@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+*.py[cod]
+data/
+*.sqlite3
+*.db
+.DS_Store
+Thumbs.db
+.pytest_cache_local/
