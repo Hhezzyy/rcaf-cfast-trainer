@@ -1,5 +1,26 @@
 from __future__ import annotations
 
+"""
+Pygame UI shell for the RCAF CFAST Trainer.
+
+This file intentionally contains only UI/navigation scaffolding. Core deterministic
+logic (timing/scoring/RNG/state machines) should live elsewhere later.
+
+This change implements:
+- A Settings screen with working toggles:
+  - Fullscreen (applies immediately)
+  - Max FPS (applies immediately)
+  - Show FPS overlay (applies immediately)
+  - Invert Y axis (stored toggle for future input mapping)
+- Placeholder subpages:
+  - Axis Calibration (placeholder)
+  - Axis Visualizer (placeholder)
+  - Input Profiles (placeholder)
+  - Data & Storage (placeholder)
+
+No persistence is implemented in this task.
+"""
+
 from dataclasses import dataclass
 from typing import Callable, Protocol
 
@@ -15,6 +36,21 @@ class Screen(Protocol):
 class MenuItem:
     label: str
     action: Callable[[], None]
+
+
+@dataclass
+class Settings:
+    # Display
+    fullscreen: bool = False
+    max_fps: int = 60
+    show_fps_overlay: bool = False
+
+    # Input (used later by psychomotor tasks / mappings)
+    invert_y_axis: bool = False
+
+
+# Global settings instance for now (persistence later).
+settings = Settings()
 
 
 class App:
@@ -56,6 +92,10 @@ class App:
             return
         self._screens[-1].render(self._surface)
 
+    def update_surface(self, new_surface: pygame.Surface) -> None:
+        # Used when toggling fullscreen (display mode changes).
+        self._surface = new_surface
+
 
 class PlaceholderScreen:
     def __init__(self, app: App, title: str) -> None:
@@ -88,16 +128,18 @@ class MenuScreen:
         if event.type == pygame.KEYDOWN:
             self._handle_key(event.key)
             return
+
         if event.type == pygame.JOYHATMOTION:
-            # D-pad / hat navigation (works on many sticks).
+            # D-pad / hat navigation
             _, y = event.value
             if y == 1:
                 self._move(-1)
             elif y == -1:
                 self._move(1)
             return
+
         if event.type == pygame.JOYBUTTONDOWN:
-            # Common mapping: 0 = select, 1 = back/cancel.
+            # Common mapping: 0 = select, 1 = back/cancel
             if event.button == 0:
                 self._activate()
             elif event.button == 1:
@@ -147,8 +189,121 @@ class MenuScreen:
         surface.blit(foot, (40, surface.get_height() - 40))
 
 
+class SettingsScreen:
+    def __init__(
+        self,
+        app: App,
+        *,
+        axis_calibration: Screen,
+        axis_visualizer: Screen,
+        input_profiles: Screen,
+        data_storage: Screen,
+    ) -> None:
+        self._app = app
+        self._selected = 0
+        self._fps_options = [30, 60, 120]
+
+        self._axis_calibration = axis_calibration
+        self._axis_visualizer = axis_visualizer
+        self._input_profiles = input_profiles
+        self._data_storage = data_storage
+
+    def _toggle_fullscreen(self) -> None:
+        settings.fullscreen = not settings.fullscreen
+
+        flags = pygame.FULLSCREEN if settings.fullscreen else 0
+        new_surface = pygame.display.set_mode((960, 540), flags)
+        self._app.update_surface(new_surface)
+
+    def _cycle_max_fps(self) -> None:
+        try:
+            idx = self._fps_options.index(settings.max_fps)
+        except ValueError:
+            idx = 0
+        settings.max_fps = self._fps_options[(idx + 1) % len(self._fps_options)]
+
+    def _toggle_show_fps(self) -> None:
+        settings.show_fps_overlay = not settings.show_fps_overlay
+
+    def _toggle_invert_y(self) -> None:
+        settings.invert_y_axis = not settings.invert_y_axis
+
+    def _entries(self) -> list[tuple[str, Callable[[], None]]]:
+        return [
+            (f"Fullscreen: {'ON' if settings.fullscreen else 'OFF'}", self._toggle_fullscreen),
+            (f"Max FPS: {settings.max_fps}", self._cycle_max_fps),
+            (f"Show FPS overlay: {'ON' if settings.show_fps_overlay else 'OFF'}", self._toggle_show_fps),
+            (f"Invert Y axis: {'ON' if settings.invert_y_axis else 'OFF'}", self._toggle_invert_y),
+            ("Axis Calibration", lambda: self._app.push(self._axis_calibration)),
+            ("Axis Visualizer", lambda: self._app.push(self._axis_visualizer)),
+            ("Input Profiles", lambda: self._app.push(self._input_profiles)),
+            ("Data & Storage", lambda: self._app.push(self._data_storage)),
+            ("Back", self._app.pop),
+        ]
+
+    def _move(self, delta: int) -> None:
+        items = self._entries()
+        if not items:
+            return
+        self._selected = (self._selected + delta) % len(items)
+
+    def _activate(self) -> None:
+        items = self._entries()
+        if not items:
+            return
+        _, action = items[self._selected]
+        action()
+
+    def _back(self) -> None:
+        self._app.pop()
+
+    def handle_event(self, event: pygame.event.Event) -> None:
+        if event.type == pygame.KEYDOWN:
+            if event.key in (pygame.K_UP, pygame.K_w):
+                self._move(-1)
+            elif event.key in (pygame.K_DOWN, pygame.K_s):
+                self._move(1)
+            elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE):
+                self._activate()
+            elif event.key in (pygame.K_ESCAPE, pygame.K_BACKSPACE):
+                self._back()
+            return
+
+        if event.type == pygame.JOYHATMOTION:
+            _, y = event.value
+            if y == 1:
+                self._move(-1)
+            elif y == -1:
+                self._move(1)
+            return
+
+        if event.type == pygame.JOYBUTTONDOWN:
+            if event.button == 0:
+                self._activate()
+            elif event.button == 1:
+                self._back()
+
+    def render(self, surface: pygame.Surface) -> None:
+        surface.fill((10, 10, 14))
+        title = self._app.font.render("Settings", True, (235, 235, 245))
+        surface.blit(title, (40, 40))
+
+        y = 120
+        items = self._entries()
+        for idx, (label, _) in enumerate(items):
+            prefix = "> " if idx == self._selected else "  "
+            color = (235, 235, 245) if idx == self._selected else (180, 180, 190)
+            text = self._app.font.render(f"{prefix}{label}", True, color)
+            surface.blit(text, (60, y))
+            y += 42
+
+        footer = "Enter/Space to select • Esc to back • D-pad + Button0/1 supported"
+        foot = pygame.font.Font(None, 22).render(footer, True, (140, 140, 150))
+        surface.blit(foot, (40, surface.get_height() - 40))
+
+
 def _init_joysticks() -> None:
-    # Safe on platforms with no joystick support; pygame-ce typically exposes this on Win/macOS.
+    # Safe on platforms with no joystick support.
     try:
         count = pygame.joystick.get_count()
     except Exception:
@@ -158,7 +313,6 @@ def _init_joysticks() -> None:
             js = pygame.joystick.Joystick(i)
             js.init()
         except Exception:
-            # Ignore any problematic device; keyboard remains primary input.
             continue
 
 
@@ -167,8 +321,10 @@ def run(*, max_frames: int | None = None, event_injector: Callable[[int], None] 
     _init_joysticks()
 
     pygame.display.set_caption("RCAF CFAST Trainer")
-    surface = pygame.display.set_mode((960, 540))
+    surface = pygame.display.set_mode((960, 540), pygame.FULLSCREEN if settings.fullscreen else 0)
+
     font = pygame.font.Font(None, 36)
+    small_font = pygame.font.Font(None, 20)
     clock = pygame.time.Clock()
 
     app = App(surface=surface, font=font)
@@ -176,13 +332,25 @@ def run(*, max_frames: int | None = None, event_injector: Callable[[int], None] 
     workouts = PlaceholderScreen(app, "90-minute workouts")
     drills = PlaceholderScreen(app, "Individual drills")
     tests = PlaceholderScreen(app, "Individual tests")
-    settings = PlaceholderScreen(app, "Settings")
+
+    axis_calibration = PlaceholderScreen(app, "Axis Calibration (placeholder)")
+    axis_visualizer = PlaceholderScreen(app, "Axis Visualizer (placeholder)")
+    input_profiles = PlaceholderScreen(app, "Input Profiles (placeholder)")
+    data_storage = PlaceholderScreen(app, "Data & Storage (placeholder)")
+
+    settings_screen = SettingsScreen(
+        app,
+        axis_calibration=axis_calibration,
+        axis_visualizer=axis_visualizer,
+        input_profiles=input_profiles,
+        data_storage=data_storage,
+    )
 
     main_items = [
         MenuItem("90-minute workouts", lambda: app.push(workouts)),
         MenuItem("Individual drills", lambda: app.push(drills)),
         MenuItem("Individual tests", lambda: app.push(tests)),
-        MenuItem("Settings", lambda: app.push(settings)),
+        MenuItem("Settings", lambda: app.push(settings_screen)),
         MenuItem("Quit", app.quit),
     ]
     app.push(MenuScreen(app, "Main Menu", main_items, is_root=True))
@@ -197,12 +365,21 @@ def run(*, max_frames: int | None = None, event_injector: Callable[[int], None] 
                 app.handle_event(event)
 
             app.render()
+
+            # Always draw overlays on the current display surface (fullscreen toggle recreates it).
+            display_surface = pygame.display.get_surface()
+            if display_surface is not None and settings.show_fps_overlay:
+                fps = int(clock.get_fps())
+                fps_surf = small_font.render(f"{fps} FPS", True, (140, 220, 140))
+                display_surface.blit(fps_surf, (display_surface.get_width() - fps_surf.get_width() - 10, 10))
+
             pygame.display.flip()
 
             frame += 1
             if max_frames is not None and frame >= max_frames:
                 break
-            clock.tick(60)
+
+            clock.tick(settings.max_fps)
     finally:
         pygame.quit()
 
