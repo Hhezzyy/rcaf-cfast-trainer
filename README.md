@@ -44,6 +44,7 @@ python -m pip install -r requirements-dev.txt
 ## Verify
 - `python --version` should report `3.13.12`.
 - `python -m pytest` runs the smoke test.
+- `python -m cfast_trainer` opens the app (main menu).
 
 ## Share / Move Between PC and Mac
 - Do not copy `.venv/` between machines.
