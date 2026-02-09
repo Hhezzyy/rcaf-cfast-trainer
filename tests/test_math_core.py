@@ -104,6 +104,8 @@ def test_headless_simulation() -> None:
         assert problem is not None
         # Always answer correctly
         clock.advance(0.5)
+        if engine.finished:
+            break
         engine.submit_answer(problem.answer)
         answers_given += 1
     summary = engine.summary()

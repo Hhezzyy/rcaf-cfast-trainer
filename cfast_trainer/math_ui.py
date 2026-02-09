@@ -18,9 +18,8 @@ from __future__ import annotations
 
 import pygame
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
-from .app import App, Screen
 from .math_core import MathProblem, MathProblemGenerator, MathTestEngine
 
 
