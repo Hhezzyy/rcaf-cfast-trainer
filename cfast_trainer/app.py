@@ -1,59 +1,41 @@
 from __future__ import annotations
 
-"""
-Pygame UI shell for the RCAF CFAST Trainer.
+"""Pygame UI shell for the RCAF CFAST Trainer.
 
-This file intentionally contains only UI/navigation scaffolding. Core deterministic
-logic (timing/scoring/RNG/state machines) should live elsewhere later.
+This task adds two cognitive tests under a "Tests" submenu:
+- Numerical Operations (mental arithmetic)
+- Mathematics Reasoning (time/speed/distance word problems)
 
-This change implements:
-- A Settings screen with working toggles:
-  - Fullscreen (applies immediately)
-  - Max FPS (applies immediately)
-  - Show FPS overlay (applies immediately)
-  - Invert Y axis (stored toggle for future input mapping)
-- Placeholder subpages:
-  - Axis Calibration (placeholder)
-  - Axis Visualizer (placeholder)
-  - Input Profiles (placeholder)
-  - Data & Storage (placeholder)
-
-No persistence is implemented in this task.
+Deterministic timing/scoring/RNG/state lives in cfast_trainer/* (core modules).
 """
 
+import random
 from dataclasses import dataclass
 from typing import Callable, Protocol
 
 import pygame
 
-# Import the mathematics test screen for integration into the tests menu
-from .math_ui import MathTestScreen
+from .clock import RealClock
+from .math_reasoning import build_math_reasoning_test
+from .numerical_operations import build_numerical_operations_test
 
 
 class Screen(Protocol):
-    """Protocol for screens used by the app."""
-
     def handle_event(self, event: pygame.event.Event) -> None:
-        """Handle an incoming pygame event."""
         ...
 
     def render(self, surface: pygame.Surface) -> None:
-        """Draw the contents of the screen onto the given surface."""
         ...
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class MenuItem:
-    """A single selectable item in a menu."""
-
     label: str
     action: Callable[[], None]
 
 
 @dataclass
 class Settings:
-    """Runtime configuration for the trainer UI."""
-
     # Display
     fullscreen: bool = False
     max_fps: int = 60
@@ -63,13 +45,11 @@ class Settings:
     invert_y_axis: bool = False
 
 
-# Global settings instance for now (persistence later).
+# Global settings instance (persistence later).
 settings = Settings()
 
 
 class App:
-    """A simple stack of screens with a pygame surface and font."""
-
     def __init__(self, surface: pygame.Surface, font: pygame.font.Font) -> None:
         self._surface = surface
         self._font = font
@@ -78,30 +58,24 @@ class App:
 
     @property
     def running(self) -> bool:
-        """Whether the application is still running."""
         return self._running
 
     @property
     def font(self) -> pygame.font.Font:
-        """Retrieve the font in use by the application."""
         return self._font
 
     def push(self, screen: Screen) -> None:
-        """Push a new screen onto the stack."""
         self._screens.append(screen)
 
     def pop(self) -> None:
-        """Pop the top screen off the stack (but not the root screen)."""
         # Never pop the last/root screen; root handles its own quit/back behavior.
         if len(self._screens) > 1:
             self._screens.pop()
 
     def quit(self) -> None:
-        """Request that the application exit."""
         self._running = False
 
     def handle_event(self, event: pygame.event.Event) -> None:
-        """Dispatch an event to the current screen or handle quit."""
         if event.type == pygame.QUIT:
             self.quit()
             return
@@ -110,19 +84,16 @@ class App:
         self._screens[-1].handle_event(event)
 
     def render(self) -> None:
-        """Render the topmost screen."""
         if not self._screens:
             return
         self._screens[-1].render(self._surface)
 
     def update_surface(self, new_surface: pygame.Surface) -> None:
-        """Update the internal surface reference (e.g. after toggling fullscreen)."""
+        # Used when toggling fullscreen (display mode changes).
         self._surface = new_surface
 
 
 class PlaceholderScreen:
-    """A stub screen that shows a title and returns on Esc/back."""
-
     def __init__(self, app: App, title: str) -> None:
         self._app = app
         self._title = title
@@ -136,24 +107,13 @@ class PlaceholderScreen:
     def render(self, surface: pygame.Surface) -> None:
         surface.fill((10, 10, 14))
         title = self._app.font.render(self._title, True, (235, 235, 245))
-        hint = self._app.font.render(
-            "Placeholder. Press Esc to go back.", True, (180, 180, 190)
-        )
+        hint = self._app.font.render("Placeholder. Press Esc to go back.", True, (180, 180, 190))
         surface.blit(title, (40, 40))
         surface.blit(hint, (40, 100))
 
 
 class MenuScreen:
-    """Simple navigable menu screen."""
-
-    def __init__(
-        self,
-        app: App,
-        title: str,
-        items: list[MenuItem],
-        *,
-        is_root: bool = False,
-    ) -> None:
+    def __init__(self, app: App, title: str, items: list[MenuItem], *, is_root: bool = False) -> None:
         self._app = app
         self._title = title
         self._items = items
@@ -166,7 +126,7 @@ class MenuScreen:
             return
 
         if event.type == pygame.JOYHATMOTION:
-            # D‑pad / hat navigation
+            # D-pad / hat navigation (works on many sticks).
             _, y = event.value
             if y == 1:
                 self._move(-1)
@@ -175,7 +135,7 @@ class MenuScreen:
             return
 
         if event.type == pygame.JOYBUTTONDOWN:
-            # Common mapping: 0 = select, 1 = back/cancel
+            # Common mapping: 0 = select, 1 = back/cancel.
             if event.button == 0:
                 self._activate()
             elif event.button == 1:
@@ -220,16 +180,12 @@ class MenuScreen:
             surface.blit(text, (60, y))
             y += 42
 
-        footer = (
-            "Enter/Space to select • Esc to back/quit • D‑pad + Button0/1 supported"
-        )
+        footer = "Enter/Space to select • Esc to back/quit • D-pad + Button0/1 supported"
         foot = pygame.font.Font(None, 22).render(footer, True, (140, 140, 150))
         surface.blit(foot, (40, surface.get_height() - 40))
 
 
 class SettingsScreen:
-    """Menu for adjusting runtime options."""
-
     def __init__(
         self,
         app: App,
@@ -242,7 +198,6 @@ class SettingsScreen:
         self._app = app
         self._selected = 0
         self._fps_options = [30, 60, 120]
-
         self._axis_calibration = axis_calibration
         self._axis_visualizer = axis_visualizer
         self._input_profiles = input_profiles
@@ -271,14 +226,8 @@ class SettingsScreen:
         return [
             (f"Fullscreen: {'ON' if settings.fullscreen else 'OFF'}", self._toggle_fullscreen),
             (f"Max FPS: {settings.max_fps}", self._cycle_max_fps),
-            (
-                f"Show FPS overlay: {'ON' if settings.show_fps_overlay else 'OFF'}",
-                self._toggle_show_fps,
-            ),
-            (
-                f"Invert Y axis: {'ON' if settings.invert_y_axis else 'OFF'}",
-                self._toggle_invert_y,
-            ),
+            (f"Show FPS overlay: {'ON' if settings.show_fps_overlay else 'OFF'}", self._toggle_show_fps),
+            (f"Invert Y axis: {'ON' if settings.invert_y_axis else 'OFF'}", self._toggle_invert_y),
             ("Axis Calibration", lambda: self._app.push(self._axis_calibration)),
             ("Axis Visualizer", lambda: self._app.push(self._axis_visualizer)),
             ("Input Profiles", lambda: self._app.push(self._input_profiles)),
@@ -342,22 +291,113 @@ class SettingsScreen:
             surface.blit(text, (60, y))
             y += 42
 
-        footer = "Enter/Space to select • Esc to back • D‑pad + Button0/1 supported"
+        footer = "Enter/Space to select • Esc to back • D-pad + Button0/1 supported"
         foot = pygame.font.Font(None, 22).render(footer, True, (140, 140, 150))
         surface.blit(foot, (40, surface.get_height() - 40))
 
 
-def _init_joysticks() -> None:
-    """Initialise any available joysticks.
+class CognitiveTestScreen:
+    def __init__(self, app: App, *, engine_factory: Callable[[], object]) -> None:
+        self._app = app
+        self._engine = engine_factory()
+        self._input = ""
 
-    On some platforms joystick support may be absent; the function silently
-    ignores errors and attempts to initialise each joystick.
-    """
+        self._small_font = pygame.font.Font(None, 24)
+
+    def handle_event(self, event: pygame.event.Event) -> None:
+        if event.type != pygame.KEYDOWN:
+            return
+
+        key = event.key
+        snap = self._engine.snapshot()
+
+        if key in (pygame.K_ESCAPE, pygame.K_BACKSPACE) and self._engine.can_exit():
+            self._app.pop()
+            return
+
+        if key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+            if snap.phase.value == "instructions":
+                self._engine.start_practice()
+                self._input = ""
+                return
+            if snap.phase.value == "practice_done":
+                self._engine.start_scored()
+                self._input = ""
+                return
+            if snap.phase.value == "results":
+                self._app.pop()
+                return
+
+            accepted = self._engine.submit_answer(self._input)
+            if accepted:
+                self._input = ""
+            return
+
+        if snap.phase.value not in ("practice", "scored"):
+            return
+
+        if key == pygame.K_BACKSPACE:
+            self._input = self._input[:-1]
+            return
+
+        ch = event.unicode
+        if ch and (ch.isdigit() or (ch == "-" and self._input == "")):
+            self._input += ch
+
+    def render(self, surface: pygame.Surface) -> None:
+        self._engine.update()
+        snap = self._engine.snapshot()
+
+        surface.fill((10, 10, 14))
+
+        title = self._app.font.render(snap.title, True, (235, 235, 245))
+        surface.blit(title, (40, 30))
+
+        y_info = 80
+        if snap.time_remaining_s is not None:
+            rem = int(round(snap.time_remaining_s))
+            mm = rem // 60
+            ss = rem % 60
+            timer = self._small_font.render(f"Time remaining: {mm:02d}:{ss:02d}", True, (200, 200, 210))
+            surface.blit(timer, (40, y_info))
+            y_info += 28
+
+        stats = self._small_font.render(
+            f"Scored: {snap.correct_scored}/{snap.attempted_scored}", True, (180, 180, 190)
+        )
+        surface.blit(stats, (40, y_info))
+
+        prompt_lines = str(snap.prompt).split("\n")
+        y = 140
+        for line in prompt_lines[:10]:
+            txt = self._small_font.render(line, True, (235, 235, 245))
+            surface.blit(txt, (40, y))
+            y += 26
+
+        if snap.phase.value in ("practice", "scored"):
+            box = pygame.Rect(40, surface.get_height() - 120, 400, 44)
+            pygame.draw.rect(surface, (30, 30, 40), box)
+            pygame.draw.rect(surface, (90, 90, 110), box, 2)
+
+            caret = "|" if (pygame.time.get_ticks() // 500) % 2 == 0 else ""
+            entry = self._app.font.render(self._input + caret, True, (235, 235, 245))
+            surface.blit(entry, (box.x + 10, box.y + 8))
+
+            hint = self._small_font.render(snap.input_hint, True, (140, 140, 150))
+            surface.blit(hint, (40, surface.get_height() - 60))
+
+        if not self._engine.can_exit() and snap.phase.value == "scored":
+            lock = self._small_font.render("Test in progress: cannot exit.", True, (140, 140, 150))
+            surface.blit(lock, (460, surface.get_height() - 60))
+
+
+def _init_joysticks() -> None:
     # Safe on platforms with no joystick support.
     try:
         count = pygame.joystick.get_count()
     except Exception:
         return
+
     for i in range(count):
         try:
             js = pygame.joystick.Joystick(i)
@@ -366,16 +406,11 @@ def _init_joysticks() -> None:
             continue
 
 
+def _new_seed() -> int:
+    return random.SystemRandom().randint(1, 2**31 - 1)
+
+
 def run(*, max_frames: int | None = None, event_injector: Callable[[int], None] | None = None) -> int:
-    """Run the main event loop.
-
-    Args:
-        max_frames: Optional limit on the number of frames to run before exiting.
-        event_injector: Optional callable invoked each frame before events are processed.
-
-    Returns:
-        Exit code integer (0 for normal exit).
-    """
     pygame.init()
     _init_joysticks()
 
@@ -388,18 +423,8 @@ def run(*, max_frames: int | None = None, event_injector: Callable[[int], None] 
 
     app = App(surface=surface, font=font)
 
-    workouts = PlaceholderScreen(app, "90‑minute workouts")
+    workouts = PlaceholderScreen(app, "90-minute workouts")
     drills = PlaceholderScreen(app, "Individual drills")
-
-    # Build the individual tests menu with the numerical operations test
-    tests_menu_items = [
-        MenuItem(
-            "Numerical Operations",
-            lambda: app.push(MathTestScreen(app)),
-        ),
-        MenuItem("Back", app.pop),
-    ]
-    tests = MenuScreen(app, "Individual tests", tests_menu_items)
 
     axis_calibration = PlaceholderScreen(app, "Axis Calibration (placeholder)")
     axis_visualizer = PlaceholderScreen(app, "Axis Visualizer (placeholder)")
@@ -414,13 +439,44 @@ def run(*, max_frames: int | None = None, event_injector: Callable[[int], None] 
         data_storage=data_storage,
     )
 
+    real_clock = RealClock()
+
+    def open_numerical_ops() -> None:
+        seed = _new_seed()
+        app.push(
+            CognitiveTestScreen(
+                app,
+                engine_factory=lambda: build_numerical_operations_test(clock=real_clock, seed=seed, difficulty=0.5),
+            )
+        )
+
+    def open_math_reasoning() -> None:
+        seed = _new_seed()
+        app.push(
+            CognitiveTestScreen(
+                app,
+                engine_factory=lambda: build_math_reasoning_test(clock=real_clock, seed=seed, difficulty=0.5),
+            )
+        )
+
+    tests_menu = MenuScreen(
+        app,
+        "Tests",
+        [
+            MenuItem("Numerical Operations", open_numerical_ops),
+            MenuItem("Mathematics Reasoning", open_math_reasoning),
+            MenuItem("Back", app.pop),
+        ],
+    )
+
     main_items = [
-        MenuItem("90‑minute workouts", lambda: app.push(workouts)),
+        MenuItem("90-minute workouts", lambda: app.push(workouts)),
         MenuItem("Individual drills", lambda: app.push(drills)),
-        MenuItem("Individual tests", lambda: app.push(tests)),
+        MenuItem("Tests", lambda: app.push(tests_menu)),
         MenuItem("Settings", lambda: app.push(settings_screen)),
         MenuItem("Quit", app.quit),
     ]
+
     app.push(MenuScreen(app, "Main Menu", main_items, is_root=True))
 
     frame = 0

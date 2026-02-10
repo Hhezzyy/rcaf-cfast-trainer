@@ -1,288 +1,103 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import random
-import time
-from typing import Protocol
+
+from .clock import Clock
+from .cognitive_core import Problem, SeededRng, TimedTextInputTest, lerp_int
 
 
-class Clock(Protocol):
-    def now(self) -> float:
-        """Return monotonic seconds."""
-        ...
-
-class RealClock:
-    """Adapter clock (real monotonic time)."""
-
-    def now(self) -> float:
-        return time.monotonic()
-
-
-class FakeClock:
-    """Deterministic test clock."""
-
-    def __init__(self, *, start: float = 0.0) -> None:
-        self._t = float(start)
-
-    def now(self) -> float:
-        return self._t
-
-    def advance(self, dt: float) -> None:
-        if dt < 0:
-            raise ValueError("dt must be non-negative")
-        self._t += float(dt)
-
-    def set(self, t: float) -> None:
-        self._t = float(t)
-
-
-@dataclass(frozen=True)
-class ArithmeticProblem:
-    text: str
-    answer: int
-    a: int
-    b: int
-    op: str
-
-
-@dataclass(frozen=True)
-class Trial:
-    problem: ArithmeticProblem
-    presented_at: float
-    answered_at: float
-    response_text: str
-    response_value: int | None
-    correct: bool
-
-
-@dataclass(frozen=True)
-class NumericalOperationsResults:
-    seed: int
-    difficulty: float
-    attempted: int
-    correct: int
-    accuracy: float
-    throughput_per_min: float
-    mean_response_time_s: float
-    response_times_s: tuple[float, ...]
-
-
-@dataclass(frozen=True)
-class NumericalOperationsSessionConfig:
-    seed: int
-    practice_questions: int = 5
+@dataclass(frozen=True, slots=True)
+class NumericalOperationsConfig:
     scored_duration_s: float = 120.0
-    difficulty: float = 0.35
+    practice_questions: int = 5
 
 
-class ProblemGenerator:
-    def __init__(self, rng: random.Random, *, difficulty: float) -> None:
-        self._rng = rng
-        self._difficulty = _clamp01(difficulty)
+class NumericalOperationsGenerator:
+    """Generates mental arithmetic problems (+ - × ÷) with integer results."""
 
-    def next_problem(self) -> ArithmeticProblem:
-        op = self._rng.choice(["+", "-", "×", "÷"])
+    def __init__(self, *, seed: int) -> None:
+        self._rng = SeededRng(seed)
+
+    def next_problem(self, *, difficulty: float) -> Problem:
+        # difficulty 0..1 controls operand ranges and operator mix.
+        difficulty = max(0.0, min(1.0, difficulty))
+
+        op = self._pick_operator(difficulty)
 
         if op == "+":
-            max_v = _scale_int(9, 99, self._difficulty)
-            a = self._rng.randint(0, max_v)
-            b = self._rng.randint(0, max_v)
-            ans = a + b
-        elif op == "-":
-            max_v = _scale_int(9, 99, self._difficulty)
-            a = self._rng.randint(0, max_v)
-            b = self._rng.randint(0, max_v)
+            a, b = self._operands(difficulty)
+            return Problem(prompt=f"{a} + {b} =", answer=a + b)
+        if op == "-":
+            a, b = self._operands(difficulty)
             if b > a:
                 a, b = b, a
-            ans = a - b
-        elif op == "×":
-            max_v = _scale_int(9, 20, self._difficulty)
-            a = self._rng.randint(0, max_v)
-            b = self._rng.randint(0, max_v)
-            ans = a * b
-        else:  # "÷"
-            max_v = _scale_int(9, 20, self._difficulty)
-            divisor = self._rng.randint(1, max_v)
-            quotient = self._rng.randint(0, max_v)
-            dividend = divisor * quotient
-            a, b = dividend, divisor
-            ans = quotient
+            return Problem(prompt=f"{a} - {b} =", answer=a - b)
+        if op == "*":
+            a, b = self._operands_mult(difficulty)
+            return Problem(prompt=f"{a} × {b} =", answer=a * b)
 
-        return ArithmeticProblem(text=f"{a} {op} {b} =", answer=ans, a=a, b=b, op=op)
+        # Division: force clean integer quotient.
+        divisor = self._rng.randint(2, lerp_int(9, 25, difficulty))
+        quotient = self._rng.randint(2, lerp_int(9, 25, difficulty))
+        dividend = divisor * quotient
+        return Problem(prompt=f"{dividend} ÷ {divisor} =", answer=quotient)
 
+    def _pick_operator(self, difficulty: float) -> str:
+        # Easy: more + and -; hard: more * and ÷.
+        r = self._rng.uniform(0.0, 1.0)
+        if r < (0.45 - 0.20 * difficulty):
+            return "+"
+        if r < (0.80 - 0.20 * difficulty):
+            return "-"
+        if r < (0.92 + 0.04 * difficulty):
+            return "*"
+        return "/"
 
-def _scale_int(lo: int, hi: int, t: float) -> int:
-    return int(round(lo + (hi - lo) * _clamp01(t)))
+    def _operands(self, difficulty: float) -> tuple[int, int]:
+        lo = 1
+        hi = lerp_int(9, 99, difficulty)
+        return self._rng.randint(lo, hi), self._rng.randint(lo, hi)
 
-
-def _clamp01(x: float) -> float:
-    if x < 0.0:
-        return 0.0
-    if x > 1.0:
-        return 1.0
-    return float(x)
-
-
-def _try_parse_int(text: str) -> int | None:
-    s = text.strip()
-    if not s:
-        return None
-    try:
-        return int(s)
-    except ValueError:
-        return None
+    def _operands_mult(self, difficulty: float) -> tuple[int, int]:
+        # Keep multiplication within reasonable mental range.
+        a_hi = lerp_int(9, 25, difficulty)
+        b_hi = lerp_int(9, 15, difficulty)
+        return self._rng.randint(2, a_hi), self._rng.randint(2, b_hi)
 
 
-class NumericalOperationsSession:
-    """
-    Deterministic session state machine:
+def build_numerical_operations_test(
+    *,
+    clock: Clock,
+    seed: int,
+    difficulty: float = 0.5,
+    config: NumericalOperationsConfig | None = None,
+) -> TimedTextInputTest:
+    """Factory for the Numerical Operations test session."""
 
-      INSTRUCTIONS -> PRACTICE -> READY -> SCORED -> RESULTS
+    cfg = config or NumericalOperationsConfig()
 
-    Core logic is deterministic given (seed, scripted inputs, fake clock).
-    """
+    instructions = [
+        "Numerical Operations (Mental Arithmetic)",
+        "",
+        "Answer as many arithmetic problems as you can.",
+        "Use mental math: no calculator, no paper.",
+        "",
+        "Controls:",
+        "- Type your answer",
+        "- Press Enter to submit",
+        "",
+        "You will get a short practice, then a timed 2-minute scored block.",
+    ]
 
-    def __init__(self, config: NumericalOperationsSessionConfig, *, clock: Clock) -> None:
-        self._config = config
-        self._clock = clock
-        self._rng = random.Random(config.seed)
-        self._gen = ProblemGenerator(self._rng, difficulty=config.difficulty)
+    generator = NumericalOperationsGenerator(seed=seed)
 
-        self._phase: str = "INSTRUCTIONS"
-
-        self._practice_done = 0
-        self._practice_trials: list[Trial] = []
-
-        self._scored_trials: list[Trial] = []
-        self._scored_ends_at: float | None = None
-
-        self._current: ArithmeticProblem | None = None
-        self._presented_at: float | None = None
-
-        self._results: NumericalOperationsResults | None = None
-
-    @property
-    def phase(self) -> str:
-        return self._phase
-
-    @property
-    def current_problem(self) -> ArithmeticProblem | None:
-        return self._current
-
-    @property
-    def time_remaining_s(self) -> float:
-        if self._phase != "SCORED":
-            return 0.0
-        assert self._scored_ends_at is not None
-        return max(0.0, self._scored_ends_at - self._clock.now())
-
-    @property
-    def results(self) -> NumericalOperationsResults | None:
-        return self._results
-
-    def start_practice(self) -> None:
-        if self._phase != "INSTRUCTIONS":
-            return
-        if self._config.practice_questions <= 0:
-            self._phase = "READY"
-            self._current = None
-            self._presented_at = None
-            return
-        self._phase = "PRACTICE"
-        self._next_problem()
-
-    def start_scored(self) -> None:
-        if self._phase != "READY":
-            return
-        now = self._clock.now()
-        self._scored_ends_at = now + float(self._config.scored_duration_s)
-        self._phase = "SCORED"
-        self._next_problem()
-
-    def tick(self) -> None:
-        if self._phase == "SCORED":
-            self._end_if_expired()
-
-    def submit_answer(self, answer_text: str) -> str | None:
-        if self._phase not in ("PRACTICE", "SCORED"):
-            return None
-
-        now = self._clock.now()
-
-        if self._phase == "SCORED":
-            assert self._scored_ends_at is not None
-            if now >= self._scored_ends_at:
-                self._end_scored()
-                return None
-
-        if self._current is None or self._presented_at is None:
-            return None
-
-        value = _try_parse_int(answer_text)
-        correct = value is not None and value == self._current.answer
-
-        trial = Trial(
-            problem=self._current,
-            presented_at=self._presented_at,
-            answered_at=now,
-            response_text=answer_text,
-            response_value=value,
-            correct=correct,
-        )
-
-        if self._phase == "PRACTICE":
-            self._practice_trials.append(trial)
-            self._practice_done += 1
-            msg = "Correct." if correct else f"Incorrect. Answer: {trial.problem.answer}"
-            if self._practice_done >= self._config.practice_questions:
-                self._phase = "READY"
-                self._current = None
-                self._presented_at = None
-                return "Practice complete."
-            self._next_problem()
-            return msg
-
-        # SCORED
-        self._scored_trials.append(trial)
-        self._end_if_expired()
-        if self._phase == "SCORED":
-            self._next_problem()
-        return None
-
-    def _next_problem(self) -> None:
-        self._current = self._gen.next_problem()
-        self._presented_at = self._clock.now()
-
-    def _end_if_expired(self) -> None:
-        assert self._scored_ends_at is not None
-        if self._clock.now() >= self._scored_ends_at:
-            self._end_scored()
-
-    def _end_scored(self) -> None:
-        self._phase = "RESULTS"
-        self._current = None
-        self._presented_at = None
-        self._results = _compute_results(self._config, self._scored_trials)
-
-
-def _compute_results(config: NumericalOperationsSessionConfig, trials: list[Trial]) -> NumericalOperationsResults:
-    attempted = len(trials)
-    correct = sum(1 for t in trials if t.correct)
-    accuracy = (correct / attempted) if attempted else 0.0
-
-    duration_min = float(config.scored_duration_s) / 60.0
-    throughput = (attempted / duration_min) if duration_min > 0 else 0.0
-
-    rts = [max(0.0, t.answered_at - t.presented_at) for t in trials]
-    mean_rt = (sum(rts) / len(rts)) if rts else 0.0
-
-    return NumericalOperationsResults(
-        seed=config.seed,
-        difficulty=config.difficulty,
-        attempted=attempted,
-        correct=correct,
-        accuracy=float(accuracy),
-        throughput_per_min=float(throughput),
-        mean_response_time_s=float(mean_rt),
-        response_times_s=tuple(rts),
+    return TimedTextInputTest(
+        title="Numerical Operations",
+        instructions=instructions,
+        generator=generator,
+        clock=clock,
+        seed=seed,
+        difficulty=difficulty,
+        practice_questions=cfg.practice_questions,
+        scored_duration_s=cfg.scored_duration_s,
     )
