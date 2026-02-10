@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 """
-Pygame UI shell for the RCAF CFAST Trainer.
+Pygame UI shell for the RCAF CFAST Trainer.
 
 This file intentionally contains only UI/navigation scaffolding. Core deterministic
 logic (timing/scoring/RNG/state machines) should live elsewhere later.
@@ -11,12 +11,12 @@ This change implements:
   - Fullscreen (applies immediately)
   - Max FPS (applies immediately)
   - Show FPS overlay (applies immediately)
-  - Invert Y axis (stored toggle for future input mapping)
+  - Invert Y axis (stored toggle for future input mapping)
 - Placeholder subpages:
   - Axis Calibration (placeholder)
   - Axis Visualizer (placeholder)
   - Input Profiles (placeholder)
-  - Data & Storage (placeholder)
+  - Data & Storage (placeholder)
 
 No persistence is implemented in this task.
 """
@@ -26,20 +26,34 @@ from typing import Callable, Protocol
 
 import pygame
 
+# Import the mathematics test screen for integration into the tests menu
+from .math_ui import MathTestScreen
+
 
 class Screen(Protocol):
-    def handle_event(self, event: pygame.event.Event) -> None: ...
-    def render(self, surface: pygame.Surface) -> None: ...
+    """Protocol for screens used by the app."""
+
+    def handle_event(self, event: pygame.event.Event) -> None:
+        """Handle an incoming pygame event."""
+        ...
+
+    def render(self, surface: pygame.Surface) -> None:
+        """Draw the contents of the screen onto the given surface."""
+        ...
 
 
 @dataclass(frozen=True)
 class MenuItem:
+    """A single selectable item in a menu."""
+
     label: str
     action: Callable[[], None]
 
 
 @dataclass
 class Settings:
+    """Runtime configuration for the trainer UI."""
+
     # Display
     fullscreen: bool = False
     max_fps: int = 60
@@ -54,6 +68,8 @@ settings = Settings()
 
 
 class App:
+    """A simple stack of screens with a pygame surface and font."""
+
     def __init__(self, surface: pygame.Surface, font: pygame.font.Font) -> None:
         self._surface = surface
         self._font = font
@@ -62,24 +78,30 @@ class App:
 
     @property
     def running(self) -> bool:
+        """Whether the application is still running."""
         return self._running
 
     @property
     def font(self) -> pygame.font.Font:
+        """Retrieve the font in use by the application."""
         return self._font
 
     def push(self, screen: Screen) -> None:
+        """Push a new screen onto the stack."""
         self._screens.append(screen)
 
     def pop(self) -> None:
+        """Pop the top screen off the stack (but not the root screen)."""
         # Never pop the last/root screen; root handles its own quit/back behavior.
         if len(self._screens) > 1:
             self._screens.pop()
 
     def quit(self) -> None:
+        """Request that the application exit."""
         self._running = False
 
     def handle_event(self, event: pygame.event.Event) -> None:
+        """Dispatch an event to the current screen or handle quit."""
         if event.type == pygame.QUIT:
             self.quit()
             return
@@ -88,16 +110,19 @@ class App:
         self._screens[-1].handle_event(event)
 
     def render(self) -> None:
+        """Render the topmost screen."""
         if not self._screens:
             return
         self._screens[-1].render(self._surface)
 
     def update_surface(self, new_surface: pygame.Surface) -> None:
-        # Used when toggling fullscreen (display mode changes).
+        """Update the internal surface reference (e.g. after toggling fullscreen)."""
         self._surface = new_surface
 
 
 class PlaceholderScreen:
+    """A stub screen that shows a title and returns on Esc/back."""
+
     def __init__(self, app: App, title: str) -> None:
         self._app = app
         self._title = title
@@ -111,13 +136,24 @@ class PlaceholderScreen:
     def render(self, surface: pygame.Surface) -> None:
         surface.fill((10, 10, 14))
         title = self._app.font.render(self._title, True, (235, 235, 245))
-        hint = self._app.font.render("Placeholder. Press Esc to go back.", True, (180, 180, 190))
+        hint = self._app.font.render(
+            "Placeholder. Press Esc to go back.", True, (180, 180, 190)
+        )
         surface.blit(title, (40, 40))
         surface.blit(hint, (40, 100))
 
 
 class MenuScreen:
-    def __init__(self, app: App, title: str, items: list[MenuItem], *, is_root: bool = False) -> None:
+    """Simple navigable menu screen."""
+
+    def __init__(
+        self,
+        app: App,
+        title: str,
+        items: list[MenuItem],
+        *,
+        is_root: bool = False,
+    ) -> None:
         self._app = app
         self._title = title
         self._items = items
@@ -130,7 +166,7 @@ class MenuScreen:
             return
 
         if event.type == pygame.JOYHATMOTION:
-            # D-pad / hat navigation
+            # D‑pad / hat navigation
             _, y = event.value
             if y == 1:
                 self._move(-1)
@@ -184,12 +220,16 @@ class MenuScreen:
             surface.blit(text, (60, y))
             y += 42
 
-        footer = "Enter/Space to select • Esc to back/quit • D-pad + Button0/1 supported"
+        footer = (
+            "Enter/Space to select • Esc to back/quit • D‑pad + Button0/1 supported"
+        )
         foot = pygame.font.Font(None, 22).render(footer, True, (140, 140, 150))
         surface.blit(foot, (40, surface.get_height() - 40))
 
 
 class SettingsScreen:
+    """Menu for adjusting runtime options."""
+
     def __init__(
         self,
         app: App,
@@ -210,7 +250,6 @@ class SettingsScreen:
 
     def _toggle_fullscreen(self) -> None:
         settings.fullscreen = not settings.fullscreen
-
         flags = pygame.FULLSCREEN if settings.fullscreen else 0
         new_surface = pygame.display.set_mode((960, 540), flags)
         self._app.update_surface(new_surface)
@@ -232,8 +271,14 @@ class SettingsScreen:
         return [
             (f"Fullscreen: {'ON' if settings.fullscreen else 'OFF'}", self._toggle_fullscreen),
             (f"Max FPS: {settings.max_fps}", self._cycle_max_fps),
-            (f"Show FPS overlay: {'ON' if settings.show_fps_overlay else 'OFF'}", self._toggle_show_fps),
-            (f"Invert Y axis: {'ON' if settings.invert_y_axis else 'OFF'}", self._toggle_invert_y),
+            (
+                f"Show FPS overlay: {'ON' if settings.show_fps_overlay else 'OFF'}",
+                self._toggle_show_fps,
+            ),
+            (
+                f"Invert Y axis: {'ON' if settings.invert_y_axis else 'OFF'}",
+                self._toggle_invert_y,
+            ),
             ("Axis Calibration", lambda: self._app.push(self._axis_calibration)),
             ("Axis Visualizer", lambda: self._app.push(self._axis_visualizer)),
             ("Input Profiles", lambda: self._app.push(self._input_profiles)),
@@ -297,12 +342,17 @@ class SettingsScreen:
             surface.blit(text, (60, y))
             y += 42
 
-        footer = "Enter/Space to select • Esc to back • D-pad + Button0/1 supported"
+        footer = "Enter/Space to select • Esc to back • D‑pad + Button0/1 supported"
         foot = pygame.font.Font(None, 22).render(footer, True, (140, 140, 150))
         surface.blit(foot, (40, surface.get_height() - 40))
 
 
 def _init_joysticks() -> None:
+    """Initialise any available joysticks.
+
+    On some platforms joystick support may be absent; the function silently
+    ignores errors and attempts to initialise each joystick.
+    """
     # Safe on platforms with no joystick support.
     try:
         count = pygame.joystick.get_count()
@@ -317,6 +367,15 @@ def _init_joysticks() -> None:
 
 
 def run(*, max_frames: int | None = None, event_injector: Callable[[int], None] | None = None) -> int:
+    """Run the main event loop.
+
+    Args:
+        max_frames: Optional limit on the number of frames to run before exiting.
+        event_injector: Optional callable invoked each frame before events are processed.
+
+    Returns:
+        Exit code integer (0 for normal exit).
+    """
     pygame.init()
     _init_joysticks()
 
@@ -329,9 +388,18 @@ def run(*, max_frames: int | None = None, event_injector: Callable[[int], None] 
 
     app = App(surface=surface, font=font)
 
-    workouts = PlaceholderScreen(app, "90-minute workouts")
+    workouts = PlaceholderScreen(app, "90‑minute workouts")
     drills = PlaceholderScreen(app, "Individual drills")
-    tests = PlaceholderScreen(app, "Individual tests")
+
+    # Build the individual tests menu with the numerical operations test
+    tests_menu_items = [
+        MenuItem(
+            "Numerical Operations",
+            lambda: app.push(MathTestScreen(app)),
+        ),
+        MenuItem("Back", app.pop),
+    ]
+    tests = MenuScreen(app, "Individual tests", tests_menu_items)
 
     axis_calibration = PlaceholderScreen(app, "Axis Calibration (placeholder)")
     axis_visualizer = PlaceholderScreen(app, "Axis Visualizer (placeholder)")
@@ -347,7 +415,7 @@ def run(*, max_frames: int | None = None, event_injector: Callable[[int], None] 
     )
 
     main_items = [
-        MenuItem("90-minute workouts", lambda: app.push(workouts)),
+        MenuItem("90‑minute workouts", lambda: app.push(workouts)),
         MenuItem("Individual drills", lambda: app.push(drills)),
         MenuItem("Individual tests", lambda: app.push(tests)),
         MenuItem("Settings", lambda: app.push(settings_screen)),
@@ -371,7 +439,10 @@ def run(*, max_frames: int | None = None, event_injector: Callable[[int], None] 
             if display_surface is not None and settings.show_fps_overlay:
                 fps = int(clock.get_fps())
                 fps_surf = small_font.render(f"{fps} FPS", True, (140, 220, 140))
-                display_surface.blit(fps_surf, (display_surface.get_width() - fps_surf.get_width() - 10, 10))
+                display_surface.blit(
+                    fps_surf,
+                    (display_surface.get_width() - fps_surf.get_width() - 10, 10),
+                )
 
             pygame.display.flip()
 
