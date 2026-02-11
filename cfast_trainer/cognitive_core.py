@@ -1,3 +1,5 @@
+git restore cfast_trainer/cognitive_core.py
+cat > cfast_trainer/cognitive_core.py <<'PY'
 from __future__ import annotations
 
 import math
@@ -78,6 +80,7 @@ class TestSnapshot:
     time_remaining_s: float | None
     attempted_scored: int
     correct_scored: int
+    payload: object | None = None
 
 
 class TimedTextInputTest:
@@ -291,6 +294,7 @@ class TimedTextInputTest:
         )
 
     def snapshot(self) -> TestSnapshot:
+        payload = None if self._current is None else self._current.payload
         return TestSnapshot(
             title=self._title,
             phase=self._phase,
@@ -299,6 +303,7 @@ class TimedTextInputTest:
             time_remaining_s=self.time_remaining_s(),
             attempted_scored=self._scored_attempted,
             correct_scored=self._scored_correct,
+            payload=payload,
         )
 
     def _deal_new_problem(self) -> None:
@@ -339,3 +344,4 @@ def clamp01(x: float) -> float:
 def round_half_up(x: float) -> int:
     # For consistent educational-style rounding when needed.
     return int(math.floor(x + 0.5))
+PY
