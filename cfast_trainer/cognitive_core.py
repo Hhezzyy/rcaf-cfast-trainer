@@ -1,5 +1,3 @@
-git restore cfast_trainer/cognitive_core.py
-cat > cfast_trainer/cognitive_core.py <<'PY'
 from __future__ import annotations
 
 import math
@@ -344,4 +342,3 @@ def clamp01(x: float) -> float:
 def round_half_up(x: float) -> int:
     # For consistent educational-style rounding when needed.
     return int(math.floor(x + 0.5))
-PY
