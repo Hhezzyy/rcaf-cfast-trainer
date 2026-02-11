@@ -28,6 +28,7 @@ class Phase(str, Enum):
 class Problem:
     prompt: str
     answer: int
+    tolerance: int = 0  # abs(user_answer - answer) <= tolerance
 
 
 @dataclass(frozen=True, slots=True)
@@ -197,7 +198,8 @@ class TimedTextInputTest:
 
         answered_at_s = self._clock.now()
         response_time_s = max(0.0, answered_at_s - self._presented_at_s)
-        is_correct = user_answer == self._current.answer
+        tol = 0 if self._current.tolerance < 0 else self._current.tolerance
+        is_correct = abs(user_answer - self._current.answer) <= tol
 
         event = QuestionEvent(
             index=len(self._events),
