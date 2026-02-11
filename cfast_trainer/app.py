@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """Pygame UI shell for the RCAF CFAST Trainer.
 
 This task adds two cognitive tests under a "Tests" submenu:
@@ -9,16 +7,20 @@ This task adds two cognitive tests under a "Tests" submenu:
 Deterministic timing/scoring/RNG/state lives in cfast_trainer/* (core modules).
 """
 
+from __future__ import annotations
+
 import random
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable, Protocol
+from typing import Protocol
 
 import pygame
 
+from .airborne_numerical import build_airborne_numerical_test
 from .clock import RealClock
+from .cognitive_core import Phase, TestSnapshot
 from .math_reasoning import build_math_reasoning_test
 from .numerical_operations import build_numerical_operations_test
-from .airborne_numerical import build_airborne_numerical_test
 
 
 class Screen(Protocol):
@@ -28,6 +30,13 @@ class Screen(Protocol):
     def render(self, surface: pygame.Surface) -> None:
         ...
 
+class CognitiveEngine(Protocol):
+    def snapshot(self) -> TestSnapshot: ...
+    def can_exit(self) -> bool: ...
+    def start_practice(self) -> None: ...
+    def start_scored(self) -> None: ...
+    def submit_answer(self, raw: str) -> bool: ...
+    def update(self) -> None: ...
 
 @dataclass(frozen=True, slots=True)
 class MenuItem:
@@ -114,7 +123,9 @@ class PlaceholderScreen:
 
 
 class MenuScreen:
-    def __init__(self, app: App, title: str, items: list[MenuItem], *, is_root: bool = False) -> None:
+    def __init__(
+        self, app: App, title: str, items: list[MenuItem], *, is_root: bool = False
+    ) -> None:
         self._app = app
         self._title = title
         self._items = items
@@ -227,7 +238,10 @@ class SettingsScreen:
         return [
             (f"Fullscreen: {'ON' if settings.fullscreen else 'OFF'}", self._toggle_fullscreen),
             (f"Max FPS: {settings.max_fps}", self._cycle_max_fps),
-            (f"Show FPS overlay: {'ON' if settings.show_fps_overlay else 'OFF'}", self._toggle_show_fps),
+            (
+                f"Show FPS overlay: {'ON' if settings.show_fps_overlay else 'OFF'}",
+                self._toggle_show_fps,
+            ),
             (f"Invert Y axis: {'ON' if settings.invert_y_axis else 'OFF'}", self._toggle_invert_y),
             ("Axis Calibration", lambda: self._app.push(self._axis_calibration)),
             ("Axis Visualizer", lambda: self._app.push(self._axis_visualizer)),
@@ -298,9 +312,9 @@ class SettingsScreen:
 
 
 class CognitiveTestScreen:
-    def __init__(self, app: App, *, engine_factory: Callable[[], object]) -> None:
+    def __init__(self, app: App, *, engine_factory: Callable[[], CognitiveEngine]) -> None:
         self._app = app
-        self._engine = engine_factory()
+        self._engine: CognitiveEngine = engine_factory()
         self._input = ""
 
         self._small_font = pygame.font.Font(None, 24)
@@ -317,15 +331,15 @@ class CognitiveTestScreen:
             return
 
         if key in (pygame.K_RETURN, pygame.K_KP_ENTER):
-            if snap.phase.value == "instructions":
+            if snap.phase is Phase.INSTRUCTIONS:
                 self._engine.start_practice()
                 self._input = ""
                 return
-            if snap.phase.value == "practice_done":
+            if snap.phase is Phase.PRACTICE_DONE:
                 self._engine.start_scored()
                 self._input = ""
                 return
-            if snap.phase.value == "results":
+            if snap.phase is Phase.RESULTS:
                 self._app.pop()
                 return
 
@@ -334,7 +348,7 @@ class CognitiveTestScreen:
                 self._input = ""
             return
 
-        if snap.phase.value not in ("practice", "scored"):
+        if snap.phase not in (Phase.PRACTICE, Phase.SCORED):
             return
 
         if key == pygame.K_BACKSPACE:
@@ -359,7 +373,9 @@ class CognitiveTestScreen:
             rem = int(round(snap.time_remaining_s))
             mm = rem // 60
             ss = rem % 60
-            timer = self._small_font.render(f"Time remaining: {mm:02d}:{ss:02d}", True, (200, 200, 210))
+            timer = self._small_font.render(
+                f"Time remaining: {mm:02d}:{ss:02d}", True, (200, 200, 210)
+            )
             surface.blit(timer, (40, y_info))
             y_info += 28
 
@@ -375,7 +391,7 @@ class CognitiveTestScreen:
             surface.blit(txt, (40, y))
             y += 26
 
-        if snap.phase.value in ("practice", "scored"):
+        if snap.phase in (Phase.PRACTICE, Phase.SCORED):
             box = pygame.Rect(40, surface.get_height() - 120, 400, 44)
             pygame.draw.rect(surface, (30, 30, 40), box)
             pygame.draw.rect(surface, (90, 90, 110), box, 2)
@@ -387,7 +403,7 @@ class CognitiveTestScreen:
             hint = self._small_font.render(snap.input_hint, True, (140, 140, 150))
             surface.blit(hint, (40, surface.get_height() - 60))
 
-        if not self._engine.can_exit() and snap.phase.value == "scored":
+        if not self._engine.can_exit() and snap.phase is Phase.SCORED:
             lock = self._small_font.render("Test in progress: cannot exit.", True, (140, 140, 150))
             surface.blit(lock, (460, surface.get_height() - 60))
 
@@ -411,7 +427,9 @@ def _new_seed() -> int:
     return random.SystemRandom().randint(1, 2**31 - 1)
 
 
-def run(*, max_frames: int | None = None, event_injector: Callable[[int], None] | None = None) -> int:
+def run(
+    *, max_frames: int | None = None, event_injector: Callable[[int], None] | None = None
+) -> int:
     pygame.init()
     _init_joysticks()
 
@@ -447,7 +465,9 @@ def run(*, max_frames: int | None = None, event_injector: Callable[[int], None] 
         app.push(
             CognitiveTestScreen(
                 app,
-                engine_factory=lambda: build_numerical_operations_test(clock=real_clock, seed=seed, difficulty=0.5),
+                engine_factory=lambda: build_numerical_operations_test(
+                    clock=real_clock, seed=seed, difficulty=0.5
+                ),
             )
         )
 
@@ -456,16 +476,20 @@ def run(*, max_frames: int | None = None, event_injector: Callable[[int], None] 
         app.push(
             CognitiveTestScreen(
                 app,
-                engine_factory=lambda: build_airborne_numerical_test(clock=real_clock, seed=seed, difficulty=0.5),
+                engine_factory=lambda: build_airborne_numerical_test(
+                    clock=real_clock, seed=seed, difficulty=0.5
+                ),
             )
-        )    
+        )
 
     def open_math_reasoning() -> None:
         seed = _new_seed()
         app.push(
             CognitiveTestScreen(
                 app,
-                engine_factory=lambda: build_math_reasoning_test(clock=real_clock, seed=seed, difficulty=0.5),
+                engine_factory=lambda: build_math_reasoning_test(
+                    clock=real_clock, seed=seed, difficulty=0.5
+                ),
             )
         )
 
