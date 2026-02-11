@@ -16,6 +16,12 @@ class ProblemGenerator(Protocol):
         ...
 
 
+class AnswerScorer(Protocol):
+    def score(self, *, problem: "Problem", user_answer: int, raw: str) -> float:
+        """Return score in [0.0, 1.0]."""
+        ...
+
+
 class Phase(str, Enum):
     INSTRUCTIONS = "instructions"
     PRACTICE = "practice"
@@ -29,6 +35,7 @@ class Problem:
     prompt: str
     answer: int
     tolerance: int = 0  # abs(user_answer - answer) <= tolerance
+    payload: object | None = None  # optional structured data for UI
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +49,9 @@ class QuestionEvent:
     presented_at_s: float
     answered_at_s: float
     response_time_s: float
+    raw: str = ""
+    score: float = 0.0
+    max_score: float = 1.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,6 +62,9 @@ class AttemptSummary:
     duration_s: float
     throughput_per_min: float
     mean_response_time_s: float | None
+    total_score: float = 0.0
+    max_score: float = 0.0
+    score_ratio: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,6 +98,7 @@ class TimedTextInputTest:
         difficulty: float = 0.5,
         practice_questions: int = 5,
         scored_duration_s: float,
+        scorer: AnswerScorer | None = None,
     ) -> None:
         if not (0.0 <= difficulty <= 1.0):
             raise ValueError("difficulty must be in [0.0, 1.0]")
@@ -114,6 +128,10 @@ class TimedTextInputTest:
 
         self._scored_attempted = 0
         self._scored_correct = 0
+
+        self._scorer = scorer
+        self._scored_total_score = 0.0
+        self._scored_max_score = 0.0
 
     @property
     def seed(self) -> int:
@@ -184,6 +202,7 @@ class TimedTextInputTest:
             self._phase = Phase.RESULTS
             return False
 
+        raw_in = raw
         raw = raw.strip()
         if raw == "":
             return False
@@ -198,8 +217,18 @@ class TimedTextInputTest:
 
         answered_at_s = self._clock.now()
         response_time_s = max(0.0, answered_at_s - self._presented_at_s)
-        tol = 0 if self._current.tolerance < 0 else self._current.tolerance
-        is_correct = abs(user_answer - self._current.answer) <= tol
+
+        if self._scorer is None:
+            tol = 0 if self._current.tolerance < 0 else self._current.tolerance
+            score = 1.0 if abs(user_answer - self._current.answer) <= tol else 0.0
+        else:
+            score = float(self._scorer.score(problem=self._current, user_answer=user_answer, raw=raw_in))
+            if score < 0.0:
+                score = 0.0
+            elif score > 1.0:
+                score = 1.0
+
+        is_full_correct = score >= 1.0 - 1e-9
 
         event = QuestionEvent(
             index=len(self._events),
@@ -207,16 +236,21 @@ class TimedTextInputTest:
             prompt=self._current.prompt,
             correct_answer=self._current.answer,
             user_answer=user_answer,
-            is_correct=is_correct,
+            is_correct=is_full_correct,
             presented_at_s=self._presented_at_s,
             answered_at_s=answered_at_s,
             response_time_s=response_time_s,
+            raw=raw_in,
+            score=score,
+            max_score=1.0,
         )
         self._events.append(event)
 
         if self._phase is Phase.SCORED:
             self._scored_attempted += 1
-            if is_correct:
+            self._scored_max_score += 1.0
+            self._scored_total_score += score
+            if is_full_correct:
                 self._scored_correct += 1
         else:
             self._practice_answered += 1
@@ -239,6 +273,11 @@ class TimedTextInputTest:
         throughput = (attempted / duration_s) * 60.0
         rts = [e.response_time_s for e in self._events if e.phase is Phase.SCORED]
         mean_rt = None if not rts else sum(rts) / len(rts)
+
+        total_score = float(self._scored_total_score)
+        max_score = float(self._scored_max_score)
+        score_ratio = 0.0 if max_score == 0.0 else total_score / max_score
+
         return AttemptSummary(
             attempted=attempted,
             correct=correct,
@@ -246,6 +285,9 @@ class TimedTextInputTest:
             duration_s=duration_s,
             throughput_per_min=throughput,
             mean_response_time_s=mean_rt,
+            total_score=total_score,
+            max_score=max_score,
+            score_ratio=score_ratio,
         )
 
     def snapshot(self) -> TestSnapshot:
