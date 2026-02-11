@@ -18,6 +18,7 @@ import pygame
 from .clock import RealClock
 from .math_reasoning import build_math_reasoning_test
 from .numerical_operations import build_numerical_operations_test
+from .airborne_numerical import build_airborne_numerical_test
 
 
 class Screen(Protocol):
@@ -450,6 +451,15 @@ def run(*, max_frames: int | None = None, event_injector: Callable[[int], None] 
             )
         )
 
+    def open_airborne_numerical() -> None:
+        seed = _new_seed()
+        app.push(
+            CognitiveTestScreen(
+                app,
+                engine_factory=lambda: build_airborne_numerical_test(clock=real_clock, seed=seed, difficulty=0.5),
+            )
+        )    
+
     def open_math_reasoning() -> None:
         seed = _new_seed()
         app.push(
@@ -465,6 +475,7 @@ def run(*, max_frames: int | None = None, event_injector: Callable[[int], None] 
         [
             MenuItem("Numerical Operations", open_numerical_ops),
             MenuItem("Mathematics Reasoning", open_math_reasoning),
+            MenuItem("Airborne Numerical Test", open_airborne_numerical),
             MenuItem("Back", app.pop),
         ],
     )
