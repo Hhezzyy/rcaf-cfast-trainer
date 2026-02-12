@@ -65,6 +65,10 @@ class AirborneScenario:
         return self.parcel_weight
 
 
+
+    @property
+    def fuel_burn_lph(self) -> int:
+        return self.fuel_burn_per_hr
 # -----------------------------
 # Time helpers (HHMM)
 # -----------------------------
