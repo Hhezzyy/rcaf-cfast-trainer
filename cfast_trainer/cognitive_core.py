@@ -198,19 +198,22 @@ class TimedTextInputTest:
 
         if self._phase not in (Phase.PRACTICE, Phase.SCORED):
             return False
-        if self._phase is Phase.SCORED and self.time_remaining_s() == 0:
-            # Treat expiry as immediate end; ignore late submissions.
-            self._phase = Phase.RESULTS
-            return False
+        expired = self._phase is Phase.SCORED and self.time_remaining_s() == 0
 
         raw_in = raw
         raw = raw.strip()
+        if expired and raw == "":
+            # Timeout with no partial entry.
+            self._phase = Phase.RESULTS
+            return False
         if raw == "":
             return False
 
         try:
             user_answer = int(raw)
         except ValueError:
+            if expired:
+                self._phase = Phase.RESULTS
             return False
 
         assert self._current is not None
@@ -255,6 +258,13 @@ class TimedTextInputTest:
                 self._scored_correct += 1
         else:
             self._practice_answered += 1
+
+        # If time expired, accept the submission but end the test without dealing a new problem.
+        if expired and self._phase is Phase.SCORED:
+            self._phase = Phase.RESULTS
+            self._current = None
+            self._presented_at_s = None
+            return True
 
         # Advance / transition.
         if self._phase is Phase.PRACTICE and self._practice_answered >= self._practice_questions:

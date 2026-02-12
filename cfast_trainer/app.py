@@ -332,22 +332,22 @@ class CognitiveTestScreen:
         # Airborne: hold-to-show overlays.
         if scenario is not None:
             if event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_a:
+                if event.key == pygame.K_s:
                     self._air_overlay = "intro"
-                elif event.key == pygame.K_s:
-                    self._air_overlay = "fuel"
                 elif event.key == pygame.K_d:
-                    self._air_overlay = "parcel"
+                    self._air_overlay = "fuel"
                 elif event.key == pygame.K_f:
+                    self._air_overlay = "parcel"
+                elif event.key == pygame.K_a:
                     self._air_show_distances = True
             elif event.type == pygame.KEYUP:
-                if event.key == pygame.K_f:
+                if event.key == pygame.K_a:
                     self._air_show_distances = False
-                elif event.key == pygame.K_a and self._air_overlay == "intro":
+                elif event.key == pygame.K_s and self._air_overlay == "intro":
                     self._air_overlay = None
-                elif event.key == pygame.K_s and self._air_overlay == "fuel":
+                elif event.key == pygame.K_d and self._air_overlay == "fuel":
                     self._air_overlay = None
-                elif event.key == pygame.K_d and self._air_overlay == "parcel":
+                elif event.key == pygame.K_f and self._air_overlay == "parcel":
                     self._air_overlay = None
 
         if event.type != pygame.KEYDOWN:
@@ -505,15 +505,15 @@ class CognitiveTestScreen:
         pygame.draw.rect(surface, (70, 70, 85), menu_rect, 2)
         surface.blit(self._app.font.render("Menu", True, (235, 235, 245)), (menu_rect.x + 14, menu_rect.y + 10))
         surface.blit(
-            self._tiny_font.render("Hold A: Intro", True, (150, 150, 165)),
+            self._tiny_font.render("Hold S: Intro", True, (150, 150, 165)),
             (menu_rect.x + 14, menu_rect.y + 60),
         )
         surface.blit(
-            self._tiny_font.render("Hold S: Speed & Fuel", True, (150, 150, 165)),
+            self._tiny_font.render("Hold D: Speed & Fuel", True, (150, 150, 165)),
             (menu_rect.x + 14, menu_rect.y + 84),
         )
         surface.blit(
-            self._tiny_font.render("Hold D: Speed & Parcel", True, (150, 150, 165)),
+            self._tiny_font.render("Hold F: Speed & Parcel", True, (150, 150, 165)),
             (menu_rect.x + 14, menu_rect.y + 108),
         )
         surface.blit(
