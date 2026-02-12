@@ -16,7 +16,7 @@ from typing import Protocol
 
 import pygame
 
-from .airborne_numerical import build_airborne_numerical_test
+from .airborne_numerical import AirborneScenario, TEMPLATES_BY_NAME, build_airborne_numerical_test
 from .clock import RealClock
 from .cognitive_core import Phase, TestSnapshot
 from .math_reasoning import build_math_reasoning_test
@@ -29,6 +29,7 @@ class Screen(Protocol):
 
     def render(self, surface: pygame.Surface) -> None:
         ...
+
 
 class CognitiveEngine(Protocol):
     def snapshot(self) -> TestSnapshot: ...
@@ -318,13 +319,41 @@ class CognitiveTestScreen:
         self._input = ""
 
         self._small_font = pygame.font.Font(None, 24)
+        self._tiny_font = pygame.font.Font(None, 18)
+
+        # Airborne-specific UI state (hold-to-show overlays).
+        self._air_overlay: str | None = None  # "intro" | "fuel" | "parcel"
+        self._air_show_distances = False
 
     def handle_event(self, event: pygame.event.Event) -> None:
+        snap = self._engine.snapshot()
+        scenario = snap.payload if isinstance(snap.payload, AirborneScenario) else None
+
+        # Airborne: hold-to-show overlays.
+        if scenario is not None:
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_a:
+                    self._air_overlay = "intro"
+                elif event.key == pygame.K_s:
+                    self._air_overlay = "fuel"
+                elif event.key == pygame.K_d:
+                    self._air_overlay = "parcel"
+                elif event.key == pygame.K_f:
+                    self._air_show_distances = True
+            elif event.type == pygame.KEYUP:
+                if event.key == pygame.K_f:
+                    self._air_show_distances = False
+                elif event.key == pygame.K_a and self._air_overlay == "intro":
+                    self._air_overlay = None
+                elif event.key == pygame.K_s and self._air_overlay == "fuel":
+                    self._air_overlay = None
+                elif event.key == pygame.K_d and self._air_overlay == "parcel":
+                    self._air_overlay = None
+
         if event.type != pygame.KEYDOWN:
             return
 
         key = event.key
-        snap = self._engine.snapshot()
 
         if key in (pygame.K_ESCAPE, pygame.K_BACKSPACE) and self._engine.can_exit():
             self._app.pop()
@@ -352,16 +381,37 @@ class CognitiveTestScreen:
             return
 
         if key == pygame.K_BACKSPACE:
-            self._input = self._input[:-1]
+            # Airborne test: no backspace editing.
+            if scenario is None:
+                self._input = self._input[:-1]
             return
 
         ch = event.unicode
+        if scenario is not None:
+            if ch and ch.isdigit() and len(self._input) < 4:
+                self._input += ch
+            return
+
         if ch and (ch.isdigit() or (ch == "-" and self._input == "")):
             self._input += ch
 
     def render(self, surface: pygame.Surface) -> None:
+        # If the timer expires mid-entry, auto-submit the digits typed so far (no backspace on the
+        # real test; partial entry will simply score 0).
+        snap_pre = self._engine.snapshot()
+        if (
+            snap_pre.phase is Phase.SCORED
+            and snap_pre.time_remaining_s is not None
+            and snap_pre.time_remaining_s <= 0.0
+            and self._input.strip() != ""
+        ):
+            self._engine.submit_answer(self._input)
+            self._input = ""
+
         self._engine.update()
         snap = self._engine.snapshot()
+
+        scenario = snap.payload if isinstance(snap.payload, AirborneScenario) else None
 
         surface.fill((10, 10, 14))
 
@@ -384,28 +434,240 @@ class CognitiveTestScreen:
         )
         surface.blit(stats, (40, y_info))
 
-        prompt_lines = str(snap.prompt).split("\n")
-        y = 140
-        for line in prompt_lines[:10]:
-            txt = self._small_font.render(line, True, (235, 235, 245))
-            surface.blit(txt, (40, y))
-            y += 26
+        if scenario is not None and snap.phase in (Phase.PRACTICE, Phase.SCORED):
+            self._render_airborne_question(surface, snap, scenario)
+        else:
+            prompt_lines = str(snap.prompt).split("\n")
+            y = 140
+            for line in prompt_lines[:10]:
+                txt = self._small_font.render(line, True, (235, 235, 245))
+                surface.blit(txt, (40, y))
+                y += 26
 
         if snap.phase in (Phase.PRACTICE, Phase.SCORED):
-            box = pygame.Rect(40, surface.get_height() - 120, 400, 44)
-            pygame.draw.rect(surface, (30, 30, 40), box)
-            pygame.draw.rect(surface, (90, 90, 110), box, 2)
+            if scenario is None:
+                box = pygame.Rect(40, surface.get_height() - 120, 400, 44)
+                pygame.draw.rect(surface, (30, 30, 40), box)
+                pygame.draw.rect(surface, (90, 90, 110), box, 2)
 
-            caret = "|" if (pygame.time.get_ticks() // 500) % 2 == 0 else ""
-            entry = self._app.font.render(self._input + caret, True, (235, 235, 245))
-            surface.blit(entry, (box.x + 10, box.y + 8))
+                caret = "|" if (pygame.time.get_ticks() // 500) % 2 == 0 else ""
+                entry = self._app.font.render(self._input + caret, True, (235, 235, 245))
+                surface.blit(entry, (box.x + 10, box.y + 8))
 
-            hint = self._small_font.render(snap.input_hint, True, (140, 140, 150))
-            surface.blit(hint, (40, surface.get_height() - 60))
+                hint = self._small_font.render(snap.input_hint, True, (140, 140, 150))
+                surface.blit(hint, (40, surface.get_height() - 60))
 
         if not self._engine.can_exit() and snap.phase is Phase.SCORED:
             lock = self._small_font.render("Test in progress: cannot exit.", True, (140, 140, 150))
             surface.blit(lock, (460, surface.get_height() - 60))
+
+    def _render_airborne_question(
+        self, surface: pygame.Surface, snap: TestSnapshot, scenario: AirborneScenario
+    ) -> None:
+        # Layout matches the guide at a structural level: menu on left, fixed map, bottom table,
+        # and answer/timer on the right. Distances and menu contents are hold-to-show.
+
+        w, h = surface.get_size()
+        menu_rect = pygame.Rect(20, 80, 220, h - 120)
+        content_rect = pygame.Rect(menu_rect.right + 20, 80, w - menu_rect.right - 40, h - 160)
+        map_rect = pygame.Rect(content_rect.x, content_rect.y, content_rect.w, 250)
+        table_rect = pygame.Rect(content_rect.x, map_rect.bottom + 20, content_rect.w, content_rect.h - 270)
+        answer_rect = pygame.Rect(content_rect.right - 210, 30, 190, 58)
+        task_rect = pygame.Rect(content_rect.x, 30, content_rect.w - 230, 58)
+
+        # Task / prompt.
+        pygame.draw.rect(surface, (18, 18, 26), task_rect)
+        pygame.draw.rect(surface, (70, 70, 85), task_rect, 2)
+        task_lines = str(snap.prompt).split("\n")
+        task = task_lines[0] if task_lines else ""
+        surface.blit(self._small_font.render(task, True, (235, 235, 245)), (task_rect.x + 12, task_rect.y + 10))
+        surface.blit(
+            self._tiny_font.render("Answer HHMM (4 digits). No backspace.", True, (150, 150, 165)),
+            (task_rect.x + 12, task_rect.y + 34),
+        )
+
+        # Answer box with 4 slots.
+        pygame.draw.rect(surface, (18, 18, 26), answer_rect)
+        pygame.draw.rect(surface, (70, 70, 85), answer_rect, 2)
+        surface.blit(self._tiny_font.render("ANSWER", True, (150, 150, 165)), (answer_rect.x + 10, answer_rect.y + 6))
+        slots_x = answer_rect.x + 10
+        slots_y = answer_rect.y + 26
+        for i in range(4):
+            r = pygame.Rect(slots_x + i * 42, slots_y, 34, 26)
+            pygame.draw.rect(surface, (30, 30, 40), r)
+            pygame.draw.rect(surface, (90, 90, 110), r, 2)
+            ch = self._input[i] if i < len(self._input) else ""
+            if ch:
+                surface.blit(self._small_font.render(ch, True, (235, 235, 245)), (r.x + 10, r.y + 2))
+
+        # Menu panel.
+        pygame.draw.rect(surface, (18, 18, 26), menu_rect)
+        pygame.draw.rect(surface, (70, 70, 85), menu_rect, 2)
+        surface.blit(self._app.font.render("Menu", True, (235, 235, 245)), (menu_rect.x + 14, menu_rect.y + 10))
+        surface.blit(
+            self._tiny_font.render("Hold A: Intro", True, (150, 150, 165)),
+            (menu_rect.x + 14, menu_rect.y + 60),
+        )
+        surface.blit(
+            self._tiny_font.render("Hold S: Speed & Fuel", True, (150, 150, 165)),
+            (menu_rect.x + 14, menu_rect.y + 84),
+        )
+        surface.blit(
+            self._tiny_font.render("Hold D: Speed & Parcel", True, (150, 150, 165)),
+            (menu_rect.x + 14, menu_rect.y + 108),
+        )
+        surface.blit(
+            self._tiny_font.render("Hold F: Show distances", True, (150, 150, 165)),
+            (menu_rect.x + 14, menu_rect.y + 140),
+        )
+
+        # Map.
+        pygame.draw.rect(surface, (12, 12, 18), map_rect)
+        pygame.draw.rect(surface, (70, 70, 85), map_rect, 2)
+        self._draw_airborne_map(surface, map_rect, scenario)
+
+        # Bottom table.
+        pygame.draw.rect(surface, (12, 12, 18), table_rect)
+        pygame.draw.rect(surface, (70, 70, 85), table_rect, 2)
+        self._draw_airborne_table(surface, table_rect, scenario)
+
+        # Overlay panels (hold-to-show; intentionally occludes map/table).
+        if self._air_overlay is not None:
+            overlay = pygame.Surface((content_rect.w, content_rect.h), flags=pygame.SRCALPHA)
+            overlay.fill((0, 0, 0, 210))
+            surface.blit(overlay, (content_rect.x, content_rect.y))
+            panel = pygame.Rect(content_rect.x + 20, content_rect.y + 20, content_rect.w - 40, content_rect.h - 40)
+            pygame.draw.rect(surface, (18, 18, 26), panel)
+            pygame.draw.rect(surface, (120, 120, 140), panel, 2)
+
+            title = {
+                "intro": "Introduction",
+                "fuel": "Speed & Fuel Consumption",
+                "parcel": "Speed & Parcel Weight",
+            }[self._air_overlay]
+            surface.blit(self._app.font.render(title, True, (235, 235, 245)), (panel.x + 16, panel.y + 14))
+
+            lines: list[str] = []
+            if self._air_overlay == "intro":
+                route_names = " → ".join(scenario.node_names[i] for i in scenario.route)
+                lines = [
+                    f"Start time: {scenario.start_time_hhmm}",
+                    f"Route: {route_names}",
+                    "",
+                    "Use the map and table to derive the required time.",
+                    "Distances are hidden unless you hold F.",
+                ]
+            elif self._air_overlay == "fuel":
+                lines = [
+                    f"Speed: {scenario.speed_value} {scenario.speed_unit}",
+                    f"Fuel burn: {scenario.fuel_burn_lph} L/hr",
+                    "",
+                    "(Training note: fuel calculations will be added as question types.)",
+                ]
+            else:
+                lines = [
+                    f"Speed: {scenario.speed_value} {scenario.speed_unit}",
+                    f"Parcel weight: {scenario.parcel_weight_kg} kg",
+                    "",
+                    "(Training note: weight effects will be added as question types.)",
+                ]
+
+            y = panel.y + 70
+            for line in lines:
+                surface.blit(self._small_font.render(line, True, (235, 235, 245)), (panel.x + 16, y))
+                y += 26
+
+    def _draw_airborne_map(self, surface: pygame.Surface, rect: pygame.Rect, scenario: AirborneScenario) -> None:
+        template = TEMPLATES_BY_NAME.get(scenario.template_name)
+        if template is None:
+            return
+
+        # Precompute node positions.
+        node_px: list[tuple[int, int]] = []
+        for n in template.nodes:
+            x = int(rect.x + n.pos[0] * rect.w)
+            y = int(rect.y + n.pos[1] * rect.h)
+            node_px.append((x, y))
+
+        route_edges = {tuple(sorted((a, b))) for a, b in zip(scenario.route, scenario.route[1:])}
+
+        # Edges.
+        for idx, e in enumerate(template.edges):
+            a = node_px[e.a]
+            b = node_px[e.b]
+            key = tuple(sorted((e.a, e.b)))
+            color = (220, 220, 235) if key in route_edges else (70, 70, 85)
+            pygame.draw.line(surface, color, a, b, 3 if key in route_edges else 2)
+
+            if self._air_show_distances:
+                midx = (a[0] + b[0]) / 2
+                midy = (a[1] + b[1]) / 2
+                # Slight perpendicular offset so text doesn't sit exactly on the line.
+                dx = b[0] - a[0]
+                dy = b[1] - a[1]
+                length = max(1.0, (dx * dx + dy * dy) ** 0.5)
+                ox = int(-dy / length * 10)
+                oy = int(dx / length * 10)
+                text = self._tiny_font.render(str(scenario.edge_distances[idx]), True, (12, 12, 18))
+                bg = text.get_rect(center=(int(midx) + ox, int(midy) + oy))
+                bg.inflate_ip(10, 6)
+                pygame.draw.rect(surface, (235, 235, 245), bg)
+                surface.blit(text, text.get_rect(center=bg.center))
+
+        # Nodes + labels.
+        for i, n in enumerate(template.nodes):
+            x, y = node_px[i]
+            pygame.draw.circle(surface, (12, 12, 18), (x, y), 10)
+            pygame.draw.circle(surface, (235, 235, 245), (x, y), 10, 2)
+
+            lx = int(rect.x + n.label_anchor[0] * rect.w)
+            ly = int(rect.y + n.label_anchor[1] * rect.h)
+            label = self._tiny_font.render(scenario.node_names[i], True, (12, 12, 18))
+            bg = label.get_rect(midleft=(lx, ly))
+            bg.inflate_ip(10, 6)
+            pygame.draw.rect(surface, (235, 235, 245), bg)
+            surface.blit(label, label.get_rect(midleft=bg.midleft))
+
+    def _draw_airborne_table(self, surface: pygame.Surface, rect: pygame.Rect, scenario: AirborneScenario) -> None:
+        header = self._tiny_font.render("Journey", True, (235, 235, 245))
+        surface.blit(header, (rect.x + 12, rect.y + 10))
+
+        cols = [
+            ("LEG", rect.x + 12),
+            ("FROM", rect.x + 80),
+            ("TO", rect.x + 210),
+            ("DIST", rect.x + 340),
+            ("SPEED", rect.x + 430),
+            ("TIME", rect.x + 530),
+            ("PARCEL", rect.x + 610),
+        ]
+        y = rect.y + 32
+        for label, x in cols:
+            surface.blit(self._tiny_font.render(label, True, (150, 150, 165)), (x, y))
+        y += 22
+
+        for i in range(3):
+            if i < len(scenario.legs):
+                leg = scenario.legs[i]
+                dist = str(leg.distance) if self._air_show_distances else "----"
+                speed = "----"  # shown via menu overlay only
+                t = "----"
+                parcel = str(scenario.parcel_weight_kg)
+                row = [
+                    (str(i + 1), cols[0][1]),
+                    (scenario.node_names[leg.frm], cols[1][1]),
+                    (scenario.node_names[leg.to], cols[2][1]),
+                    (dist, cols[3][1]),
+                    (speed, cols[4][1]),
+                    (t, cols[5][1]),
+                    (parcel, cols[6][1]),
+                ]
+            else:
+                row = [("", x) for _, x in cols]
+
+            for text, x in row:
+                surface.blit(self._tiny_font.render(text, True, (235, 235, 245)), (x, y))
+            y += 22
 
 
 def _init_joysticks() -> None:
