@@ -3,7 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .clock import Clock
-from .cognitive_core import AnswerScorer, Problem, SeededRng, TimedTextInputTest, lerp_int
+from .cognitive_core import (
+    AnswerScorer,
+    Problem,
+    SeededRng,
+    TimedTextInputTest,
+    lerp_int,
+    round_half_up,
+)
 
 
 # -----------------------------
@@ -52,6 +59,10 @@ class AirborneScenario:
     distance_unit: str    # "NM" or "km"
     fuel_burn_per_hr: int
     parcel_weight: int
+
+    @property
+    def parcel_weight_kg(self) -> int:
+        return self.parcel_weight
 
 
 # -----------------------------
@@ -108,7 +119,7 @@ class AirborneArrivalTimeScorer:
             return 1.0 if user_answer == problem.answer else 0.0
 
         user_min = _hhmm_str_to_minutes(raw)
-        correct_hhmm = _minutes_to_hhmm_str(_hhmm_str_to_minutes(expected.start_time_hhmm) + _route_minutes(expected))
+        correct_hhmm = arrival_time_hhmm(expected)
         correct_min = _hhmm_str_to_minutes(correct_hhmm)
 
         err = _wrap_minute_error(user_min, correct_min)
@@ -251,6 +262,9 @@ _TEMPLATES: tuple[MapTemplate, ...] = (
     ),
 )
 
+# Exported for UI rendering (fixed geometry; deterministic per scenario).
+TEMPLATES_BY_NAME: dict[str, MapTemplate] = {t.name: t for t in _TEMPLATES}
+
 
 _CODES: tuple[str, ...] = (
     # Short, uniform-width-ish codes (avoid clipping; UI will still draw boxed labels).
@@ -266,8 +280,14 @@ def _route_minutes(s: AirborneScenario) -> int:
         return 0
     minutes = 0
     for leg in s.legs:
-        minutes += int(round((leg.distance / s.speed_value) * 60.0))
+        minutes += round_half_up((leg.distance / s.speed_value) * 60.0)
     return minutes
+
+
+def arrival_time_hhmm(s: AirborneScenario) -> str:
+    """Compute arrival time as HHMM, using round-half-up for travel time."""
+
+    return _minutes_to_hhmm_str(_hhmm_str_to_minutes(s.start_time_hhmm) + _route_minutes(s))
 
 
 class AirborneNumericalGenerator:
@@ -309,7 +329,7 @@ class AirborneNumericalGenerator:
         )
 
         # Correct arrival time as HHMM, stored as int for core consistency.
-        arrival_hhmm = _minutes_to_hhmm_str(_hhmm_str_to_minutes(start_time) + _route_minutes(scenario))
+        arrival_hhmm = arrival_time_hhmm(scenario)
         answer_int = int(arrival_hhmm)  # leading zeros irrelevant; scorer uses raw formatting
 
         dest_name = node_names[route[-1]]
