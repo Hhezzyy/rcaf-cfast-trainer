@@ -1,0 +1,37 @@
+diff --git a/cfast_trainer/cognitive_core.py b/cfast_trainer/cognitive_core.py
+--- a/cfast_trainer/cognitive_core.py
++++ b/cfast_trainer/cognitive_core.py
+@@
+-from typing import Protocol
++from typing import Protocol, Sequence, TypeVar
++
++T = TypeVar("T")
+@@ class SeededRng:
+-    def choice(self, seq: list[str]) -> str:
+-        return self._rng.choice(seq)
++    def random(self) -> float:
++        return float(self._rng.random())
++
++    def choice(self, seq: Sequence[T]) -> T:
++        return self._rng.choice(list(seq))
++
++    def sample(self, seq: Sequence[T], *, k: int) -> list[T]:
++        return list(self._rng.sample(list(seq), k=k))
+
+diff --git a/cfast_trainer/airborne_numerical.py b/cfast_trainer/airborne_numerical.py
+--- a/cfast_trainer/airborne_numerical.py
++++ b/cfast_trainer/airborne_numerical.py
+@@ def build_airborne_numerical_test(
+-    return TimedTextInputTest(
++    return TimedTextInputTest(
+         title="Airborne Numerical Test",
+         clock=clock,
+         generator=gen,
+         scorer=scorer,
+         instructions=intro,
++        seed=seed,
++        difficulty=difficulty,
+         practice_questions=6 if practice else 0,
+         scored_duration_s=scored_duration_s,
+-        seconds_per_question=None,
+     )

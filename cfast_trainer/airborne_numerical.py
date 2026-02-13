@@ -139,7 +139,7 @@ class AirborneTimeScorer(AnswerScorer):
     Exact match = 1.0, >=30 min error = 0.0.
     """
 
-    def score(self, problem: Problem, user_answer: int) -> float:
+    def score(self, *, problem: Problem, user_answer: int, raw: str) -> float:
         correct_hhmm = int(problem.answer)
         user_hhmm = int(user_answer)
 
@@ -228,6 +228,10 @@ class AirborneNumericalGenerator:
 
     def check(self, problem: Problem, user_answer: int) -> bool:
         return int(user_answer) == int(problem.answer)
+    
+    def next_problem(self, *, difficulty: float) -> Problem:
+        _ = difficulty
+        return self.generate()
 
     def _build_problem(self) -> tuple[AirborneScenario, str, int]:
         rng = self._rng
@@ -341,7 +345,8 @@ def build_airborne_numerical_test(
         generator=gen,
         scorer=scorer,
         instructions=intro,
+        seed=seed,
+        difficulty=difficulty,
         practice_questions=6 if practice else 0,
         scored_duration_s=scored_duration_s,
-        seconds_per_question=None,
-    )
+)
