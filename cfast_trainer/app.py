@@ -21,6 +21,7 @@ from .airborne_numerical import AirborneScenario, TEMPLATES_BY_NAME, build_airbo
 from .clock import RealClock
 from .cognitive_core import Phase, TestSnapshot
 from .math_reasoning import build_math_reasoning_test
+from .digit_recognition import DigitRecognitionPayload, build_digit_recognition_test
 from .numerical_operations import build_numerical_operations_test
 
 
@@ -314,6 +315,8 @@ class CognitiveTestScreen:
 
         self._small_font = pygame.font.Font(None, 24)
         self._tiny_font = pygame.font.Font(None, 18)
+        self._big_font = pygame.font.Font(None, 72)
+        self._mid_font = pygame.font.Font(None, 52)
 
         # Airborne-specific UI state (hold-to-show overlays).
         self._air_overlay: str | None = None  # "intro" | "fuel" | "parcel"
@@ -322,6 +325,7 @@ class CognitiveTestScreen:
     def handle_event(self, event: pygame.event.Event) -> None:
         snap = self._engine.snapshot()
         scenario = snap.payload if isinstance(snap.payload, AirborneScenario) else None
+        dr = snap.payload if isinstance(snap.payload, DigitRecognitionPayload) else None
 
         # Airborne: hold-to-show overlays.
         if scenario is not None:
@@ -365,13 +369,18 @@ class CognitiveTestScreen:
             if snap.phase is Phase.RESULTS:
                 self._app.pop()
                 return
-
+            if dr is not None and not dr.accepting_input:
+                return
+            
             accepted = self._engine.submit_answer(self._input)
             if accepted:
                 self._input = ""
             return
 
         if snap.phase not in (Phase.PRACTICE, Phase.SCORED):
+            return
+        
+        if dr is not None and not dr.accepting_input:
             return
 
         if key == pygame.K_BACKSPACE:
@@ -556,6 +565,21 @@ class CognitiveTestScreen:
                 self._draw_airborne_fuel_panel(surface, graph_rect, scenario)
             elif self._air_overlay == "parcel":
                 self._draw_airborne_parcel_panel(surface, graph_rect, scenario)
+
+    def _render_digit_recognition(self, surface: pygame.Surface, snap: TestSnapshot, payload: DigitRecognitionPayload) -> None:
+        w, h = surface.get_size()
+
+        if snap.prompt:
+            surface.blit(self._app.font.render(str(snap.prompt), True, (235, 235, 245)), (40, 140))
+
+        if payload.display_digits:
+            txt = payload.display_digits
+            surf = self._big_font.render(txt, True, (235, 235, 245))
+            if surf.get_width() > int(w * 0.92):
+                surf = self._mid_font.render(txt, True, (235, 235, 245))
+            x = (w - surf.get_width()) // 2
+            y = (h - surf.get_height()) // 2 - 10
+            surface.blit(surf, (x, y))
 
     def _airborne_graph_seed(self, scenario: AirborneScenario) -> int:
         # Stable per-scenario seed (no Python hash()).
@@ -836,7 +860,14 @@ def run(*, max_frames: int | None = None, event_injector: Callable[[int], None] 
                 engine_factory=lambda: build_math_reasoning_test(clock=real_clock, seed=seed, difficulty=0.5),
             )
         )
-
+    def open_digit_recognition() -> None:
+        seed = _new_seed()
+        app.push(
+            CognitiveTestScreen(
+                app,
+                engine_factory=lambda: build_digit_recognition_test(clock=real_clock, seed=seed, difficulty=0.5),
+            )
+        )
     tests_menu = MenuScreen(
         app,
         "Tests",
@@ -844,6 +875,7 @@ def run(*, max_frames: int | None = None, event_injector: Callable[[int], None] 
             MenuItem("Numerical Operations", open_numerical_ops),
             MenuItem("Mathematics Reasoning", open_math_reasoning),
             MenuItem("Airborne Numerical Test", open_airborne_numerical),
+            MenuItem("Digit Recognition", open_digit_recognition),
             MenuItem("Back", app.pop),
         ],
     )
