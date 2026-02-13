@@ -517,7 +517,7 @@ class CognitiveTestScreen:
             (menu_rect.x + 14, menu_rect.y + 108),
         )
         surface.blit(
-            self._tiny_font.render("Hold F: Show distances", True, (150, 150, 165)),
+            self._tiny_font.render("Hold A: Show distances", True, (150, 150, 165)),
             (menu_rect.x + 14, menu_rect.y + 140),
         )
 
@@ -560,7 +560,7 @@ class CognitiveTestScreen:
             elif self._air_overlay == "fuel":
                 lines = [
                     f"Speed: {scenario.speed_value} {scenario.speed_unit}",
-                    f"Fuel burn: {scenario.fuel_burn_lph} L/hr",
+                    f"Fuel burn: {scenario.fuel_burn_per_hr} L/hr",
                     "",
                     "(Training note: fuel calculations will be added as question types.)",
                 ]
@@ -577,6 +577,155 @@ class CognitiveTestScreen:
                 surface.blit(self._small_font.render(line, True, (235, 235, 245)), (panel.x + 16, y))
                 y += 26
 
+            graph_rect = pygame.Rect(panel.x + 16, panel.y + 140, panel.w - 32, panel.h - 160)
+            if self._air_overlay == "fuel":
+                self._draw_airborne_fuel_panel(surface, graph_rect, scenario)
+            elif self._air_overlay == "parcel":
+                self._draw_airborne_parcel_panel(surface, graph_rect, scenario)
+
+    def _airborne_graph_seed(self, scenario: AirborneScenario) -> int:
+        # Stable per-scenario seed (no Python hash()).
+        seed = 2166136261
+        def mix(x: int) -> None:
+            nonlocal seed
+            seed ^= (x & 0xFFFFFFFF)
+            seed = (seed * 16777619) & 0xFFFFFFFF
+
+        mix(getattr(scenario, "speed_value", 0))
+        mix(getattr(scenario, "fuel_burn_per_hr", 0))
+        mix(getattr(scenario, "parcel_weight", 0))
+        for name in getattr(scenario, "node_names", ()):
+            for ch in name:
+                mix(ord(ch))
+        for idx in getattr(scenario, "route", ()):
+            mix(int(idx))
+        return seed
+
+    def _draw_airborne_bar_chart(
+        self,
+        surface: pygame.Surface,
+        rect: pygame.Rect,
+        *,
+        title: str,
+        x_labels: list[str],
+        values: list[int],
+        value_unit: str,
+    ) -> None:
+        pygame.draw.rect(surface, (18, 18, 26), rect)
+        pygame.draw.rect(surface, (120, 120, 140), rect, 2)
+
+        surface.blit(self._small_font.render(title, True, (235, 235, 245)), (rect.x + 12, rect.y + 10))
+
+        chart = pygame.Rect(rect.x + 40, rect.y + 42, rect.w - 56, rect.h - 70)
+        pygame.draw.line(surface, (140, 140, 150), (chart.x, chart.bottom), (chart.right, chart.bottom), 1)
+        pygame.draw.line(surface, (140, 140, 150), (chart.x, chart.y), (chart.x, chart.bottom), 1)
+
+        if not values:
+            return
+
+        vmax = max(values) or 1
+        n = len(values)
+        gap = 8
+        bar_w = max(10, (chart.w - gap * (n + 1)) // n)
+
+        for i, (lbl, v) in enumerate(zip(x_labels, values, strict=False)):
+            x = chart.x + gap + i * (bar_w + gap)
+            h = int(round((v / vmax) * (chart.h - 20)))
+            bar = pygame.Rect(x, chart.bottom - h, bar_w, h)
+            pygame.draw.rect(surface, (90, 90, 110), bar)
+
+            # value above
+            t = self._tiny_font.render(f"{v}{value_unit}", True, (200, 200, 210))
+            surface.blit(t, t.get_rect(midbottom=(bar.centerx, bar.y - 2)))
+
+            # label below
+            xl = self._tiny_font.render(lbl, True, (150, 150, 165))
+            surface.blit(xl, xl.get_rect(midtop=(bar.centerx, chart.bottom + 4)))
+
+    def _draw_airborne_table_small(
+        self,
+        surface: pygame.Surface,
+        rect: pygame.Rect,
+        *,
+        title: str,
+        headers: tuple[str, str],
+        rows: list[tuple[str, str]],
+    ) -> None:
+        pygame.draw.rect(surface, (18, 18, 26), rect)
+        pygame.draw.rect(surface, (120, 120, 140), rect, 2)
+        surface.blit(self._small_font.render(title, True, (235, 235, 245)), (rect.x + 12, rect.y + 10))
+
+        x1 = rect.x + 14
+        x2 = rect.x + rect.w // 2 + 10
+        y = rect.y + 46
+
+        surface.blit(self._tiny_font.render(headers[0], True, (150, 150, 165)), (x1, y))
+        surface.blit(self._tiny_font.render(headers[1], True, (150, 150, 165)), (x2, y))
+        y += 20
+
+        for a, b in rows[:10]:
+            surface.blit(self._tiny_font.render(a, True, (235, 235, 245)), (x1, y))
+            surface.blit(self._tiny_font.render(b, True, (235, 235, 245)), (x2, y))
+            y += 20
+
+    def _draw_airborne_fuel_panel(self, surface: pygame.Surface, rect: pygame.Rect, scenario: AirborneScenario) -> None:
+        seed = self._airborne_graph_seed(scenario)
+        base_speed = max(1, int(scenario.speed_value))
+        base_burn = int(getattr(scenario, "fuel_burn_per_hr", 0))
+        speeds = [int(round(base_speed * f)) for f in (0.8, 0.9, 1.0, 1.1, 1.2)]
+        # simple aerodynamic-ish scaling; deterministic exponent choice
+        exp = 2.0 if (seed & 2) == 0 else 2.2
+        burns = [int(round(base_burn * ((s / base_speed) ** exp))) for s in speeds]
+        labels = [str(s) for s in speeds]
+
+        if (seed & 1) == 0:
+            self._draw_airborne_bar_chart(
+                surface,
+                rect,
+                title="Fuel burn vs speed",
+                x_labels=labels,
+                values=burns,
+                value_unit="",
+            )
+        else:
+            rows = [(f"{sp} {scenario.speed_unit}", f"{bn} L/hr") for sp, bn in zip(speeds, burns, strict=False)]
+            self._draw_airborne_table_small(
+                surface,
+                rect,
+                title="Fuel burn table",
+                headers=("SPEED", "BURN"),
+                rows=rows,
+            )
+
+    def _draw_airborne_parcel_panel(self, surface: pygame.Surface, rect: pygame.Rect, scenario: AirborneScenario) -> None:
+        seed = self._airborne_graph_seed(scenario) ^ 0x9E3779B9
+        base_speed = max(1, int(scenario.speed_value))
+        # weight bins
+        weights = [0, 200, 400, 600, 800, 1000]
+        # deterministic slope (no randomness required)
+        slope = 6 + (seed % 7)  # speed drop per 100kg
+        speeds = [max(1, base_speed - int((w / 100) * slope)) for w in weights]
+        wlabels = [str(w) for w in weights]
+
+        if (seed & 1) == 0:
+            self._draw_airborne_bar_chart(
+                surface,
+                rect,
+                title="Speed vs parcel weight",
+                x_labels=wlabels,
+                values=speeds,
+                value_unit="",
+            )
+        else:
+            rows = [(f"{w} kg", f"{sp} {scenario.speed_unit}") for w, sp in zip(weights, speeds, strict=False)]
+            self._draw_airborne_table_small(
+                surface,
+                rect,
+                title="Parcel weight table",
+                headers=("WEIGHT", "SPEED"),
+                rows=rows,
+            )
+
     def _draw_airborne_map(self, surface: pygame.Surface, rect: pygame.Rect, scenario: AirborneScenario) -> None:
         template = TEMPLATES_BY_NAME.get(scenario.template_name)
         if template is None:
@@ -585,11 +734,11 @@ class CognitiveTestScreen:
         # Precompute node positions.
         node_px: list[tuple[int, int]] = []
         for n in template.nodes:
-            x = int(rect.x + n.pos[0] * rect.w)
-            y = int(rect.y + n.pos[1] * rect.h)
+            x = int(rect.x + n.pos[0] / 960 * rect.w)
+            y = int(rect.y + n.pos[1] / 540 * rect.h)
             node_px.append((x, y))
 
-        route_edges = {tuple(sorted((a, b))) for a, b in zip(scenario.route, scenario.route[1:])}
+        route_edges: set[tuple[int, int]] = set()  # disabled: no route highlighting
 
         # Edges.
         for idx, e in enumerate(template.edges):
@@ -620,8 +769,8 @@ class CognitiveTestScreen:
             pygame.draw.circle(surface, (12, 12, 18), (x, y), 10)
             pygame.draw.circle(surface, (235, 235, 245), (x, y), 10, 2)
 
-            lx = int(rect.x + n.label_anchor[0] * rect.w)
-            ly = int(rect.y + n.label_anchor[1] * rect.h)
+            lx = int(rect.x + n.label_anchor[0] / 960 * rect.w)
+            ly = int(rect.y + n.label_anchor[1] / 540 * rect.h)
             label = self._tiny_font.render(scenario.node_names[i], True, (12, 12, 18))
             bg = label.get_rect(midleft=(lx, ly))
             bg.inflate_ip(10, 6)

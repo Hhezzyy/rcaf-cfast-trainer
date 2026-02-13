@@ -79,6 +79,7 @@ class TestSnapshot:
     attempted_scored: int
     correct_scored: int
     payload: object | None = None
+    practice_feedback: str | None = None
 
 
 class TimedTextInputTest:
