@@ -4,8 +4,9 @@ import math
 import random
 from dataclasses import dataclass
 from enum import Enum
-from typing import Protocol
+from typing import Protocol, Sequence, TypeVar
 
+T = TypeVar("T")
 from .clock import Clock
 
 
@@ -155,6 +156,9 @@ class TimedTextInputTest:
             return
         self._phase = Phase.PRACTICE
         self._deal_new_problem()
+        # Backwards-compatibility shim: older tests call start() to begin practice.
+    def start(self) -> None:
+        self.start_practice()
 
     def start_scored(self) -> None:
         if self._phase in (Phase.SCORED, Phase.RESULTS):
@@ -194,15 +198,15 @@ class TimedTextInputTest:
             return ""
         return self._current.prompt
 
-    def submit_answer(self, raw: str) -> bool:
+    def submit_answer(self, raw: object) -> bool:
         """Submit a typed answer. Returns True if accepted."""
 
         if self._phase not in (Phase.PRACTICE, Phase.SCORED):
             return False
         expired = self._phase is Phase.SCORED and self.time_remaining_s() == 0
 
-        raw_in = raw
-        raw = raw.strip()
+        raw_in = raw if isinstance(raw, str) else str(raw)
+        raw = raw_in.strip()
         if expired and raw == "":
             # Timeout with no partial entry.
             self._phase = Phase.RESULTS
@@ -327,13 +331,22 @@ class SeededRng:
         self._rng = random.Random(int(seed))
 
     def randint(self, a: int, b: int) -> int:
-        return self._rng.randint(a, b)
+        return int(self._rng.randint(a, b))
 
-    def choice(self, seq: list[str]) -> str:
-        return self._rng.choice(seq)
+    def random(self) -> float:
+        """Return a float in [0.0, 1.0)."""
+        return float(self._rng.random())
+
+    def choice(self, seq: Sequence[T]) -> T:
+        """Return a random element from a non-empty sequence."""
+        return self._rng.choice(list(seq))
+
+    def sample(self, seq: Sequence[T], *, k: int) -> list[T]:
+        """Return k unique elements chosen from seq."""
+        return list(self._rng.sample(list(seq), k=k))
 
     def uniform(self, a: float, b: float) -> float:
-        return self._rng.uniform(a, b)
+        return float(self._rng.uniform(a, b))
 
 
 def lerp_int(a: int, b: int, t: float) -> int:

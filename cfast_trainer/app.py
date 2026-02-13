@@ -3,6 +3,7 @@
 This task adds two cognitive tests under a "Tests" submenu:
 - Numerical Operations (mental arithmetic)
 - Mathematics Reasoning (time/speed/distance word problems)
+- Airborne Numerical Test (HHMM timing with map/table UI)
 
 Deterministic timing/scoring/RNG/state lives in cfast_trainer/* (core modules).
 """
@@ -24,11 +25,8 @@ from .numerical_operations import build_numerical_operations_test
 
 
 class Screen(Protocol):
-    def handle_event(self, event: pygame.event.Event) -> None:
-        ...
-
-    def render(self, surface: pygame.Surface) -> None:
-        ...
+    def handle_event(self, event: pygame.event.Event) -> None: ...
+    def render(self, surface: pygame.Surface) -> None: ...
 
 
 class CognitiveEngine(Protocol):
@@ -38,6 +36,7 @@ class CognitiveEngine(Protocol):
     def start_scored(self) -> None: ...
     def submit_answer(self, raw: str) -> bool: ...
     def update(self) -> None: ...
+
 
 @dataclass(frozen=True, slots=True)
 class MenuItem:
@@ -124,9 +123,7 @@ class PlaceholderScreen:
 
 
 class MenuScreen:
-    def __init__(
-        self, app: App, title: str, items: list[MenuItem], *, is_root: bool = False
-    ) -> None:
+    def __init__(self, app: App, title: str, items: list[MenuItem], *, is_root: bool = False) -> None:
         self._app = app
         self._title = title
         self._items = items
@@ -239,10 +236,7 @@ class SettingsScreen:
         return [
             (f"Fullscreen: {'ON' if settings.fullscreen else 'OFF'}", self._toggle_fullscreen),
             (f"Max FPS: {settings.max_fps}", self._cycle_max_fps),
-            (
-                f"Show FPS overlay: {'ON' if settings.show_fps_overlay else 'OFF'}",
-                self._toggle_show_fps,
-            ),
+            (f"Show FPS overlay: {'ON' if settings.show_fps_overlay else 'OFF'}", self._toggle_show_fps),
             (f"Invert Y axis: {'ON' if settings.invert_y_axis else 'OFF'}", self._toggle_invert_y),
             ("Axis Calibration", lambda: self._app.push(self._axis_calibration)),
             ("Axis Visualizer", lambda: self._app.push(self._axis_visualizer)),
@@ -410,7 +404,6 @@ class CognitiveTestScreen:
 
         self._engine.update()
         snap = self._engine.snapshot()
-
         scenario = snap.payload if isinstance(snap.payload, AirborneScenario) else None
 
         surface.fill((10, 10, 14))
@@ -423,9 +416,7 @@ class CognitiveTestScreen:
             rem = int(round(snap.time_remaining_s))
             mm = rem // 60
             ss = rem % 60
-            timer = self._small_font.render(
-                f"Time remaining: {mm:02d}:{ss:02d}", True, (200, 200, 210)
-            )
+            timer = self._small_font.render(f"Time remaining: {mm:02d}:{ss:02d}", True, (200, 200, 210))
             surface.blit(timer, (40, y_info))
             y_info += 28
 
@@ -461,12 +452,8 @@ class CognitiveTestScreen:
             lock = self._small_font.render("Test in progress: cannot exit.", True, (140, 140, 150))
             surface.blit(lock, (460, surface.get_height() - 60))
 
-    def _render_airborne_question(
-        self, surface: pygame.Surface, snap: TestSnapshot, scenario: AirborneScenario
-    ) -> None:
-        # Layout matches the guide at a structural level: menu on left, fixed map, bottom table,
-        # and answer/timer on the right. Distances and menu contents are hold-to-show.
-
+    def _render_airborne_question(self, surface: pygame.Surface, snap: TestSnapshot, scenario: AirborneScenario) -> None:
+        # Layout: menu on left, map, bottom table, answer/timer on the right.
         w, h = surface.get_size()
         menu_rect = pygame.Rect(20, 80, 220, h - 120)
         content_rect = pygame.Rect(menu_rect.right + 20, 80, w - menu_rect.right - 40, h - 160)
@@ -504,22 +491,10 @@ class CognitiveTestScreen:
         pygame.draw.rect(surface, (18, 18, 26), menu_rect)
         pygame.draw.rect(surface, (70, 70, 85), menu_rect, 2)
         surface.blit(self._app.font.render("Menu", True, (235, 235, 245)), (menu_rect.x + 14, menu_rect.y + 10))
-        surface.blit(
-            self._tiny_font.render("Hold S: Intro", True, (150, 150, 165)),
-            (menu_rect.x + 14, menu_rect.y + 60),
-        )
-        surface.blit(
-            self._tiny_font.render("Hold D: Speed & Fuel", True, (150, 150, 165)),
-            (menu_rect.x + 14, menu_rect.y + 84),
-        )
-        surface.blit(
-            self._tiny_font.render("Hold F: Speed & Parcel", True, (150, 150, 165)),
-            (menu_rect.x + 14, menu_rect.y + 108),
-        )
-        surface.blit(
-            self._tiny_font.render("Hold A: Show distances", True, (150, 150, 165)),
-            (menu_rect.x + 14, menu_rect.y + 140),
-        )
+        surface.blit(self._tiny_font.render("Hold S: Intro", True, (150, 150, 165)), (menu_rect.x + 14, menu_rect.y + 60))
+        surface.blit(self._tiny_font.render("Hold D: Speed & Fuel", True, (150, 150, 165)), (menu_rect.x + 14, menu_rect.y + 84))
+        surface.blit(self._tiny_font.render("Hold F: Speed & Parcel", True, (150, 150, 165)), (menu_rect.x + 14, menu_rect.y + 108))
+        surface.blit(self._tiny_font.render("Hold A: Show distances", True, (150, 150, 165)), (menu_rect.x + 14, menu_rect.y + 140))
 
         # Map.
         pygame.draw.rect(surface, (12, 12, 18), map_rect)
@@ -540,11 +515,9 @@ class CognitiveTestScreen:
             pygame.draw.rect(surface, (18, 18, 26), panel)
             pygame.draw.rect(surface, (120, 120, 140), panel, 2)
 
-            title = {
-                "intro": "Introduction",
-                "fuel": "Speed & Fuel Consumption",
-                "parcel": "Speed & Parcel Weight",
-            }[self._air_overlay]
+            title = {"intro": "Introduction", "fuel": "Speed & Fuel Consumption", "parcel": "Speed & Parcel Weight"}[
+                self._air_overlay
+            ]
             surface.blit(self._app.font.render(title, True, (235, 235, 245)), (panel.x + 16, panel.y + 14))
 
             lines: list[str] = []
@@ -555,19 +528,20 @@ class CognitiveTestScreen:
                     f"Route: {route_names}",
                     "",
                     "Use the map and table to derive the required time.",
-                    "Distances are hidden unless you hold F.",
+                    "Distances are hidden unless you hold A.",
                 ]
             elif self._air_overlay == "fuel":
                 lines = [
-                    f"Speed: {scenario.speed_value} {scenario.speed_unit}",
-                    f"Fuel burn: {scenario.fuel_burn_per_hr} L/hr",
+                    f"Speed: {getattr(scenario, 'speed_value', 0)} {getattr(scenario, 'speed_unit', '')}",
+                    f"Fuel burn: {getattr(scenario, 'fuel_burn_per_hr', 0)} L/hr",
                     "",
                     "(Training note: fuel calculations will be added as question types.)",
                 ]
             else:
+                pw = getattr(scenario, "parcel_weight_kg", getattr(scenario, "parcel_weight", 0))
                 lines = [
-                    f"Speed: {scenario.speed_value} {scenario.speed_unit}",
-                    f"Parcel weight: {scenario.parcel_weight_kg} kg",
+                    f"Speed: {getattr(scenario, 'speed_value', 0)} {getattr(scenario, 'speed_unit', '')}",
+                    f"Parcel weight: {pw} kg",
                     "",
                     "(Training note: weight effects will be added as question types.)",
                 ]
@@ -586,14 +560,15 @@ class CognitiveTestScreen:
     def _airborne_graph_seed(self, scenario: AirborneScenario) -> int:
         # Stable per-scenario seed (no Python hash()).
         seed = 2166136261
+
         def mix(x: int) -> None:
             nonlocal seed
             seed ^= (x & 0xFFFFFFFF)
             seed = (seed * 16777619) & 0xFFFFFFFF
 
-        mix(getattr(scenario, "speed_value", 0))
-        mix(getattr(scenario, "fuel_burn_per_hr", 0))
-        mix(getattr(scenario, "parcel_weight", 0))
+        mix(int(getattr(scenario, "speed_value", 0)))
+        mix(int(getattr(scenario, "fuel_burn_per_hr", 0)))
+        mix(int(getattr(scenario, "parcel_weight_kg", getattr(scenario, "parcel_weight", 0))))
         for name in getattr(scenario, "node_names", ()):
             for ch in name:
                 mix(ord(ch))
@@ -630,15 +605,13 @@ class CognitiveTestScreen:
 
         for i, (lbl, v) in enumerate(zip(x_labels, values, strict=False)):
             x = chart.x + gap + i * (bar_w + gap)
-            h = int(round((v / vmax) * (chart.h - 20)))
-            bar = pygame.Rect(x, chart.bottom - h, bar_w, h)
+            hh = int(round((v / vmax) * (chart.h - 20)))
+            bar = pygame.Rect(x, chart.bottom - hh, bar_w, hh)
             pygame.draw.rect(surface, (90, 90, 110), bar)
 
-            # value above
             t = self._tiny_font.render(f"{v}{value_unit}", True, (200, 200, 210))
             surface.blit(t, t.get_rect(midbottom=(bar.centerx, bar.y - 2)))
 
-            # label below
             xl = self._tiny_font.render(lbl, True, (150, 150, 165))
             surface.blit(xl, xl.get_rect(midtop=(bar.centerx, chart.bottom + 4)))
 
@@ -670,107 +643,74 @@ class CognitiveTestScreen:
 
     def _draw_airborne_fuel_panel(self, surface: pygame.Surface, rect: pygame.Rect, scenario: AirborneScenario) -> None:
         seed = self._airborne_graph_seed(scenario)
-        base_speed = max(1, int(scenario.speed_value))
+        base_speed = max(1, int(getattr(scenario, "speed_value", 1)))
         base_burn = int(getattr(scenario, "fuel_burn_per_hr", 0))
         speeds = [int(round(base_speed * f)) for f in (0.8, 0.9, 1.0, 1.1, 1.2)]
-        # simple aerodynamic-ish scaling; deterministic exponent choice
         exp = 2.0 if (seed & 2) == 0 else 2.2
         burns = [int(round(base_burn * ((s / base_speed) ** exp))) for s in speeds]
         labels = [str(s) for s in speeds]
 
         if (seed & 1) == 0:
             self._draw_airborne_bar_chart(
-                surface,
-                rect,
-                title="Fuel burn vs speed",
-                x_labels=labels,
-                values=burns,
-                value_unit="",
+                surface, rect, title="Fuel burn vs speed", x_labels=labels, values=burns, value_unit=""
             )
         else:
-            rows = [(f"{sp} {scenario.speed_unit}", f"{bn} L/hr") for sp, bn in zip(speeds, burns, strict=False)]
-            self._draw_airborne_table_small(
-                surface,
-                rect,
-                title="Fuel burn table",
-                headers=("SPEED", "BURN"),
-                rows=rows,
-            )
+            rows = [(f"{sp} {getattr(scenario, 'speed_unit', '')}", f"{bn} L/hr") for sp, bn in zip(speeds, burns, strict=False)]
+            self._draw_airborne_table_small(surface, rect, title="Fuel burn table", headers=("SPEED", "BURN"), rows=rows)
 
     def _draw_airborne_parcel_panel(self, surface: pygame.Surface, rect: pygame.Rect, scenario: AirborneScenario) -> None:
         seed = self._airborne_graph_seed(scenario) ^ 0x9E3779B9
-        base_speed = max(1, int(scenario.speed_value))
-        # weight bins
+        base_speed = max(1, int(getattr(scenario, "speed_value", 1)))
         weights = [0, 200, 400, 600, 800, 1000]
-        # deterministic slope (no randomness required)
         slope = 6 + (seed % 7)  # speed drop per 100kg
         speeds = [max(1, base_speed - int((w / 100) * slope)) for w in weights]
         wlabels = [str(w) for w in weights]
 
         if (seed & 1) == 0:
             self._draw_airborne_bar_chart(
-                surface,
-                rect,
-                title="Speed vs parcel weight",
-                x_labels=wlabels,
-                values=speeds,
-                value_unit="",
+                surface, rect, title="Speed vs parcel weight", x_labels=wlabels, values=speeds, value_unit=""
             )
         else:
-            rows = [(f"{w} kg", f"{sp} {scenario.speed_unit}") for w, sp in zip(weights, speeds, strict=False)]
-            self._draw_airborne_table_small(
-                surface,
-                rect,
-                title="Parcel weight table",
-                headers=("WEIGHT", "SPEED"),
-                rows=rows,
-            )
+            rows = [(f"{w} kg", f"{sp} {getattr(scenario, 'speed_unit', '')}") for w, sp in zip(weights, speeds, strict=False)]
+            self._draw_airborne_table_small(surface, rect, title="Parcel weight table", headers=("WEIGHT", "SPEED"), rows=rows)
 
     def _draw_airborne_map(self, surface: pygame.Surface, rect: pygame.Rect, scenario: AirborneScenario) -> None:
         template = TEMPLATES_BY_NAME.get(scenario.template_name)
         if template is None:
             return
 
-        # Precompute node positions.
         node_px: list[tuple[int, int]] = []
-        for n in template.nodes:
-            x = int(rect.x + n.pos[0] / 960 * rect.w)
-            y = int(rect.y + n.pos[1] / 540 * rect.h)
+        for nx, ny in template.nodes:
+            x = int(rect.x + nx * rect.w)
+            y = int(rect.y + ny * rect.h)
             node_px.append((x, y))
 
-        route_edges: set[tuple[int, int]] = set()  # disabled: no route highlighting
-
-        # Edges.
-        for idx, e in enumerate(template.edges):
-            a = node_px[e.a]
-            b = node_px[e.b]
-            key = tuple(sorted((e.a, e.b)))
-            color = (220, 220, 235) if key in route_edges else (70, 70, 85)
-            pygame.draw.line(surface, color, a, b, 3 if key in route_edges else 2)
+        for idx, (ea, eb) in enumerate(template.edges):
+            a = node_px[ea]
+            b = node_px[eb]
+            pygame.draw.line(surface, (70, 70, 85), a, b, 2)
 
             if self._air_show_distances:
                 midx = (a[0] + b[0]) / 2
                 midy = (a[1] + b[1]) / 2
-                # Slight perpendicular offset so text doesn't sit exactly on the line.
                 dx = b[0] - a[0]
                 dy = b[1] - a[1]
                 length = max(1.0, (dx * dx + dy * dy) ** 0.5)
                 ox = int(-dy / length * 10)
                 oy = int(dx / length * 10)
+
                 text = self._tiny_font.render(str(scenario.edge_distances[idx]), True, (12, 12, 18))
                 bg = text.get_rect(center=(int(midx) + ox, int(midy) + oy))
                 bg.inflate_ip(10, 6)
                 pygame.draw.rect(surface, (235, 235, 245), bg)
                 surface.blit(text, text.get_rect(center=bg.center))
 
-        # Nodes + labels.
-        for i, n in enumerate(template.nodes):
-            x, y = node_px[i]
+        for i, (x, y) in enumerate(node_px):
             pygame.draw.circle(surface, (12, 12, 18), (x, y), 10)
             pygame.draw.circle(surface, (235, 235, 245), (x, y), 10, 2)
 
-            lx = int(rect.x + n.label_anchor[0] / 960 * rect.w)
-            ly = int(rect.y + n.label_anchor[1] / 540 * rect.h)
+            lx = x + 18 if x < rect.right - 80 else x - 18
+            ly = y
             label = self._tiny_font.render(scenario.node_names[i], True, (12, 12, 18))
             bg = label.get_rect(midleft=(lx, ly))
             bg.inflate_ip(10, 6)
@@ -795,21 +735,22 @@ class CognitiveTestScreen:
             surface.blit(self._tiny_font.render(label, True, (150, 150, 165)), (x, y))
         y += 22
 
+        pw = getattr(scenario, "parcel_weight_kg", getattr(scenario, "parcel_weight", 0))
+
         for i in range(3):
             if i < len(scenario.legs):
                 leg = scenario.legs[i]
-                dist = str(leg.distance) if self._air_show_distances else "----"
-                speed = "----"  # shown via menu overlay only
+                dist = str(getattr(leg, "distance", "----")) if self._air_show_distances else "----"
+                speed = "----"
                 t = "----"
-                parcel = str(scenario.parcel_weight_kg)
                 row = [
                     (str(i + 1), cols[0][1]),
-                    (scenario.node_names[leg.frm], cols[1][1]),
-                    (scenario.node_names[leg.to], cols[2][1]),
+                    (scenario.node_names[getattr(leg, "frm")], cols[1][1]),
+                    (scenario.node_names[getattr(leg, "to")], cols[2][1]),
                     (dist, cols[3][1]),
                     (speed, cols[4][1]),
                     (t, cols[5][1]),
-                    (parcel, cols[6][1]),
+                    (str(pw), cols[6][1]),
                 ]
             else:
                 row = [("", x) for _, x in cols]
@@ -838,9 +779,7 @@ def _new_seed() -> int:
     return random.SystemRandom().randint(1, 2**31 - 1)
 
 
-def run(
-    *, max_frames: int | None = None, event_injector: Callable[[int], None] | None = None
-) -> int:
+def run(*, max_frames: int | None = None, event_injector: Callable[[int], None] | None = None) -> int:
     pygame.init()
     _init_joysticks()
 
@@ -876,9 +815,7 @@ def run(
         app.push(
             CognitiveTestScreen(
                 app,
-                engine_factory=lambda: build_numerical_operations_test(
-                    clock=real_clock, seed=seed, difficulty=0.5
-                ),
+                engine_factory=lambda: build_numerical_operations_test(clock=real_clock, seed=seed, difficulty=0.5),
             )
         )
 
@@ -887,9 +824,7 @@ def run(
         app.push(
             CognitiveTestScreen(
                 app,
-                engine_factory=lambda: build_airborne_numerical_test(
-                    clock=real_clock, seed=seed, difficulty=0.5
-                ),
+                engine_factory=lambda: build_airborne_numerical_test(clock=real_clock, seed=seed, difficulty=0.5),
             )
         )
 
@@ -898,9 +833,7 @@ def run(
         app.push(
             CognitiveTestScreen(
                 app,
-                engine_factory=lambda: build_math_reasoning_test(
-                    clock=real_clock, seed=seed, difficulty=0.5
-                ),
+                engine_factory=lambda: build_math_reasoning_test(clock=real_clock, seed=seed, difficulty=0.5),
             )
         )
 
