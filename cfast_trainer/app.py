@@ -28,6 +28,10 @@ from .angles_bearings_degrees import (
 from .clock import RealClock
 from .cognitive_core import Phase, TestSnapshot
 from .digit_recognition import DigitRecognitionPayload, build_digit_recognition_test
+from .instrument_comprehension import (
+    InstrumentComprehensionPayload,
+    build_instrument_comprehension_test,
+)
 from .math_reasoning import build_math_reasoning_test
 from .numerical_operations import build_numerical_operations_test
 from .visual_search import VisualSearchPayload, VisualSearchTaskKind, build_visual_search_test
@@ -444,6 +448,9 @@ class CognitiveTestScreen:
         abd: AnglesBearingsDegreesPayload | None = (
             p if isinstance(p, AnglesBearingsDegreesPayload) else None
         )
+        ic: InstrumentComprehensionPayload | None = (
+            p if isinstance(p, InstrumentComprehensionPayload) else None
+        )
         vs: VisualSearchPayload | None = p if isinstance(p, VisualSearchPayload) else None
         dr: DigitRecognitionPayload | None = None
         if p is not None:
@@ -475,6 +482,8 @@ class CognitiveTestScreen:
             self._render_airborne_question(surface, snap, scenario)
         elif abd is not None and snap.phase in (Phase.PRACTICE, Phase.SCORED):
             self._render_angles_bearings_question(surface, snap, abd)
+        elif ic is not None and snap.phase in (Phase.PRACTICE, Phase.SCORED):
+            self._render_instrument_comprehension_question(surface, snap, ic)
         elif vs is not None and snap.phase in (Phase.PRACTICE, Phase.SCORED):
             self._render_visual_search_question(surface, snap, vs)
         else:
@@ -640,6 +649,135 @@ class CognitiveTestScreen:
                 token_surface = token_font.render(str(token), True, text_color)
                 token_rect = token_surface.get_rect(center=cell.center)
                 surface.blit(token_surface, token_rect)
+
+    def _render_instrument_comprehension_question(
+        self,
+        surface: pygame.Surface,
+        snap: TestSnapshot,
+        payload: InstrumentComprehensionPayload,
+    ) -> None:
+        w, h = surface.get_size()
+        panel = pygame.Rect(40, 130, w - 80, h - 250)
+        pygame.draw.rect(surface, (18, 18, 26), panel)
+        pygame.draw.rect(surface, (70, 70, 85), panel, 2)
+
+        surface.blit(
+            self._small_font.render(str(snap.prompt), True, (235, 235, 245)),
+            (panel.x + 16, panel.y + 12),
+        )
+        surface.blit(
+            self._tiny_font.render(payload.verbal_cue, True, (150, 150, 165)),
+            (panel.x + 16, panel.y + 38),
+        )
+
+        left = pygame.Rect(panel.x + 14, panel.y + 66, panel.w // 2 - 20, panel.h - 80)
+        right = pygame.Rect(left.right + 12, panel.y + 66, panel.right - left.right - 26, panel.h - 80)
+        pygame.draw.rect(surface, (12, 12, 18), left)
+        pygame.draw.rect(surface, (70, 70, 85), left, 1)
+        pygame.draw.rect(surface, (12, 12, 18), right)
+        pygame.draw.rect(surface, (70, 70, 85), right, 1)
+
+        surface.blit(
+            self._tiny_font.render("INSTRUMENT PANEL", True, (150, 150, 165)),
+            (left.x + 10, left.y + 8),
+        )
+        instrument_preview = pygame.Rect(left.x + 18, left.y + 28, left.w - 36, left.h - 116)
+        self._draw_instrument_preview(
+            surface,
+            instrument_preview,
+            bank_deg=payload.bank_deg,
+            pitch_deg=payload.pitch_deg,
+            heading_deg=payload.heading_deg,
+        )
+
+        info_y = instrument_preview.bottom + 8
+        info_lines = (
+            f"Heading: {int(payload.heading_deg) % 360:03d}",
+            f"Bank: {int(payload.bank_deg):+d}°",
+            f"Pitch: {int(payload.pitch_deg):+d}°",
+        )
+        for line in info_lines:
+            surface.blit(self._small_font.render(line, True, (235, 235, 245)), (left.x + 12, info_y))
+            info_y += 24
+
+        surface.blit(
+            self._tiny_font.render("OPTIONS (type 1-4)", True, (150, 150, 165)),
+            (right.x + 10, right.y + 8),
+        )
+
+        rows = 2
+        cols = 2
+        gap = 8
+        card_w = (right.w - (gap * (cols + 1))) // cols
+        card_h = (right.h - 30 - (gap * (rows + 1))) // rows
+
+        options = payload.options[:4]
+        for idx, option in enumerate(options):
+            r = idx // cols
+            c = idx % cols
+            card = pygame.Rect(
+                right.x + gap + c * (card_w + gap),
+                right.y + 30 + gap + r * (card_h + gap),
+                card_w,
+                card_h,
+            )
+            pygame.draw.rect(surface, (24, 24, 34), card)
+            pygame.draw.rect(surface, (90, 90, 110), card, 1)
+
+            surface.blit(
+                self._small_font.render(f"#{option.code}", True, (235, 235, 245)),
+                (card.x + 8, card.y + 6),
+            )
+            preview = pygame.Rect(card.x + 10, card.y + 28, card.w - 20, card.h - 64)
+            self._draw_instrument_preview(
+                surface,
+                preview,
+                bank_deg=option.bank_deg,
+                pitch_deg=option.pitch_deg,
+                heading_deg=option.heading_deg,
+            )
+
+            labels = option.label.split(", ")
+            txt_y = card.bottom - 32
+            for part in labels[:2]:
+                surface.blit(
+                    self._tiny_font.render(part, True, (150, 150, 165)),
+                    (card.x + 8, txt_y),
+                )
+                txt_y += 14
+
+    def _draw_instrument_preview(
+        self,
+        surface: pygame.Surface,
+        rect: pygame.Rect,
+        *,
+        bank_deg: int,
+        pitch_deg: int,
+        heading_deg: int,
+    ) -> None:
+        cx = rect.centerx
+        cy = rect.centery
+        radius = max(14, min(rect.w, rect.h) // 2 - 8)
+
+        pygame.draw.circle(surface, (28, 35, 55), (cx, cy), radius)
+        pygame.draw.circle(surface, (90, 90, 110), (cx, cy), radius, 2)
+
+        pitch = max(-25.0, min(25.0, float(pitch_deg)))
+        pitch_px = int(round((-pitch / 25.0) * (radius * 0.6)))
+        rad = math.radians(float(bank_deg))
+        dx = math.cos(rad) * (radius + 8)
+        dy = math.sin(rad) * (radius + 8)
+
+        x1 = int(round(cx - dx))
+        y1 = int(round(cy + pitch_px - dy))
+        x2 = int(round(cx + dx))
+        y2 = int(round(cy + pitch_px + dy))
+        pygame.draw.line(surface, (235, 235, 245), (x1, y1), (x2, y2), 3)
+        pygame.draw.circle(surface, (235, 235, 245), (cx, cy), 4, 1)
+
+        heading = self._tiny_font.render(f"HDG {int(heading_deg) % 360:03d}", True, (150, 150, 165))
+        heading_rect = heading.get_rect(center=(cx, rect.bottom - 10))
+        surface.blit(heading, heading_rect)
 
     def _visual_search_cell_color(
         self, kind: VisualSearchTaskKind, token: str
@@ -1103,6 +1241,19 @@ def run(*, max_frames: int | None = None, event_injector: Callable[[int], None] 
             )
         )
 
+    def open_instrument_comprehension() -> None:
+        seed = _new_seed()
+        app.push(
+            CognitiveTestScreen(
+                app,
+                engine_factory=lambda: build_instrument_comprehension_test(
+                    clock=real_clock,
+                    seed=seed,
+                    difficulty=0.5,
+                ),
+            )
+        )
+
     tests_menu = MenuScreen(
         app,
         "Tests",
@@ -1113,6 +1264,7 @@ def run(*, max_frames: int | None = None, event_injector: Callable[[int], None] 
             MenuItem("Digit Recognition", open_digit_recognition),
             MenuItem("Angles, Bearings and Degrees", open_angles_bearings_degrees),
             MenuItem("Visual Search (Target Recognition)", open_visual_search),
+            MenuItem("Instrument Comprehension", open_instrument_comprehension),
             MenuItem("Back", app.pop),
         ],
     )
