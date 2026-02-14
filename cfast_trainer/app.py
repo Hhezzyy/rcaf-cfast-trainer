@@ -13,6 +13,7 @@ from __future__ import annotations
 import random
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import cast
 from typing import Protocol
 
 import pygame
@@ -324,9 +325,14 @@ class CognitiveTestScreen:
 
     def handle_event(self, event: pygame.event.Event) -> None:
         snap = self._engine.snapshot()
-        scenario = snap.payload if isinstance(snap.payload, AirborneScenario) else None
-        dr = snap.payload if isinstance(snap.payload, DigitRecognitionPayload) else None
+        p = snap.payload
+        scenario = p if isinstance(p, AirborneScenario) else None
 
+        dr: DigitRecognitionPayload | None = None
+        if p is not None and hasattr(p, "display_digits") and hasattr(p, "accepting_input"):
+            dr = cast(DigitRecognitionPayload, p)
+        if dr is not None and not dr.accepting_input:
+            return
         # Airborne: hold-to-show overlays.
         if scenario is not None:
             if event.type == pygame.KEYDOWN:
@@ -399,6 +405,17 @@ class CognitiveTestScreen:
             self._input += ch
 
     def render(self, surface: pygame.Surface) -> None:
+        # Update engine first
+        self._engine.update()
+        snap = self._engine.snapshot()
+
+        # Identify payloads
+        p = snap.payload
+        scenario = p if isinstance(p, AirborneScenario) else None
+
+        dr = None
+        if p is not None and hasattr(p, "display_digits") and hasattr(p, "accepting_input"):
+            dr = p  # duck-typed DigitRecognitionPayload
         # If the timer expires mid-entry, auto-submit the digits typed so far (no backspace on the
         # real test; partial entry will simply score 0).
         snap_pre = self._engine.snapshot()
@@ -413,7 +430,20 @@ class CognitiveTestScreen:
 
         self._engine.update()
         snap = self._engine.snapshot()
-        scenario = snap.payload if isinstance(snap.payload, AirborneScenario) else None
+        p = snap.payload
+        scenario: AirborneScenario | None = p if isinstance(p, AirborneScenario) else None
+        dr: DigitRecognitionPayload | None = None
+        if p is not None:
+            if isinstance(p, DigitRecognitionPayload):
+                dr = p
+            elif hasattr(p, "display_digits") and hasattr(p, "accepting_input"):
+                dr = cast(DigitRecognitionPayload, p)
+        if scenario is not None and snap.phase in (Phase.PRACTICE, Phase.SCORED):
+            self._render_airborne_question(surface, snap, scenario)
+        elif dr is not None and snap.phase in (Phase.PRACTICE, Phase.SCORED):
+            self._render_digit_recognition(surface, snap, dr)
+        else:
+            ...
 
         surface.fill((10, 10, 14))
 
@@ -572,7 +602,7 @@ class CognitiveTestScreen:
         if snap.prompt:
             surface.blit(self._app.font.render(str(snap.prompt), True, (235, 235, 245)), (40, 140))
 
-        if payload.display_digits:
+        if payload.display_digits is not None:
             txt = payload.display_digits
             surf = self._big_font.render(txt, True, (235, 235, 245))
             if surf.get_width() > int(w * 0.92):

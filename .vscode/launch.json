@@ -1,0 +1,13 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Run cfast_trainer (module)",
+      "type": "python",
+      "request": "launch",
+      "module": "cfast_trainer",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal"
+    }
+  ]
+}
