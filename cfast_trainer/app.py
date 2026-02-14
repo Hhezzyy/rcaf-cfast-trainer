@@ -621,11 +621,13 @@ class CognitiveTestScreen:
         start_x = grid_rect.x + max(0, (grid_rect.w - grid_w) // 2)
         start_y = grid_rect.y + max(0, (grid_rect.h - grid_h) // 2)
         token_font = pygame.font.Font(None, max(16, min(30, int(cell_size * 0.42))))
+        code_font = pygame.font.Font(None, max(12, min(18, int(cell_size * 0.24))))
 
         for r in range(rows):
             for c in range(cols):
                 idx = r * cols + c
                 token = payload.cells[idx] if idx < len(payload.cells) else ""
+                code = payload.cell_codes[idx] if idx < len(payload.cell_codes) else 0
                 cell = pygame.Rect(start_x + c * cell_size, start_y + r * cell_size, cell_size, cell_size)
                 fill = self._visual_search_cell_color(payload.kind, token)
                 pygame.draw.rect(surface, fill, cell)
@@ -633,6 +635,8 @@ class CognitiveTestScreen:
 
                 luminance = (fill[0] * 299 + fill[1] * 587 + fill[2] * 114) / 1000
                 text_color = (20, 20, 24) if luminance > 145 else (235, 235, 245)
+                code_surf = code_font.render(str(code), True, text_color)
+                surface.blit(code_surf, (cell.x + 3, cell.y + 2))
                 token_surface = token_font.render(str(token), True, text_color)
                 token_rect = token_surface.get_rect(center=cell.center)
                 surface.blit(token_surface, token_rect)

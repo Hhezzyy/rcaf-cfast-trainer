@@ -35,6 +35,7 @@ class VisualSearchPayload:
     cols: int
     target: str
     cells: tuple[str, ...]  # row-major order
+    cell_codes: tuple[int, ...]  # row-major numeric labels shown in each block
     full_credit_error: int
     zero_credit_error: int
 
@@ -84,16 +85,19 @@ class VisualSearchGenerator:
         target = str(self._rng.choice(bank))
         distractors = tuple(tok for tok in bank if tok != target)
 
-        max_targets = max(1, min(cell_count // 2, lerp_int(8, 4, d)))
-        target_count = self._rng.randint(0, max_targets)
-
         cells = [str(self._rng.choice(distractors)) for _ in range(cell_count)]
-        if target_count > 0:
-            for idx in self._rng.sample(tuple(range(cell_count)), k=target_count):
-                cells[int(idx)] = target
+        target_idx = int(self._rng.randint(0, cell_count - 1))
+        cells[target_idx] = target
+
+        # Visible per-cell numeric labels that the user types as the answer.
+        pool_hi = max(99, cell_count + 50)
+        code_pool = tuple(range(1, pool_hi + 1))
+        sampled = self._rng.sample(code_pool, k=cell_count)
+        cell_codes = tuple(int(v) for v in sampled)
+        correct_code = int(cell_codes[target_idx])
 
         full_credit_error = 0
-        zero_credit_error = lerp_int(4, 2, d)
+        zero_credit_error = lerp_int(6, 3, d)
 
         payload = VisualSearchPayload(
             kind=kind,
@@ -101,13 +105,14 @@ class VisualSearchGenerator:
             cols=cols,
             target=target,
             cells=tuple(cells),
+            cell_codes=cell_codes,
             full_credit_error=full_credit_error,
             zero_credit_error=zero_credit_error,
         )
 
         return Problem(
             prompt=self._prompt_for(kind=kind, target=target),
-            answer=int(target_count),
+            answer=correct_code,
             payload=payload,
         )
 
@@ -137,7 +142,7 @@ class VisualSearchGenerator:
             prefix = "Warning signs"
         else:
             prefix = "Colour patterns"
-        return f"{prefix}: count '{target}' in the grid."
+        return f"{prefix}: find '{target}' and enter its small block number."
 
 
 def build_visual_search_test(
@@ -152,12 +157,14 @@ def build_visual_search_test(
     instructions = [
         "Visual Search (Target Recognition)",
         "",
-        "Scan each grid quickly and count the requested target.",
+        "Scan each grid quickly and find the requested target.",
+        "Each block shows a small number label.",
+        "Enter the number label for the matching target block.",
         "Targets alternate between alphanumeric strings, symbol codes,",
         "warning signs, and colour-pattern codes.",
         "",
         "Controls:",
-        "- Type the count as a whole number",
+        "- Type the block number as a whole number",
         "- Press Enter to submit",
         "",
         "You will get a short practice, then a timed scored block.",
