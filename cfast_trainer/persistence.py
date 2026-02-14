@@ -4,7 +4,7 @@ from pathlib import Path
 import sqlite3
 import time
 
-from .math_reasoning import AttemptResult
+from .results import AttemptResult
 
 SCHEMA_VERSION = 1
 
@@ -119,8 +119,8 @@ def _insert_attempt(*, conn: sqlite3.Connection, result: AttemptResult, app_vers
             """,
             (
                 session_id,
-                "math_reasoning",
-                1,
+                str(result.test_code),
+                int(result.test_version),
                 app_version,
                 int(result.seed),
                 float(result.difficulty),
@@ -133,18 +133,22 @@ def _insert_attempt(*, conn: sqlite3.Connection, result: AttemptResult, app_vers
         )
         attempt_id = int(cur.lastrowid)
 
+        mean_rt = "" if result.mean_rt_ms is None else f"{result.mean_rt_ms:.3f}"
+        median_rt = "" if result.median_rt_ms is None else f"{result.median_rt_ms:.3f}"
         metrics = {
             "attempted": str(result.attempted),
             "correct": str(result.correct),
             "accuracy": f"{result.accuracy:.6f}",
             "throughput_per_min": f"{result.throughput_per_min:.6f}",
-            "mean_rt_ms": f"{result.mean_rt_ms:.3f}",
-            "median_rt_ms": f"{result.median_rt_ms:.3f}",
+            "mean_rt_ms": mean_rt,
+            "median_rt_ms": median_rt,
         }
         for k, v in metrics.items():
             conn.execute("INSERT INTO metric(attempt_id, key, value) VALUES (?, ?, ?)", (attempt_id, k, v))
 
         for e in result.events:
+            # Map QuestionEvent -> persistence schema.
+            response_text = (e.raw or "").strip() or str(e.user_answer)
             conn.execute(
                 """
                 INSERT INTO cognitive_event(
@@ -155,15 +159,15 @@ def _insert_attempt(*, conn: sqlite3.Connection, result: AttemptResult, app_vers
                 """,
                 (
                     attempt_id,
-                    int(e.seq),
-                    e.phase,
-                    e.prompt,
-                    str(e.expected),
-                    e.response,
+                    int(e.index),
+                    str(e.phase.value),
+                    str(e.prompt),
+                    str(e.correct_answer),
+                    response_text,
                     1 if e.is_correct else 0,
-                    int(e.presented_at_ms),
-                    int(e.answered_at_ms),
-                    int(e.rt_ms),
+                    int(round(e.presented_at_s * 1000.0)),
+                    int(round(e.answered_at_s * 1000.0)),
+                    int(round(e.response_time_s * 1000.0)),
                 ),
             )
 

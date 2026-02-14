@@ -82,7 +82,7 @@ class DigitRecognitionTest:
         seed: int,
         difficulty: float = 0.5,
         practice_questions: int = 3,
-        scored_duration_s: float = 180.0,
+        scored_duration_s: float = 360.0,
         display_s: float = 1.25,
         mask_s: float = 0.25,
     ) -> None:
@@ -344,7 +344,7 @@ def build_digit_recognition_test(
     seed: int,
     difficulty: float = 0.5,
     practice: bool = True,
-    scored_duration_s: float = 180.0,
+    scored_duration_s: float = 360.0,
 ) -> DigitRecognitionTest:
     return DigitRecognitionTest(
         clock=clock,

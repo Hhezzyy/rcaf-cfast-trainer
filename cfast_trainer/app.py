@@ -328,6 +328,16 @@ class CognitiveTestScreen:
         p = snap.payload
         scenario = p if isinstance(p, AirborneScenario) else None
 
+        # Emergency exit: allow a hard escape from any state (including SCORED) to
+        # prevent fullscreen lock-in.
+        if event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_F12:
+                self._app.pop()
+                return
+            if event.key == pygame.K_ESCAPE and (event.mod & pygame.KMOD_SHIFT):
+                self._app.pop()
+                return
+
         dr: DigitRecognitionPayload | None = None
         if p is not None and hasattr(p, "display_digits") and hasattr(p, "accepting_input"):
             dr = cast(DigitRecognitionPayload, p)
@@ -405,31 +415,23 @@ class CognitiveTestScreen:
             self._input += ch
 
     def render(self, surface: pygame.Surface) -> None:
-        # Update engine first
+        # Update engine and take a fresh snapshot.
         self._engine.update()
         snap = self._engine.snapshot()
 
-        # Identify payloads
-        p = snap.payload
-        scenario = p if isinstance(p, AirborneScenario) else None
-
-        dr = None
-        if p is not None and hasattr(p, "display_digits") and hasattr(p, "accepting_input"):
-            dr = p  # duck-typed DigitRecognitionPayload
-        # If the timer expires mid-entry, auto-submit the digits typed so far (no backspace on the
-        # real test; partial entry will simply score 0).
-        snap_pre = self._engine.snapshot()
+        # If the timer expires mid-entry, auto-submit what was typed so far.
         if (
-            snap_pre.phase is Phase.SCORED
-            and snap_pre.time_remaining_s is not None
-            and snap_pre.time_remaining_s <= 0.0
+            snap.phase is Phase.SCORED
+            and snap.time_remaining_s is not None
+            and snap.time_remaining_s <= 0.0
             and self._input.strip() != ""
         ):
             self._engine.submit_answer(self._input)
             self._input = ""
+            self._engine.update()
+            snap = self._engine.snapshot()
 
-        self._engine.update()
-        snap = self._engine.snapshot()
+        # Identify payloads.
         p = snap.payload
         scenario: AirborneScenario | None = p if isinstance(p, AirborneScenario) else None
         dr: DigitRecognitionPayload | None = None
@@ -438,12 +440,6 @@ class CognitiveTestScreen:
                 dr = p
             elif hasattr(p, "display_digits") and hasattr(p, "accepting_input"):
                 dr = cast(DigitRecognitionPayload, p)
-        if scenario is not None and snap.phase in (Phase.PRACTICE, Phase.SCORED):
-            self._render_airborne_question(surface, snap, scenario)
-        elif dr is not None and snap.phase in (Phase.PRACTICE, Phase.SCORED):
-            self._render_digit_recognition(surface, snap, dr)
-        else:
-            ...
 
         surface.fill((10, 10, 14))
 
@@ -474,8 +470,13 @@ class CognitiveTestScreen:
                 surface.blit(txt, (40, y))
                 y += 26
 
+            # Digit Recognition: render the digit string (if present) *after* the
+            # background/prompt so it isn't overwritten.
+            if dr is not None and snap.phase in (Phase.PRACTICE, Phase.SCORED):
+                self._render_digit_recognition(surface, snap, dr)
+
         if snap.phase in (Phase.PRACTICE, Phase.SCORED):
-            if scenario is None:
+            if scenario is None and (dr is None or dr.accepting_input):
                 box = pygame.Rect(40, surface.get_height() - 120, 400, 44)
                 pygame.draw.rect(surface, (30, 30, 40), box)
                 pygame.draw.rect(surface, (90, 90, 110), box, 2)
@@ -598,9 +599,6 @@ class CognitiveTestScreen:
 
     def _render_digit_recognition(self, surface: pygame.Surface, snap: TestSnapshot, payload: DigitRecognitionPayload) -> None:
         w, h = surface.get_size()
-
-        if snap.prompt:
-            surface.blit(self._app.font.render(str(snap.prompt), True, (235, 235, 245)), (40, 140))
 
         if payload.display_digits is not None:
             txt = payload.display_digits

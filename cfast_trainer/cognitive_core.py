@@ -141,6 +141,22 @@ class TimedTextInputTest:
         return self._seed
 
     @property
+    def difficulty(self) -> float:
+        return float(self._difficulty)
+
+    @property
+    def practice_questions(self) -> int:
+        return int(self._practice_questions)
+
+    @property
+    def scored_duration_s(self) -> float:
+        return float(self._scored_duration_s)
+
+    def events(self) -> list[QuestionEvent]:
+        # Return a copy to keep internal state encapsulated.
+        return list(self._events)
+
+    @property
     def phase(self) -> Phase:
         return self._phase
 

@@ -4,7 +4,7 @@ Offline‑first training app for CFASC CFAST‑style aircrew selection aptitude 
 
 ## Requirements
 
-- CPython 3.13.12
+- CPython 3.11+ (3.13 tested)
 - VS Code with the Python and Pylance extensions
 - Git (recommended for moving between machines)
 
@@ -55,7 +55,7 @@ Offline‑first training app for CFASC CFAST‑style aircrew selection aptitude 
 
 ## Verify
 
-- `python --version` should report `3.13.12`.
+- `python --version` should report 3.11+.
 - `python -m pytest` runs the smoke test.
 - `python -m cfast_trainer` opens the app (main menu).
 
