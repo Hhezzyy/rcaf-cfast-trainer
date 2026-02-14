@@ -10,6 +10,7 @@ Deterministic timing/scoring/RNG/state lives in cfast_trainer/* (core modules).
 
 from __future__ import annotations
 
+import math
 import random
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -19,11 +20,17 @@ from typing import Protocol
 import pygame
 
 from .airborne_numerical import AirborneScenario, TEMPLATES_BY_NAME, build_airborne_numerical_test
+from .angles_bearings_degrees import (
+    AnglesBearingsDegreesPayload,
+    AnglesBearingsQuestionKind,
+    build_angles_bearings_degrees_test,
+)
 from .clock import RealClock
 from .cognitive_core import Phase, TestSnapshot
-from .math_reasoning import build_math_reasoning_test
 from .digit_recognition import DigitRecognitionPayload, build_digit_recognition_test
+from .math_reasoning import build_math_reasoning_test
 from .numerical_operations import build_numerical_operations_test
+from .visual_search import VisualSearchPayload, VisualSearchTaskKind, build_visual_search_test
 
 
 class Screen(Protocol):
@@ -434,6 +441,10 @@ class CognitiveTestScreen:
         # Identify payloads.
         p = snap.payload
         scenario: AirborneScenario | None = p if isinstance(p, AirborneScenario) else None
+        abd: AnglesBearingsDegreesPayload | None = (
+            p if isinstance(p, AnglesBearingsDegreesPayload) else None
+        )
+        vs: VisualSearchPayload | None = p if isinstance(p, VisualSearchPayload) else None
         dr: DigitRecognitionPayload | None = None
         if p is not None:
             if isinstance(p, DigitRecognitionPayload):
@@ -462,6 +473,10 @@ class CognitiveTestScreen:
 
         if scenario is not None and snap.phase in (Phase.PRACTICE, Phase.SCORED):
             self._render_airborne_question(surface, snap, scenario)
+        elif abd is not None and snap.phase in (Phase.PRACTICE, Phase.SCORED):
+            self._render_angles_bearings_question(surface, snap, abd)
+        elif vs is not None and snap.phase in (Phase.PRACTICE, Phase.SCORED):
+            self._render_visual_search_question(surface, snap, vs)
         else:
             prompt_lines = str(snap.prompt).split("\n")
             y = 140
@@ -491,6 +506,166 @@ class CognitiveTestScreen:
         if not self._engine.can_exit() and snap.phase is Phase.SCORED:
             lock = self._small_font.render("Test in progress: cannot exit.", True, (140, 140, 150))
             surface.blit(lock, (460, surface.get_height() - 60))
+
+    def _render_angles_bearings_question(
+        self,
+        surface: pygame.Surface,
+        snap: TestSnapshot,
+        payload: AnglesBearingsDegreesPayload,
+    ) -> None:
+        w, h = surface.get_size()
+        panel = pygame.Rect(40, 130, w - 80, h - 250)
+        pygame.draw.rect(surface, (18, 18, 26), panel)
+        pygame.draw.rect(surface, (70, 70, 85), panel, 2)
+
+        prompt = self._small_font.render(str(snap.prompt), True, (235, 235, 245))
+        surface.blit(prompt, (panel.x + 16, panel.y + 14))
+
+        if payload.kind is AnglesBearingsQuestionKind.ANGLE_BETWEEN_LINES:
+            self._draw_angle_trial(surface, panel, payload)
+        else:
+            self._draw_bearing_trial(surface, panel, payload)
+
+    def _draw_angle_trial(
+        self,
+        surface: pygame.Surface,
+        panel: pygame.Rect,
+        payload: AnglesBearingsDegreesPayload,
+    ) -> None:
+        cx = panel.centerx
+        cy = panel.centery + 20
+        radius = min(panel.w, panel.h) // 3
+
+        pygame.draw.circle(surface, (35, 35, 48), (cx, cy), radius)
+        pygame.draw.circle(surface, (90, 90, 110), (cx, cy), radius, 2)
+
+        p1 = self._bearing_point(cx, cy, radius, payload.reference_bearing_deg)
+        p2 = self._bearing_point(cx, cy, radius, payload.target_bearing_deg)
+        pygame.draw.line(surface, (235, 235, 245), (cx, cy), p1, 4)
+        pygame.draw.line(surface, (140, 220, 140), (cx, cy), p2, 4)
+        pygame.draw.circle(surface, (235, 235, 245), (cx, cy), 6)
+
+        hint = self._tiny_font.render("Enter the smaller angle in degrees.", True, (150, 150, 165))
+        surface.blit(hint, (panel.x + 16, panel.bottom - 30))
+
+    def _draw_bearing_trial(
+        self,
+        surface: pygame.Surface,
+        panel: pygame.Rect,
+        payload: AnglesBearingsDegreesPayload,
+    ) -> None:
+        cx = panel.centerx
+        cy = panel.centery + 20
+        radius = min(panel.w, panel.h) // 3
+
+        pygame.draw.circle(surface, (35, 35, 48), (cx, cy), radius)
+        pygame.draw.circle(surface, (90, 90, 110), (cx, cy), radius, 2)
+
+        for bearing in (0, 90, 180, 270):
+            end = self._bearing_point(cx, cy, radius, bearing)
+            pygame.draw.line(surface, (70, 70, 85), (cx, cy), end, 1)
+
+        for label, bearing in (("000", 0), ("090", 90), ("180", 180), ("270", 270)):
+            tx, ty = self._bearing_point(cx, cy, radius + 24, bearing)
+            surf = self._tiny_font.render(label, True, (150, 150, 165))
+            rect = surf.get_rect(center=(tx, ty))
+            surface.blit(surf, rect)
+
+        target = self._bearing_point(cx, cy, radius - 8, payload.target_bearing_deg)
+        pygame.draw.line(surface, (140, 220, 140), (cx, cy), target, 4)
+        pygame.draw.circle(surface, (235, 235, 245), target, 6)
+        lbl = self._small_font.render(payload.object_label, True, (235, 235, 245))
+        surface.blit(lbl, (target[0] + 8, target[1] - 12))
+        pygame.draw.circle(surface, (235, 235, 245), (cx, cy), 6)
+
+        hint = self._tiny_font.render("Enter the bearing (000-359).", True, (150, 150, 165))
+        surface.blit(hint, (panel.x + 16, panel.bottom - 30))
+
+    def _render_visual_search_question(
+        self,
+        surface: pygame.Surface,
+        snap: TestSnapshot,
+        payload: VisualSearchPayload,
+    ) -> None:
+        w, h = surface.get_size()
+        panel = pygame.Rect(40, 130, w - 80, h - 250)
+        pygame.draw.rect(surface, (18, 18, 26), panel)
+        pygame.draw.rect(surface, (70, 70, 85), panel, 2)
+
+        prompt = self._small_font.render(str(snap.prompt), True, (235, 235, 245))
+        surface.blit(prompt, (panel.x + 16, panel.y + 14))
+
+        target_box = pygame.Rect(panel.right - 260, panel.y + 8, 244, 54)
+        pygame.draw.rect(surface, (30, 30, 40), target_box)
+        pygame.draw.rect(surface, (90, 90, 110), target_box, 2)
+        surface.blit(
+            self._tiny_font.render("TARGET", True, (150, 150, 165)),
+            (target_box.x + 10, target_box.y + 8),
+        )
+        target_text = self._small_font.render(payload.target, True, (235, 235, 245))
+        surface.blit(target_text, (target_box.x + 10, target_box.y + 24))
+
+        task_kind = payload.kind.value.replace("_", " ").title()
+        kind_text = self._tiny_font.render(task_kind, True, (150, 150, 165))
+        surface.blit(kind_text, (target_box.x + 110, target_box.y + 28))
+
+        grid_rect = pygame.Rect(panel.x + 14, panel.y + 72, panel.w - 28, panel.h - 92)
+        pygame.draw.rect(surface, (12, 12, 18), grid_rect)
+        pygame.draw.rect(surface, (65, 65, 80), grid_rect, 1)
+
+        rows = max(1, int(payload.rows))
+        cols = max(1, int(payload.cols))
+        cell_size = min(max(20, grid_rect.w // cols), max(20, grid_rect.h // rows))
+        grid_w = cols * cell_size
+        grid_h = rows * cell_size
+        start_x = grid_rect.x + max(0, (grid_rect.w - grid_w) // 2)
+        start_y = grid_rect.y + max(0, (grid_rect.h - grid_h) // 2)
+        token_font = pygame.font.Font(None, max(16, min(30, int(cell_size * 0.42))))
+
+        for r in range(rows):
+            for c in range(cols):
+                idx = r * cols + c
+                token = payload.cells[idx] if idx < len(payload.cells) else ""
+                cell = pygame.Rect(start_x + c * cell_size, start_y + r * cell_size, cell_size, cell_size)
+                fill = self._visual_search_cell_color(payload.kind, token)
+                pygame.draw.rect(surface, fill, cell)
+                pygame.draw.rect(surface, (45, 45, 58), cell, 1)
+
+                luminance = (fill[0] * 299 + fill[1] * 587 + fill[2] * 114) / 1000
+                text_color = (20, 20, 24) if luminance > 145 else (235, 235, 245)
+                token_surface = token_font.render(str(token), True, text_color)
+                token_rect = token_surface.get_rect(center=cell.center)
+                surface.blit(token_surface, token_rect)
+
+    def _visual_search_cell_color(
+        self, kind: VisualSearchTaskKind, token: str
+    ) -> tuple[int, int, int]:
+        if kind is VisualSearchTaskKind.COLOR_PATTERN:
+            return self._color_pattern_cell_color(token)
+        if kind is VisualSearchTaskKind.WARNING_SIGN:
+            return (65, 46, 40)
+        if kind is VisualSearchTaskKind.SYMBOL_CODE:
+            return (40, 50, 64)
+        return (40, 40, 56)
+
+    def _color_pattern_cell_color(self, token: str) -> tuple[int, int, int]:
+        palette = {
+            "R": (200, 70, 70),
+            "G": (70, 180, 100),
+            "B": (80, 110, 200),
+            "Y": (210, 190, 80),
+            "W": (220, 220, 220),
+        }
+        t = str(token)
+        c1 = palette.get(t[0], (90, 90, 110)) if len(t) >= 1 else (90, 90, 110)
+        c2 = palette.get(t[1], c1) if len(t) >= 2 else c1
+        return ((c1[0] + c2[0]) // 2, (c1[1] + c2[1]) // 2, (c1[2] + c2[2]) // 2)
+
+    def _bearing_point(self, cx: int, cy: int, radius: int, bearing_deg: int) -> tuple[int, int]:
+        rad = math.radians(float(bearing_deg))
+        x = int(round(cx + math.sin(rad) * radius))
+        y = int(round(cy - math.cos(rad) * radius))
+        return x, y
 
     def _render_airborne_question(self, surface: pygame.Surface, snap: TestSnapshot, scenario: AirborneScenario) -> None:
         # Layout: menu on left, map, bottom table, answer/timer on the right.
@@ -888,6 +1063,7 @@ def run(*, max_frames: int | None = None, event_injector: Callable[[int], None] 
                 engine_factory=lambda: build_math_reasoning_test(clock=real_clock, seed=seed, difficulty=0.5),
             )
         )
+
     def open_digit_recognition() -> None:
         seed = _new_seed()
         app.push(
@@ -896,6 +1072,33 @@ def run(*, max_frames: int | None = None, event_injector: Callable[[int], None] 
                 engine_factory=lambda: build_digit_recognition_test(clock=real_clock, seed=seed, difficulty=0.5),
             )
         )
+
+    def open_angles_bearings_degrees() -> None:
+        seed = _new_seed()
+        app.push(
+            CognitiveTestScreen(
+                app,
+                engine_factory=lambda: build_angles_bearings_degrees_test(
+                    clock=real_clock,
+                    seed=seed,
+                    difficulty=0.5,
+                ),
+            )
+        )
+
+    def open_visual_search() -> None:
+        seed = _new_seed()
+        app.push(
+            CognitiveTestScreen(
+                app,
+                engine_factory=lambda: build_visual_search_test(
+                    clock=real_clock,
+                    seed=seed,
+                    difficulty=0.5,
+                ),
+            )
+        )
+
     tests_menu = MenuScreen(
         app,
         "Tests",
@@ -904,6 +1107,8 @@ def run(*, max_frames: int | None = None, event_injector: Callable[[int], None] 
             MenuItem("Mathematics Reasoning", open_math_reasoning),
             MenuItem("Airborne Numerical Test", open_airborne_numerical),
             MenuItem("Digit Recognition", open_digit_recognition),
+            MenuItem("Angles, Bearings and Degrees", open_angles_bearings_degrees),
+            MenuItem("Visual Search (Target Recognition)", open_visual_search),
             MenuItem("Back", app.pop),
         ],
     )
