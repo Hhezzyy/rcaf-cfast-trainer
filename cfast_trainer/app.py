@@ -292,6 +292,9 @@ class CognitiveTestScreen:
         self._air_overlay: str | None = None  # "intro" | "fuel" | "parcel"
         self._air_show_distances = False
 
+        # Cached procedural sprites for Instrument Comprehension dials.
+        self._instrument_sprite_cache: dict[tuple[object, ...], pygame.Surface] = {}
+
     def handle_event(self, event: pygame.event.Event) -> None:
         snap = self._engine.snapshot()
         p = snap.payload
@@ -1414,49 +1417,12 @@ class CognitiveTestScreen:
     ) -> None:
         panel_bg = (36, 40, 50)
         panel_border = (170, 184, 212)
-        text_main = (236, 244, 255)
-        text_muted = (184, 200, 224)
 
         pygame.draw.rect(surface, panel_bg, rect)
         pygame.draw.rect(surface, panel_border, rect, 1)
         inner = rect.inflate(-8, -8)
 
-        if compact:
-            gap = 6
-            top_h = max(44, int(inner.h * 0.70))
-            top = pygame.Rect(inner.x, inner.y, inner.w, top_h)
-            info = pygame.Rect(inner.x, top.bottom + 4, inner.w, inner.bottom - top.bottom - 4)
-
-            dial_size = max(30, min(top.h, (top.w - gap * 2) // 3))
-            start_x = top.x + (top.w - (dial_size * 3 + gap * 2)) // 2
-            y = top.y + (top.h - dial_size) // 2
-
-            speed_rect = pygame.Rect(start_x, y, dial_size, dial_size)
-            att_rect = pygame.Rect(speed_rect.right + gap, y, dial_size, dial_size)
-            heading_rect = pygame.Rect(att_rect.right + gap, y, dial_size, dial_size)
-
-            self._draw_speed_dial(surface, speed_rect, state.speed_kts)
-            self._draw_attitude_dial(surface, att_rect, bank_deg=state.bank_deg, pitch_deg=state.pitch_deg)
-            self._draw_heading_dial(surface, heading_rect, state.heading_deg)
-
-            pygame.draw.rect(surface, (24, 28, 36), info)
-            pygame.draw.rect(surface, panel_border, info, 1)
-            surface.blit(
-                self._tiny_font.render(f"ALT {state.altitude_ft:04d}", True, text_main),
-                (info.x + 6, info.y + 2),
-            )
-            surface.blit(
-                self._tiny_font.render(f"VS {state.vertical_rate_fpm:+04d}", True, text_muted),
-                (info.x + info.w // 2 - 26, info.y + 2),
-            )
-            slip_text = "BAL" if state.slip == 0 else "SLIP L" if state.slip < 0 else "SLIP R"
-            surface.blit(
-                self._tiny_font.render(slip_text, True, text_muted),
-                (info.right - 56, info.y + 2),
-            )
-            return
-
-        gap = 8
+        gap = 5 if compact else 8
         cols = 3
         rows = 2
         cell_w = max(46, (inner.w - gap * (cols - 1)) // cols)
@@ -1489,10 +1455,8 @@ class CognitiveTestScreen:
         vertical_rate_fpm: int,
         slip: int,
     ) -> None:
+        _ = slip
         self._draw_scalar_dial(surface, rect, "V/S", int(vertical_rate_fpm), vmin=-2000, vmax=2000)
-        slip_text = "BAL" if int(slip) == 0 else "SLIP L" if int(slip) < 0 else "SLIP R"
-        t = self._tiny_font.render(slip_text, True, (184, 200, 224))
-        surface.blit(t, t.get_rect(center=(rect.centerx, rect.bottom - 10)))
 
     def _draw_scalar_dial(
         self,
@@ -1504,39 +1468,64 @@ class CognitiveTestScreen:
         vmin: int,
         vmax: int,
     ) -> None:
-        cx = rect.centerx
-        cy = rect.centery
-        radius = max(12, min(rect.w, rect.h) // 2 - 5)
-        pygame.draw.circle(surface, (20, 24, 33), (cx, cy), radius)
-        pygame.draw.circle(surface, (152, 166, 194), (cx, cy), radius, 2)
-        pygame.draw.circle(surface, (10, 12, 18), (cx, cy), max(8, radius - 4), 1)
+        dial_rect, cx, cy, _, face_r = self._dial_geometry(rect)
+        size = dial_rect.w
 
-        for idx in range(11):
-            t_tick = idx / 10.0
-            ang_tick = math.radians(-140.0 + 280.0 * t_tick)
-            outer_r = radius - 2
-            inner_r = radius - (9 if idx % 2 == 0 else 6)
-            ox = int(round(cx + math.cos(ang_tick) * outer_r))
-            oy = int(round(cy + math.sin(ang_tick) * outer_r))
-            ix = int(round(cx + math.cos(ang_tick) * inner_r))
-            iy = int(round(cy + math.sin(ang_tick) * inner_r))
-            pygame.draw.line(surface, (180, 194, 220), (ix, iy), (ox, oy), 1)
+        def build_base() -> pygame.Surface:
+            base = pygame.Surface((size, size), pygame.SRCALPHA)
+            c = size // 2
+            outer_r = size // 2 - 1
+            inner_ring = max(10, outer_r - 6)
+
+            pygame.draw.circle(base, (198, 204, 214), (c, c), outer_r)
+            pygame.draw.circle(base, (86, 96, 116), (c, c), outer_r, 2)
+            pygame.draw.circle(base, (0, 0, 0), (c, c), inner_ring)
+            pygame.draw.circle(base, (32, 38, 52), (c, c), inner_ring, 1)
+
+            for idx in range(36):
+                ang = math.radians(-130.0 + (260.0 / 35.0) * idx)
+                outer = inner_ring - 1
+                inner = inner_ring - (9 if idx % 6 == 0 else 5)
+                ox = int(round(c + math.cos(ang) * outer))
+                oy = int(round(c + math.sin(ang) * outer))
+                ix = int(round(c + math.cos(ang) * inner))
+                iy = int(round(c + math.sin(ang) * inner))
+                pygame.draw.line(base, (188, 196, 212), (ix, iy), (ox, oy), 1)
+
+            if size >= 64:
+                for idx in range(6):
+                    t = idx / 5.0
+                    raw_v = int(round(float(vmin) + float(vmax - vmin) * t))
+                    label = self._format_scalar_tick(title, raw_v)
+                    ang = math.radians(-130.0 + 260.0 * t)
+                    tx = int(round(c + math.cos(ang) * (inner_ring - 16)))
+                    ty = int(round(c + math.sin(ang) * (inner_ring - 16)))
+                    label_surf = self._tiny_font.render(label, True, (226, 232, 244))
+                    base.blit(label_surf, label_surf.get_rect(center=(tx, ty)))
+
+            title_surf = self._tiny_font.render(title, True, (166, 180, 206))
+            base.blit(title_surf, title_surf.get_rect(center=(c, c - inner_ring + 12)))
+            return base
+
+        key = ("scalar_base", size, title, int(vmin), int(vmax))
+        surface.blit(self._get_instrument_sprite(key, build_base), dial_rect.topleft)
 
         t = (float(value) - float(vmin)) / max(1.0, float(vmax - vmin))
         t = 0.0 if t < 0.0 else 1.0 if t > 1.0 else t
-        ang = math.radians(-140.0 + 280.0 * t)
-        nx = int(round(cx + math.cos(ang) * (radius - 10)))
-        ny = int(round(cy + math.sin(ang) * (radius - 10)))
-        pygame.draw.line(surface, (245, 250, 255), (cx, cy), (nx, ny), 3)
-        pygame.draw.circle(surface, (245, 250, 255), (cx, cy), 3)
+        ang = math.radians(-130.0 + 260.0 * t)
+        needle_len = max(6, face_r - 10)
+        tip = (
+            int(round(cx + math.cos(ang) * needle_len)),
+            int(round(cy + math.sin(ang) * needle_len)),
+        )
+        tail = (
+            int(round(cx - math.cos(ang) * max(5, face_r * 0.16))),
+            int(round(cy - math.sin(ang) * max(5, face_r * 0.16))),
+        )
+        pygame.draw.line(surface, (246, 248, 252), tail, tip, 4 if size >= 84 else 3)
+        pygame.draw.circle(surface, (10, 10, 12), (cx, cy), max(2, size // 18))
+        pygame.draw.circle(surface, (246, 248, 252), (cx, cy), max(1, size // 24))
 
-        title_s = self._tiny_font.render(title, True, (184, 200, 224))
-        title_rect = title_s.get_rect(center=(cx, cy - radius + 10))
-        surface.blit(title_s, title_rect)
-
-        value_s = self._tiny_font.render(str(value), True, (236, 244, 255))
-        value_rect = value_s.get_rect(center=(cx, cy + radius - 10))
-        surface.blit(value_s, value_rect)
 
     def _draw_attitude_dial(
         self,
@@ -1546,74 +1535,150 @@ class CognitiveTestScreen:
         bank_deg: int,
         pitch_deg: int,
     ) -> None:
-        cx = rect.centerx
-        cy = rect.centery
-        radius = max(12, min(rect.w, rect.h) // 2 - 5)
-        pygame.draw.circle(surface, (20, 24, 33), (cx, cy), radius)
-        pygame.draw.circle(surface, (152, 166, 194), (cx, cy), radius, 2)
+        dial_rect, _, _, _, face_r = self._dial_geometry(rect)
+        size = dial_rect.w
 
-        # Sky/ground split line controlled by pitch + bank.
+        # Dynamic horizon/pitch ladder layer.
+        horizon_side = max(size * 3, 96)
+        horizon = pygame.Surface((horizon_side, horizon_side), pygame.SRCALPHA)
+        hc = horizon_side // 2
         pitch = max(-20.0, min(20.0, float(pitch_deg)))
-        pitch_px = int(round((-pitch / 20.0) * (radius * 0.55)))
-        rad = math.radians(float(bank_deg))
-        dx = math.cos(rad) * (radius + 10)
-        dy = math.sin(rad) * (radius + 10)
-        x1 = int(round(cx - dx))
-        y1 = int(round(cy + pitch_px - dy))
-        x2 = int(round(cx + dx))
-        y2 = int(round(cy + pitch_px + dy))
-
-        pygame.draw.circle(surface, (56, 158, 230), (cx, cy), radius - 2)
-        ground_poly = [
-            (x1, y1),
-            (x2, y2),
-            (cx + radius + 14, cy + radius + 14),
-            (cx - radius - 14, cy + radius + 14),
-        ]
-        pygame.draw.polygon(surface, (170, 106, 44), ground_poly)
-        pygame.draw.line(surface, (246, 246, 248), (x1, y1), (x2, y2), 2)
-        pygame.draw.line(surface, (244, 246, 255), (cx - 14, cy), (cx + 14, cy), 2)
-        pygame.draw.circle(surface, (244, 246, 255), (cx, cy), 3)
-
-        # Fixed bank marker and index.
-        marker_top = (cx, cy - radius + 3)
-        pygame.draw.polygon(
-            surface,
-            (244, 246, 255),
-            [(marker_top[0], marker_top[1]), (marker_top[0] - 4, marker_top[1] + 7), (marker_top[0] + 4, marker_top[1] + 7)],
+        horizon_y = hc + int(round((pitch / 20.0) * (face_r * 0.90)))
+        sky = (30, 176, 238)
+        ground = (174, 108, 36)
+        pygame.draw.rect(horizon, sky, pygame.Rect(0, 0, horizon_side, horizon_y))
+        pygame.draw.rect(
+            horizon,
+            ground,
+            pygame.Rect(0, horizon_y, horizon_side, max(0, horizon_side - horizon_y)),
         )
+        pygame.draw.line(horizon, (246, 246, 248), (0, horizon_y), (horizon_side, horizon_y), 3)
+
+        for mark in (-15, -10, -5, 5, 10, 15):
+            y = horizon_y - int(round((mark / 20.0) * (face_r * 0.90)))
+            half = int(round(face_r * (0.45 if mark % 10 == 0 else 0.30)))
+            pygame.draw.line(horizon, (242, 244, 248), (hc - half, y), (hc + half, y), 2)
+
+        rotated = pygame.transform.rotozoom(horizon, -float(bank_deg), 1.0)
+        self._draw_circular_layer(surface, dial_rect, rotated, radius=face_r - 1)
+
+        def build_overlay() -> pygame.Surface:
+            overlay = pygame.Surface((size, size), pygame.SRCALPHA)
+            c = size // 2
+            outer_r = size // 2 - 1
+            inner_ring = max(10, outer_r - 6)
+            rim_w = max(3, outer_r - inner_ring + 1)
+
+            # Draw only the bezel/rim so the dynamic horizon remains visible.
+            pygame.draw.circle(overlay, (198, 204, 214), (c, c), outer_r, rim_w)
+            pygame.draw.circle(overlay, (86, 96, 116), (c, c), outer_r, 2)
+            pygame.draw.circle(overlay, (24, 30, 44), (c, c), inner_ring, 2)
+
+            for deg in (-60, -45, -30, -20, -10, 0, 10, 20, 30, 45, 60):
+                rad = math.radians(float(deg - 90))
+                outer = inner_ring - 1
+                inner = inner_ring - (9 if deg % 30 == 0 else 6)
+                ox = int(round(c + math.cos(rad) * outer))
+                oy = int(round(c + math.sin(rad) * outer))
+                ix = int(round(c + math.cos(rad) * inner))
+                iy = int(round(c + math.sin(rad) * inner))
+                pygame.draw.line(overlay, (204, 214, 230), (ix, iy), (ox, oy), 1)
+
+            # Fixed airplane cue.
+            wing_y = c + int(round(inner_ring * 0.10))
+            wing_half = max(8, int(round(inner_ring * 0.35)))
+            pygame.draw.line(overlay, (248, 250, 255), (c - wing_half, wing_y), (c + wing_half, wing_y), 3)
+            pygame.draw.line(overlay, (248, 250, 255), (c, wing_y - 6), (c, wing_y + 6), 2)
+
+            cue = [
+                (c - int(inner_ring * 0.42), c + int(inner_ring * 0.10)),
+                (c - int(inner_ring * 0.26), c + int(inner_ring * 0.23)),
+                (c - int(inner_ring * 0.14), c + int(inner_ring * 0.08)),
+                (c, c + int(inner_ring * 0.22)),
+                (c + int(inner_ring * 0.14), c + int(inner_ring * 0.08)),
+                (c + int(inner_ring * 0.26), c + int(inner_ring * 0.23)),
+                (c + int(inner_ring * 0.42), c + int(inner_ring * 0.10)),
+            ]
+            pygame.draw.lines(overlay, (242, 244, 248), False, cue, 2)
+            return overlay
+
+        overlay_key = ("attitude_overlay", size)
+        surface.blit(self._get_instrument_sprite(overlay_key, build_overlay), dial_rect.topleft)
 
     def _draw_heading_dial(self, surface: pygame.Surface, rect: pygame.Rect, heading_deg: int) -> None:
-        cx = rect.centerx
-        cy = rect.centery
-        radius = max(12, min(rect.w, rect.h) // 2 - 5)
-        pygame.draw.circle(surface, (20, 24, 33), (cx, cy), radius)
-        pygame.draw.circle(surface, (152, 166, 194), (cx, cy), radius, 2)
+        dial_rect, cx, cy, _, face_r = self._dial_geometry(rect)
+        size = dial_rect.w
 
-        for ang_deg in range(0, 360, 30):
-            rad = math.radians(float(ang_deg))
-            outer_r = radius - 2
-            inner_r = radius - (9 if ang_deg % 90 == 0 else 6)
-            ox = int(round(cx + math.sin(rad) * outer_r))
-            oy = int(round(cy - math.cos(rad) * outer_r))
-            ix = int(round(cx + math.sin(rad) * inner_r))
-            iy = int(round(cy - math.cos(rad) * inner_r))
-            pygame.draw.line(surface, (180, 194, 220), (ix, iy), (ox, oy), 1)
+        def build_base() -> pygame.Surface:
+            base = pygame.Surface((size, size), pygame.SRCALPHA)
+            c = size // 2
+            outer_r = size // 2 - 1
+            inner_ring = max(10, outer_r - 6)
 
-        for label, ang_deg in (("N", 0), ("E", 90), ("S", 180), ("W", 270)):
-            rad = math.radians(float(ang_deg))
-            tx = int(round(cx + math.sin(rad) * (radius - 14)))
-            ty = int(round(cy - math.cos(rad) * (radius - 14)))
-            label_surf = self._tiny_font.render(label, True, (236, 244, 255))
-            surface.blit(label_surf, label_surf.get_rect(center=(tx, ty)))
+            pygame.draw.circle(base, (198, 204, 214), (c, c), outer_r)
+            pygame.draw.circle(base, (86, 96, 116), (c, c), outer_r, 2)
+            pygame.draw.circle(base, (0, 0, 0), (c, c), inner_ring)
+            pygame.draw.circle(base, (32, 38, 52), (c, c), inner_ring, 1)
 
-        rad_h = math.radians(float(int(heading_deg) % 360))
-        hx = int(round(cx + math.sin(rad_h) * (radius - 10)))
-        hy = int(round(cy - math.cos(rad_h) * (radius - 10)))
-        pygame.draw.line(surface, (132, 226, 146), (cx, cy), (hx, hy), 3)
-        pygame.draw.circle(surface, (245, 250, 255), (cx, cy), 3)
-        tag = self._tiny_font.render(f"{int(heading_deg) % 360:03d}", True, (184, 200, 224))
-        surface.blit(tag, tag.get_rect(center=(cx, rect.bottom - 10)))
+            for deg in range(0, 360, 15):
+                rad = math.radians(float(deg - 90))
+                outer = inner_ring - 1
+                inner = inner_ring - (10 if deg % 90 == 0 else 6)
+                ox = int(round(c + math.cos(rad) * outer))
+                oy = int(round(c + math.sin(rad) * outer))
+                ix = int(round(c + math.cos(rad) * inner))
+                iy = int(round(c + math.sin(rad) * inner))
+                pygame.draw.line(base, (192, 202, 220), (ix, iy), (ox, oy), 1)
+
+            for label, deg in (("N", 0), ("E", 90), ("S", 180), ("W", 270)):
+                rad = math.radians(float(deg - 90))
+                tx = int(round(c + math.cos(rad) * (inner_ring - 18)))
+                ty = int(round(c + math.sin(rad) * (inner_ring - 18)))
+                label_font = self._small_font if size >= 88 else self._tiny_font
+                surf = label_font.render(label, True, (236, 244, 255))
+                base.blit(surf, surf.get_rect(center=(tx, ty)))
+            return base
+
+        base_key = ("heading_base", size)
+        surface.blit(self._get_instrument_sprite(base_key, build_base), dial_rect.topleft)
+
+        def build_aircraft_icon() -> pygame.Surface:
+            icon = pygame.Surface((size, size), pygame.SRCALPHA)
+            c = size // 2
+            wing = max(7, int(round(face_r * 0.40)))
+            body = max(12, int(round(face_r * 0.82)))
+            aircraft = [
+                (c, c - body),
+                (c + 4, c - body + 8),
+                (c + 4, c - 4),
+                (c + wing, c - 1),
+                (c + wing, c + 3),
+                (c + 4, c + 2),
+                (c + 4, c + body - 10),
+                (c + 9, c + body - 2),
+                (c + 9, c + body + 2),
+                (c + 3, c + body),
+                (c - 3, c + body),
+                (c - 9, c + body + 2),
+                (c - 9, c + body - 2),
+                (c - 4, c + body - 10),
+                (c - 4, c + 2),
+                (c - wing, c + 3),
+                (c - wing, c - 1),
+                (c - 4, c - 4),
+                (c - 4, c - body + 8),
+            ]
+            pygame.draw.polygon(icon, (245, 248, 255), aircraft)
+            arrow = [(c, c - body - 12), (c - 5, c - body - 2), (c + 5, c - body - 2)]
+            pygame.draw.polygon(icon, (245, 248, 255), arrow)
+            return icon
+
+        icon_key = ("heading_icon", size)
+        icon = self._get_instrument_sprite(icon_key, build_aircraft_icon)
+        rotation = -float(int(heading_deg) % 360)
+        rot_icon = pygame.transform.rotozoom(icon, rotation, 1.0)
+        surface.blit(rot_icon, rot_icon.get_rect(center=(cx, cy)))
+
 
     def _draw_slip_indicator(
         self,
@@ -1623,35 +1688,109 @@ class CognitiveTestScreen:
         bank_deg: int,
         slip: int,
     ) -> None:
-        panel_bg = (20, 24, 33)
-        border = (152, 166, 194)
-        text_main = (236, 244, 255)
-        text_muted = (184, 200, 224)
+        dial_rect, cx, cy, _, face_r = self._dial_geometry(rect)
+        size = dial_rect.w
 
-        pygame.draw.rect(surface, panel_bg, rect)
-        pygame.draw.rect(surface, border, rect, 2)
+        def build_base() -> pygame.Surface:
+            base = pygame.Surface((size, size), pygame.SRCALPHA)
+            c = size // 2
+            outer_r = size // 2 - 1
+            inner_ring = max(10, outer_r - 6)
 
-        title = self._tiny_font.render("SLIP / TURN", True, text_muted)
-        surface.blit(title, title.get_rect(midtop=(rect.centerx, rect.y + 6)))
+            pygame.draw.circle(base, (198, 204, 214), (c, c), outer_r)
+            pygame.draw.circle(base, (86, 96, 116), (c, c), outer_r, 2)
+            pygame.draw.circle(base, (0, 0, 0), (c, c), inner_ring)
+            pygame.draw.circle(base, (32, 38, 52), (c, c), inner_ring, 1)
 
-        track = pygame.Rect(rect.x + 10, rect.centery - 6, rect.w - 20, 12)
-        pygame.draw.rect(surface, (8, 12, 20), track)
-        pygame.draw.rect(surface, border, track, 1)
-        pygame.draw.line(surface, text_muted, (track.centerx, track.y), (track.centerx, track.bottom), 1)
+            for deg in (-60, -45, -30, -15, 0, 15, 30, 45, 60):
+                rad = math.radians(float(deg - 90))
+                outer = inner_ring - 1
+                inner = inner_ring - (9 if deg % 30 == 0 else 6)
+                ox = int(round(c + math.cos(rad) * outer))
+                oy = int(round(c + math.sin(rad) * outer))
+                ix = int(round(c + math.cos(rad) * inner))
+                iy = int(round(c + math.sin(rad) * inner))
+                pygame.draw.line(base, (192, 202, 220), (ix, iy), (ox, oy), 1)
 
-        max_offset = max(1, track.w // 2 - 8)
+            left = self._tiny_font.render("L", True, (236, 244, 255))
+            right = self._tiny_font.render("R", True, (236, 244, 255))
+            base.blit(left, left.get_rect(center=(c - int(inner_ring * 0.55), c - int(inner_ring * 0.22))))
+            base.blit(right, right.get_rect(center=(c + int(inner_ring * 0.55), c - int(inner_ring * 0.22))))
+            return base
+
+        base_key = ("slip_base", size)
+        surface.blit(self._get_instrument_sprite(base_key, build_base), dial_rect.topleft)
+
+        bank_norm = max(-1.0, min(1.0, float(bank_deg) / 35.0))
+        angle = math.radians(-90.0 + bank_norm * 58.0)
+        pointer_len = max(6, face_r - 8)
+        tip = (
+            int(round(cx + math.cos(angle) * pointer_len)),
+            int(round(cy + math.sin(angle) * pointer_len)),
+        )
+        pygame.draw.line(surface, (246, 248, 252), (cx, cy), tip, 4 if size >= 84 else 3)
+        pygame.draw.circle(surface, (246, 248, 252), (cx, cy), max(2, size // 24))
+
+        tube_w = min(dial_rect.w - 8, max(14, int(round(face_r * 1.40))))
+        tube_h = max(7, int(round(face_r * 0.46)))
+        track = pygame.Rect(0, 0, tube_w, tube_h)
+        track.centerx = cx
+        track.centery = cy + int(round(face_r * 0.62))
+        pygame.draw.rect(surface, (8, 10, 16), track)
+        pygame.draw.rect(surface, (130, 146, 176), track, 1)
+        pygame.draw.line(surface, (172, 184, 208), (track.centerx, track.y), (track.centerx, track.bottom), 1)
+
+        ball_r = max(2, min(4, tube_h // 2 - 1))
+        max_offset = max(1, track.w // 2 - ball_r - 2)
         offset = int(max(-1, min(1, int(slip))) * max_offset)
         ball_center = (track.centerx + offset, track.centery)
-        pygame.draw.circle(surface, text_main, ball_center, 4)
+        pygame.draw.circle(surface, (244, 248, 255), ball_center, ball_r)
+        pygame.draw.circle(surface, (120, 132, 156), ball_center, 1)
 
-        bank = max(-45.0, min(45.0, float(bank_deg)))
-        arrow_len = max(12, rect.w // 5)
-        ax = rect.centerx
-        ay = rect.bottom - 12
-        ax2 = int(round(ax + math.sin(math.radians(bank)) * arrow_len))
-        ay2 = int(round(ay - math.cos(math.radians(bank)) * arrow_len * 0.5))
-        pygame.draw.line(surface, (132, 226, 146), (ax, ay), (ax2, ay2), 2)
-        pygame.draw.circle(surface, (132, 226, 146), (ax, ay), 2)
+    def _dial_geometry(self, rect: pygame.Rect) -> tuple[pygame.Rect, int, int, int, int]:
+        size = max(24, min(rect.w, rect.h))
+        dial_rect = pygame.Rect(0, 0, size, size)
+        dial_rect.center = rect.center
+        cx = dial_rect.centerx
+        cy = dial_rect.centery
+        outer_r = size // 2 - 1
+        face_r = max(8, outer_r - 7)
+        return dial_rect, cx, cy, outer_r, face_r
+
+    def _format_scalar_tick(self, title: str, value: int) -> str:
+        if title == "ALT":
+            return str((abs(int(value)) // 1000) % 10)
+        if title == "V/S":
+            v = int(round(float(value) / 1000.0))
+            return "0" if v == 0 else f"{v:+d}"
+        return str(int(value))
+
+    def _get_instrument_sprite(
+        self,
+        key: tuple[object, ...],
+        builder: Callable[[], pygame.Surface],
+    ) -> pygame.Surface:
+        cached = self._instrument_sprite_cache.get(key)
+        if cached is not None:
+            return cached
+        built = builder()
+        self._instrument_sprite_cache[key] = built
+        return built
+
+    def _draw_circular_layer(
+        self,
+        surface: pygame.Surface,
+        dial_rect: pygame.Rect,
+        layer: pygame.Surface,
+        *,
+        radius: int,
+    ) -> None:
+        face = pygame.Surface(dial_rect.size, pygame.SRCALPHA)
+        face.blit(layer, layer.get_rect(center=(dial_rect.w // 2, dial_rect.h // 2)))
+        mask = pygame.Surface(dial_rect.size, pygame.SRCALPHA)
+        pygame.draw.circle(mask, (255, 255, 255, 255), (dial_rect.w // 2, dial_rect.h // 2), max(1, radius))
+        face.blit(mask, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
+        surface.blit(face, dial_rect.topleft)
 
     def _draw_aircraft_orientation_card(
         self,
@@ -1661,99 +1800,167 @@ class CognitiveTestScreen:
     ) -> None:
         panel_bg = (30, 34, 44)
         border = (170, 184, 212)
-        text_main = (236, 244, 255)
 
         pygame.draw.rect(surface, panel_bg, rect)
+        pitch = max(-20.0, min(20.0, float(state.pitch_deg)))
+        bank = max(-45.0, min(45.0, float(state.bank_deg)))
+        heading = float(int(state.heading_deg) % 360)
+
+        pitch_norm = pitch / 20.0
+        bank_norm = bank / 45.0
+        horizon_y = rect.centery + int(round(-pitch_norm * rect.h * 0.22))
+        slope = int(round(bank_norm * rect.h * 0.28))
+        left = (rect.x - 2, horizon_y + slope)
+        right = (rect.right + 2, horizon_y - slope)
+        sky_poly = [rect.topleft, rect.topright, right, left]
+        ground_poly = [left, right, rect.bottomright, rect.bottomleft]
+        pygame.draw.polygon(surface, (36, 150, 232), sky_poly)
+        pygame.draw.polygon(surface, (24, 102, 60), ground_poly)
         pygame.draw.rect(surface, border, rect, 1)
 
-        # Simple horizon bands make pitch changes easier to detect at a glance.
-        upper = pygame.Rect(rect.x + 1, rect.y + 1, rect.w - 2, rect.h // 2)
-        lower = pygame.Rect(rect.x + 1, upper.bottom, rect.w - 2, rect.h - upper.h - 1)
-        pygame.draw.rect(surface, (68, 120, 176), upper)
-        pygame.draw.rect(surface, (110, 116, 124), lower)
-
         cx = rect.centerx
-        cy = rect.centery + int(round(-float(state.pitch_deg) * 1.6))
-        size = max(10.0, float(min(rect.w, rect.h)) * 0.12)
-        bank = max(-40.0, min(40.0, float(state.bank_deg)))
-        wing_drop = (bank / 40.0) * size * 0.8
-        angle = math.radians(float(int(state.heading_deg) % 360))
+        cy = rect.centery + int(round(rect.h * 0.05))
+        scale = max(9.0, float(min(rect.w, rect.h)) * 0.16)
 
         fuselage = [
-            (0.00 * size, -3.10 * size),
-            (0.55 * size, -2.00 * size),
-            (0.68 * size, 1.80 * size),
-            (0.00 * size, 2.90 * size),
-            (-0.68 * size, 1.80 * size),
-            (-0.55 * size, -2.00 * size),
+            (0.00, 2.90, 0.00),
+            (0.40, 1.90, 0.24),
+            (0.52, -1.95, 0.16),
+            (0.00, -2.70, 0.10),
+            (-0.52, -1.95, 0.16),
+            (-0.40, 1.90, 0.24),
         ]
         wings = [
-            (-3.10 * size, 0.15 * size + wing_drop),
-            (-0.85 * size, -0.50 * size),
-            (-0.65 * size, 0.45 * size),
-            (0.65 * size, 0.45 * size),
-            (0.85 * size, -0.50 * size),
-            (3.10 * size, 0.15 * size - wing_drop),
-            (2.70 * size, 0.95 * size - wing_drop),
-            (0.85 * size, 0.45 * size),
-            (-0.85 * size, 0.45 * size),
-            (-2.70 * size, 0.95 * size + wing_drop),
+            (-2.70, 0.10, 0.02),
+            (-0.60, 0.52, 0.10),
+            (0.60, 0.52, 0.10),
+            (2.70, 0.10, 0.02),
+            (1.85, -0.35, -0.04),
+            (-1.85, -0.35, -0.04),
         ]
-        tail = [
-            (0.00 * size, 2.00 * size),
-            (0.60 * size, 3.05 * size),
-            (0.00 * size, 3.40 * size),
-            (-0.60 * size, 3.05 * size),
+        tailplane = [
+            (-1.20, -1.98, 0.06),
+            (-0.22, -1.76, 0.10),
+            (0.22, -1.76, 0.10),
+            (1.20, -1.98, 0.06),
+            (0.65, -2.34, 0.02),
+            (-0.65, -2.34, 0.02),
         ]
-        cockpit_center = (0.00 * size, -1.85 * size)
-        gear_left = (-0.85 * size, 1.15 * size)
-        gear_right = (0.85 * size, 1.15 * size)
+        fin = [
+            (0.00, -2.20, 0.10),
+            (0.00, -1.44, 1.12),
+            (0.24, -2.02, 0.28),
+            (-0.24, -2.02, 0.28),
+        ]
+        canopy = [(-0.20, 1.78, 0.34), (0.20, 1.78, 0.34), (0.16, 1.18, 0.44), (-0.16, 1.18, 0.44)]
 
-        fuselage_pts = self._translate_points(fuselage, cx=cx, cy=cy, angle_rad=angle)
-        wing_pts = self._translate_points(wings, cx=cx, cy=cy, angle_rad=angle)
-        tail_pts = self._translate_points(tail, cx=cx, cy=cy, angle_rad=angle)
-        cockpit = self._rotate_point(cockpit_center[0], cockpit_center[1], angle)
-        left_gear = self._rotate_point(gear_left[0], gear_left[1], angle)
-        right_gear = self._rotate_point(gear_right[0], gear_right[1], angle)
+        parts: list[
+            tuple[str, list[tuple[float, float, float]], tuple[int, int, int], tuple[int, int, int]]
+        ] = [
+            ("wings", wings, (214, 52, 56), (236, 86, 90)),
+            ("tailplane", tailplane, (206, 50, 54), (232, 82, 86)),
+            ("fuselage", fuselage, (220, 58, 62), (244, 96, 100)),
+            ("fin", fin, (198, 44, 50), (226, 78, 84)),
+            ("canopy", canopy, (156, 226, 232), (104, 188, 208)),
+        ]
 
-        pygame.draw.polygon(surface, (214, 52, 56), wing_pts)
-        pygame.draw.polygon(surface, (236, 84, 84), wing_pts, 1)
-        pygame.draw.polygon(surface, (214, 52, 56), fuselage_pts)
-        pygame.draw.polygon(surface, (236, 84, 84), fuselage_pts, 1)
-        pygame.draw.polygon(surface, (214, 52, 56), tail_pts)
-        pygame.draw.polygon(surface, (236, 84, 84), tail_pts, 1)
+        projected_parts: list[
+            tuple[float, list[tuple[int, int]], tuple[int, int, int], tuple[int, int, int]]
+        ] = []
+        for _, local_pts, fill_color, edge_color in parts:
+            depth_total = 0.0
+            pts_2d: list[tuple[int, int]] = []
+            for pt in local_pts:
+                rot = self._rotate_aircraft_point(
+                    pt,
+                    heading_deg=heading,
+                    pitch_deg=pitch,
+                    bank_deg=bank,
+                )
+                sx, sy, depth = self._project_aircraft_point(rot, cx=cx, cy=cy, scale=scale)
+                pts_2d.append((sx, sy))
+                depth_total += depth
+            avg_depth = depth_total / float(max(1, len(local_pts)))
+            projected_parts.append((avg_depth, pts_2d, fill_color, edge_color))
 
-        cockpit_pos = (int(round(cx + cockpit[0])), int(round(cy + cockpit[1])))
-        pygame.draw.circle(surface, (250, 246, 255), cockpit_pos, max(2, int(size * 0.25)))
+        # Draw far geometry first.
+        for _, pts_2d, fill_color, edge_color in sorted(projected_parts, key=lambda t: t[0], reverse=True):
+            pygame.draw.polygon(surface, fill_color, pts_2d)
+            pygame.draw.polygon(surface, edge_color, pts_2d, 1)
 
-        lg = (int(round(cx + left_gear[0])), int(round(cy + left_gear[1])))
-        rg = (int(round(cx + right_gear[0])), int(round(cy + right_gear[1])))
-        pygame.draw.line(surface, (24, 24, 26), lg, (lg[0], lg[1] + 6), 2)
-        pygame.draw.line(surface, (24, 24, 26), rg, (rg[0], rg[1] + 6), 2)
-        pygame.draw.circle(surface, (20, 20, 22), (lg[0], lg[1] + 7), 2)
-        pygame.draw.circle(surface, (20, 20, 22), (rg[0], rg[1] + 7), 2)
+        def project_point(pt: tuple[float, float, float]) -> tuple[int, int]:
+            rot = self._rotate_aircraft_point(
+                pt,
+                heading_deg=heading,
+                pitch_deg=pitch,
+                bank_deg=bank,
+            )
+            sx, sy, _ = self._project_aircraft_point(rot, cx=cx, cy=cy, scale=scale)
+            return sx, sy
 
-        hdg = self._tiny_font.render(f"HDG {int(state.heading_deg) % 360:03d}", True, text_main)
-        surface.blit(hdg, (rect.x + 6, rect.y + 4))
+        nose = project_point((0.0, 2.95, 0.0))
+        tail = project_point((0.0, -2.58, 0.08))
+        pygame.draw.line(surface, (255, 238, 230), tail, nose, 1)
+        pygame.draw.circle(surface, (240, 244, 255), nose, max(1, int(scale * 0.10)))
 
-    def _translate_points(
+        gear_pairs = [
+            ((0.00, 1.70, -0.18), (0.00, 1.70, -0.95)),
+            ((-0.72, -0.20, -0.10), (-0.72, -0.20, -0.90)),
+            ((0.72, -0.20, -0.10), (0.72, -0.20, -0.90)),
+        ]
+        for start, end in gear_pairs:
+            p0 = project_point(start)
+            p1 = project_point(end)
+            pygame.draw.line(surface, (24, 24, 26), p0, p1, 2)
+            pygame.draw.circle(surface, (16, 16, 18), p1, max(1, int(scale * 0.08)))
+
+    def _rotate_aircraft_point(
         self,
-        points: list[tuple[float, float]],
+        point: tuple[float, float, float],
+        *,
+        heading_deg: float,
+        pitch_deg: float,
+        bank_deg: float,
+    ) -> tuple[float, float, float]:
+        x, y, z = point
+
+        # Roll around the aircraft longitudinal axis (forward/y).
+        roll = math.radians(bank_deg)
+        cos_r = math.cos(roll)
+        sin_r = math.sin(roll)
+        x1 = x * cos_r + z * sin_r
+        y1 = y
+        z1 = -x * sin_r + z * cos_r
+
+        # Pitch around right axis (x).
+        pitch = math.radians(pitch_deg)
+        cos_p = math.cos(pitch)
+        sin_p = math.sin(pitch)
+        x2 = x1
+        y2 = y1 * cos_p - z1 * sin_p
+        z2 = y1 * sin_p + z1 * cos_p
+
+        # Yaw around up axis (z). Heading is clockwise from North.
+        yaw = math.radians(-heading_deg)
+        cos_y = math.cos(yaw)
+        sin_y = math.sin(yaw)
+        x3 = x2 * cos_y - y2 * sin_y
+        y3 = x2 * sin_y + y2 * cos_y
+        z3 = z2
+        return x3, y3, z3
+
+    def _project_aircraft_point(
+        self,
+        point: tuple[float, float, float],
         *,
         cx: int,
         cy: int,
-        angle_rad: float,
-    ) -> list[tuple[int, int]]:
-        translated: list[tuple[int, int]] = []
-        for px, py in points:
-            rx, ry = self._rotate_point(px, py, angle_rad)
-            translated.append((int(round(cx + rx)), int(round(cy + ry))))
-        return translated
-
-    def _rotate_point(self, x: float, y: float, angle_rad: float) -> tuple[float, float]:
-        ca = math.cos(angle_rad)
-        sa = math.sin(angle_rad)
-        return (x * ca - y * sa, x * sa + y * ca)
+        scale: float,
+    ) -> tuple[int, int, float]:
+        x, y, z = point
+        sx = int(round(cx + (x + y * 0.10) * scale))
+        sy = int(round(cy - (z + y * 0.34) * scale))
+        return sx, sy, y
 
     def _visual_search_cell_color(
         self, kind: VisualSearchTaskKind, token: str
