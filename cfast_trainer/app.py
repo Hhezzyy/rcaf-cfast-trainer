@@ -30,6 +30,8 @@ from .cognitive_core import Phase, TestSnapshot
 from .digit_recognition import DigitRecognitionPayload, build_digit_recognition_test
 from .instrument_comprehension import (
     InstrumentComprehensionPayload,
+    InstrumentComprehensionTrialKind,
+    InstrumentState,
     build_instrument_comprehension_test,
 )
 from .math_reasoning import build_math_reasoning_test
@@ -57,19 +59,8 @@ class MenuItem:
     action: Callable[[], None]
 
 
-@dataclass
-class Settings:
-    # Display
-    fullscreen: bool = False
-    max_fps: int = 60
-    show_fps_overlay: bool = False
-
-    # Input (used later by psychomotor tasks / mappings)
-    invert_y_axis: bool = False
-
-
-# Global settings instance (persistence later).
-settings = Settings()
+WINDOW_SIZE = (960, 540)
+TARGET_FPS = 60
 
 
 class App:
@@ -111,10 +102,6 @@ class App:
             return
         self._screens[-1].render(self._surface)
 
-    def update_surface(self, new_surface: pygame.Surface) -> None:
-        # Used when toggling fullscreen (display mode changes).
-        self._surface = new_surface
-
 
 class PlaceholderScreen:
     def __init__(self, app: App, title: str) -> None:
@@ -142,6 +129,9 @@ class MenuScreen:
         self._items = items
         self._selected = 0
         self._is_root = is_root
+        self._title_font = pygame.font.Font(None, 42)
+        self._item_font = pygame.font.Font(None, 32)
+        self._hint_font = pygame.font.Font(None, 22)
 
     def handle_event(self, event: pygame.event.Event) -> None:
         if event.type == pygame.KEYDOWN:
@@ -190,133 +180,92 @@ class MenuScreen:
         else:
             self._app.pop()
 
-    def render(self, surface: pygame.Surface) -> None:
-        surface.fill((10, 10, 14))
-        title = self._app.font.render(self._title, True, (235, 235, 245))
-        surface.blit(title, (40, 40))
+    def _fit_label(self, font: pygame.font.Font, label: str, max_width: int) -> str:
+        if max_width <= 0:
+            return ""
+        if font.size(label)[0] <= max_width:
+            return label
+        clipped = label
+        while clipped and font.size(f"{clipped}...")[0] > max_width:
+            clipped = clipped[:-1]
+        return f"{clipped}..." if clipped else "..."
 
-        y = 120
+    def render(self, surface: pygame.Surface) -> None:
+        w, h = surface.get_size()
+        bg = (3, 9, 78)
+        panel_bg = (8, 18, 104)
+        header_bg = (18, 30, 118)
+        border = (226, 236, 255)
+        text_main = (238, 245, 255)
+        text_muted = (186, 200, 224)
+        active_bg = (244, 248, 255)
+        active_text = (14, 26, 74)
+
+        surface.fill(bg)
+
+        frame_margin = max(10, min(26, w // 34))
+        frame = pygame.Rect(
+            frame_margin,
+            frame_margin,
+            max(260, w - frame_margin * 2),
+            max(220, h - frame_margin * 2),
+        )
+        pygame.draw.rect(surface, panel_bg, frame)
+        pygame.draw.rect(surface, border, frame, 2)
+
+        header_h = max(34, min(52, h // 8))
+        header = pygame.Rect(frame.x + 2, frame.y + 2, frame.w - 4, header_h)
+        pygame.draw.rect(surface, header_bg, header)
+        pygame.draw.line(
+            surface,
+            border,
+            (header.x, header.bottom),
+            (header.right, header.bottom),
+            1,
+        )
+
+        tag = self._hint_font.render("MENU", True, text_muted)
+        surface.blit(tag, (header.x + 12, header.y + (header.h - tag.get_height()) // 2))
+
+        title = self._title_font.render(self._title, True, text_main)
+        surface.blit(title, title.get_rect(center=(frame.centerx, header.centery)))
+
+        content_top = header.bottom + max(16, h // 30)
+        content_bottom = frame.bottom - max(44, h // 12)
+        list_rect = pygame.Rect(
+            frame.x + max(14, w // 44),
+            content_top,
+            frame.w - max(28, w // 22),
+            max(120, content_bottom - content_top),
+        )
+        pygame.draw.rect(surface, (6, 13, 92), list_rect)
+        pygame.draw.rect(surface, (78, 102, 170), list_rect, 1)
+
+        item_count = max(1, len(self._items))
+        gap = max(4, min(10, list_rect.h // max(10, item_count * 3)))
+        row_h = max(30, min(44, (list_rect.h - gap * (item_count + 1)) // item_count))
+        total_h = row_h * item_count + gap * (item_count - 1)
+        y = list_rect.y + max(8, (list_rect.h - total_h) // 2)
+
         for idx, item in enumerate(self._items):
-            prefix = "> " if idx == self._selected else "  "
-            color = (235, 235, 245) if idx == self._selected else (180, 180, 190)
-            text = self._app.font.render(f"{prefix}{item.label}", True, color)
-            surface.blit(text, (60, y))
-            y += 42
+            row = pygame.Rect(list_rect.x + 12, y, list_rect.w - 24, row_h)
+            selected = idx == self._selected
+            if selected:
+                pygame.draw.rect(surface, active_bg, row)
+                pygame.draw.rect(surface, (120, 142, 196), row, 2)
+            else:
+                pygame.draw.rect(surface, (9, 20, 106), row)
+                pygame.draw.rect(surface, (62, 84, 152), row, 1)
 
-        footer = "Enter/Space to select • Esc to back/quit • D-pad + Button0/1 supported"
-        foot = pygame.font.Font(None, 22).render(footer, True, (140, 140, 150))
-        surface.blit(foot, (40, surface.get_height() - 40))
+            color = active_text if selected else text_main
+            label = self._fit_label(self._item_font, item.label, row.w - 20)
+            text = self._item_font.render(label, True, color)
+            surface.blit(text, (row.x + 10, row.y + (row.h - text.get_height()) // 2))
+            y += row_h + gap
 
-
-class SettingsScreen:
-    def __init__(
-        self,
-        app: App,
-        *,
-        axis_calibration: Screen,
-        axis_visualizer: Screen,
-        input_profiles: Screen,
-        data_storage: Screen,
-    ) -> None:
-        self._app = app
-        self._selected = 0
-        self._fps_options = [30, 60, 120]
-        self._axis_calibration = axis_calibration
-        self._axis_visualizer = axis_visualizer
-        self._input_profiles = input_profiles
-        self._data_storage = data_storage
-
-    def _toggle_fullscreen(self) -> None:
-        settings.fullscreen = not settings.fullscreen
-        flags = pygame.FULLSCREEN if settings.fullscreen else 0
-        new_surface = pygame.display.set_mode((960, 540), flags)
-        self._app.update_surface(new_surface)
-
-    def _cycle_max_fps(self) -> None:
-        try:
-            idx = self._fps_options.index(settings.max_fps)
-        except ValueError:
-            idx = 0
-        settings.max_fps = self._fps_options[(idx + 1) % len(self._fps_options)]
-
-    def _toggle_show_fps(self) -> None:
-        settings.show_fps_overlay = not settings.show_fps_overlay
-
-    def _toggle_invert_y(self) -> None:
-        settings.invert_y_axis = not settings.invert_y_axis
-
-    def _entries(self) -> list[tuple[str, Callable[[], None]]]:
-        return [
-            (f"Fullscreen: {'ON' if settings.fullscreen else 'OFF'}", self._toggle_fullscreen),
-            (f"Max FPS: {settings.max_fps}", self._cycle_max_fps),
-            (f"Show FPS overlay: {'ON' if settings.show_fps_overlay else 'OFF'}", self._toggle_show_fps),
-            (f"Invert Y axis: {'ON' if settings.invert_y_axis else 'OFF'}", self._toggle_invert_y),
-            ("Axis Calibration", lambda: self._app.push(self._axis_calibration)),
-            ("Axis Visualizer", lambda: self._app.push(self._axis_visualizer)),
-            ("Input Profiles", lambda: self._app.push(self._input_profiles)),
-            ("Data & Storage", lambda: self._app.push(self._data_storage)),
-            ("Back", self._app.pop),
-        ]
-
-    def _move(self, delta: int) -> None:
-        items = self._entries()
-        if not items:
-            return
-        self._selected = (self._selected + delta) % len(items)
-
-    def _activate(self) -> None:
-        items = self._entries()
-        if not items:
-            return
-        _, action = items[self._selected]
-        action()
-
-    def _back(self) -> None:
-        self._app.pop()
-
-    def handle_event(self, event: pygame.event.Event) -> None:
-        if event.type == pygame.KEYDOWN:
-            if event.key in (pygame.K_UP, pygame.K_w):
-                self._move(-1)
-            elif event.key in (pygame.K_DOWN, pygame.K_s):
-                self._move(1)
-            elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE):
-                self._activate()
-            elif event.key in (pygame.K_ESCAPE, pygame.K_BACKSPACE):
-                self._back()
-            return
-
-        if event.type == pygame.JOYHATMOTION:
-            _, y = event.value
-            if y == 1:
-                self._move(-1)
-            elif y == -1:
-                self._move(1)
-            return
-
-        if event.type == pygame.JOYBUTTONDOWN:
-            if event.button == 0:
-                self._activate()
-            elif event.button == 1:
-                self._back()
-
-    def render(self, surface: pygame.Surface) -> None:
-        surface.fill((10, 10, 14))
-        title = self._app.font.render("Settings", True, (235, 235, 245))
-        surface.blit(title, (40, 40))
-
-        y = 120
-        items = self._entries()
-        for idx, (label, _) in enumerate(items):
-            prefix = "> " if idx == self._selected else "  "
-            color = (235, 235, 245) if idx == self._selected else (180, 180, 190)
-            text = self._app.font.render(f"{prefix}{label}", True, color)
-            surface.blit(text, (60, y))
-            y += 42
-
-        footer = "Enter/Space to select • Esc to back • D-pad + Button0/1 supported"
-        foot = pygame.font.Font(None, 22).render(footer, True, (140, 140, 150))
-        surface.blit(foot, (40, surface.get_height() - 40))
+        footer = "Enter/Space: Select  |  Esc/Backspace: Back  |  D-pad + Button0/1"
+        foot = self._hint_font.render(footer, True, text_muted)
+        surface.blit(foot, foot.get_rect(midbottom=(frame.centerx, frame.bottom - 10)))
 
 
 class CognitiveTestScreen:
@@ -329,6 +278,14 @@ class CognitiveTestScreen:
         self._tiny_font = pygame.font.Font(None, 18)
         self._big_font = pygame.font.Font(None, 72)
         self._mid_font = pygame.font.Font(None, 52)
+        self._num_header_font = pygame.font.Font(None, 28)
+        self._num_prompt_fonts = [
+            pygame.font.Font(None, 112),
+            pygame.font.Font(None, 96),
+            pygame.font.Font(None, 84),
+            pygame.font.Font(None, 72),
+        ]
+        self._num_input_font = pygame.font.Font(None, 58)
 
         # Airborne-specific UI state (hold-to-show overlays).
         self._air_overlay: str | None = None  # "intro" | "fuel" | "parcel"
@@ -339,8 +296,7 @@ class CognitiveTestScreen:
         p = snap.payload
         scenario = p if isinstance(p, AirborneScenario) else None
 
-        # Emergency exit: allow a hard escape from any state (including SCORED) to
-        # prevent fullscreen lock-in.
+        # Emergency exit: allow a hard escape from any state (including SCORED).
         if event.type == pygame.KEYDOWN:
             if event.key == pygame.K_F12:
                 self._app.pop()
@@ -459,48 +415,54 @@ class CognitiveTestScreen:
             elif hasattr(p, "display_digits") and hasattr(p, "accepting_input"):
                 dr = cast(DigitRecognitionPayload, p)
 
-        surface.fill((10, 10, 14))
-
-        title = self._app.font.render(snap.title, True, (235, 235, 245))
-        surface.blit(title, (40, 30))
-
-        y_info = 80
-        if snap.time_remaining_s is not None:
-            rem = int(round(snap.time_remaining_s))
-            mm = rem // 60
-            ss = rem % 60
-            timer = self._small_font.render(f"Time remaining: {mm:02d}:{ss:02d}", True, (200, 200, 210))
-            surface.blit(timer, (40, y_info))
-            y_info += 28
-
-        stats = self._small_font.render(
-            f"Scored: {snap.correct_scored}/{snap.attempted_scored}", True, (180, 180, 190)
-        )
-        surface.blit(stats, (40, y_info))
-
-        if scenario is not None and snap.phase in (Phase.PRACTICE, Phase.SCORED):
-            self._render_airborne_question(surface, snap, scenario)
-        elif abd is not None and snap.phase in (Phase.PRACTICE, Phase.SCORED):
-            self._render_angles_bearings_question(surface, snap, abd)
-        elif ic is not None and snap.phase in (Phase.PRACTICE, Phase.SCORED):
-            self._render_instrument_comprehension_question(surface, snap, ic)
-        elif vs is not None and snap.phase in (Phase.PRACTICE, Phase.SCORED):
-            self._render_visual_search_question(surface, snap, vs)
+        is_numerical_ops = snap.title == "Numerical Operations"
+        if is_numerical_ops and snap.phase in (Phase.PRACTICE, Phase.SCORED):
+            self._render_numerical_operations_question(surface, snap)
         else:
-            prompt_lines = str(snap.prompt).split("\n")
-            y = 140
-            for line in prompt_lines[:10]:
-                txt = self._small_font.render(line, True, (235, 235, 245))
-                surface.blit(txt, (40, y))
-                y += 26
+            surface.fill((10, 10, 14))
 
-            # Digit Recognition: render the digit string (if present) *after* the
-            # background/prompt so it isn't overwritten.
-            if dr is not None and snap.phase in (Phase.PRACTICE, Phase.SCORED):
-                self._render_digit_recognition(surface, snap, dr)
+            title = self._app.font.render(snap.title, True, (235, 235, 245))
+            surface.blit(title, (40, 30))
+
+            y_info = 80
+            if snap.time_remaining_s is not None:
+                rem = int(round(snap.time_remaining_s))
+                mm = rem // 60
+                ss = rem % 60
+                timer = self._small_font.render(f"Time remaining: {mm:02d}:{ss:02d}", True, (200, 200, 210))
+                surface.blit(timer, (40, y_info))
+                y_info += 28
+
+            stats = self._small_font.render(
+                f"Scored: {snap.correct_scored}/{snap.attempted_scored}", True, (180, 180, 190)
+            )
+            surface.blit(stats, (40, y_info))
+
+            if scenario is not None and snap.phase in (Phase.PRACTICE, Phase.SCORED):
+                self._render_airborne_question(surface, snap, scenario)
+            elif abd is not None and snap.phase in (Phase.PRACTICE, Phase.SCORED):
+                self._render_angles_bearings_question(surface, snap, abd)
+            elif ic is not None and snap.phase in (Phase.PRACTICE, Phase.SCORED):
+                self._render_instrument_comprehension_question(surface, snap, ic)
+            elif vs is not None and snap.phase in (Phase.PRACTICE, Phase.SCORED):
+                self._render_visual_search_question(surface, snap, vs)
+            else:
+                prompt_lines = str(snap.prompt).split("\n")
+                y = 140
+                for line in prompt_lines[:10]:
+                    txt = self._small_font.render(line, True, (235, 235, 245))
+                    surface.blit(txt, (40, y))
+                    y += 26
+
+                # Digit Recognition: render the digit string (if present) *after* the
+                # background/prompt so it isn't overwritten.
+                if dr is not None and snap.phase in (Phase.PRACTICE, Phase.SCORED):
+                    self._render_digit_recognition(surface, snap, dr)
 
         if snap.phase in (Phase.PRACTICE, Phase.SCORED):
-            if scenario is None and (dr is None or dr.accepting_input):
+            if is_numerical_ops:
+                self._render_numerical_operations_answer_box(surface, snap)
+            elif scenario is None and (dr is None or dr.accepting_input):
                 box = pygame.Rect(40, surface.get_height() - 120, 400, 44)
                 pygame.draw.rect(surface, (30, 30, 40), box)
                 pygame.draw.rect(surface, (90, 90, 110), box, 2)
@@ -515,6 +477,89 @@ class CognitiveTestScreen:
         if not self._engine.can_exit() and snap.phase is Phase.SCORED:
             lock = self._small_font.render("Test in progress: cannot exit.", True, (140, 140, 150))
             surface.blit(lock, (460, surface.get_height() - 60))
+
+    def _render_numerical_operations_question(
+        self,
+        surface: pygame.Surface,
+        snap: TestSnapshot,
+    ) -> None:
+        w, h = surface.get_size()
+        bg = (0, 0, 116)
+        frame_color = (236, 243, 255)
+        text_main = (244, 248, 255)
+        text_muted = (214, 225, 244)
+        accent = (164, 190, 235)
+
+        surface.fill(bg)
+        margin = max(8, min(18, w // 50))
+        frame = pygame.Rect(margin, margin, w - margin * 2, h - margin * 2)
+        pygame.draw.rect(surface, frame_color, frame, 1)
+
+        phase_label = "Practice" if snap.phase is Phase.PRACTICE else "Timed Test"
+        left = self._num_header_font.render(phase_label, True, text_muted)
+        surface.blit(left, (frame.x + 12, frame.y + 10))
+
+        title = self._num_header_font.render("Numerical Operations Test", True, text_main)
+        surface.blit(title, title.get_rect(midtop=(frame.centerx, frame.y + 10)))
+
+        if snap.time_remaining_s is not None:
+            rem = int(round(snap.time_remaining_s))
+            mm = rem // 60
+            ss = rem % 60
+            timer = self._num_header_font.render(f"{mm:02d}:{ss:02d}", True, text_muted)
+            surface.blit(timer, timer.get_rect(topright=(frame.right - 12, frame.y + 10)))
+
+        stats = self._small_font.render(
+            f"Scored {snap.correct_scored}/{snap.attempted_scored}",
+            True,
+            accent,
+        )
+        surface.blit(stats, stats.get_rect(midtop=(frame.centerx, frame.y + 40)))
+
+        prompt = str(snap.prompt).strip().split("\n", 1)[0]
+        if prompt == "":
+            prompt = "0 + 0 ="
+
+        prompt_surface = None
+        for f in self._num_prompt_fonts:
+            candidate = f.render(prompt, True, text_main)
+            if candidate.get_width() <= int(frame.w * 0.86):
+                prompt_surface = candidate
+                break
+        if prompt_surface is None:
+            prompt_surface = self._num_prompt_fonts[-1].render(prompt, True, text_main)
+
+        prompt_y = frame.y + int(frame.h * 0.36)
+        surface.blit(prompt_surface, prompt_surface.get_rect(center=(frame.centerx, prompt_y)))
+
+    def _render_numerical_operations_answer_box(
+        self,
+        surface: pygame.Surface,
+        snap: TestSnapshot,
+    ) -> None:
+        w, h = surface.get_size()
+        text_main = (244, 248, 255)
+        box_fill = (246, 250, 255)
+        box_border = (142, 168, 210)
+        input_color = (12, 26, 88)
+
+        answer_label = self._small_font.render("Your Answer:", True, text_main)
+        box_w = max(220, min(380, int(w * 0.42)))
+        box_h = max(52, min(66, int(h * 0.12)))
+        box_x = (w - box_w) // 2
+        box_y = int(h * 0.62)
+        surface.blit(answer_label, answer_label.get_rect(midbottom=(w // 2, box_y - 8)))
+
+        box = pygame.Rect(box_x, box_y, box_w, box_h)
+        pygame.draw.rect(surface, box_fill, box)
+        pygame.draw.rect(surface, box_border, box, 2)
+
+        caret = "|" if (pygame.time.get_ticks() // 500) % 2 == 0 else ""
+        entry = self._num_input_font.render(self._input + caret, True, input_color)
+        surface.blit(entry, (box.x + 12, box.y + max(2, (box.h - entry.get_height()) // 2)))
+
+        hint = self._small_font.render(snap.input_hint, True, (194, 210, 236))
+        surface.blit(hint, hint.get_rect(midtop=(w // 2, box.bottom + 10)))
 
     def _render_angles_bearings_question(
         self,
@@ -657,67 +702,73 @@ class CognitiveTestScreen:
         payload: InstrumentComprehensionPayload,
     ) -> None:
         w, h = surface.get_size()
-        panel = pygame.Rect(40, 130, w - 80, h - 250)
+        panel = pygame.Rect(30, 98, w - 60, h - 230)
         pygame.draw.rect(surface, (18, 18, 26), panel)
         pygame.draw.rect(surface, (70, 70, 85), panel, 2)
 
-        surface.blit(
-            self._small_font.render(str(snap.prompt), True, (235, 235, 245)),
-            (panel.x + 16, panel.y + 12),
-        )
-        surface.blit(
-            self._tiny_font.render(payload.verbal_cue, True, (150, 150, 165)),
-            (panel.x + 16, panel.y + 38),
+        surface.blit(self._small_font.render(str(snap.prompt), True, (235, 235, 245)), (panel.x + 14, panel.y + 12))
+
+        prompt_h = 138
+        prompt_rect = pygame.Rect(panel.x + 14, panel.y + 44, panel.w - 28, prompt_h)
+        options_rect = pygame.Rect(
+            panel.x + 14,
+            prompt_rect.bottom + 8,
+            panel.w - 28,
+            panel.bottom - prompt_rect.bottom - 16,
         )
 
-        left = pygame.Rect(panel.x + 14, panel.y + 66, panel.w // 2 - 20, panel.h - 80)
-        right = pygame.Rect(left.right + 12, panel.y + 66, panel.right - left.right - 26, panel.h - 80)
-        pygame.draw.rect(surface, (12, 12, 18), left)
-        pygame.draw.rect(surface, (70, 70, 85), left, 1)
-        pygame.draw.rect(surface, (12, 12, 18), right)
-        pygame.draw.rect(surface, (70, 70, 85), right, 1)
+        if payload.kind is InstrumentComprehensionTrialKind.DESCRIPTION_TO_INSTRUMENTS:
+            pygame.draw.rect(surface, (12, 12, 18), prompt_rect)
+            pygame.draw.rect(surface, (70, 70, 85), prompt_rect, 1)
+            self._draw_wrapped_text(
+                surface,
+                payload.prompt_description,
+                prompt_rect.inflate(-16, -14),
+                color=(235, 235, 245),
+                font=self._small_font,
+                max_lines=4,
+            )
+        else:
+            self._draw_instrument_cluster(surface, prompt_rect, payload.prompt_state)
 
-        surface.blit(
-            self._tiny_font.render("INSTRUMENT PANEL", True, (150, 150, 165)),
-            (left.x + 10, left.y + 8),
-        )
-        instrument_preview = pygame.Rect(left.x + 18, left.y + 28, left.w - 36, left.h - 116)
-        self._draw_instrument_preview(
-            surface,
-            instrument_preview,
-            bank_deg=payload.bank_deg,
-            pitch_deg=payload.pitch_deg,
-            heading_deg=payload.heading_deg,
-        )
+        gap = 8
+        options = payload.options[:4]
+        if payload.kind is InstrumentComprehensionTrialKind.INSTRUMENTS_TO_DESCRIPTION:
+            row_h = max(28, (options_rect.h - gap * 5) // 4)
+            for idx, option in enumerate(options):
+                card = pygame.Rect(
+                    options_rect.x + gap,
+                    options_rect.y + gap + idx * (row_h + gap),
+                    options_rect.w - gap * 2,
+                    row_h,
+                )
+                pygame.draw.rect(surface, (24, 24, 34), card)
+                pygame.draw.rect(surface, (90, 90, 110), card, 1)
 
-        info_y = instrument_preview.bottom + 8
-        info_lines = (
-            f"Heading: {int(payload.heading_deg) % 360:03d}",
-            f"Bank: {int(payload.bank_deg):+d}°",
-            f"Pitch: {int(payload.pitch_deg):+d}°",
-        )
-        for line in info_lines:
-            surface.blit(self._small_font.render(line, True, (235, 235, 245)), (left.x + 12, info_y))
-            info_y += 24
-
-        surface.blit(
-            self._tiny_font.render("OPTIONS (type 1-4)", True, (150, 150, 165)),
-            (right.x + 10, right.y + 8),
-        )
+                surface.blit(
+                    self._small_font.render(f"#{option.code}", True, (235, 235, 245)),
+                    (card.x + 8, card.y + 2),
+                )
+                self._draw_wrapped_text(
+                    surface,
+                    option.description,
+                    pygame.Rect(card.x + 38, card.y + 4, card.w - 44, card.h - 6),
+                    color=(235, 235, 245),
+                    font=self._tiny_font,
+                    max_lines=2,
+                )
+            return
 
         rows = 2
         cols = 2
-        gap = 8
-        card_w = (right.w - (gap * (cols + 1))) // cols
-        card_h = (right.h - 30 - (gap * (rows + 1))) // rows
-
-        options = payload.options[:4]
+        card_w = (options_rect.w - (gap * (cols + 1))) // cols
+        card_h = (options_rect.h - (gap * (rows + 1))) // rows
         for idx, option in enumerate(options):
             r = idx // cols
             c = idx % cols
             card = pygame.Rect(
-                right.x + gap + c * (card_w + gap),
-                right.y + 30 + gap + r * (card_h + gap),
+                options_rect.x + gap + c * (card_w + gap),
+                options_rect.y + gap + r * (card_h + gap),
                 card_w,
                 card_h,
             )
@@ -726,58 +777,257 @@ class CognitiveTestScreen:
 
             surface.blit(
                 self._small_font.render(f"#{option.code}", True, (235, 235, 245)),
-                (card.x + 8, card.y + 6),
+                (card.x + 8, card.y + 2),
             )
-            preview = pygame.Rect(card.x + 10, card.y + 28, card.w - 20, card.h - 64)
-            self._draw_instrument_preview(
-                surface,
-                preview,
-                bank_deg=option.bank_deg,
-                pitch_deg=option.pitch_deg,
-                heading_deg=option.heading_deg,
+            inner = pygame.Rect(card.x + 8, card.y + 24, card.w - 16, card.h - 30)
+            if payload.kind is InstrumentComprehensionTrialKind.DESCRIPTION_TO_INSTRUMENTS:
+                self._draw_instrument_cluster(surface, inner, option.state, compact=True)
+            else:
+                self._draw_aircraft_orientation_card(surface, inner, option.state)
+
+    def _draw_wrapped_text(
+        self,
+        surface: pygame.Surface,
+        text: str,
+        rect: pygame.Rect,
+        *,
+        color: tuple[int, int, int],
+        font: pygame.font.Font,
+        max_lines: int,
+    ) -> None:
+        words = str(text).split()
+        lines: list[str] = []
+        cur = ""
+        for word in words:
+            trial = word if cur == "" else f"{cur} {word}"
+            if font.size(trial)[0] <= rect.w:
+                cur = trial
+                continue
+            if cur:
+                lines.append(cur)
+            cur = word
+        if cur:
+            lines.append(cur)
+
+        y = rect.y
+        line_h = font.get_linesize() + 2
+        for line in lines[: max(0, max_lines)]:
+            to_draw = line
+            if font.size(to_draw)[0] > rect.w:
+                while to_draw and font.size(f"{to_draw}...")[0] > rect.w:
+                    to_draw = to_draw[:-1]
+                to_draw = f"{to_draw}..." if to_draw else "..."
+            surface.blit(font.render(to_draw, True, color), (rect.x, y))
+            y += line_h
+
+    def _draw_instrument_cluster(
+        self,
+        surface: pygame.Surface,
+        rect: pygame.Rect,
+        state: InstrumentState,
+        *,
+        compact: bool = False,
+    ) -> None:
+        pygame.draw.rect(surface, (12, 12, 18), rect)
+        pygame.draw.rect(surface, (70, 70, 85), rect, 1)
+
+        if compact:
+            gap = 6
+            dial_h = max(34, rect.h - 28)
+            dial_w = (rect.w - 4 * gap) // 3
+            speed_rect = pygame.Rect(rect.x + gap, rect.y + gap, dial_w, dial_h)
+            att_rect = pygame.Rect(speed_rect.right + gap, rect.y + gap, dial_w, dial_h)
+            heading_rect = pygame.Rect(att_rect.right + gap, rect.y + gap, dial_w, dial_h)
+
+            self._draw_speed_dial(surface, speed_rect, state.speed_kts)
+            self._draw_attitude_dial(surface, att_rect, bank_deg=state.bank_deg, pitch_deg=state.pitch_deg)
+            self._draw_heading_dial(surface, heading_rect, state.heading_deg)
+
+            info = f"ALT {state.altitude_ft}  VS {state.vertical_rate_fpm:+d}"
+            surface.blit(
+                self._tiny_font.render(info, True, (150, 150, 165)),
+                (rect.x + 6, rect.bottom - 16),
             )
+            return
 
-            labels = option.label.split(", ")
-            txt_y = card.bottom - 32
-            for part in labels[:2]:
-                surface.blit(
-                    self._tiny_font.render(part, True, (150, 150, 165)),
-                    (card.x + 8, txt_y),
-                )
-                txt_y += 14
+        gap = 8 if compact else 10
+        top_h = int(rect.h * 0.58)
+        top_y = rect.y + gap
+        top_w = rect.w - gap * 2
+        dial_w_top = (top_w - 2 * gap) // 3
+        dial_h_top = top_h - gap * 2
 
-    def _draw_instrument_preview(
+        speed_rect = pygame.Rect(rect.x + gap, top_y, dial_w_top, dial_h_top)
+        att_rect = pygame.Rect(speed_rect.right + gap, top_y, dial_w_top, dial_h_top)
+        heading_rect = pygame.Rect(att_rect.right + gap, top_y, dial_w_top, dial_h_top)
+
+        bot_y = rect.y + top_h + gap
+        bot_h = rect.bottom - bot_y - gap
+        dial_w_bot = (top_w - gap) // 2
+        alt_rect = pygame.Rect(rect.x + gap, bot_y, dial_w_bot, bot_h)
+        vsi_rect = pygame.Rect(alt_rect.right + gap, bot_y, dial_w_bot, bot_h)
+
+        self._draw_speed_dial(surface, speed_rect, state.speed_kts)
+        self._draw_attitude_dial(surface, att_rect, bank_deg=state.bank_deg, pitch_deg=state.pitch_deg)
+        self._draw_heading_dial(surface, heading_rect, state.heading_deg)
+        self._draw_altimeter_dial(surface, alt_rect, state.altitude_ft)
+        self._draw_vertical_dial(surface, vsi_rect, state.vertical_rate_fpm, state.slip)
+
+    def _draw_speed_dial(self, surface: pygame.Surface, rect: pygame.Rect, speed_kts: int) -> None:
+        self._draw_scalar_dial(surface, rect, "KNOTS", int(speed_kts), vmin=80, vmax=360)
+
+    def _draw_altimeter_dial(self, surface: pygame.Surface, rect: pygame.Rect, altitude_ft: int) -> None:
+        self._draw_scalar_dial(surface, rect, "ALT", int(altitude_ft), vmin=0, vmax=10000)
+
+    def _draw_vertical_dial(
+        self,
+        surface: pygame.Surface,
+        rect: pygame.Rect,
+        vertical_rate_fpm: int,
+        slip: int,
+    ) -> None:
+        self._draw_scalar_dial(surface, rect, "V/S", int(vertical_rate_fpm), vmin=-2000, vmax=2000)
+        slip_text = "BAL"
+        if int(slip) < 0:
+            slip_text = "SLIP L"
+        elif int(slip) > 0:
+            slip_text = "SLIP R"
+        t = self._tiny_font.render(slip_text, True, (150, 150, 165))
+        t_rect = t.get_rect(center=(rect.centerx, rect.bottom - 10))
+        surface.blit(t, t_rect)
+
+    def _draw_scalar_dial(
+        self,
+        surface: pygame.Surface,
+        rect: pygame.Rect,
+        title: str,
+        value: int,
+        *,
+        vmin: int,
+        vmax: int,
+    ) -> None:
+        cx = rect.centerx
+        cy = rect.centery
+        radius = max(12, min(rect.w, rect.h) // 2 - 6)
+        pygame.draw.circle(surface, (8, 8, 12), (cx, cy), radius)
+        pygame.draw.circle(surface, (120, 120, 140), (cx, cy), radius, 2)
+
+        t = (float(value) - float(vmin)) / max(1.0, float(vmax - vmin))
+        t = 0.0 if t < 0.0 else 1.0 if t > 1.0 else t
+        ang = math.radians(-140.0 + 280.0 * t)
+        nx = int(round(cx + math.cos(ang) * (radius - 8)))
+        ny = int(round(cy + math.sin(ang) * (radius - 8)))
+        pygame.draw.line(surface, (235, 235, 245), (cx, cy), (nx, ny), 3)
+        pygame.draw.circle(surface, (235, 235, 245), (cx, cy), 3)
+
+        title_s = self._tiny_font.render(title, True, (150, 150, 165))
+        title_rect = title_s.get_rect(center=(cx, cy - radius + 12))
+        surface.blit(title_s, title_rect)
+
+        value_s = self._tiny_font.render(str(value), True, (235, 235, 245))
+        value_rect = value_s.get_rect(center=(cx, cy + radius - 12))
+        surface.blit(value_s, value_rect)
+
+    def _draw_attitude_dial(
         self,
         surface: pygame.Surface,
         rect: pygame.Rect,
         *,
         bank_deg: int,
         pitch_deg: int,
-        heading_deg: int,
     ) -> None:
         cx = rect.centerx
         cy = rect.centery
-        radius = max(14, min(rect.w, rect.h) // 2 - 8)
+        radius = max(12, min(rect.w, rect.h) // 2 - 6)
+        pygame.draw.circle(surface, (8, 8, 12), (cx, cy), radius)
 
-        pygame.draw.circle(surface, (28, 35, 55), (cx, cy), radius)
-        pygame.draw.circle(surface, (90, 90, 110), (cx, cy), radius, 2)
-
-        pitch = max(-25.0, min(25.0, float(pitch_deg)))
-        pitch_px = int(round((-pitch / 25.0) * (radius * 0.6)))
+        # Sky/ground split line controlled by pitch + bank.
+        pitch = max(-20.0, min(20.0, float(pitch_deg)))
+        pitch_px = int(round((-pitch / 20.0) * (radius * 0.55)))
         rad = math.radians(float(bank_deg))
         dx = math.cos(rad) * (radius + 8)
         dy = math.sin(rad) * (radius + 8)
-
         x1 = int(round(cx - dx))
         y1 = int(round(cy + pitch_px - dy))
         x2 = int(round(cx + dx))
         y2 = int(round(cy + pitch_px + dy))
-        pygame.draw.line(surface, (235, 235, 245), (x1, y1), (x2, y2), 3)
-        pygame.draw.circle(surface, (235, 235, 245), (cx, cy), 4, 1)
 
-        heading = self._tiny_font.render(f"HDG {int(heading_deg) % 360:03d}", True, (150, 150, 165))
-        heading_rect = heading.get_rect(center=(cx, rect.bottom - 10))
-        surface.blit(heading, heading_rect)
+        pygame.draw.circle(surface, (20, 140, 220), (cx, cy), radius)
+        ground_poly = [(x1, y1), (x2, y2), (cx + radius + 10, cy + radius + 10), (cx - radius - 10, cy + radius + 10)]
+        pygame.draw.polygon(surface, (150, 90, 25), ground_poly)
+        pygame.draw.line(surface, (235, 235, 245), (x1, y1), (x2, y2), 2)
+        pygame.draw.circle(surface, (120, 120, 140), (cx, cy), radius, 2)
+        pygame.draw.line(surface, (235, 235, 245), (cx - 14, cy), (cx + 14, cy), 2)
+        pygame.draw.circle(surface, (235, 235, 245), (cx, cy), 3)
+
+    def _draw_heading_dial(self, surface: pygame.Surface, rect: pygame.Rect, heading_deg: int) -> None:
+        cx = rect.centerx
+        cy = rect.centery
+        radius = max(12, min(rect.w, rect.h) // 2 - 6)
+        pygame.draw.circle(surface, (8, 8, 12), (cx, cy), radius)
+        pygame.draw.circle(surface, (120, 120, 140), (cx, cy), radius, 2)
+
+        for label, ang_deg in (("N", 0), ("E", 90), ("S", 180), ("W", 270)):
+            rad = math.radians(float(ang_deg))
+            tx = int(round(cx + math.sin(rad) * (radius - 12)))
+            ty = int(round(cy - math.cos(rad) * (radius - 12)))
+            surf = self._tiny_font.render(label, True, (235, 235, 245))
+            surface.blit(surf, surf.get_rect(center=(tx, ty)))
+
+        rad_h = math.radians(float(int(heading_deg) % 360))
+        hx = int(round(cx + math.sin(rad_h) * (radius - 8)))
+        hy = int(round(cy - math.cos(rad_h) * (radius - 8)))
+        pygame.draw.line(surface, (140, 220, 140), (cx, cy), (hx, hy), 3)
+        pygame.draw.circle(surface, (235, 235, 245), (cx, cy), 3)
+        tag = self._tiny_font.render(f"{int(heading_deg) % 360:03d}", True, (150, 150, 165))
+        surface.blit(tag, tag.get_rect(center=(cx, rect.bottom - 10)))
+
+    def _draw_aircraft_orientation_card(
+        self,
+        surface: pygame.Surface,
+        rect: pygame.Rect,
+        state: InstrumentState,
+    ) -> None:
+        pygame.draw.rect(surface, (25, 150, 230), rect)
+        ground_h = max(10, rect.h // 7)
+        pygame.draw.rect(surface, (5, 80, 40), pygame.Rect(rect.x, rect.bottom - ground_h, rect.w, ground_h))
+        pygame.draw.rect(surface, (90, 90, 110), rect, 1)
+
+        cx = rect.centerx
+        cy = rect.y + (rect.h - ground_h) // 2
+        pitch_shift = int(round(-float(state.pitch_deg) * 1.5))
+        cy += pitch_shift
+        size = max(12.0, float(min(rect.w, rect.h)) * 0.12)
+
+        bank = max(-40.0, min(40.0, float(state.bank_deg)))
+        wing_skew = (bank / 40.0) * size * 0.8
+        points = [
+            (0.0, -2.8 * size),
+            (0.50 * size, -1.1 * size),
+            (1.8 * size, -0.2 * size - wing_skew),
+            (0.72 * size, 0.55 * size),
+            (0.35 * size, 2.1 * size),
+            (0.0, 1.5 * size),
+            (-0.35 * size, 2.1 * size),
+            (-0.72 * size, 0.55 * size),
+            (-1.8 * size, -0.2 * size + wing_skew),
+            (-0.50 * size, -1.1 * size),
+        ]
+
+        angle = math.radians(float(int(state.heading_deg) % 360))
+        rotated = [self._rotate_point(px, py, angle) for px, py in points]
+        translated = [(int(round(cx + px)), int(round(cy + py))) for px, py in rotated]
+        pygame.draw.polygon(surface, (220, 45, 45), translated)
+        pygame.draw.polygon(surface, (245, 80, 80), translated, 2)
+        pygame.draw.circle(surface, (250, 210, 210), (cx, cy), max(2, int(size * 0.2)))
+
+        hdg = self._tiny_font.render(f"HDG {int(state.heading_deg) % 360:03d}", True, (235, 235, 245))
+        surface.blit(hdg, (rect.x + 6, rect.y + 4))
+
+    def _rotate_point(self, x: float, y: float, angle_rad: float) -> tuple[float, float]:
+        ca = math.cos(angle_rad)
+        sa = math.sin(angle_rad)
+        return (x * ca - y * sa, x * sa + y * ca)
 
     def _visual_search_cell_color(
         self, kind: VisualSearchTaskKind, token: str
@@ -1153,10 +1403,9 @@ def run(*, max_frames: int | None = None, event_injector: Callable[[int], None] 
     _init_joysticks()
 
     pygame.display.set_caption("RCAF CFAST Trainer")
-    surface = pygame.display.set_mode((960, 540), pygame.FULLSCREEN if settings.fullscreen else 0)
+    surface = pygame.display.set_mode(WINDOW_SIZE, pygame.RESIZABLE)
 
     font = pygame.font.Font(None, 36)
-    small_font = pygame.font.Font(None, 20)
     clock = pygame.time.Clock()
 
     app = App(surface=surface, font=font)
@@ -1167,14 +1416,16 @@ def run(*, max_frames: int | None = None, event_injector: Callable[[int], None] 
     axis_calibration = PlaceholderScreen(app, "Axis Calibration (placeholder)")
     axis_visualizer = PlaceholderScreen(app, "Axis Visualizer (placeholder)")
     input_profiles = PlaceholderScreen(app, "Input Profiles (placeholder)")
-    data_storage = PlaceholderScreen(app, "Data & Storage (placeholder)")
 
-    settings_screen = SettingsScreen(
+    settings_menu = MenuScreen(
         app,
-        axis_calibration=axis_calibration,
-        axis_visualizer=axis_visualizer,
-        input_profiles=input_profiles,
-        data_storage=data_storage,
+        "HOTAS & Input",
+        [
+            MenuItem("Axis Calibration", lambda: app.push(axis_calibration)),
+            MenuItem("Axis Visualizer", lambda: app.push(axis_visualizer)),
+            MenuItem("Input Profiles", lambda: app.push(input_profiles)),
+            MenuItem("Back", app.pop),
+        ],
     )
 
     real_clock = RealClock()
@@ -1273,7 +1524,7 @@ def run(*, max_frames: int | None = None, event_injector: Callable[[int], None] 
         MenuItem("90-minute workouts", lambda: app.push(workouts)),
         MenuItem("Individual drills", lambda: app.push(drills)),
         MenuItem("Tests", lambda: app.push(tests_menu)),
-        MenuItem("Settings", lambda: app.push(settings_screen)),
+        MenuItem("HOTAS", lambda: app.push(settings_menu)),
         MenuItem("Quit", app.quit),
     ]
 
@@ -1290,23 +1541,13 @@ def run(*, max_frames: int | None = None, event_injector: Callable[[int], None] 
 
             app.render()
 
-            # Always draw overlays on the current display surface (fullscreen toggle recreates it).
-            display_surface = pygame.display.get_surface()
-            if display_surface is not None and settings.show_fps_overlay:
-                fps = int(clock.get_fps())
-                fps_surf = small_font.render(f"{fps} FPS", True, (140, 220, 140))
-                display_surface.blit(
-                    fps_surf,
-                    (display_surface.get_width() - fps_surf.get_width() - 10, 10),
-                )
-
             pygame.display.flip()
 
             frame += 1
             if max_frames is not None and frame >= max_frames:
                 break
 
-            clock.tick(settings.max_fps)
+            clock.tick(TARGET_FPS)
     finally:
         pygame.quit()
 
