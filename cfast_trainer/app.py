@@ -68,6 +68,20 @@ class MenuItem:
     action: Callable[[], None]
 
 
+@dataclass(slots=True)
+class _TargetRecognitionSceneGlyph:
+    glyph_id: int
+    kind: str  # "entity" | "beacon" | "unknown"
+    entity: TargetRecognitionSceneEntity | None
+    nx: float
+    ny: float
+    scale: float
+    heading: float
+    alpha: float
+    max_alpha: float
+    matching_labels: tuple[str, ...]
+
+
 WINDOW_SIZE = (960, 540)
 TARGET_FPS = 60
 
@@ -346,7 +360,29 @@ class CognitiveTestScreen:
         self._tr_system_points = 0
         self._tr_system_hits = 0
         self._tr_system_string_hitboxes: list[tuple[pygame.Rect, str]] = []
+        self._tr_scene_payload_id: int | None = None
+        self._tr_scene_rng: random.Random | None = None
+        self._tr_scene_glyphs: dict[int, _TargetRecognitionSceneGlyph] = {}
+        self._tr_scene_glyph_order: list[int] = []
+        self._tr_scene_symbol_hitboxes: list[tuple[pygame.Rect, int]] = []
+        self._tr_scene_next_glyph_id = 1
+        self._tr_scene_target_queue: list[str] = []
+        self._tr_scene_active_targets: list[str] = []
+        self._tr_scene_next_target_add_ms = 0
+        self._tr_scene_had_active_targets = False
+        self._tr_scene_complete = False
+        self._tr_scene_points = 0
+        self._tr_scene_hits = 0
+        self._tr_scene_misses = 0
+        self._tr_scene_beacon_hits = 0
+        self._tr_scene_unknown_hits = 0
+        self._tr_scene_anim_frame = 0
+        self._tr_scene_last_update_ms = 0
+        self._tr_scene_base_cache: pygame.Surface | None = None
+        self._tr_scene_base_cache_size: tuple[int, int] = (0, 0)
+        self._tr_scene_base_cache_seed = 0
         self._target_recognition_reset_practice_breakdown()
+        self._target_recognition_reset_scene_subtask()
         self._target_recognition_reset_light_subtask()
         self._target_recognition_reset_scan_subtask()
         self._target_recognition_reset_system_subtask()
@@ -414,6 +450,30 @@ class CognitiveTestScreen:
             pos = getattr(event, "pos", None)
             if pos is not None:
                 expected = self._target_recognition_expected_panels(tr_payload)
+
+                for hit_rect, glyph_id in reversed(self._tr_scene_symbol_hitboxes):
+                    if not hit_rect.collidepoint(pos):
+                        continue
+                    scene_success = self._target_recognition_handle_scene_press(
+                        tr_payload,
+                        glyph_id=glyph_id,
+                    )
+                    if "scene" in expected:
+                        if self._tr_scene_complete:
+                            self._tr_selected_panels.add("scene")
+                        else:
+                            self._tr_selected_panels.discard("scene")
+                        if scene_success and self._tr_selected_panels == expected:
+                            selected_snapshot = set(self._tr_selected_panels)
+                            accepted = self._engine.submit_answer(str(len(selected_snapshot)))
+                            if accepted:
+                                if snap.phase is Phase.PRACTICE:
+                                    self._target_recognition_record_practice_trial(
+                                        selected=selected_snapshot,
+                                        expected=expected,
+                                    )
+                                self._tr_selected_panels.clear()
+                    return
 
                 if (
                     self._tr_light_button_hitbox is not None
@@ -534,6 +594,7 @@ class CognitiveTestScreen:
             if snap.phase is Phase.INSTRUCTIONS:
                 if snap.title == "Target Recognition":
                     self._target_recognition_reset_practice_breakdown()
+                    self._target_recognition_reset_scene_subtask()
                     self._target_recognition_reset_light_subtask()
                     self._target_recognition_reset_scan_subtask()
                     self._target_recognition_reset_system_subtask()
@@ -1244,6 +1305,7 @@ class CognitiveTestScreen:
             self._tr_light_button_hitbox = None
             self._tr_scan_button_hitbox = None
             self._tr_system_string_hitboxes = []
+            self._tr_scene_symbol_hitboxes = []
             card = content.inflate(-8, -8)
             pygame.draw.rect(surface, panel_bg, card)
             pygame.draw.rect(surface, border, card, 1)
@@ -1289,6 +1351,8 @@ class CognitiveTestScreen:
         self._tr_light_button_hitbox = None
         self._tr_scan_button_hitbox = None
         self._tr_system_string_hitboxes = []
+        self._tr_scene_symbol_hitboxes = []
+        self._target_recognition_sync_scene_stream(payload)
         self._target_recognition_sync_light_stream(payload)
         self._target_recognition_sync_scan_stream(payload)
         self._target_recognition_sync_system_stream(payload)
@@ -1438,7 +1502,7 @@ class CognitiveTestScreen:
         target_gap = 6
         target_w = max(80, (boxes_area.w - target_gap * 3) // 4)
         target_labels = (
-            ("scene", "Map Targets", payload.scene_target),
+            ("scene", "Map Targets", ""),
             ("light", "Light Target", "-".join(live_light_target)),
             ("scan", "Scan Target", " ".join(live_scan_target)),
             ("system", "System Target", active_system_target),
@@ -1458,9 +1522,7 @@ class CognitiveTestScreen:
             surface.blit(label_surf, label_surf.get_rect(center=bar.center))
             value_rect = pygame.Rect(box.x + 6, bar.bottom + 4, box.w - 12, box.bottom - bar.bottom - 8)
             if panel_key == "scene":
-                lines = list(payload.scene_target_options)[:4]
-                if not lines:
-                    lines = [payload.scene_target]
+                lines = list(self._tr_scene_active_targets)[:5]
                 y = value_rect.y
                 line_h = self._tiny_font.get_linesize() + 1
                 for line in lines:
@@ -1493,7 +1555,7 @@ class CognitiveTestScreen:
                 value_surf = self._small_font.render(value, True, text_main)
                 value_pos = value_surf.get_rect(center=(value_rect.centerx, value_rect.centery))
                 surface.blit(value_surf, value_pos)
-            if panel_key not in ("light", "scan", "system"):
+            if panel_key not in ("scene", "light", "scan", "system"):
                 self._tr_selector_hitboxes[panel_key] = box
 
         pygame.draw.rect(surface, (5, 12, 42), controls)
@@ -1503,7 +1565,10 @@ class CognitiveTestScreen:
             (
                 "Mouse only: click active panel controls when matching. "
                 f"Auto-advance on exact match.  "
-                f"Light Pts: {self._tr_light_points}  Scan Pts: {self._tr_scan_points}  Sys Pts: {self._tr_system_points}"
+                f"Scene Pts: {self._tr_scene_points}  "
+                f"Light Pts: {self._tr_light_points}  "
+                f"Scan Pts: {self._tr_scan_points}  "
+                f"Sys Pts: {self._tr_system_points}"
             ),
             True,
             text_muted,
@@ -1531,43 +1596,53 @@ class CognitiveTestScreen:
         x_l = rect.x + 8
         x_r = rect.x + (rect.w // 2) + 2
 
-        # Shape legend (left column).
+        # Shape legend (top row).
         shape_defs = (
             ("Trucks", TargetRecognitionSceneEntity("truck", "friendly", False, False)),
             ("Tanks", TargetRecognitionSceneEntity("tank", "friendly", False, False)),
             ("Buildings", TargetRecognitionSceneEntity("building", "friendly", False, False)),
         )
         for idx, (label, entity) in enumerate(shape_defs):
-            cy = y0 + (idx * row_h) + 7
+            cy = y0 + 7
             self._draw_target_recognition_symbol(
                 surface,
                 entity=entity,
-                cx=x_l + 6,
+                cx=x_l + 4 + idx * max(44, rect.w // 3),
                 cy=cy,
                 size=6,
                 color=(230, 230, 230, 255),
             )
             surf = self._tiny_font.render(label, True, text)
-            surface.blit(surf, (x_l + 18, cy - 7))
+            surface.blit(surf, (x_l + 14 + idx * max(44, rect.w // 3), cy - 7))
 
-        # Affiliation + flags (right column).
+        # Affiliation row.
         aff_defs = (
             ("Hostile", (226, 90, 92)),
             ("Friendly", (96, 176, 232)),
             ("Neutral", (214, 206, 88)),
         )
         for idx, (label, color) in enumerate(aff_defs):
-            cy = y0 + (idx * row_h) + 7
-            sw = pygame.Rect(x_r, cy - 5, 8, 8)
+            cy = y0 + row_h + 7
+            sw = pygame.Rect(x_l + idx * max(56, rect.w // 3), cy - 5, 8, 8)
             pygame.draw.rect(surface, color, sw)
             surf = self._tiny_font.render(label, True, text)
-            surface.blit(surf, (x_r + 12, cy - 7))
+            surface.blit(surf, (sw.right + 4, cy - 7))
 
-        flags_y = y0 + (3 * row_h) + 6
+        # Modifiers row.
+        flags_y = y0 + (2 * row_h) + 6
         dmg = self._tiny_font.render("X Damaged", True, muted)
-        pri = self._tiny_font.render("+ High Priority", True, muted)
+        pri = self._tiny_font.render("+- High Priority", True, muted)
         surface.blit(dmg, (x_l, flags_y))
-        surface.blit(pri, (x_r, flags_y))
+        surface.blit(pri, (x_r - 8, flags_y))
+
+        # Standalone filler symbols.
+        bot_y = y0 + (3 * row_h) + 6
+        self._draw_target_recognition_beacon(surface, cx=x_l + 5, cy=bot_y + 5, size=5, color=(226, 90, 92, 255))
+        beacon = self._tiny_font.render("Beacon", True, muted)
+        surface.blit(beacon, (x_l + 14, bot_y - 1))
+        self._draw_target_recognition_unknown(surface, cx=x_r - 2, cy=bot_y + 5, size=5, color=(214, 206, 88, 255))
+        unknown = self._tiny_font.render("Unknown", True, muted)
+        surface.blit(unknown, (x_r + 8, bot_y - 1))
 
     def _draw_target_recognition_scene(
         self,
@@ -1575,52 +1650,99 @@ class CognitiveTestScreen:
         rect: pygame.Rect,
         payload: TargetRecognitionPayload,
     ) -> None:
-        scene = pygame.Surface((rect.w, rect.h), pygame.SRCALPHA)
+        if rect.w <= 0 or rect.h <= 0:
+            return
+
         seed = self._target_recognition_scene_seed(payload)
-        rng = random.Random(seed)
+        if (
+            self._tr_scene_base_cache is None
+            or self._tr_scene_base_cache_size != (rect.w, rect.h)
+            or self._tr_scene_base_cache_seed != seed
+        ):
+            self._tr_scene_base_cache = self._target_recognition_build_scene_base(rect.w, rect.h, seed)
+            self._tr_scene_base_cache_size = (rect.w, rect.h)
+            self._tr_scene_base_cache_seed = seed
 
-        # Dark green aerial-map style base.
-        scene.fill((18, 34, 30, 255))
-        for _ in range(20):
-            cx = int(rng.uniform(0, rect.w))
-            cy = int(rng.uniform(0, rect.h))
-            radius = int(rng.uniform(max(36, rect.w * 0.08), max(80, rect.w * 0.22)))
-            tone = int(rng.uniform(28, 74))
-            alpha = int(rng.uniform(32, 70))
-            pygame.draw.circle(scene, (tone - 6, tone, tone - 10, alpha), (cx, cy), radius)
+        assert self._tr_scene_base_cache is not None
+        scene = self._tr_scene_base_cache.copy()
+        self._draw_target_recognition_scene_compass(scene)
+        self._tr_scene_symbol_hitboxes = []
 
-        rows = max(1, int(payload.scene_rows))
-        cols = max(1, int(payload.scene_cols))
-        cell_w = max(18.0, rect.w / float(cols))
-        cell_h = max(16.0, rect.h / float(rows))
-        scene_entities = payload.scene_entities
-        if not scene_entities:
-            scene_entities = tuple(self._target_recognition_entity_from_code(code) for code in payload.scene_cells)
+        for glyph_id in self._tr_scene_glyph_order:
+            glyph = self._tr_scene_glyphs.get(glyph_id)
+            if glyph is None:
+                continue
+            cx = int(glyph.nx * float(rect.w))
+            cy = int(glyph.ny * float(rect.h))
+            size = max(5, int(min(rect.w, rect.h) * glyph.scale))
+            alpha = max(20, min(255, int(round(glyph.alpha))))
+            if glyph.kind == "entity" and glyph.entity is not None:
+                rc, gc, bc = self._target_recognition_affiliation_color(glyph.entity.affiliation)
+                self._draw_target_recognition_symbol(
+                    scene,
+                    entity=glyph.entity,
+                    cx=cx,
+                    cy=cy,
+                    size=size,
+                    color=(rc, gc, bc, alpha),
+                    heading=glyph.heading,
+                )
+            elif glyph.kind == "beacon":
+                self._draw_target_recognition_beacon(
+                    scene,
+                    cx=cx,
+                    cy=cy,
+                    size=max(4, int(size * 0.68)),
+                    color=(226, 90, 92, alpha),
+                )
+            else:
+                self._draw_target_recognition_unknown(
+                    scene,
+                    cx=cx,
+                    cy=cy,
+                    size=max(4, int(size * 0.72)),
+                    color=(214, 206, 88, alpha),
+                )
 
-        max_items = min(len(scene_entities), rows * cols)
-        for idx in range(max_items):
-            entity = scene_entities[idx]
-            rr = idx // cols
-            cc = idx % cols
-            jitter_x = (rng.random() - 0.5) * cell_w * 0.55
-            jitter_y = (rng.random() - 0.5) * cell_h * 0.55
-            cx = int((cc + 0.5) * cell_w + jitter_x)
-            cy = int((rr + 0.5) * cell_h + jitter_y)
-            size = int(max(8, min(cell_w, cell_h) * rng.uniform(0.26, 0.52)))
-            rc, gc, bc = self._target_recognition_affiliation_color(entity.affiliation)
-            self._draw_target_recognition_symbol(
-                scene,
-                entity=entity,
-                cx=cx,
-                cy=cy,
-                size=size,
-                color=(rc, gc, bc, 142),
-            )
+            hit_r = max(8, int(size * 1.7))
+            hit = pygame.Rect(rect.x + cx - hit_r, rect.y + cy - hit_r, hit_r * 2, hit_r * 2)
+            self._tr_scene_symbol_hitboxes.append((hit, glyph_id))
 
-        self._draw_target_recognition_clouds(scene, payload)
+        self._draw_target_recognition_clouds(
+            scene,
+            payload,
+            phase_s=float(self._tr_scene_anim_frame) / 60.0,
+        )
 
         surface.blit(scene, rect.topleft)
         pygame.draw.rect(surface, (78, 98, 138), rect, 1)
+
+    def _target_recognition_build_scene_base(self, width: int, height: int, seed: int) -> pygame.Surface:
+        base = pygame.Surface((width, height), pygame.SRCALPHA)
+        rng = random.Random(seed ^ 0x7F4A7C15)
+        base.fill((18, 34, 30, 255))
+
+        for _ in range(24):
+            cx = int(rng.uniform(0, width))
+            cy = int(rng.uniform(0, height))
+            radius = int(rng.uniform(max(36, width * 0.08), max(104, width * 0.25)))
+            tone = int(rng.uniform(30, 78))
+            alpha = int(rng.uniform(30, 74))
+            pygame.draw.circle(base, (tone - 8, tone, tone - 11, alpha), (cx, cy), radius)
+        return base
+
+    @staticmethod
+    def _draw_target_recognition_scene_compass(scene: pygame.Surface) -> None:
+        ring_c = (212, 214, 220, 230)
+        mark_c = (240, 102, 106, 230)
+        txt_c = (220, 226, 238, 210)
+        cx = 16
+        cy = 16
+        r = 11
+        pygame.draw.circle(scene, (200, 206, 214, 65), (cx, cy), r + 2)
+        pygame.draw.circle(scene, ring_c, (cx, cy), r, 1)
+        pygame.draw.line(scene, mark_c, (cx, cy), (cx, cy - r + 2), 2)
+        pygame.draw.line(scene, txt_c, (cx - 2, cy), (cx + 2, cy), 1)
 
     @staticmethod
     def _target_recognition_scene_seed(payload: TargetRecognitionPayload) -> int:
@@ -1654,25 +1776,43 @@ class CognitiveTestScreen:
         cy: int,
         size: int,
         color: tuple[int, int, int, int],
+        heading: float = 0.0,
     ) -> None:
         line_w = 2 if size >= 8 else 1
         s = max(5, int(size))
 
         if entity.shape == "truck":
             pygame.draw.circle(surface, color, (cx, cy), s, line_w)
-            pygame.draw.line(surface, color, (cx, cy), (cx + s + 6, cy), line_w)
-            pygame.draw.polygon(
-                surface,
-                color,
-                ((cx + s + 6, cy), (cx + s + 1, cy - 4), (cx + s + 1, cy + 4)),
-                line_w,
-            )
+            dx = math.cos(heading)
+            dy = math.sin(heading)
+            ex = int(cx + dx * (s + 7))
+            ey = int(cy + dy * (s + 7))
+            pygame.draw.line(surface, color, (cx, cy), (ex, ey), line_w)
+            px = -dy
+            py = dx
+            p1 = (ex, ey)
+            p2 = (int(ex - dx * 5 + px * 3), int(ey - dy * 5 + py * 3))
+            p3 = (int(ex - dx * 5 - px * 3), int(ey - dy * 5 - py * 3))
+            pygame.draw.polygon(surface, color, (p1, p2, p3), line_w)
         elif entity.shape == "tank":
             box = pygame.Rect(cx - s, cy - s, s * 2, s * 2)
             pygame.draw.rect(surface, color, box, line_w)
-            pygame.draw.line(surface, color, (cx - s - 4, cy), (cx + s + 4, cy), line_w)
+            dx = math.cos(heading)
+            dy = math.sin(heading)
+            pygame.draw.line(
+                surface,
+                color,
+                (int(cx - dx * (s + 3)), int(cy - dy * (s + 3))),
+                (int(cx + dx * (s + 3)), int(cy + dy * (s + 3))),
+                line_w,
+            )
         elif entity.shape == "building":
-            pts = ((cx, cy - s - 1), (cx + s + 2, cy + s), (cx - s - 2, cy + s))
+            a0 = heading - (math.pi / 2.0)
+            pts = (
+                (int(cx + math.cos(a0) * (s + 1)), int(cy + math.sin(a0) * (s + 1))),
+                (int(cx + math.cos(a0 + 2.12) * (s + 2)), int(cy + math.sin(a0 + 2.12) * (s + 2))),
+                (int(cx + math.cos(a0 - 2.12) * (s + 2)), int(cy + math.sin(a0 - 2.12) * (s + 2))),
+            )
             pygame.draw.polygon(surface, color, pts, line_w)
         else:
             points = []
@@ -1689,6 +1829,33 @@ class CognitiveTestScreen:
             pw = max(1, line_w)
             pygame.draw.line(surface, color, (cx - s - 3, cy), (cx + s + 3, cy), pw)
             pygame.draw.line(surface, color, (cx, cy - s - 3), (cx, cy + s + 3), pw)
+
+    @staticmethod
+    def _draw_target_recognition_beacon(
+        surface: pygame.Surface,
+        *,
+        cx: int,
+        cy: int,
+        size: int,
+        color: tuple[int, int, int, int],
+    ) -> None:
+        s = max(3, int(size))
+        box = pygame.Rect(cx - s, cy - s, s * 2, s * 2)
+        pygame.draw.rect(surface, color, box)
+        pygame.draw.rect(surface, (18, 22, 34, max(80, color[3])), box, 1)
+
+    @staticmethod
+    def _draw_target_recognition_unknown(
+        surface: pygame.Surface,
+        *,
+        cx: int,
+        cy: int,
+        size: int,
+        color: tuple[int, int, int, int],
+    ) -> None:
+        s = max(4, int(size))
+        pts = ((cx, cy - s), (cx + s, cy), (cx, cy + s), (cx - s, cy))
+        pygame.draw.polygon(surface, color, pts, 2)
 
     @staticmethod
     def _target_recognition_affiliation_color(affiliation: str) -> tuple[int, int, int]:
@@ -1731,11 +1898,13 @@ class CognitiveTestScreen:
         self,
         scene: pygame.Surface,
         payload: TargetRecognitionPayload,
+        *,
+        phase_s: float,
     ) -> None:
         w, h = scene.get_size()
         seed = self._target_recognition_scene_seed(payload) ^ 0x9E3779B9
         rng = random.Random(seed)
-        t = pygame.time.get_ticks() / 1000.0
+        t = max(0.0, float(phase_s))
 
         # Bright haze base.
         haze = pygame.Surface((w, h), pygame.SRCALPHA)
@@ -1777,6 +1946,287 @@ class CognitiveTestScreen:
             pygame.draw.circle(haze, (10, 14, 12, 58), (int(cx + radius * 0.2), int(cy - radius * 0.1)), int(radius * 0.68))
 
         scene.blit(haze, (0, 0))
+
+    def _target_recognition_reset_scene_subtask(self) -> None:
+        self._tr_scene_payload_id = None
+        self._tr_scene_rng = None
+        self._tr_scene_glyphs = {}
+        self._tr_scene_glyph_order = []
+        self._tr_scene_symbol_hitboxes = []
+        self._tr_scene_next_glyph_id = 1
+        self._tr_scene_target_queue = []
+        self._tr_scene_active_targets = []
+        self._tr_scene_next_target_add_ms = 0
+        self._tr_scene_had_active_targets = False
+        self._tr_scene_complete = False
+        self._tr_scene_points = 0
+        self._tr_scene_hits = 0
+        self._tr_scene_misses = 0
+        self._tr_scene_beacon_hits = 0
+        self._tr_scene_unknown_hits = 0
+        self._tr_scene_anim_frame = 0
+        self._tr_scene_last_update_ms = 0
+        self._tr_scene_base_cache = None
+        self._tr_scene_base_cache_size = (0, 0)
+        self._tr_scene_base_cache_seed = 0
+
+    def _target_recognition_sync_scene_stream(self, payload: TargetRecognitionPayload) -> None:
+        now_ms = pygame.time.get_ticks()
+        pid = id(payload)
+        if self._tr_scene_payload_id != pid:
+            self._tr_scene_payload_id = pid
+            self._tr_scene_rng = random.Random(self._target_recognition_scene_seed(payload) ^ 0xC0FFEE17)
+            self._tr_scene_glyphs = {}
+            self._tr_scene_glyph_order = []
+            self._tr_scene_next_glyph_id = 1
+            self._tr_scene_symbol_hitboxes = []
+            self._tr_scene_target_queue = list(payload.scene_target_options) if payload.scene_has_target else []
+            self._tr_scene_active_targets = []
+            self._tr_scene_next_target_add_ms = now_ms + 1200
+            self._tr_scene_had_active_targets = False
+            self._tr_scene_complete = False
+            self._tr_scene_anim_frame = 0
+            self._tr_scene_last_update_ms = now_ms
+            self._tr_scene_base_cache = None
+            self._tr_scene_base_cache_size = (0, 0)
+            self._tr_scene_base_cache_seed = 0
+
+            scene_entities = payload.scene_entities
+            if not scene_entities:
+                scene_entities = tuple(
+                    self._target_recognition_entity_from_code(code) for code in payload.scene_cells
+                )
+            rows = max(1, int(payload.scene_rows))
+            cols = max(1, int(payload.scene_cols))
+            max_items = min(rows * cols, len(scene_entities))
+            assert self._tr_scene_rng is not None
+            for idx in range(max_items):
+                rr = idx // cols
+                cc = idx % cols
+                nx = (cc + 0.5) / float(cols)
+                ny = (rr + 0.5) / float(rows)
+                nx += (self._tr_scene_rng.random() - 0.5) * 0.08
+                ny += (self._tr_scene_rng.random() - 0.5) * 0.08
+                nx = max(0.04, min(0.96, nx))
+                ny = max(0.04, min(0.96, ny))
+                if self._target_recognition_scene_in_compass_zone(nx, ny):
+                    ny = min(0.96, ny + 0.16)
+                entity = scene_entities[idx]
+                labels = self._target_recognition_scene_matching_labels(
+                    entity=entity,
+                    labels=payload.scene_target_options,
+                )
+                glyph_id = self._tr_scene_next_glyph_id
+                self._tr_scene_next_glyph_id += 1
+                self._tr_scene_glyphs[glyph_id] = _TargetRecognitionSceneGlyph(
+                    glyph_id=glyph_id,
+                    kind="entity",
+                    entity=entity,
+                    nx=nx,
+                    ny=ny,
+                    scale=float(self._tr_scene_rng.uniform(0.010, 0.024)),
+                    heading=float(self._tr_scene_rng.uniform(0.0, math.tau)),
+                    alpha=float(self._tr_scene_rng.uniform(88.0, 160.0)),
+                    max_alpha=float(self._tr_scene_rng.uniform(128.0, 190.0)),
+                    matching_labels=labels,
+                )
+                self._tr_scene_glyph_order.append(glyph_id)
+
+            filler_count = max(2, min(5, (rows * cols) // 20))
+            for _ in range(filler_count):
+                self._target_recognition_scene_add_filler_glyph(kind="beacon")
+                self._target_recognition_scene_add_filler_glyph(kind="unknown")
+
+        if self._tr_scene_payload_id != pid:
+            return
+        dt_ms = max(0, min(120, now_ms - self._tr_scene_last_update_ms))
+        self._tr_scene_last_update_ms = now_ms
+        self._tr_scene_anim_frame += 1
+        if dt_ms > 0:
+            fade = float(dt_ms) * 0.040
+            for glyph in self._tr_scene_glyphs.values():
+                if glyph.alpha < glyph.max_alpha:
+                    glyph.alpha = min(glyph.max_alpha, glyph.alpha + fade)
+
+        if payload.scene_has_target and (not self._tr_scene_complete):
+            while self._tr_scene_target_queue and now_ms >= self._tr_scene_next_target_add_ms:
+                if len(self._tr_scene_active_targets) >= 3:
+                    break
+                nxt = self._tr_scene_target_queue.pop(0)
+                if nxt not in self._tr_scene_active_targets:
+                    self._tr_scene_active_targets.append(nxt)
+                    self._tr_scene_had_active_targets = True
+                assert self._tr_scene_rng is not None
+                self._tr_scene_next_target_add_ms += int(round(self._tr_scene_rng.uniform(1600.0, 2800.0)))
+
+            self._target_recognition_scene_prune_completed_targets()
+
+    def _target_recognition_scene_prune_completed_targets(self) -> None:
+        if not self._tr_scene_active_targets:
+            return
+        active: list[str] = []
+        for label in self._tr_scene_active_targets:
+            has_any = any(
+                glyph.kind == "entity" and label in glyph.matching_labels
+                for glyph in self._tr_scene_glyphs.values()
+            )
+            if has_any:
+                active.append(label)
+        self._tr_scene_active_targets = active
+        if not self._tr_scene_active_targets and self._tr_scene_had_active_targets:
+            self._tr_scene_complete = True
+            self._tr_scene_target_queue.clear()
+            self._tr_selected_panels.add("scene")
+
+    def _target_recognition_handle_scene_press(
+        self,
+        payload: TargetRecognitionPayload,
+        *,
+        glyph_id: int,
+    ) -> bool:
+        glyph = self._tr_scene_glyphs.get(int(glyph_id))
+        if glyph is None:
+            return False
+
+        if glyph.kind == "beacon":
+            self._tr_scene_points += 1
+            self._tr_scene_beacon_hits += 1
+            self._target_recognition_scene_reseed_glyph(payload, glyph, kind="beacon", force_non_target=True)
+            return True
+        if glyph.kind == "unknown":
+            self._tr_scene_points += 1
+            self._tr_scene_unknown_hits += 1
+            self._target_recognition_scene_reseed_glyph(payload, glyph, kind="unknown", force_non_target=True)
+            return True
+
+        active = set(self._tr_scene_active_targets)
+        hit_target = bool(active.intersection(glyph.matching_labels))
+        if hit_target:
+            self._tr_scene_points += 1
+            self._tr_scene_hits += 1
+            self._target_recognition_scene_reseed_glyph(payload, glyph, kind="entity", force_non_target=True)
+            self._target_recognition_scene_prune_completed_targets()
+            return True
+
+        self._tr_scene_points -= 1
+        self._tr_scene_misses += 1
+        return False
+
+    def _target_recognition_scene_reseed_glyph(
+        self,
+        payload: TargetRecognitionPayload,
+        glyph: _TargetRecognitionSceneGlyph,
+        *,
+        kind: str,
+        force_non_target: bool,
+    ) -> None:
+        if self._tr_scene_rng is None:
+            self._tr_scene_rng = random.Random(self._target_recognition_scene_seed(payload) ^ 0xC0FFEE17)
+
+        glyph.kind = kind
+        glyph.nx, glyph.ny = self._target_recognition_scene_random_position()
+        glyph.scale = float(self._tr_scene_rng.uniform(0.010, 0.024))
+        glyph.heading = float(self._tr_scene_rng.uniform(0.0, math.tau))
+        glyph.alpha = 0.0
+        glyph.max_alpha = float(self._tr_scene_rng.uniform(128.0, 186.0))
+        glyph.matching_labels = ()
+        glyph.entity = None
+
+        if kind != "entity":
+            return
+
+        active = set(self._tr_scene_active_targets)
+        for _ in range(72):
+            candidate = TargetRecognitionSceneEntity(
+                shape=str(self._tr_scene_rng.choice(("truck", "tank", "building"))),
+                affiliation=str(self._tr_scene_rng.choice(("hostile", "friendly", "neutral"))),
+                damaged=bool(self._tr_scene_rng.random() < 0.36),
+                high_priority=bool(self._tr_scene_rng.random() < 0.28),
+            )
+            labels = self._target_recognition_scene_matching_labels(
+                entity=candidate,
+                labels=payload.scene_target_options,
+            )
+            if force_non_target and active.intersection(labels):
+                continue
+            glyph.entity = candidate
+            glyph.matching_labels = labels
+            return
+
+        glyph.entity = TargetRecognitionSceneEntity("truck", "neutral", False, False)
+        glyph.matching_labels = ()
+
+    def _target_recognition_scene_add_filler_glyph(self, *, kind: str) -> None:
+        if self._tr_scene_rng is None:
+            return
+        glyph_id = self._tr_scene_next_glyph_id
+        self._tr_scene_next_glyph_id += 1
+        nx, ny = self._target_recognition_scene_random_position()
+        self._tr_scene_glyphs[glyph_id] = _TargetRecognitionSceneGlyph(
+            glyph_id=glyph_id,
+            kind=kind,
+            entity=None,
+            nx=nx,
+            ny=ny,
+            scale=float(self._tr_scene_rng.uniform(0.008, 0.016)),
+            heading=0.0,
+            alpha=float(self._tr_scene_rng.uniform(120.0, 188.0)),
+            max_alpha=float(self._tr_scene_rng.uniform(140.0, 196.0)),
+            matching_labels=(),
+        )
+        self._tr_scene_glyph_order.append(glyph_id)
+
+    def _target_recognition_scene_random_position(self) -> tuple[float, float]:
+        assert self._tr_scene_rng is not None
+        for _ in range(48):
+            nx = float(self._tr_scene_rng.uniform(0.04, 0.96))
+            ny = float(self._tr_scene_rng.uniform(0.05, 0.96))
+            if not self._target_recognition_scene_in_compass_zone(nx, ny):
+                return nx, ny
+        return 0.5, 0.52
+
+    @staticmethod
+    def _target_recognition_scene_in_compass_zone(nx: float, ny: float) -> bool:
+        dx = nx - 0.055
+        dy = ny - 0.065
+        return (dx * dx + dy * dy) <= (0.058 * 0.058)
+
+    def _target_recognition_scene_matching_labels(
+        self,
+        *,
+        entity: TargetRecognitionSceneEntity,
+        labels: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        return tuple(label for label in labels if self._target_recognition_scene_label_matches(entity, label))
+
+    @staticmethod
+    def _target_recognition_scene_label_matches(entity: TargetRecognitionSceneEntity, label: str) -> bool:
+        txt = str(label).upper()
+        if "UNKNOWN" in txt or "BEACON" in txt:
+            return False
+        if "TRUCK" in txt:
+            shape = "truck"
+        elif "TANK" in txt:
+            shape = "tank"
+        elif "BUILDING" in txt:
+            shape = "building"
+        else:
+            return False
+        if "HOSTILE" in txt:
+            affiliation = "hostile"
+        elif "FRIENDLY" in txt:
+            affiliation = "friendly"
+        elif "NEUTRAL" in txt:
+            affiliation = "neutral"
+        else:
+            return False
+        if entity.shape != shape or entity.affiliation != affiliation:
+            return False
+        if "DAMAGED" in txt and not entity.damaged:
+            return False
+        if "HP" in txt and not entity.high_priority:
+            return False
+        return True
 
     def _target_recognition_sync_selection(self, payload: TargetRecognitionPayload) -> None:
         pid = id(payload)
