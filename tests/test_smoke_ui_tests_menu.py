@@ -225,7 +225,7 @@ def test_ui_smoke_navigate_to_tests_and_open_visual_search() -> None:
         # 4) Digit Recognition
         # 5) Colours, Letters and Numbers
         # 6) Angles, Bearings and Degrees
-        # 7) Visual Search (Target Recognition)
+        # 7) Visual Search
         #
         # Main Menu: DOWN, DOWN -> Tests, ENTER
         # Tests menu: DOWN x6 -> Visual Search, ENTER
@@ -271,7 +271,7 @@ def test_ui_smoke_navigate_to_tests_and_open_instrument_comprehension() -> None:
         # 4) Digit Recognition
         # 5) Colours, Letters and Numbers
         # 6) Angles, Bearings and Degrees
-        # 7) Visual Search (Target Recognition)
+        # 7) Visual Search
         # 8) Instrument Comprehension
         #
         # Main Menu: DOWN, DOWN -> Tests, ENTER
@@ -303,6 +303,139 @@ def test_ui_smoke_navigate_to_tests_and_open_instrument_comprehension() -> None:
             pygame.event.post(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""}))
 
     assert run(max_frames=60, event_injector=inject) == 0
+
+
+def test_ui_smoke_navigate_to_tests_and_open_target_recognition() -> None:
+    os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+    os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+
+    import pygame
+    from cfast_trainer.app import run
+
+    def inject(frame: int) -> None:
+        # Assumes Tests submenu order:
+        # 1) Numerical Operations
+        # 2) Mathematics Reasoning
+        # 3) Airborne Numerical Test
+        # 4) Digit Recognition
+        # 5) Colours, Letters and Numbers
+        # 6) Angles, Bearings and Degrees
+        # 7) Visual Search
+        # 8) Instrument Comprehension
+        # 9) Target Recognition
+        #
+        # Main Menu: DOWN, DOWN -> Tests, ENTER
+        # Tests menu: DOWN x8 -> Target Recognition, ENTER
+        # Instructions: ENTER to begin practice
+        if frame == 1:
+            pygame.event.post(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_DOWN, "unicode": ""}))
+        elif frame == 2:
+            pygame.event.post(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_DOWN, "unicode": ""}))
+        elif frame == 3:
+            pygame.event.post(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""}))
+        elif frame == 4:
+            pygame.event.post(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_DOWN, "unicode": ""}))
+        elif frame == 5:
+            pygame.event.post(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_DOWN, "unicode": ""}))
+        elif frame == 6:
+            pygame.event.post(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_DOWN, "unicode": ""}))
+        elif frame == 7:
+            pygame.event.post(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_DOWN, "unicode": ""}))
+        elif frame == 8:
+            pygame.event.post(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_DOWN, "unicode": ""}))
+        elif frame == 9:
+            pygame.event.post(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_DOWN, "unicode": ""}))
+        elif frame == 10:
+            pygame.event.post(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_DOWN, "unicode": ""}))
+        elif frame == 11:
+            pygame.event.post(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_DOWN, "unicode": ""}))
+        elif frame == 12:
+            pygame.event.post(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""}))
+        elif frame == 13:
+            pygame.event.post(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""}))
+
+    assert run(max_frames=65, event_injector=inject) == 0
+
+
+def test_ui_smoke_navigate_to_tests_and_open_system_logic() -> None:
+    os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+    os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+
+    import pygame
+    from cfast_trainer.app import run
+
+    def inject(frame: int) -> None:
+        # Assumes Tests submenu order:
+        # 1) Numerical Operations
+        # 2) Mathematics Reasoning
+        # 3) Airborne Numerical Test
+        # 4) Digit Recognition
+        # 5) Colours, Letters and Numbers
+        # 6) Angles, Bearings and Degrees
+        # 7) Visual Search
+        # 8) Instrument Comprehension
+        # 9) Target Recognition
+        # 10) System Logic
+        #
+        # Main Menu: DOWN, DOWN -> Tests, ENTER
+        # Tests menu: DOWN x9 -> System Logic, ENTER
+        # Instructions: ENTER to begin practice
+        if frame == 1:
+            pygame.event.post(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_DOWN, "unicode": ""}))
+        elif frame == 2:
+            pygame.event.post(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_DOWN, "unicode": ""}))
+        elif frame == 3:
+            pygame.event.post(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""}))
+        elif frame in (4, 5, 6, 7, 8, 9, 10, 11, 12):
+            pygame.event.post(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_DOWN, "unicode": ""}))
+        elif frame == 13:
+            pygame.event.post(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""}))
+        elif frame == 14:
+            pygame.event.post(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""}))
+
+    assert run(max_frames=70, event_injector=inject) == 0
+
+
+def test_ui_smoke_target_recognition_mouse_select_and_submit() -> None:
+    os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+    os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+
+    import pygame
+    from cfast_trainer.app import run
+
+    def inject(frame: int) -> None:
+        # Main Menu: DOWN, DOWN -> Tests, ENTER
+        # Tests menu: DOWN x8 -> Target Recognition, ENTER
+        # Instructions: ENTER to begin practice
+        # Practice: click one target strip, then click SUBMIT
+        if frame == 1:
+            pygame.event.post(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_DOWN, "unicode": ""}))
+        elif frame == 2:
+            pygame.event.post(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_DOWN, "unicode": ""}))
+        elif frame == 3:
+            pygame.event.post(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""}))
+        elif frame in (4, 5, 6, 7, 8, 9, 10, 11):
+            pygame.event.post(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_DOWN, "unicode": ""}))
+        elif frame == 12:
+            pygame.event.post(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""}))
+        elif frame == 13:
+            pygame.event.post(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""}))
+        elif frame == 14:
+            pygame.event.post(
+                pygame.event.Event(
+                    pygame.MOUSEBUTTONDOWN,
+                    {"button": 1, "pos": (110, 430)},
+                )
+            )
+        elif frame == 15:
+            pygame.event.post(
+                pygame.event.Event(
+                    pygame.MOUSEBUTTONDOWN,
+                    {"button": 1, "pos": (870, 490)},
+                )
+            )
+
+    assert run(max_frames=75, event_injector=inject) == 0
 
 
 def test_ui_smoke_navigate_to_hotas_and_open_axis_calibration() -> None:
