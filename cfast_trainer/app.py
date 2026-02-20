@@ -18,6 +18,9 @@ import math
 import os
 import queue
 import random
+import shutil
+import subprocess
+import sys
 import threading
 from array import array
 from collections.abc import Callable
@@ -110,14 +113,15 @@ class _TargetRecognitionSceneGlyph:
 
 
 class _OfflineTtsSpeaker:
-    """Best-effort offline TTS worker using pyttsx3.
+    """Best-effort offline TTS worker using OS speech commands.
 
-    This is an adapter-only utility. If pyttsx3 is unavailable or fails to
-    initialize, it quietly disables itself.
+    Speech runs out-of-process to avoid native TTS backend crashes taking down
+    the main app process.
     """
 
     def __init__(self) -> None:
         self._enabled = False
+        self._backend: str | None = None
         self._queue: queue.Queue[str | None] = queue.Queue(maxsize=16)
         self._thread: threading.Thread | None = None
 
@@ -126,9 +130,9 @@ class _OfflineTtsSpeaker:
         if os.environ.get("SDL_AUDIODRIVER", "").strip().lower() == "dummy":
             # Keep automated/headless runs silent and stable.
             return
-        try:
-            import pyttsx3  # type: ignore[import-not-found]  # noqa: F401
-        except Exception:
+
+        self._backend = self._detect_backend()
+        if self._backend is None:
             return
 
         self._thread = threading.Thread(target=self._run_loop, name="cfast-tts", daemon=True)
@@ -168,23 +172,20 @@ class _OfflineTtsSpeaker:
             self._thread.join(timeout=1.2)
         self._thread = None
 
+    @staticmethod
+    def _detect_backend() -> str | None:
+        # macOS native offline TTS.
+        if sys.platform == "darwin" and shutil.which("say") is not None:
+            return "say"
+        # Windows offline SAPI via PowerShell.
+        if os.name == "nt" and shutil.which("powershell") is not None:
+            return "powershell"
+        # Linux fallback if installed.
+        if shutil.which("espeak") is not None:
+            return "espeak"
+        return None
+
     def _run_loop(self) -> None:
-        try:
-            import pyttsx3  # type: ignore[import-not-found]
-
-            engine = pyttsx3.init()
-            try:
-                engine.setProperty("rate", 176)
-            except Exception:
-                pass
-            try:
-                engine.setProperty("volume", 0.95)
-            except Exception:
-                pass
-        except Exception:
-            self._enabled = False
-            return
-
         while self._enabled:
             try:
                 item = self._queue.get(timeout=0.20)
@@ -193,15 +194,57 @@ class _OfflineTtsSpeaker:
             if item is None:
                 break
             try:
-                engine.say(item)
-                engine.runAndWait()
+                self._speak_now(item)
             except Exception:
                 # Continue with subsequent prompts.
                 pass
-        try:
-            engine.stop()
-        except Exception:
-            pass
+
+    def _speak_now(self, text: str) -> None:
+        backend = self._backend
+        if backend is None:
+            return
+
+        clean = " ".join(str(text).strip().split())
+        if clean == "":
+            return
+
+        if backend == "say":
+            subprocess.run(
+                ["say", "-r", "176", clean],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=6.0,
+            )
+            return
+
+        if backend == "powershell":
+            script = (
+                "Add-Type -AssemblyName System.Speech; "
+                "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
+                "$s.Rate = 1; "
+                "$t = [Console]::In.ReadToEnd(); "
+                "$s.Speak($t)"
+            )
+            subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+                input=clean,
+                text=True,
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=8.0,
+            )
+            return
+
+        if backend == "espeak":
+            subprocess.run(
+                ["espeak", "-s", "176", clean],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=6.0,
+            )
 
 
 class _AuditoryCapacityAudioAdapter:
@@ -235,6 +278,18 @@ class _AuditoryCapacityAudioAdapter:
         self._last_sequence_display: str | None = None
         self._last_assigned_callsigns: tuple[str, ...] = ()
         self._tts = _OfflineTtsSpeaker()
+        self._voice_rng = random.Random(0xAC710)
+        self._next_chatter_at_s = 0.0
+        self._chatter_lines: tuple[str, ...] = (
+            "Maintain centerline.",
+            "Stay on task.",
+            "Prioritize call signs.",
+            "Keep the aircraft steady.",
+            "Avoid false trigger.",
+            "Track and respond.",
+            "Prepare for next command.",
+            "Focus under workload.",
+        )
 
         try:
             if pygame.mixer.get_init() is None:
@@ -280,6 +335,7 @@ class _AuditoryCapacityAudioAdapter:
         self._sync_beep_cue(payload=payload)
         self._sync_color_cue(payload=payload)
         self._sync_sequence_cue(payload=payload)
+        self._sync_voice_chatter(payload=payload)
 
     def stop(self) -> None:
         if not self._available:
@@ -303,6 +359,7 @@ class _AuditoryCapacityAudioAdapter:
         self._last_beep_active = False
         self._last_sequence_display = None
         self._last_assigned_callsigns = ()
+        self._next_chatter_at_s = 0.0
 
     def _sync_background_layers(self, *, payload: AuditoryCapacityPayload) -> None:
         assert self._bg_channel is not None
@@ -339,7 +396,8 @@ class _AuditoryCapacityAudioAdapter:
             sound = self._build_callsign_sound(cue)
             self._callsign_cache[cue] = sound
         self._play_cue(sound, volume=0.50)
-        self._tts.speak(f"Call sign. {cue}")
+        mode = "respond" if cue in payload.assigned_callsigns else "ignore"
+        self._tts.speak(f"Call sign. {cue}. {mode}.")
         self._last_callsign_cue = cue
 
     def _sync_beep_cue(self, *, payload: AuditoryCapacityPayload) -> None:
@@ -348,6 +406,7 @@ class _AuditoryCapacityAudioAdapter:
             assert self._alert_channel is not None
             self._alert_channel.set_volume(0.70)
             self._alert_channel.play(self._beep_sound)
+            self._tts.speak("Beep.")
         self._last_beep_active = active
 
     def _sync_color_cue(self, *, payload: AuditoryCapacityPayload) -> None:
@@ -360,7 +419,7 @@ class _AuditoryCapacityAudioAdapter:
         sound = self._color_sounds.get(command)
         if sound is not None:
             self._play_cue(sound, volume=0.42)
-        self._tts.speak(f"Color. {command}")
+        self._tts.speak(f"Change color. {command}.")
         self._last_color_command = command
 
     def _sync_sequence_cue(self, *, payload: AuditoryCapacityPayload) -> None:
@@ -379,6 +438,26 @@ class _AuditoryCapacityAudioAdapter:
         if digit_phrase != "":
             self._tts.speak(f"Sequence. {digit_phrase}")
         self._last_sequence_display = sequence
+
+    def _sync_voice_chatter(self, *, payload: AuditoryCapacityPayload) -> None:
+        if not self._tts.enabled:
+            return
+        if not self._chatter_lines:
+            return
+
+        now_s = float(pygame.time.get_ticks()) / 1000.0
+        if self._next_chatter_at_s <= 0.0:
+            self._next_chatter_at_s = now_s + 4.5
+            return
+        if now_s < self._next_chatter_at_s:
+            return
+
+        line = str(self._voice_rng.choice(self._chatter_lines))
+        self._tts.speak(line)
+
+        base = 6.8 + (float(payload.background_noise_level) * 4.0)
+        jitter = self._voice_rng.uniform(-1.4, 1.6)
+        self._next_chatter_at_s = now_s + max(4.0, base + jitter)
 
     def _play_cue(self, sound: pygame.mixer.Sound, *, volume: float) -> None:
         if not self._available:

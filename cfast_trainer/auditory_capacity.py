@@ -19,17 +19,21 @@ class AuditoryCapacityConfig:
     tube_half_width: float = 0.92
     tube_half_height: float = 0.56
 
-    gate_speed_norm_per_s: float = 0.72
-    gate_interval_s: float = 2.00
+    gate_speed_norm_per_s: float = 0.56
+    gate_interval_s: float = 2.65
 
-    callsign_interval_s: float = 1.95
-    beep_interval_s: float = 1.60
-    color_command_interval_s: float = 4.40
-    sequence_interval_s: float = 8.20
+    callsign_interval_s: float = 2.60
+    beep_interval_s: float = 2.35
+    color_command_interval_s: float = 5.50
+    sequence_interval_s: float = 10.40
 
-    cue_window_s: float = 1.25
-    sequence_display_s: float = 1.75
-    sequence_response_s: float = 3.50
+    cue_window_s: float = 1.65
+    sequence_display_s: float = 2.20
+    sequence_response_s: float = 4.40
+
+    # Drift can taper as the phase progresses (0.0-1.0 ratio through phase time).
+    drift_relax_start_ratio: float = 0.14
+    min_drift_scale: float = 0.38
 
 
 class AuditoryCapacityEventKind(StrEnum):
@@ -292,6 +296,10 @@ class AuditoryCapacityEngine:
             raise ValueError("sequence_display_s must be > 0")
         if cfg.sequence_response_s <= 0.0:
             raise ValueError("sequence_response_s must be > 0")
+        if not (0.0 <= cfg.drift_relax_start_ratio <= 0.95):
+            raise ValueError("drift_relax_start_ratio must be in [0.0, 0.95]")
+        if not (0.0 < cfg.min_drift_scale <= 1.0):
+            raise ValueError("min_drift_scale must be in (0.0, 1.0]")
 
         self._clock = clock
         self._seed = int(seed)
@@ -543,17 +551,17 @@ class AuditoryCapacityEngine:
         self._dist_until_s = 0.0
 
         self._gates.clear()
-        self._next_gate_at_s = 0.85
+        self._next_gate_at_s = 1.60
 
         self._active_callsign = None
         self._active_beep = None
         self._active_color = None
         self._active_sequence = None
 
-        self._next_callsign_at_s = 1.10
-        self._next_beep_at_s = 0.95
-        self._next_color_at_s = 2.15
-        self._next_sequence_at_s = 3.10
+        self._next_callsign_at_s = 1.80
+        self._next_beep_at_s = 1.70
+        self._next_color_at_s = 2.90
+        self._next_sequence_at_s = 4.50
 
         self._ball_color = "RED"
         self._ball_color_strength = 1.0
@@ -617,9 +625,38 @@ class AuditoryCapacityEngine:
         if self._sim_elapsed_s < self._dist_until_s:
             return
         disturbance = self._gen.next_disturbance(difficulty=self._difficulty)
-        self._dist_x = disturbance.vx
-        self._dist_y = disturbance.vy
-        self._dist_until_s = self._sim_elapsed_s + disturbance.duration_s
+        drift_scale = self._drift_scale()
+        self._dist_x = disturbance.vx * drift_scale
+        self._dist_y = disturbance.vy * drift_scale
+
+        # As drift scales down, hold each vector slightly longer.
+        linger = 1.0 + ((1.0 - drift_scale) * 0.45)
+        self._dist_until_s = self._sim_elapsed_s + (disturbance.duration_s * linger)
+
+    def _drift_scale(self) -> float:
+        start = float(self._cfg.drift_relax_start_ratio)
+        minimum = float(self._cfg.min_drift_scale)
+        progress = self._phase_progress_ratio()
+
+        if progress <= start:
+            return 1.0
+        remaining = max(1e-6, 1.0 - start)
+        t = (progress - start) / remaining
+        t = clamp01(t)
+        return 1.0 - ((1.0 - minimum) * t)
+
+    def _phase_progress_ratio(self) -> float:
+        if self._phase is Phase.SCORED:
+            duration = float(self._cfg.scored_duration_s)
+        elif self._phase is Phase.PRACTICE:
+            duration = float(self._cfg.practice_duration_s)
+        else:
+            return 0.0
+
+        if duration <= 0.0:
+            return 0.0
+        elapsed = max(0.0, self._clock.now() - self._phase_started_at_s)
+        return clamp01(elapsed / duration)
 
     def _update_gates(self, dt: float) -> None:
         if self._sim_elapsed_s >= self._next_gate_at_s:
