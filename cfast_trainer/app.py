@@ -1,25 +1,37 @@
 """Pygame UI shell for the RCAF CFAST Trainer.
 
-This task adds two cognitive tests under a "Tests" submenu:
+This task adds cognitive tests under a "Tests" submenu:
 - Numerical Operations (mental arithmetic)
 - Mathematics Reasoning (multiple-choice word problems)
 - Airborne Numerical Test (HHMM timing with map/table UI)
+- Table Reading (cross-reference lookup tables)
+- Sensory Motor Apparatus (joystick/pedal coordination tracking)
+- Auditory Capacity (multichannel auditory + psychomotor load)
 
 Deterministic timing/scoring/RNG/state lives in cfast_trainer/* (core modules).
 """
 
 from __future__ import annotations
 
+import json
 import math
+import os
 import random
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
 from typing import cast
 from typing import Protocol
 
 import pygame
 
 from .airborne_numerical import AirborneScenario, TEMPLATES_BY_NAME, build_airborne_numerical_test
+from .auditory_capacity import (
+    AuditoryCapacityEngine,
+    AuditoryCapacityPayload,
+    build_auditory_capacity_test,
+)
 from .angles_bearings_degrees import (
     AnglesBearingsDegreesPayload,
     AnglesBearingsQuestionKind,
@@ -40,12 +52,18 @@ from .instrument_comprehension import (
 )
 from .math_reasoning import MathReasoningPayload, build_math_reasoning_test
 from .numerical_operations import build_numerical_operations_test
+from .sensory_motor_apparatus import (
+    SensoryMotorApparatusEngine,
+    SensoryMotorApparatusPayload,
+    build_sensory_motor_apparatus_test,
+)
 from .system_logic import (
     SystemLogicDocument,
     SystemLogicFolder,
     SystemLogicPayload,
     build_system_logic_test,
 )
+from .table_reading import TableReadingPayload, TableReadingTable, build_table_reading_test
 from .target_recognition import (
     TargetRecognitionPayload,
     TargetRecognitionSceneEntity,
@@ -149,6 +167,810 @@ class PlaceholderScreen:
         hint = self._app.font.render("Placeholder. Press Esc to go back.", True, (180, 180, 190))
         surface.blit(title, (40, 40))
         surface.blit(hint, (40, 100))
+
+
+INPUT_PROFILE_STORE_ENV = "CFAST_INPUT_PROFILES_PATH"
+
+
+@dataclass(slots=True)
+class AxisCalibrationSettings:
+    min_raw: float = -1.0
+    max_raw: float = 1.0
+    deadzone: float = 0.05
+    invert: bool = False
+    curve: float = 1.0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "min_raw": float(self.min_raw),
+            "max_raw": float(self.max_raw),
+            "deadzone": float(self.deadzone),
+            "invert": bool(self.invert),
+            "curve": float(self.curve),
+        }
+
+    @classmethod
+    def from_dict(cls, data: object) -> "AxisCalibrationSettings":
+        if not isinstance(data, dict):
+            return cls()
+        min_raw = _clamp(_as_float(data.get("min_raw"), -1.0), -1.0, 0.0)
+        max_raw = _clamp(_as_float(data.get("max_raw"), 1.0), 0.0, 1.0)
+        if min_raw >= -0.001:
+            min_raw = -1.0
+        if max_raw <= 0.001:
+            max_raw = 1.0
+        return cls(
+            min_raw=min_raw,
+            max_raw=max_raw,
+            deadzone=_clamp(_as_float(data.get("deadzone"), 0.05), 0.0, 0.45),
+            invert=bool(data.get("invert", False)),
+            curve=_clamp(_as_float(data.get("curve"), 1.0), 0.4, 2.6),
+        )
+
+
+@dataclass(slots=True)
+class InputProfile:
+    profile_id: str
+    name: str
+    axis_calibrations: dict[str, AxisCalibrationSettings]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.profile_id,
+            "name": self.name,
+            "axis_calibrations": {
+                axis_key: settings.to_dict()
+                for axis_key, settings in self.axis_calibrations.items()
+            },
+        }
+
+
+class InputProfilesStore:
+    _version = 1
+
+    def __init__(self, path: Path) -> None:
+        self._path = path
+        self._profiles: list[InputProfile] = [InputProfile("default", "Default", {})]
+        self._active_profile_id = "default"
+        self._load()
+
+    @classmethod
+    def default_path(cls) -> Path:
+        explicit = os.environ.get(INPUT_PROFILE_STORE_ENV)
+        if explicit:
+            return Path(explicit).expanduser()
+        return Path.home() / ".rcaf_cfast_input_profiles.json"
+
+    def _load(self) -> None:
+        if not self._path.exists():
+            return
+        try:
+            payload = json.loads(self._path.read_text(encoding="utf-8"))
+        except Exception:
+            return
+        if not isinstance(payload, dict):
+            return
+
+        raw_profiles = payload.get("profiles")
+        if not isinstance(raw_profiles, list):
+            return
+
+        loaded_profiles: list[InputProfile] = []
+        for item in raw_profiles:
+            if not isinstance(item, dict):
+                continue
+            profile_id = str(item.get("id", "")).strip()
+            name = str(item.get("name", "")).strip()
+            if profile_id == "":
+                continue
+            if name == "":
+                name = profile_id
+            raw_axes = item.get("axis_calibrations")
+            axis_calibrations: dict[str, AxisCalibrationSettings] = {}
+            if isinstance(raw_axes, dict):
+                for axis_key, settings in raw_axes.items():
+                    axis_calibrations[str(axis_key)] = AxisCalibrationSettings.from_dict(settings)
+            loaded_profiles.append(
+                InputProfile(
+                    profile_id=profile_id,
+                    name=name,
+                    axis_calibrations=axis_calibrations,
+                )
+            )
+
+        if loaded_profiles:
+            self._profiles = loaded_profiles
+        raw_active = str(payload.get("active_profile_id", "")).strip()
+        if raw_active != "" and any(p.profile_id == raw_active for p in self._profiles):
+            self._active_profile_id = raw_active
+        else:
+            self._active_profile_id = self._profiles[0].profile_id
+
+    def save(self) -> None:
+        payload = {
+            "version": self._version,
+            "active_profile_id": self._active_profile_id,
+            "profiles": [profile.to_dict() for profile in self._profiles],
+        }
+        try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = self._path.with_suffix(f"{self._path.suffix}.tmp")
+            tmp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            tmp_path.replace(self._path)
+        except Exception:
+            return
+
+    def profiles(self) -> list[InputProfile]:
+        return list(self._profiles)
+
+    def active_profile(self) -> InputProfile:
+        for profile in self._profiles:
+            if profile.profile_id == self._active_profile_id:
+                return profile
+        self._active_profile_id = self._profiles[0].profile_id
+        return self._profiles[0]
+
+    def set_active_profile(self, profile_id: str) -> None:
+        if any(profile.profile_id == profile_id for profile in self._profiles):
+            self._active_profile_id = profile_id
+            self.save()
+
+    def create_profile(self, *, name: str, copy_from: InputProfile | None) -> InputProfile:
+        candidate = str(name).strip()
+        if candidate == "":
+            candidate = "Profile"
+        profile_id = self._next_profile_id(candidate)
+        copied: dict[str, AxisCalibrationSettings] = {}
+        if copy_from is not None:
+            copied = {
+                axis_key: AxisCalibrationSettings.from_dict(settings.to_dict())
+                for axis_key, settings in copy_from.axis_calibrations.items()
+            }
+        profile = InputProfile(profile_id=profile_id, name=candidate, axis_calibrations=copied)
+        self._profiles.append(profile)
+        self._active_profile_id = profile.profile_id
+        self.save()
+        return profile
+
+    def delete_profile(self, profile_id: str) -> bool:
+        if len(self._profiles) <= 1:
+            return False
+        idx = next((i for i, p in enumerate(self._profiles) if p.profile_id == profile_id), -1)
+        if idx < 0:
+            return False
+        del self._profiles[idx]
+        if not any(p.profile_id == self._active_profile_id for p in self._profiles):
+            self._active_profile_id = self._profiles[max(0, idx - 1)].profile_id
+        self.save()
+        return True
+
+    def rename_profile(self, profile_id: str, new_name: str) -> bool:
+        cleaned = str(new_name).strip()
+        if cleaned == "":
+            return False
+        for profile in self._profiles:
+            if profile.profile_id == profile_id:
+                profile.name = cleaned
+                self.save()
+                return True
+        return False
+
+    def get_axis_calibration(
+        self,
+        *,
+        profile_id: str,
+        axis_key: str,
+    ) -> AxisCalibrationSettings:
+        for profile in self._profiles:
+            if profile.profile_id != profile_id:
+                continue
+            found = profile.axis_calibrations.get(axis_key)
+            if found is None:
+                found = AxisCalibrationSettings()
+                profile.axis_calibrations[axis_key] = found
+            return found
+        return AxisCalibrationSettings()
+
+    def set_axis_calibration(
+        self,
+        *,
+        profile_id: str,
+        axis_key: str,
+        settings: AxisCalibrationSettings,
+    ) -> None:
+        for profile in self._profiles:
+            if profile.profile_id == profile_id:
+                profile.axis_calibrations[axis_key] = AxisCalibrationSettings.from_dict(settings.to_dict())
+                self.save()
+                return
+
+    def _next_profile_id(self, base_name: str) -> str:
+        base = "".join(ch.lower() if ch.isalnum() else "_" for ch in base_name).strip("_")
+        if base == "":
+            base = "profile"
+        candidate = base
+        suffix = 2
+        existing = {profile.profile_id for profile in self._profiles}
+        while candidate in existing:
+            candidate = f"{base}_{suffix}"
+            suffix += 1
+        return candidate
+
+
+def _as_float(value: object, fallback: float) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return fallback
+
+
+def _clamp(value: float, lo: float, hi: float) -> float:
+    if value <= lo:
+        return lo
+    if value >= hi:
+        return hi
+    return float(value)
+
+
+def _iter_connected_joysticks() -> list[pygame.joystick.Joystick]:
+    joysticks: list[pygame.joystick.Joystick] = []
+    try:
+        count = int(pygame.joystick.get_count())
+    except Exception:
+        return joysticks
+    for idx in range(count):
+        try:
+            js = pygame.joystick.Joystick(idx)
+            if not js.get_init():
+                js.init()
+            joysticks.append(js)
+        except Exception:
+            continue
+    return joysticks
+
+
+def _joystick_guid(joystick: pygame.joystick.Joystick) -> str:
+    getter = getattr(joystick, "get_guid", None)
+    if callable(getter):
+        try:
+            value = str(getter()).strip()
+            if value != "":
+                return value
+        except Exception:
+            pass
+    return ""
+
+
+def _joystick_key(joystick: pygame.joystick.Joystick) -> str:
+    name = str(joystick.get_name())
+    guid = _joystick_guid(joystick)
+    return f"{name}|{guid}" if guid != "" else name
+
+
+def _axis_key(joystick: pygame.joystick.Joystick, axis_index: int) -> str:
+    return f"{_joystick_key(joystick)}::axis{int(axis_index)}"
+
+
+def _axis_raw_value(joystick: pygame.joystick.Joystick, axis_index: int) -> float:
+    try:
+        return _clamp(float(joystick.get_axis(axis_index)), -1.0, 1.0)
+    except Exception:
+        return 0.0
+
+
+def _apply_axis_calibration(raw: float, settings: AxisCalibrationSettings) -> float:
+    value = _clamp(float(raw), -1.0, 1.0)
+    if settings.invert:
+        value = -value
+
+    pos_span = max(0.001, float(settings.max_raw))
+    neg_span = max(0.001, abs(float(settings.min_raw)))
+    normalized = value / (pos_span if value >= 0.0 else neg_span)
+    normalized = _clamp(normalized, -1.0, 1.0)
+
+    deadzone = _clamp(float(settings.deadzone), 0.0, 0.45)
+    magnitude = abs(normalized)
+    if magnitude <= deadzone:
+        normalized = 0.0
+    else:
+        scaled = (magnitude - deadzone) / max(0.001, 1.0 - deadzone)
+        normalized = math.copysign(scaled, normalized)
+
+    curve = _clamp(float(settings.curve), 0.4, 2.6)
+    curved = math.copysign(abs(normalized) ** curve, normalized)
+    return _clamp(curved, -1.0, 1.0)
+
+
+def _draw_axis_bar(
+    surface: pygame.Surface,
+    rect: pygame.Rect,
+    value: float,
+    *,
+    fill_color: tuple[int, int, int],
+    line_color: tuple[int, int, int],
+) -> None:
+    pygame.draw.rect(surface, (7, 14, 95), rect)
+    pygame.draw.rect(surface, line_color, rect, 1)
+    center_x = rect.x + rect.w // 2
+    pygame.draw.line(surface, line_color, (center_x, rect.y + 2), (center_x, rect.bottom - 2), 1)
+
+    value = _clamp(value, -1.0, 1.0)
+    if abs(value) < 0.001:
+        return
+    if value > 0.0:
+        width = int((rect.w // 2 - 2) * value)
+        fill = pygame.Rect(center_x, rect.y + 2, max(1, width), rect.h - 4)
+    else:
+        width = int((rect.w // 2 - 2) * abs(value))
+        fill = pygame.Rect(center_x - width, rect.y + 2, max(1, width), rect.h - 4)
+    pygame.draw.rect(surface, fill_color, fill)
+
+
+class AxisCalibrationScreen:
+    def __init__(self, app: App, *, profiles: InputProfilesStore) -> None:
+        self._app = app
+        self._profiles = profiles
+        self._title_font = pygame.font.Font(None, 40)
+        self._small_font = pygame.font.Font(None, 25)
+        self._tiny_font = pygame.font.Font(None, 20)
+        self._device_index = 0
+        self._axis_index = 0
+        self._capturing = False
+        self._message = ""
+
+    def handle_event(self, event: pygame.event.Event) -> None:
+        if event.type != pygame.KEYDOWN:
+            return
+        key = int(event.key)
+        if key in (pygame.K_ESCAPE, pygame.K_BACKSPACE):
+            self._app.pop()
+            return
+
+        joysticks = _iter_connected_joysticks()
+        if not joysticks:
+            self._message = "No joystick detected."
+            return
+        self._device_index %= len(joysticks)
+        joystick = joysticks[self._device_index]
+        axis_count = max(1, int(joystick.get_numaxes()))
+        self._axis_index %= axis_count
+
+        if key == pygame.K_LEFT:
+            self._device_index = (self._device_index - 1) % len(joysticks)
+            self._axis_index = 0
+            self._capturing = False
+            return
+        if key == pygame.K_RIGHT:
+            self._device_index = (self._device_index + 1) % len(joysticks)
+            self._axis_index = 0
+            self._capturing = False
+            return
+        if key == pygame.K_UP:
+            self._axis_index = (self._axis_index - 1) % axis_count
+            self._capturing = False
+            return
+        if key == pygame.K_DOWN:
+            self._axis_index = (self._axis_index + 1) % axis_count
+            self._capturing = False
+            return
+
+        axis_key = _axis_key(joystick, self._axis_index)
+        profile = self._profiles.active_profile()
+        settings = self._profiles.get_axis_calibration(profile_id=profile.profile_id, axis_key=axis_key)
+
+        if key == pygame.K_SPACE:
+            if not self._capturing:
+                current = _axis_raw_value(joystick, self._axis_index)
+                settings.min_raw = min(-0.001, current)
+                settings.max_raw = max(0.001, current)
+                self._capturing = True
+                self._message = "Capture started. Move axis through full range, then press Space again."
+            else:
+                self._capturing = False
+                self._profiles.set_axis_calibration(
+                    profile_id=profile.profile_id,
+                    axis_key=axis_key,
+                    settings=settings,
+                )
+                self._message = "Capture complete. Calibration saved."
+            return
+
+        if key == pygame.K_i:
+            settings.invert = not settings.invert
+            self._profiles.set_axis_calibration(
+                profile_id=profile.profile_id,
+                axis_key=axis_key,
+                settings=settings,
+            )
+            self._message = "Invert toggled."
+            return
+
+        if key == pygame.K_r:
+            self._capturing = False
+            self._profiles.set_axis_calibration(
+                profile_id=profile.profile_id,
+                axis_key=axis_key,
+                settings=AxisCalibrationSettings(),
+            )
+            self._message = "Axis calibration reset."
+            return
+
+        if key in (pygame.K_MINUS, pygame.K_KP_MINUS):
+            settings.deadzone = _clamp(settings.deadzone - 0.01, 0.0, 0.45)
+            self._profiles.set_axis_calibration(
+                profile_id=profile.profile_id,
+                axis_key=axis_key,
+                settings=settings,
+            )
+            return
+        if key in (pygame.K_EQUALS, pygame.K_PLUS, pygame.K_KP_PLUS):
+            settings.deadzone = _clamp(settings.deadzone + 0.01, 0.0, 0.45)
+            self._profiles.set_axis_calibration(
+                profile_id=profile.profile_id,
+                axis_key=axis_key,
+                settings=settings,
+            )
+            return
+        if key == pygame.K_LEFTBRACKET:
+            settings.curve = _clamp(settings.curve - 0.05, 0.4, 2.6)
+            self._profiles.set_axis_calibration(
+                profile_id=profile.profile_id,
+                axis_key=axis_key,
+                settings=settings,
+            )
+            return
+        if key == pygame.K_RIGHTBRACKET:
+            settings.curve = _clamp(settings.curve + 0.05, 0.4, 2.6)
+            self._profiles.set_axis_calibration(
+                profile_id=profile.profile_id,
+                axis_key=axis_key,
+                settings=settings,
+            )
+            return
+
+    def render(self, surface: pygame.Surface) -> None:
+        w, h = surface.get_size()
+        surface.fill((3, 9, 78))
+        frame = pygame.Rect(12, 12, w - 24, h - 24)
+        pygame.draw.rect(surface, (8, 18, 104), frame)
+        pygame.draw.rect(surface, (226, 236, 255), frame, 2)
+
+        profile = self._profiles.active_profile()
+        title = self._title_font.render("Axis Calibration", True, (238, 245, 255))
+        surface.blit(title, (30, 26))
+        subtitle = self._small_font.render(f"Profile: {profile.name}", True, (188, 204, 228))
+        surface.blit(subtitle, (32, 66))
+
+        joysticks = _iter_connected_joysticks()
+        if not joysticks:
+            msg = self._small_font.render("No joystick detected. Connect device and reopen this screen.", True, (238, 245, 255))
+            surface.blit(msg, (32, 120))
+            footer = self._tiny_font.render("Esc/Backspace: Back", True, (188, 204, 228))
+            surface.blit(footer, (32, frame.bottom - 30))
+            return
+
+        self._device_index %= len(joysticks)
+        joystick = joysticks[self._device_index]
+        axis_count = max(1, int(joystick.get_numaxes()))
+        self._axis_index %= axis_count
+        axis_key = _axis_key(joystick, self._axis_index)
+        settings = self._profiles.get_axis_calibration(profile_id=profile.profile_id, axis_key=axis_key)
+        raw = _axis_raw_value(joystick, self._axis_index)
+        calibrated = _apply_axis_calibration(raw, settings)
+
+        if self._capturing:
+            settings.min_raw = min(settings.min_raw, raw)
+            settings.max_raw = max(settings.max_raw, raw)
+
+        device_text = self._small_font.render(
+            f"Device {self._device_index + 1}/{len(joysticks)}: {joystick.get_name()}",
+            True,
+            (238, 245, 255),
+        )
+        surface.blit(device_text, (32, 112))
+
+        axis_text = self._small_font.render(
+            f"Axis {self._axis_index + 1}/{axis_count}",
+            True,
+            (238, 245, 255),
+        )
+        surface.blit(axis_text, (32, 145))
+
+        raw_rect = pygame.Rect(32, 178, frame.w - 64, 24)
+        cal_rect = pygame.Rect(32, 214, frame.w - 64, 24)
+        _draw_axis_bar(
+            surface,
+            raw_rect,
+            raw,
+            fill_color=(116, 208, 255),
+            line_color=(98, 130, 190),
+        )
+        _draw_axis_bar(
+            surface,
+            cal_rect,
+            calibrated,
+            fill_color=(145, 232, 178),
+            line_color=(98, 130, 190),
+        )
+        raw_label = self._tiny_font.render(f"Raw: {raw:+.3f}", True, (188, 204, 228))
+        cal_label = self._tiny_font.render(f"Calibrated: {calibrated:+.3f}", True, (188, 204, 228))
+        surface.blit(raw_label, (raw_rect.right - raw_label.get_width(), raw_rect.y - 18))
+        surface.blit(cal_label, (cal_rect.right - cal_label.get_width(), cal_rect.y - 18))
+
+        rows = [
+            f"min_raw: {settings.min_raw:+.3f}",
+            f"max_raw: {settings.max_raw:+.3f}",
+            f"deadzone: {settings.deadzone:.2f}",
+            f"invert: {'ON' if settings.invert else 'OFF'}",
+            f"curve: {settings.curve:.2f}",
+            f"capture: {'ACTIVE' if self._capturing else 'idle'}",
+        ]
+        y = cal_rect.bottom + 20
+        for row in rows:
+            text = self._small_font.render(row, True, (238, 245, 255))
+            surface.blit(text, (32, y))
+            y += 28
+
+        if self._message != "":
+            note = self._tiny_font.render(self._message, True, (188, 204, 228))
+            surface.blit(note, (32, min(frame.bottom - 54, y + 8)))
+
+        footer = self._tiny_font.render(
+            "Left/Right: Device  Up/Down: Axis  Space: Capture  I: Invert  +/-: Deadzone  [/]: Curve  R: Reset  Esc: Back",
+            True,
+            (188, 204, 228),
+        )
+        surface.blit(footer, (32, frame.bottom - 28))
+
+
+class AxisVisualizerScreen:
+    def __init__(self, app: App, *, profiles: InputProfilesStore) -> None:
+        self._app = app
+        self._profiles = profiles
+        self._title_font = pygame.font.Font(None, 40)
+        self._small_font = pygame.font.Font(None, 24)
+        self._tiny_font = pygame.font.Font(None, 19)
+
+    def handle_event(self, event: pygame.event.Event) -> None:
+        if event.type != pygame.KEYDOWN:
+            return
+        if event.key in (pygame.K_ESCAPE, pygame.K_BACKSPACE):
+            self._app.pop()
+
+    def render(self, surface: pygame.Surface) -> None:
+        w, h = surface.get_size()
+        surface.fill((3, 9, 78))
+        frame = pygame.Rect(12, 12, w - 24, h - 24)
+        pygame.draw.rect(surface, (8, 18, 104), frame)
+        pygame.draw.rect(surface, (226, 236, 255), frame, 2)
+
+        profile = self._profiles.active_profile()
+        title = self._title_font.render("Axis Visualizer", True, (238, 245, 255))
+        surface.blit(title, (30, 26))
+        subtitle = self._small_font.render(f"Profile: {profile.name}", True, (188, 204, 228))
+        surface.blit(subtitle, (32, 66))
+
+        joysticks = _iter_connected_joysticks()
+        if not joysticks:
+            msg = self._small_font.render("No joystick detected.", True, (238, 245, 255))
+            surface.blit(msg, (32, 120))
+            footer = self._tiny_font.render("Esc/Backspace: Back", True, (188, 204, 228))
+            surface.blit(footer, (32, frame.bottom - 30))
+            return
+
+        max_visible_rows = max(1, (frame.h - 170) // 28)
+        y = 108
+        drawn_rows = 0
+        for joystick_index, joystick in enumerate(joysticks, start=1):
+            if drawn_rows >= max_visible_rows:
+                break
+            axis_count = max(0, int(joystick.get_numaxes()))
+            button_count = max(0, int(joystick.get_numbuttons()))
+            pressed_buttons = sum(
+                1
+                for i in range(button_count)
+                if bool(getattr(joystick, "get_button")(i))
+            )
+            header = self._small_font.render(
+                f"[{joystick_index}] {joystick.get_name()}  axes:{axis_count}  buttons:{pressed_buttons}/{button_count}",
+                True,
+                (238, 245, 255),
+            )
+            surface.blit(header, (32, y))
+            y += 26
+            drawn_rows += 1
+
+            for axis_idx in range(axis_count):
+                if drawn_rows >= max_visible_rows:
+                    break
+                raw = _axis_raw_value(joystick, axis_idx)
+                axis_key = _axis_key(joystick, axis_idx)
+                settings = self._profiles.get_axis_calibration(
+                    profile_id=profile.profile_id,
+                    axis_key=axis_key,
+                )
+                calibrated = _apply_axis_calibration(raw, settings)
+
+                label = self._tiny_font.render(f"A{axis_idx:02d}", True, (188, 204, 228))
+                surface.blit(label, (36, y + 6))
+
+                raw_rect = pygame.Rect(76, y + 2, (frame.w - 130) // 2, 16)
+                cal_rect = pygame.Rect(raw_rect.right + 10, y + 2, (frame.w - 130) // 2, 16)
+                _draw_axis_bar(
+                    surface,
+                    raw_rect,
+                    raw,
+                    fill_color=(116, 208, 255),
+                    line_color=(98, 130, 190),
+                )
+                _draw_axis_bar(
+                    surface,
+                    cal_rect,
+                    calibrated,
+                    fill_color=(145, 232, 178),
+                    line_color=(98, 130, 190),
+                )
+                raw_text = self._tiny_font.render(f"{raw:+.2f}", True, (188, 204, 228))
+                cal_text = self._tiny_font.render(f"{calibrated:+.2f}", True, (188, 204, 228))
+                surface.blit(raw_text, raw_text.get_rect(midtop=(raw_rect.centerx, raw_rect.bottom + 2)))
+                surface.blit(cal_text, cal_text.get_rect(midtop=(cal_rect.centerx, cal_rect.bottom + 2)))
+
+                y += 28
+                drawn_rows += 1
+
+        footer = self._tiny_font.render("Live raw + calibrated axis values. Esc/Backspace: Back", True, (188, 204, 228))
+        surface.blit(footer, (32, frame.bottom - 28))
+
+
+class InputProfilesScreen:
+    def __init__(self, app: App, *, profiles: InputProfilesStore) -> None:
+        self._app = app
+        self._profiles = profiles
+        self._title_font = pygame.font.Font(None, 40)
+        self._small_font = pygame.font.Font(None, 28)
+        self._tiny_font = pygame.font.Font(None, 21)
+        self._selected_index = 0
+        self._renaming = False
+        self._rename_buffer = ""
+        self._message = ""
+
+    def handle_event(self, event: pygame.event.Event) -> None:
+        if event.type != pygame.KEYDOWN:
+            return
+        key = int(event.key)
+        profiles = self._profiles.profiles()
+        if not profiles:
+            return
+        self._selected_index %= len(profiles)
+        selected = profiles[self._selected_index]
+
+        if self._renaming:
+            if key == pygame.K_ESCAPE:
+                self._renaming = False
+                self._rename_buffer = ""
+                return
+            if key == pygame.K_BACKSPACE:
+                self._rename_buffer = self._rename_buffer[:-1]
+                return
+            if key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                if self._profiles.rename_profile(selected.profile_id, self._rename_buffer):
+                    self._message = "Profile renamed."
+                self._renaming = False
+                self._rename_buffer = ""
+                return
+            ch = event.unicode
+            if ch and ch.isprintable() and len(self._rename_buffer) < 24:
+                self._rename_buffer += ch
+            return
+
+        if key in (pygame.K_ESCAPE, pygame.K_BACKSPACE):
+            self._app.pop()
+            return
+        if key == pygame.K_UP:
+            self._selected_index = (self._selected_index - 1) % len(profiles)
+            return
+        if key == pygame.K_DOWN:
+            self._selected_index = (self._selected_index + 1) % len(profiles)
+            return
+        if key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+            self._profiles.set_active_profile(selected.profile_id)
+            self._message = f"Active profile set: {selected.name}"
+            return
+        if key == pygame.K_n:
+            name = f"Profile {len(profiles) + 1}"
+            created = self._profiles.create_profile(name=name, copy_from=self._profiles.active_profile())
+            new_profiles = self._profiles.profiles()
+            self._selected_index = next(
+                i for i, profile in enumerate(new_profiles) if profile.profile_id == created.profile_id
+            )
+            self._message = f"Created {created.name}."
+            return
+        if key == pygame.K_c:
+            created = self._profiles.create_profile(
+                name=f"{selected.name} Copy",
+                copy_from=selected,
+            )
+            new_profiles = self._profiles.profiles()
+            self._selected_index = next(
+                i for i, profile in enumerate(new_profiles) if profile.profile_id == created.profile_id
+            )
+            self._message = f"Copied {selected.name}."
+            return
+        if key == pygame.K_d:
+            deleted = self._profiles.delete_profile(selected.profile_id)
+            profiles = self._profiles.profiles()
+            if deleted:
+                self._selected_index = min(self._selected_index, len(profiles) - 1)
+                self._message = "Profile deleted."
+            else:
+                self._message = "Cannot delete the last profile."
+            return
+        if key == pygame.K_r:
+            self._renaming = True
+            self._rename_buffer = selected.name
+
+    def render(self, surface: pygame.Surface) -> None:
+        w, h = surface.get_size()
+        surface.fill((3, 9, 78))
+        frame = pygame.Rect(12, 12, w - 24, h - 24)
+        pygame.draw.rect(surface, (8, 18, 104), frame)
+        pygame.draw.rect(surface, (226, 236, 255), frame, 2)
+
+        title = self._title_font.render("Input Profiles", True, (238, 245, 255))
+        surface.blit(title, (30, 26))
+
+        profiles = self._profiles.profiles()
+        if not profiles:
+            note = self._small_font.render("No profiles available.", True, (238, 245, 255))
+            surface.blit(note, (32, 120))
+            return
+
+        self._selected_index %= len(profiles)
+        active_id = self._profiles.active_profile().profile_id
+
+        list_rect = pygame.Rect(32, 100, frame.w - 64, frame.h - 170)
+        pygame.draw.rect(surface, (6, 13, 92), list_rect)
+        pygame.draw.rect(surface, (78, 102, 170), list_rect, 1)
+
+        y = list_rect.y + 10
+        row_h = 34
+        for idx, profile in enumerate(profiles):
+            row = pygame.Rect(list_rect.x + 10, y, list_rect.w - 20, row_h)
+            selected = idx == self._selected_index
+            is_active = profile.profile_id == active_id
+            if selected:
+                pygame.draw.rect(surface, (244, 248, 255), row)
+                text_color = (16, 32, 88)
+            else:
+                pygame.draw.rect(surface, (9, 20, 106), row)
+                text_color = (238, 245, 255)
+            pygame.draw.rect(surface, (62, 84, 152), row, 1)
+            marker = "*" if is_active else " "
+            label = f"{marker} {profile.name}"
+            text = self._small_font.render(label, True, text_color)
+            surface.blit(text, (row.x + 10, row.y + (row.h - text.get_height()) // 2))
+            y += row_h + 6
+            if y + row_h > list_rect.bottom:
+                break
+
+        if self._renaming:
+            editor = pygame.Rect(32, frame.bottom - 98, frame.w - 64, 34)
+            pygame.draw.rect(surface, (9, 20, 106), editor)
+            pygame.draw.rect(surface, (120, 144, 198), editor, 2)
+            caret = "|" if (pygame.time.get_ticks() // 500) % 2 == 0 else ""
+            entry = self._small_font.render(self._rename_buffer + caret, True, (238, 245, 255))
+            surface.blit(entry, (editor.x + 10, editor.y + 6))
+            help_text = "Renaming: type name, Enter to save, Esc to cancel"
+        else:
+            help_text = (
+                "Enter: Set Active  N: New  C: Copy  R: Rename  D: Delete  Up/Down: Select  Esc: Back"
+            )
+
+        hint = self._tiny_font.render(help_text, True, (188, 204, 228))
+        surface.blit(hint, (32, frame.bottom - 52))
+        if self._message != "":
+            msg = self._tiny_font.render(self._message, True, (188, 204, 228))
+            surface.blit(msg, (32, frame.bottom - 30))
 
 
 class MenuScreen:
@@ -403,6 +1225,10 @@ class CognitiveTestScreen:
         p = snap.payload
         scenario = p if isinstance(p, AirborneScenario) else None
         math_payload: MathReasoningPayload | None = p if isinstance(p, MathReasoningPayload) else None
+        sensory_payload: SensoryMotorApparatusPayload | None = (
+            p if isinstance(p, SensoryMotorApparatusPayload) else None
+        )
+        table_payload: TableReadingPayload | None = p if isinstance(p, TableReadingPayload) else None
         angles_payload: AnglesBearingsDegreesPayload | None = (
             p if isinstance(p, AnglesBearingsDegreesPayload) else None
         )
@@ -414,6 +1240,9 @@ class CognitiveTestScreen:
         )
         tr_payload: TargetRecognitionPayload | None = (
             p if isinstance(p, TargetRecognitionPayload) else None
+        )
+        auditory_payload: AuditoryCapacityPayload | None = (
+            p if isinstance(p, AuditoryCapacityPayload) else None
         )
 
         # Emergency exit: allow a hard escape from any state (including SCORED).
@@ -625,9 +1454,17 @@ class CognitiveTestScreen:
             if tr_payload is not None:
                 # Target Recognition answers are mouse-only in PRACTICE/SCORED.
                 return
+            if auditory_payload is not None:
+                if auditory_payload.sequence_response_open:
+                    accepted = self._engine.submit_answer(f"SEQ:{self._input}")
+                    if accepted:
+                        self._input = ""
+                return
             if dr is not None and not dr.accepting_input:
                 return
             if math_payload is not None and self._input == "":
+                self._input = str(self._math_choice)
+            if table_payload is not None and self._input == "":
                 self._input = str(self._math_choice)
             if angles_payload is not None and self._input == "":
                 self._input = str(self._math_choice)
@@ -654,6 +1491,34 @@ class CognitiveTestScreen:
             if color_key is not None:
                 self._engine.submit_answer(f"CLR:{color_key}")
                 return
+
+        if auditory_payload is not None:
+            if key == pygame.K_c:
+                self._engine.submit_answer("CALL")
+                return
+
+            if key == pygame.K_SPACE:
+                self._engine.submit_answer("BEEP")
+                return
+
+            color_key = {
+                pygame.K_q: "BLUE",
+                pygame.K_w: "GREEN",
+                pygame.K_e: "YELLOW",
+                pygame.K_r: "RED",
+            }.get(key)
+            if color_key is not None:
+                self._engine.submit_answer(f"COL:{color_key}")
+                return
+
+            if key == pygame.K_BACKSPACE:
+                self._input = self._input[:-1]
+                return
+
+            ch = event.unicode
+            if ch and ch.isdigit() and len(self._input) < 16:
+                self._input += ch
+            return
 
         if system_logic_payload is not None:
             self._system_logic_sync_payload(system_logic_payload)
@@ -692,6 +1557,23 @@ class CognitiveTestScreen:
                 self._input = str(choice)
             return
 
+        if table_payload is not None:
+            option_count = max(1, len(table_payload.options))
+            if key in (pygame.K_UP, pygame.K_w):
+                self._math_choice = option_count if self._math_choice <= 1 else self._math_choice - 1
+                self._input = str(self._math_choice)
+                return
+            if key in (pygame.K_DOWN, pygame.K_s):
+                self._math_choice = 1 if self._math_choice >= option_count else self._math_choice + 1
+                self._input = str(self._math_choice)
+                return
+
+            choice = self._choice_from_key(key)
+            if choice is not None and 1 <= choice <= option_count:
+                self._math_choice = choice
+                self._input = str(choice)
+            return
+
         if angles_payload is not None:
             option_count = max(1, len(angles_payload.options))
             if key in (pygame.K_UP, pygame.K_w):
@@ -707,6 +1589,9 @@ class CognitiveTestScreen:
             if choice is not None and 1 <= choice <= option_count:
                 self._math_choice = choice
                 self._input = str(choice)
+            return
+
+        if sensory_payload is not None:
             return
 
         if tr_payload is not None:
@@ -728,6 +1613,13 @@ class CognitiveTestScreen:
             self._input += ch
 
     def render(self, surface: pygame.Surface) -> None:
+        if isinstance(self._engine, SensoryMotorApparatusEngine):
+            control_x, control_y = self._read_sensory_motor_control()
+            self._engine.set_control(horizontal=control_x, vertical=control_y)
+        elif isinstance(self._engine, AuditoryCapacityEngine):
+            control_x, control_y = self._read_sensory_motor_control()
+            self._engine.set_control(horizontal=control_x, vertical=control_y)
+
         # Update engine and take a fresh snapshot.
         self._engine.update()
         snap = self._engine.snapshot()
@@ -757,10 +1649,15 @@ class CognitiveTestScreen:
         tr: TargetRecognitionPayload | None = p if isinstance(p, TargetRecognitionPayload) else None
         vs: VisualSearchPayload | None = p if isinstance(p, VisualSearchPayload) else None
         mr: MathReasoningPayload | None = p if isinstance(p, MathReasoningPayload) else None
+        sensory_payload: SensoryMotorApparatusPayload | None = (
+            p if isinstance(p, SensoryMotorApparatusPayload) else None
+        )
+        table_payload: TableReadingPayload | None = p if isinstance(p, TableReadingPayload) else None
         sl: SystemLogicPayload | None = p if isinstance(p, SystemLogicPayload) else None
         cln: ColoursLettersNumbersPayload | None = (
             p if isinstance(p, ColoursLettersNumbersPayload) else None
         )
+        ac: AuditoryCapacityPayload | None = p if isinstance(p, AuditoryCapacityPayload) else None
         dr: DigitRecognitionPayload | None = None
         if p is not None:
             if isinstance(p, DigitRecognitionPayload):
@@ -776,10 +1673,19 @@ class CognitiveTestScreen:
         is_instrument_comprehension = snap.title == "Instrument Comprehension"
         is_target_recognition = snap.title == "Target Recognition"
         is_system_logic = snap.title == "System Logic"
+        is_sensory_motor_apparatus = snap.title == "Sensory Motor Apparatus"
+        is_table_reading = snap.title == "Table Reading"
+        is_auditory_capacity = snap.title == "Auditory Capacity"
         if is_numerical_ops and snap.phase in (Phase.PRACTICE, Phase.SCORED):
             self._render_numerical_operations_question(surface, snap)
         elif is_math_reasoning:
             self._render_math_reasoning(surface, snap, mr)
+        elif is_sensory_motor_apparatus:
+            self._render_sensory_motor_apparatus_screen(surface, snap, sensory_payload)
+        elif is_auditory_capacity:
+            self._render_auditory_capacity_screen(surface, snap, ac)
+        elif is_table_reading:
+            self._render_table_reading_screen(surface, snap, table_payload)
         elif is_system_logic:
             self._render_system_logic_screen(surface, snap, sl)
         elif is_angles_bearings:
@@ -829,6 +1735,12 @@ class CognitiveTestScreen:
                 self._render_numerical_operations_answer_box(surface, snap)
             elif is_math_reasoning:
                 pass
+            elif is_sensory_motor_apparatus:
+                pass
+            elif is_auditory_capacity:
+                self._render_auditory_capacity_answer_box(surface, snap, ac)
+            elif is_table_reading:
+                pass
             elif is_system_logic:
                 pass
             elif is_angles_bearings:
@@ -866,10 +1778,12 @@ class CognitiveTestScreen:
             pygame.K_2: 2,
             pygame.K_3: 3,
             pygame.K_4: 4,
+            pygame.K_5: 5,
             pygame.K_KP1: 1,
             pygame.K_KP2: 2,
             pygame.K_KP3: 3,
             pygame.K_KP4: 4,
+            pygame.K_KP5: 5,
         }
         return mapping.get(key)
 
@@ -883,6 +1797,433 @@ class CognitiveTestScreen:
         while clipped and font.size(f"{clipped}...")[0] > max_width:
             clipped = clipped[:-1]
         return f"{clipped}..." if clipped else "..."
+
+    def _read_sensory_motor_control(self) -> tuple[float, float]:
+        keys = pygame.key.get_pressed()
+
+        key_horizontal = (
+            (1.0 if keys[pygame.K_RIGHT] or keys[pygame.K_d] else 0.0)
+            - (1.0 if keys[pygame.K_LEFT] or keys[pygame.K_a] else 0.0)
+        )
+        key_vertical = (
+            (1.0 if keys[pygame.K_DOWN] or keys[pygame.K_s] else 0.0)
+            - (1.0 if keys[pygame.K_UP] or keys[pygame.K_w] else 0.0)
+        )
+
+        horizontal = 0.0
+        vertical = 0.0
+        joysticks = _iter_connected_joysticks()
+        if joysticks:
+            primary = joysticks[0]
+            # Requested mapping:
+            # - Horizontal: rudder axis (axis 3 / rudder function)
+            # - Vertical: joystick axis 1
+            if primary.get_numaxes() > 1:
+                vertical = max(-1.0, min(1.0, float(primary.get_axis(1))))
+            elif primary.get_numaxes() > 0:
+                vertical = max(-1.0, min(1.0, float(primary.get_axis(0))))
+
+            rudder_value: float | None = None
+
+            # Prefer a separate rudder pedal device by name.
+            for device in joysticks:
+                name = str(device.get_name()).lower()
+                if "rudder" not in name and "pedal" not in name:
+                    continue
+                axis_count = int(device.get_numaxes())
+                if axis_count <= 0:
+                    continue
+                # Prefer axis 3 for rudder first, then alternate common pedal axes.
+                preferred_indices = (3, 2, 0, 1)
+                for idx in preferred_indices:
+                    if idx < axis_count:
+                        rudder_value = max(-1.0, min(1.0, float(device.get_axis(idx))))
+                        break
+                if rudder_value is not None:
+                    break
+
+            # Fallback to primary stick rudder-related axes.
+            if rudder_value is None:
+                axis_count = int(primary.get_numaxes())
+                for idx in (3, 4, 5, 2, 1, 0):
+                    if idx < axis_count:
+                        rudder_value = max(-1.0, min(1.0, float(primary.get_axis(idx))))
+                        break
+
+            horizontal = 0.0 if rudder_value is None else rudder_value
+
+        out_horizontal = key_horizontal if abs(key_horizontal) > 0.001 else horizontal
+        out_vertical = vertical if joysticks else key_vertical
+        return (
+            max(-1.0, min(1.0, out_horizontal)),
+            max(-1.0, min(1.0, out_vertical)),
+        )
+
+    def _render_sensory_motor_apparatus_screen(
+        self,
+        surface: pygame.Surface,
+        snap: TestSnapshot,
+        payload: SensoryMotorApparatusPayload | None,
+    ) -> None:
+        w, h = surface.get_size()
+        bg = (4, 10, 74)
+        panel_bg = (7, 16, 99)
+        border = (226, 236, 255)
+        text_main = (238, 245, 255)
+        text_muted = (188, 204, 228)
+        accent = (255, 52, 70)
+
+        surface.fill(bg)
+        frame = pygame.Rect(10, 10, w - 20, h - 20)
+        pygame.draw.rect(surface, panel_bg, frame)
+        pygame.draw.rect(surface, border, frame, 2)
+
+        header = pygame.Rect(frame.x + 2, frame.y + 2, frame.w - 4, 42)
+        pygame.draw.rect(surface, (16, 28, 118), header)
+        pygame.draw.line(surface, border, (header.x, header.bottom), (header.right, header.bottom), 1)
+
+        phase_label = {
+            Phase.INSTRUCTIONS: "Instructions",
+            Phase.PRACTICE: "Practice",
+            Phase.PRACTICE_DONE: "Practice Complete",
+            Phase.SCORED: "Timed Test",
+            Phase.RESULTS: "Results",
+        }.get(snap.phase, "Task")
+
+        title = self._small_font.render(f"Sensory Motor Apparatus - {phase_label}", True, text_main)
+        surface.blit(title, (header.x + 12, header.y + 8))
+
+        stats = self._tiny_font.render(
+            f"Windows {snap.correct_scored}/{snap.attempted_scored}",
+            True,
+            text_muted,
+        )
+        surface.blit(stats, stats.get_rect(midright=(header.right - 12, header.centery)))
+
+        if snap.time_remaining_s is not None:
+            rem = int(round(snap.time_remaining_s))
+            mm = rem // 60
+            ss = rem % 60
+            timer = self._small_font.render(f"{mm:02d}:{ss:02d}", True, text_main)
+            surface.blit(timer, timer.get_rect(topright=(frame.right - 12, header.bottom + 6)))
+
+        body = pygame.Rect(
+            frame.x + 8,
+            header.bottom + 8,
+            frame.w - 16,
+            frame.bottom - header.bottom - 44,
+        )
+        track_margin = max(4, min(10, min(body.w, body.h) // 60))
+        track = body.inflate(-track_margin * 2, -track_margin * 2)
+
+        pygame.draw.rect(surface, (0, 0, 0), track)
+        pygame.draw.rect(surface, (96, 108, 140), track, 1)
+
+        cx = track.centerx
+        cy = track.centery
+        line_len = max(18, min(track.w, track.h) // 14)
+        pygame.draw.line(surface, accent, (cx - line_len, cy), (cx + line_len, cy), 2)
+        pygame.draw.line(surface, accent, (cx, cy - line_len), (cx, cy + line_len), 2)
+
+        if payload is not None:
+            x_scale = (track.w // 2) - 12
+            y_scale = (track.h // 2) - 12
+            dot_x = int(round(cx + (payload.dot_x * x_scale)))
+            dot_y = int(round(cy + (payload.dot_y * y_scale)))
+            radius = max(4, min(9, track.w // 34))
+            pygame.draw.circle(surface, accent, (dot_x, dot_y), radius)
+
+        if payload is not None:
+            metrics_bg = pygame.Rect(track.x + 8, track.y + 8, track.w - 16, 24)
+            pygame.draw.rect(surface, (8, 18, 104), metrics_bg)
+            pygame.draw.rect(surface, (78, 102, 170), metrics_bg, 1)
+            left_text = self._tiny_font.render(
+                f"Err {payload.mean_error:.3f}  RMS {payload.rms_error:.3f}  On {payload.on_target_ratio*100.0:.1f}%",
+                True,
+                text_main,
+            )
+            right_text = self._tiny_font.render(
+                f"Ctrl {payload.control_x:+.2f},{payload.control_y:+.2f}  Drift {payload.disturbance_x:+.2f},{payload.disturbance_y:+.2f}",
+                True,
+                text_muted,
+            )
+            surface.blit(left_text, (metrics_bg.x + 8, metrics_bg.y + 4))
+            surface.blit(
+                right_text,
+                right_text.get_rect(midright=(metrics_bg.right - 8, metrics_bg.centery)),
+            )
+
+        if snap.phase in (Phase.INSTRUCTIONS, Phase.PRACTICE_DONE, Phase.RESULTS):
+            prompt_bg = pygame.Rect(track.x + 10, track.bottom - 92, track.w - 20, 82)
+            pygame.draw.rect(surface, (8, 18, 104), prompt_bg)
+            pygame.draw.rect(surface, (78, 102, 170), prompt_bg, 1)
+            self._draw_wrapped_text(
+                surface,
+                str(snap.prompt),
+                prompt_bg.inflate(-10, -8),
+                color=text_muted,
+                font=self._tiny_font,
+                max_lines=6,
+            )
+
+        if snap.phase in (Phase.INSTRUCTIONS, Phase.PRACTICE_DONE):
+            footer = "Enter: Continue  |  Esc/Backspace: Back"
+        elif snap.phase in (Phase.PRACTICE, Phase.SCORED):
+            footer = (
+                "Rudder axis controls left/right; Joystick axis 1 controls up/down "
+                "(WASD/arrows fallback)."
+            )
+        else:
+            footer = "Enter: Return to Tests"
+        foot = self._tiny_font.render(footer, True, text_muted)
+        surface.blit(foot, foot.get_rect(midbottom=(frame.centerx, frame.bottom - 10)))
+
+    def _render_auditory_capacity_screen(
+        self,
+        surface: pygame.Surface,
+        snap: TestSnapshot,
+        payload: AuditoryCapacityPayload | None,
+    ) -> None:
+        w, h = surface.get_size()
+        bg = (7, 10, 26)
+        panel_bg = (12, 18, 42)
+        border = (92, 106, 150)
+        text_main = (232, 238, 252)
+        text_muted = (172, 182, 216)
+
+        surface.fill(bg)
+
+        margin = max(10, min(20, w // 42))
+        frame = pygame.Rect(margin, margin, w - margin * 2, h - margin * 2)
+        pygame.draw.rect(surface, panel_bg, frame)
+        pygame.draw.rect(surface, border, frame, 2)
+
+        header_h = 46
+        header = pygame.Rect(frame.x + 2, frame.y + 2, frame.w - 4, header_h)
+        pygame.draw.rect(surface, (16, 26, 58), header)
+        pygame.draw.line(surface, border, (header.x, header.bottom), (header.right, header.bottom), 1)
+
+        phase_label = {
+            Phase.INSTRUCTIONS: "Instructions",
+            Phase.PRACTICE: "Practice",
+            Phase.PRACTICE_DONE: "Practice Complete",
+            Phase.SCORED: "Timed Test",
+            Phase.RESULTS: "Results",
+        }.get(snap.phase, "Task")
+
+        title = self._small_font.render(f"Auditory Capacity - {phase_label}", True, text_main)
+        surface.blit(title, (header.x + 12, header.y + 10))
+
+        stats = self._tiny_font.render(
+            f"Scored {snap.correct_scored}/{snap.attempted_scored}",
+            True,
+            text_muted,
+        )
+        surface.blit(stats, stats.get_rect(midright=(header.right - 12, header.centery)))
+
+        if snap.time_remaining_s is not None:
+            rem = int(round(snap.time_remaining_s))
+            timer = self._small_font.render(f"{rem // 60:02d}:{rem % 60:02d}", True, text_main)
+            surface.blit(timer, timer.get_rect(topright=(frame.right - 12, header.bottom + 6)))
+
+        body = pygame.Rect(frame.x + 8, header.bottom + 8, frame.w - 16, frame.h - header_h - 18)
+        gap = max(8, min(14, body.w // 52))
+        tube_panel_w = int(body.w * 0.62)
+        tube_panel = pygame.Rect(body.x, body.y, tube_panel_w, body.h)
+        info_panel = pygame.Rect(tube_panel.right + gap, body.y, body.w - tube_panel_w - gap, body.h)
+
+        pygame.draw.rect(surface, (9, 14, 34), tube_panel)
+        pygame.draw.rect(surface, border, tube_panel, 1)
+        pygame.draw.rect(surface, (9, 14, 34), info_panel)
+        pygame.draw.rect(surface, border, info_panel, 1)
+
+        world = tube_panel.inflate(-18, -28)
+        pygame.draw.rect(surface, (2, 4, 10), world)
+        pygame.draw.rect(surface, (82, 94, 128), world, 1)
+
+        if payload is not None:
+            x_half_span = 1.25
+            y_half_span = 0.95
+
+            def to_px_x(x_norm: float) -> int:
+                return int(round(world.centerx + (x_norm / x_half_span) * (world.w / 2.0)))
+
+            def to_px_y(y_norm: float) -> int:
+                return int(round(world.centery + (y_norm / y_half_span) * (world.h / 2.0)))
+
+            tube_w = int(round((payload.tube_half_width / x_half_span) * world.w))
+            tube_h = int(round((payload.tube_half_height / y_half_span) * world.h))
+            tube_rect = pygame.Rect(0, 0, max(12, tube_w), max(12, tube_h))
+            tube_rect.center = world.center
+
+            pygame.draw.rect(surface, (14, 20, 48), tube_rect)
+            pygame.draw.rect(surface, (148, 162, 206), tube_rect, 2)
+
+            for gate in payload.gates:
+                gx = to_px_x(gate.x_norm)
+                gy = to_px_y(gate.y_norm)
+                aperture_px = max(9, int(round((gate.aperture_norm / y_half_span) * (world.h / 2.0))))
+                gate_color = self._auditory_color_rgb(gate.color, 1.0)
+
+                pygame.draw.line(surface, (52, 66, 94), (gx, tube_rect.top), (gx, tube_rect.bottom), 1)
+                pygame.draw.line(surface, gate_color, (gx, gy - aperture_px), (gx, gy + aperture_px), 3)
+                self._draw_auditory_gate_shape(
+                    surface,
+                    shape=gate.shape,
+                    center=(gx, gy),
+                    size=max(6, min(12, world.h // 20)),
+                    color=gate_color,
+                )
+
+            ball_x = to_px_x(payload.ball_x)
+            ball_y = to_px_y(payload.ball_y)
+            ball_color = self._auditory_color_rgb(payload.ball_color, payload.ball_color_strength)
+            ball_radius = max(6, min(12, world.h // 22))
+            pygame.draw.circle(surface, ball_color, (ball_x, ball_y), ball_radius)
+            pygame.draw.circle(surface, (248, 252, 255), (ball_x, ball_y), ball_radius, 1)
+
+            if abs(payload.ball_x) > payload.tube_half_width or abs(payload.ball_y) > payload.tube_half_height:
+                pygame.draw.rect(surface, (240, 64, 74), tube_rect, 2)
+
+            metrics = self._tiny_font.render(
+                f"Ctrl {payload.control_x:+.2f},{payload.control_y:+.2f}  Drift {payload.disturbance_x:+.2f},{payload.disturbance_y:+.2f}",
+                True,
+                text_muted,
+            )
+            surface.blit(metrics, (world.x + 8, world.y + 6))
+
+        info_lines: list[str] = []
+        if payload is None:
+            info_lines.extend(str(snap.prompt).split("\n"))
+        else:
+            assigned = ", ".join(payload.assigned_callsigns) if payload.assigned_callsigns else "—"
+            info_lines.append(f"Assigned call signs: {assigned}")
+            if payload.callsign_cue is None:
+                info_lines.append("Radio cue: —")
+            else:
+                cue_mode = "RESPOND" if payload.callsign_cue in payload.assigned_callsigns else "IGNORE"
+                info_lines.append(f"Radio cue: {payload.callsign_cue} ({cue_mode})")
+
+            info_lines.append(f"Beep cue: {'ACTIVE' if payload.beep_active else '—'}")
+            info_lines.append(f"Color command: {payload.color_command or '—'}")
+
+            if payload.sequence_display is not None:
+                info_lines.append(f"Sequence: {payload.sequence_display}")
+            elif payload.sequence_response_open:
+                info_lines.append("Sequence: enter digits and press Enter")
+            else:
+                info_lines.append("Sequence: —")
+
+            info_lines.append("")
+            info_lines.append("Color -> required gate shape")
+            for rule in payload.color_rules:
+                info_lines.append(f"{rule.color:>6}: {rule.required_shape}")
+
+            info_lines.append("")
+            info_lines.append(
+                f"Gates hit/miss: {payload.gate_hits}/{payload.gate_misses}  Collisions: {payload.collisions}"
+            )
+            info_lines.append(
+                f"False alarms: {payload.false_alarms}  Noise: {int(round(payload.background_noise_level*100))}%"
+            )
+            info_lines.append(f"Distortion: {int(round(payload.distortion_level*100))}%")
+
+        info_rect = info_panel.inflate(-10, -10)
+        y = info_rect.y
+        for line in info_lines:
+            rendered = self._tiny_font.render(line, True, text_main if line != "" else text_muted)
+            surface.blit(rendered, (info_rect.x, y))
+            y += 18
+            if y > info_rect.bottom - 18:
+                break
+
+        if snap.phase in (Phase.INSTRUCTIONS, Phase.PRACTICE_DONE, Phase.RESULTS):
+            prompt_rect = pygame.Rect(
+                tube_panel.x + 10,
+                tube_panel.bottom - 96,
+                tube_panel.w - 20,
+                86,
+            )
+            pygame.draw.rect(surface, (10, 16, 42), prompt_rect)
+            pygame.draw.rect(surface, (78, 94, 136), prompt_rect, 1)
+            self._draw_wrapped_text(
+                surface,
+                str(snap.prompt),
+                prompt_rect.inflate(-8, -8),
+                color=text_muted,
+                font=self._tiny_font,
+                max_lines=6,
+            )
+
+        footer_text = (
+            "C: callsign  Space: beep  Q/W/E/R: color  Digits+Enter: sequence  |  WASD/arrows or HOTAS to fly"
+        )
+        if snap.phase is Phase.RESULTS:
+            footer_text = "Enter: Return to Tests"
+        elif snap.phase in (Phase.INSTRUCTIONS, Phase.PRACTICE_DONE):
+            footer_text = "Enter: Continue  |  Esc/Backspace: Back"
+
+        foot = self._tiny_font.render(footer_text, True, text_muted)
+        surface.blit(foot, foot.get_rect(midbottom=(frame.centerx, frame.bottom - 10)))
+
+    def _render_auditory_capacity_answer_box(
+        self,
+        surface: pygame.Surface,
+        snap: TestSnapshot,
+        payload: AuditoryCapacityPayload | None,
+    ) -> None:
+        if payload is None or not payload.sequence_response_open:
+            return
+        if snap.phase not in (Phase.PRACTICE, Phase.SCORED):
+            return
+
+        box = pygame.Rect(34, surface.get_height() - 112, 380, 44)
+        pygame.draw.rect(surface, (20, 24, 46), box)
+        pygame.draw.rect(surface, (112, 126, 166), box, 2)
+
+        caret = "|" if (pygame.time.get_ticks() // 500) % 2 == 0 else ""
+        entry = self._app.font.render(self._input + caret, True, (236, 242, 255))
+        surface.blit(entry, (box.x + 10, box.y + 8))
+
+        hint = self._small_font.render("Recall digits then press Enter", True, (156, 170, 204))
+        surface.blit(hint, (34, surface.get_height() - 58))
+
+    @staticmethod
+    def _auditory_color_rgb(color_name: str, strength: float) -> tuple[int, int, int]:
+        base = {
+            "RED": (232, 72, 86),
+            "GREEN": (84, 214, 136),
+            "BLUE": (96, 154, 244),
+            "YELLOW": (238, 206, 84),
+        }.get(color_name.upper(), (210, 214, 226))
+        s = max(0.0, min(1.0, float(strength)))
+        mix = 1.0 - s
+        return (
+            int(round(base[0] * s + 255.0 * mix)),
+            int(round(base[1] * s + 255.0 * mix)),
+            int(round(base[2] * s + 255.0 * mix)),
+        )
+
+    @staticmethod
+    def _draw_auditory_gate_shape(
+        surface: pygame.Surface,
+        *,
+        shape: str,
+        center: tuple[int, int],
+        size: int,
+        color: tuple[int, int, int],
+    ) -> None:
+        cx, cy = center
+        half = max(3, int(size))
+        if shape == "CIRCLE":
+            pygame.draw.circle(surface, color, (cx, cy), half, 2)
+            return
+        if shape == "TRIANGLE":
+            pts = [(cx, cy - half), (cx - half, cy + half), (cx + half, cy + half)]
+            pygame.draw.polygon(surface, color, pts, 2)
+            return
+        rect = pygame.Rect(cx - half, cy - half, half * 2, half * 2)
+        pygame.draw.rect(surface, color, rect, 2)
 
     def _render_math_reasoning(
         self,
@@ -1006,6 +2347,226 @@ class CognitiveTestScreen:
             footer = "Enter: Return to Tests"
         footer_text = self._tiny_font.render(footer, True, text_muted)
         surface.blit(footer_text, footer_text.get_rect(midbottom=(frame.centerx, frame.bottom - 12)))
+
+    def _render_table_reading_screen(
+        self,
+        surface: pygame.Surface,
+        snap: TestSnapshot,
+        payload: TableReadingPayload | None,
+    ) -> None:
+        w, h = surface.get_size()
+        bg = (4, 12, 84)
+        panel_bg = (8, 18, 104)
+        header_bg = (18, 30, 118)
+        border = (226, 236, 255)
+        text_main = (238, 245, 255)
+        text_muted = (188, 204, 228)
+        active_bg = (244, 248, 255)
+        active_text = (16, 32, 88)
+        row_bg = (9, 20, 106)
+
+        surface.fill(bg)
+
+        margin = max(10, min(24, w // 34))
+        frame = pygame.Rect(margin, margin, max(280, w - margin * 2), max(220, h - margin * 2))
+        pygame.draw.rect(surface, panel_bg, frame)
+        pygame.draw.rect(surface, border, frame, 2)
+
+        header_h = max(40, min(56, h // 7))
+        header = pygame.Rect(frame.x + 2, frame.y + 2, frame.w - 4, header_h)
+        pygame.draw.rect(surface, header_bg, header)
+        pygame.draw.line(surface, border, (header.x, header.bottom), (header.right, header.bottom), 1)
+
+        phase_label = {
+            Phase.INSTRUCTIONS: "Instructions",
+            Phase.PRACTICE: "Practice",
+            Phase.PRACTICE_DONE: "Practice Complete",
+            Phase.SCORED: "Timed Test",
+            Phase.RESULTS: "Results",
+        }.get(snap.phase, "Task")
+        surface.blit(
+            self._tiny_font.render(phase_label, True, text_muted),
+            (header.x + 12, header.y + (header.h - self._tiny_font.get_height()) // 2),
+        )
+
+        title = self._small_font.render("Table Reading", True, text_main)
+        surface.blit(title, title.get_rect(midleft=(header.x + 130, header.centery)))
+
+        stats = self._tiny_font.render(
+            f"Scored {snap.correct_scored}/{snap.attempted_scored}",
+            True,
+            text_muted,
+        )
+        surface.blit(stats, stats.get_rect(midright=(header.right - 12, header.centery)))
+
+        if snap.time_remaining_s is not None:
+            rem = int(round(snap.time_remaining_s))
+            mm = rem // 60
+            ss = rem % 60
+            timer = self._small_font.render(f"{mm:02d}:{ss:02d}", True, text_main)
+            surface.blit(timer, timer.get_rect(topright=(frame.right - 12, header.bottom + 8)))
+
+        content = pygame.Rect(
+            frame.x + max(14, w // 48),
+            header.bottom + max(12, h // 36),
+            frame.w - max(28, w // 24),
+            frame.bottom - header.bottom - max(62, h // 9),
+        )
+        pygame.draw.rect(surface, (6, 13, 92), content)
+        pygame.draw.rect(surface, (78, 102, 170), content, 1)
+
+        is_question_phase = snap.phase in (Phase.PRACTICE, Phase.SCORED)
+        if payload is None or not is_question_phase:
+            self._draw_wrapped_text(
+                surface,
+                str(snap.prompt),
+                content.inflate(-24, -24),
+                color=text_main,
+                font=self._small_font,
+                max_lines=12,
+            )
+        else:
+            left_w = max(280, int(content.w * 0.56))
+            left = pygame.Rect(content.x + 10, content.y + 10, min(left_w, content.w - 220), content.h - 20)
+            right = pygame.Rect(left.right + 10, content.y + 10, content.right - left.right - 20, content.h - 20)
+
+            if payload.secondary_table is None:
+                self._draw_table_reading_table(
+                    surface,
+                    left,
+                    payload.primary_table,
+                )
+            else:
+                upper_h = max(120, (left.h - 10) // 2)
+                top = pygame.Rect(left.x, left.y, left.w, upper_h)
+                bottom = pygame.Rect(left.x, top.bottom + 10, left.w, left.bottom - top.bottom - 10)
+
+                self._draw_table_reading_table(
+                    surface,
+                    top,
+                    payload.primary_table,
+                )
+                self._draw_table_reading_table(
+                    surface,
+                    bottom,
+                    payload.secondary_table,
+                )
+
+            pygame.draw.rect(surface, panel_bg, right)
+            pygame.draw.rect(surface, (62, 84, 152), right, 1)
+
+            if payload.part.value == "part_one_cross_reference":
+                part_label = "Part 1 - Cross-reference"
+            else:
+                part_label = "Part 2 - Multi-table"
+            part = self._tiny_font.render(part_label, True, text_muted)
+            surface.blit(part, (right.x + 10, right.y + 8))
+
+            stem_rect = pygame.Rect(right.x + 10, right.y + 26, right.w - 20, max(74, right.h // 3))
+            self._draw_wrapped_text(
+                surface,
+                payload.stem,
+                stem_rect,
+                color=text_main,
+                font=self._small_font,
+                max_lines=4,
+            )
+
+            selected = self._math_choice
+            if self._input in ("1", "2", "3", "4", "5"):
+                selected = int(self._input)
+
+            options_top = stem_rect.bottom + 8
+            row_count = max(1, len(payload.options))
+            row_gap = 6
+            row_h = max(32, min(44, (right.bottom - options_top - row_gap * (row_count + 1)) // row_count))
+            y = options_top + row_gap
+
+            for option in payload.options:
+                row = pygame.Rect(right.x + 10, y, right.w - 20, row_h)
+                is_selected = option.code == selected
+                pygame.draw.rect(surface, active_bg if is_selected else row_bg, row)
+                pygame.draw.rect(surface, (62, 84, 152), row, 1)
+                color = active_text if is_selected else text_main
+                label = f"{option.code}. {option.label}: {option.value}"
+                text = self._small_font.render(label, True, color)
+                surface.blit(text, (row.x + 10, row.y + (row.h - text.get_height()) // 2))
+                y += row_h + row_gap
+
+        if snap.phase in (Phase.PRACTICE, Phase.SCORED):
+            footer = "1-5: Select option  |  Up/Down: Move  |  Enter: Submit"
+        elif snap.phase in (Phase.INSTRUCTIONS, Phase.PRACTICE_DONE):
+            footer = "Enter: Continue  |  Esc/Backspace: Back"
+        else:
+            footer = "Enter: Return to Tests"
+        footer_text = self._tiny_font.render(footer, True, text_muted)
+        surface.blit(footer_text, footer_text.get_rect(midbottom=(frame.centerx, frame.bottom - 12)))
+
+    def _draw_table_reading_table(
+        self,
+        surface: pygame.Surface,
+        rect: pygame.Rect,
+        table: TableReadingTable,
+    ) -> None:
+        panel_bg = (8, 18, 104)
+        line = (78, 102, 170)
+        header_bg = (18, 30, 118)
+        header_text = (212, 223, 244)
+        text_main = (238, 245, 255)
+
+        pygame.draw.rect(surface, panel_bg, rect)
+        pygame.draw.rect(surface, line, rect, 1)
+
+        title = self._tiny_font.render(table.title, True, header_text)
+        surface.blit(title, (rect.x + 8, rect.y + 6))
+
+        grid = pygame.Rect(rect.x + 6, rect.y + 24, rect.w - 12, rect.h - 30)
+        rows = len(table.row_labels) + 1
+        cols = len(table.column_labels) + 1
+        if rows <= 0 or cols <= 0:
+            return
+
+        cell_w = max(18, grid.w // cols)
+        cell_h = max(16, grid.h // rows)
+        draw_w = cell_w * cols
+        draw_h = cell_h * rows
+        start_x = grid.x + (grid.w - draw_w) // 2
+        start_y = grid.y + (grid.h - draw_h) // 2
+
+        corner_label = f"{table.row_header}/{table.column_header}"
+        for row_idx in range(rows):
+            for col_idx in range(cols):
+                cell = pygame.Rect(
+                    start_x + (col_idx * cell_w),
+                    start_y + (row_idx * cell_h),
+                    cell_w,
+                    cell_h,
+                )
+
+                is_header = row_idx == 0 or col_idx == 0
+
+                fill = header_bg if is_header else panel_bg
+                text_color = header_text if is_header else text_main
+
+                pygame.draw.rect(surface, fill, cell)
+                pygame.draw.rect(surface, line, cell, 1)
+
+                if row_idx == 0 and col_idx == 0:
+                    value = corner_label
+                    font = self._tiny_font
+                elif row_idx == 0:
+                    value = table.column_labels[col_idx - 1]
+                    font = self._small_font
+                elif col_idx == 0:
+                    value = table.row_labels[row_idx - 1]
+                    font = self._small_font
+                else:
+                    value = str(table.values[row_idx - 1][col_idx - 1])
+                    font = self._tiny_font
+
+                clipped = self._fit_label(font, value, cell.w - 4)
+                text = font.render(clipped, True, text_color)
+                surface.blit(text, text.get_rect(center=cell.center))
 
     def _system_logic_sync_payload(self, payload: SystemLogicPayload) -> None:
         payload_id = id(payload)
@@ -4929,9 +6490,10 @@ def run(*, max_frames: int | None = None, event_injector: Callable[[int], None] 
     workouts = PlaceholderScreen(app, "90-minute workouts")
     drills = PlaceholderScreen(app, "Individual drills")
 
-    axis_calibration = PlaceholderScreen(app, "Axis Calibration (placeholder)")
-    axis_visualizer = PlaceholderScreen(app, "Axis Visualizer (placeholder)")
-    input_profiles = PlaceholderScreen(app, "Input Profiles (placeholder)")
+    input_profiles_store = InputProfilesStore(InputProfilesStore.default_path())
+    axis_calibration = AxisCalibrationScreen(app, profiles=input_profiles_store)
+    axis_visualizer = AxisVisualizerScreen(app, profiles=input_profiles_store)
+    input_profiles = InputProfilesScreen(app, profiles=input_profiles_store)
 
     settings_menu = MenuScreen(
         app,
@@ -5060,6 +6622,45 @@ def run(*, max_frames: int | None = None, event_injector: Callable[[int], None] 
             )
         )
 
+    def open_table_reading() -> None:
+        seed = _new_seed()
+        app.push(
+            CognitiveTestScreen(
+                app,
+                engine_factory=lambda: build_table_reading_test(
+                    clock=real_clock,
+                    seed=seed,
+                    difficulty=0.5,
+                ),
+            )
+        )
+
+    def open_sensory_motor_apparatus() -> None:
+        seed = _new_seed()
+        app.push(
+            CognitiveTestScreen(
+                app,
+                engine_factory=lambda: build_sensory_motor_apparatus_test(
+                    clock=real_clock,
+                    seed=seed,
+                    difficulty=0.5,
+                ),
+            )
+        )
+
+    def open_auditory_capacity() -> None:
+        seed = _new_seed()
+        app.push(
+            CognitiveTestScreen(
+                app,
+                engine_factory=lambda: build_auditory_capacity_test(
+                    clock=real_clock,
+                    seed=seed,
+                    difficulty=0.5,
+                ),
+            )
+        )
+
     tests_menu = MenuScreen(
         app,
         "Tests",
@@ -5074,6 +6675,9 @@ def run(*, max_frames: int | None = None, event_injector: Callable[[int], None] 
             MenuItem("Instrument Comprehension", open_instrument_comprehension),
             MenuItem("Target Recognition", open_target_recognition),
             MenuItem("System Logic", open_system_logic),
+            MenuItem("Table Reading", open_table_reading),
+            MenuItem("Sensory Motor Apparatus", open_sensory_motor_apparatus),
+            MenuItem("Auditory Capacity", open_auditory_capacity),
             MenuItem("Back", app.pop),
         ],
     )
