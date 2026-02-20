@@ -16,12 +16,11 @@ from __future__ import annotations
 import json
 import math
 import os
-import queue
 import random
 import shutil
 import subprocess
 import sys
-import threading
+import tempfile
 from array import array
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -113,18 +112,16 @@ class _TargetRecognitionSceneGlyph:
 
 
 class _OfflineTtsSpeaker:
-    """Best-effort offline TTS worker using OS speech commands.
+    """Best-effort offline TTS rendered to pygame Sound objects."""
 
-    Speech runs out-of-process to avoid native TTS backend crashes taking down
-    the main app process.
-    """
-
-    def __init__(self) -> None:
+    def __init__(self, *, channel: pygame.mixer.Channel | None) -> None:
+        self._channel = channel
         self._enabled = False
         self._backend: str | None = None
-        self._queue: queue.Queue[str | None] = queue.Queue(maxsize=16)
-        self._thread: threading.Thread | None = None
+        self._cache: dict[str, pygame.mixer.Sound] = {}
 
+        if self._channel is None:
+            return
         if os.environ.get("CFAST_DISABLE_TTS", "0") == "1":
             return
         if os.environ.get("SDL_AUDIODRIVER", "").strip().lower() == "dummy":
@@ -132,50 +129,45 @@ class _OfflineTtsSpeaker:
             return
 
         self._backend = self._detect_backend()
-        if self._backend is None:
-            return
-
-        self._thread = threading.Thread(target=self._run_loop, name="cfast-tts", daemon=True)
-        self._thread.start()
-        self._enabled = True
+        self._enabled = self._backend is not None
 
     @property
     def enabled(self) -> bool:
-        return self._enabled
+        return bool(self._enabled)
 
     def speak(self, text: str) -> None:
-        if not self._enabled:
+        if not self._enabled or self._channel is None:
             return
-        message = str(text).strip()
-        if message == "":
+        phrase = " ".join(str(text).strip().split())
+        if phrase == "":
             return
-        # Keep freshest prompts if queue is saturated.
-        while self._queue.full():
-            try:
-                self._queue.get_nowait()
-            except queue.Empty:
-                break
-        try:
-            self._queue.put_nowait(message)
-        except queue.Full:
-            pass
+
+        sound = self._cache.get(phrase)
+        if sound is None:
+            sound = self._synthesize_sound(phrase)
+            if sound is None:
+                return
+            self._cache[phrase] = sound
+
+        if self._channel.get_busy():
+            self._channel.queue(sound)
+        else:
+            self._channel.play(sound)
 
     def stop(self) -> None:
-        if not self._enabled:
-            return
-        self._enabled = False
-        try:
-            self._queue.put_nowait(None)
-        except queue.Full:
-            pass
-        if self._thread is not None:
-            self._thread.join(timeout=1.2)
-        self._thread = None
+        if self._channel is not None:
+            try:
+                self._channel.stop()
+            except Exception:
+                pass
+        self._cache.clear()
 
     @staticmethod
     def _detect_backend() -> str | None:
         # macOS native offline TTS.
-        if sys.platform == "darwin" and shutil.which("say") is not None:
+        if sys.platform == "darwin" and (
+            shutil.which("say") is not None or Path("/usr/bin/say").exists()
+        ):
             return "say"
         # Windows offline SAPI via PowerShell.
         if os.name == "nt" and shutil.which("powershell") is not None:
@@ -185,66 +177,68 @@ class _OfflineTtsSpeaker:
             return "espeak"
         return None
 
-    def _run_loop(self) -> None:
-        while self._enabled:
-            try:
-                item = self._queue.get(timeout=0.20)
-            except queue.Empty:
-                continue
-            if item is None:
-                break
-            try:
-                self._speak_now(item)
-            except Exception:
-                # Continue with subsequent prompts.
-                pass
-
-    def _speak_now(self, text: str) -> None:
+    def _synthesize_sound(self, text: str) -> pygame.mixer.Sound | None:
         backend = self._backend
         if backend is None:
-            return
+            return None
 
-        clean = " ".join(str(text).strip().split())
-        if clean == "":
-            return
+        phrase = " ".join(str(text).strip().split())
+        if phrase == "":
+            return None
 
-        if backend == "say":
-            subprocess.run(
-                ["say", "-r", "176", clean],
-                check=False,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=6.0,
-            )
-            return
+        suffix = ".aiff" if backend == "say" else ".wav"
+        fd, out_path = tempfile.mkstemp(prefix="cfast_tts_", suffix=suffix)
+        os.close(fd)
 
-        if backend == "powershell":
-            script = (
-                "Add-Type -AssemblyName System.Speech; "
-                "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
-                "$s.Rate = 1; "
-                "$t = [Console]::In.ReadToEnd(); "
-                "$s.Speak($t)"
-            )
-            subprocess.run(
-                ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
-                input=clean,
-                text=True,
-                check=False,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=8.0,
-            )
-            return
+        try:
+            if backend == "say":
+                say_cmd = shutil.which("say") or "/usr/bin/say"
+                subprocess.run(
+                    [say_cmd, "-r", "176", "-o", out_path, phrase],
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=8.0,
+                )
+            elif backend == "powershell":
+                script = (
+                    "Add-Type -AssemblyName System.Speech; "
+                    "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
+                    "$s.Rate = 1; "
+                    "$out = [Console]::In.ReadLine(); "
+                    "$txt = [Console]::In.ReadToEnd(); "
+                    "$s.SetOutputToWaveFile($out); "
+                    "$s.Speak($txt); "
+                    "$s.SetOutputToDefaultAudioDevice();"
+                )
+                subprocess.run(
+                    ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+                    input=f"{out_path}\n{phrase}",
+                    text=True,
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=10.0,
+                )
+            elif backend == "espeak":
+                subprocess.run(
+                    ["espeak", "-s", "176", "-w", out_path, phrase],
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=8.0,
+                )
 
-        if backend == "espeak":
-            subprocess.run(
-                ["espeak", "-s", "176", clean],
-                check=False,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=6.0,
-            )
+            if not Path(out_path).exists() or Path(out_path).stat().st_size <= 0:
+                return None
+            return pygame.mixer.Sound(out_path)
+        except Exception:
+            return None
+        finally:
+            try:
+                Path(out_path).unlink(missing_ok=True)
+            except Exception:
+                pass
 
 
 class _AuditoryCapacityAudioAdapter:
@@ -271,13 +265,14 @@ class _AuditoryCapacityAudioAdapter:
         self._dist_channel: pygame.mixer.Channel | None = None
         self._cue_channel: pygame.mixer.Channel | None = None
         self._alert_channel: pygame.mixer.Channel | None = None
+        self._voice_channel: pygame.mixer.Channel | None = None
 
         self._last_callsign_cue: str | None = None
         self._last_color_command: str | None = None
         self._last_beep_active = False
         self._last_sequence_display: str | None = None
         self._last_assigned_callsigns: tuple[str, ...] = ()
-        self._tts = _OfflineTtsSpeaker()
+        self._tts = _OfflineTtsSpeaker(channel=None)
         self._voice_rng = random.Random(0xAC710)
         self._next_chatter_at_s = 0.0
         self._chatter_lines: tuple[str, ...] = (
@@ -318,6 +313,9 @@ class _AuditoryCapacityAudioAdapter:
             self._dist_channel = pygame.mixer.Channel(1)
             self._cue_channel = pygame.mixer.Channel(2)
             self._alert_channel = pygame.mixer.Channel(3)
+            self._voice_channel = pygame.mixer.Channel(4)
+            self._voice_channel.set_volume(0.92)
+            self._tts = _OfflineTtsSpeaker(channel=self._voice_channel)
 
             self._available = True
         except Exception:
@@ -380,8 +378,9 @@ class _AuditoryCapacityAudioAdapter:
 
         assigned = tuple(str(v) for v in payload.assigned_callsigns)
         if assigned != self._last_assigned_callsigns and assigned:
-            phrase = ", ".join(assigned)
-            self._tts.speak(f"Assigned call signs. {phrase}")
+            self._tts.speak("Assigned call signs.")
+            for callsign in assigned:
+                self._tts.speak(callsign)
             self._last_assigned_callsigns = assigned
 
     def _sync_callsign_cue(self, *, payload: AuditoryCapacityPayload) -> None:
@@ -434,9 +433,11 @@ class _AuditoryCapacityAudioAdapter:
             sound = self._build_sequence_sound(sequence)
             self._sequence_cache[sequence] = sound
         self._play_cue(sound, volume=0.52)
-        digit_phrase = " ".join(ch for ch in sequence if ch.isdigit())
-        if digit_phrase != "":
-            self._tts.speak(f"Sequence. {digit_phrase}")
+        digits = [ch for ch in sequence if ch.isdigit()]
+        if digits:
+            self._tts.speak("Sequence.")
+            for digit in digits:
+                self._tts.speak(digit)
         self._last_sequence_display = sequence
 
     def _sync_voice_chatter(self, *, payload: AuditoryCapacityPayload) -> None:
