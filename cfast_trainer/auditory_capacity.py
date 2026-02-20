@@ -15,25 +15,26 @@ class AuditoryCapacityConfig:
     tick_hz: float = 120.0
 
     control_gain: float = 1.24
-    disturbance_gain: float = 0.64
+    disturbance_gain: float = 0.42
     tube_half_width: float = 0.92
     tube_half_height: float = 0.56
 
-    gate_speed_norm_per_s: float = 0.56
-    gate_interval_s: float = 2.65
+    gate_speed_norm_per_s: float = 0.30
+    gate_interval_s: float = 11.5
 
-    callsign_interval_s: float = 2.60
-    beep_interval_s: float = 2.35
-    color_command_interval_s: float = 5.50
-    sequence_interval_s: float = 10.40
+    callsign_interval_s: float = 22.0
+    callsign_hold_probability: float = 0.15
+    beep_interval_s: float = 36.0
+    color_command_interval_s: float = 72.0
+    sequence_interval_s: float = 240.0
 
-    cue_window_s: float = 1.65
-    sequence_display_s: float = 2.20
-    sequence_response_s: float = 4.40
+    cue_window_s: float = 2.40
+    sequence_display_s: float = 3.00
+    sequence_response_s: float = 7.00
 
     # Drift can taper as the phase progresses (0.0-1.0 ratio through phase time).
     drift_relax_start_ratio: float = 0.14
-    min_drift_scale: float = 0.38
+    min_drift_scale: float = 0.24
 
 
 class AuditoryCapacityEventKind(StrEnum):
@@ -79,6 +80,7 @@ class AuditoryCapacityPayload:
 
     assigned_callsigns: tuple[str, ...]
     callsign_cue: str | None
+    callsign_blocks_gate: bool
     beep_active: bool
     color_command: str | None
 
@@ -141,6 +143,7 @@ class _CueState:
     issued_at_s: float
     expires_at_s: float
     expects_response: bool
+    hold_current_color_gate: bool = False
 
 
 @dataclass(slots=True)
@@ -176,6 +179,17 @@ class AuditoryCapacityScenarioGenerator:
     def next_callsign_cue(self, *, difficulty: float) -> str:
         _ = difficulty
         return str(self._rng.choice(self.CALLSIGNS))
+
+    def should_hold_current_color_gate(
+        self,
+        *,
+        expects_response: bool,
+        probability: float,
+    ) -> bool:
+        if not expects_response:
+            return False
+        p = max(0.0, min(1.0, float(probability)))
+        return self._rng.random() < p
 
     def next_sequence(self, *, difficulty: float) -> str:
         d = clamp01(difficulty)
@@ -296,6 +310,8 @@ class AuditoryCapacityEngine:
             raise ValueError("sequence_display_s must be > 0")
         if cfg.sequence_response_s <= 0.0:
             raise ValueError("sequence_response_s must be > 0")
+        if not (0.0 <= cfg.callsign_hold_probability <= 1.0):
+            raise ValueError("callsign_hold_probability must be in [0.0, 1.0]")
         if not (0.0 <= cfg.drift_relax_start_ratio <= 0.95):
             raise ValueError("drift_relax_start_ratio must be in [0.0, 0.95]")
         if not (0.0 < cfg.min_drift_scale <= 1.0):
@@ -462,7 +478,8 @@ class AuditoryCapacityEngine:
                     "- Trigger when a beep appears (Space)",
                     "- Change ball color when commanded (Q/W/E/R)",
                     "- Memorize and enter digit sequences",
-                    "- Fly through gates matching your current color and shape rule",
+                    "- Fly through gates that match your current color",
+                    "- If your call sign gives a HOLD cue, avoid current-color gates",
                     "",
                     "Once scored begins, exit is locked until completion.",
                     "Press Enter to start practice.",
@@ -551,17 +568,42 @@ class AuditoryCapacityEngine:
         self._dist_until_s = 0.0
 
         self._gates.clear()
-        self._next_gate_at_s = 1.60
+        self._next_gate_at_s = self._startup_delay(
+            base_interval_s=self._cfg.gate_interval_s,
+            scale=0.70,
+            lower_s=0.80,
+            upper_s=18.0,
+        )
 
         self._active_callsign = None
         self._active_beep = None
         self._active_color = None
         self._active_sequence = None
 
-        self._next_callsign_at_s = 1.80
-        self._next_beep_at_s = 1.70
-        self._next_color_at_s = 2.90
-        self._next_sequence_at_s = 4.50
+        self._next_callsign_at_s = self._startup_delay(
+            base_interval_s=self._cfg.callsign_interval_s,
+            scale=0.55,
+            lower_s=1.00,
+            upper_s=24.0,
+        )
+        self._next_beep_at_s = self._startup_delay(
+            base_interval_s=self._cfg.beep_interval_s,
+            scale=0.65,
+            lower_s=1.20,
+            upper_s=36.0,
+        )
+        self._next_color_at_s = self._startup_delay(
+            base_interval_s=self._cfg.color_command_interval_s,
+            scale=0.70,
+            lower_s=1.80,
+            upper_s=48.0,
+        )
+        self._next_sequence_at_s = self._startup_delay(
+            base_interval_s=self._cfg.sequence_interval_s,
+            scale=0.45,
+            lower_s=2.50,
+            upper_s=96.0,
+        )
 
         self._ball_color = "RED"
         self._ball_color_strength = 1.0
@@ -579,6 +621,16 @@ class AuditoryCapacityEngine:
             self._scored_correct = 0
             self._scored_total_score = 0.0
             self._scored_max_score = 0.0
+
+    @staticmethod
+    def _startup_delay(
+        *,
+        base_interval_s: float,
+        scale: float,
+        lower_s: float,
+        upper_s: float,
+    ) -> float:
+        return max(lower_s, min(upper_s, float(base_interval_s) * float(scale)))
 
     def _step(self, dt: float) -> None:
         self._sim_elapsed_s += dt
@@ -684,11 +736,27 @@ class AuditoryCapacityEngine:
             gate.x_norm -= speed * dt
 
             if not gate.scored and gate.x_norm <= self._ball_x:
-                expected_shape = self._shape_for_color(self._ball_color)
                 inside_aperture = abs(self._ball_y - gate.y_norm) <= gate.aperture_norm
                 color_ok = gate.color == self._ball_color
-                shape_ok = gate.shape == expected_shape
-                is_correct = inside_aperture and color_ok and shape_ok and (not self._outside_tube)
+
+                # Only same-color gates are scored; others are neutral traffic.
+                if not color_ok:
+                    gate.scored = True
+                    if gate.x_norm >= -1.25:
+                        active.append(gate)
+                    continue
+
+                hold_gate = (
+                    self._active_callsign is not None
+                    and self._active_callsign.expects_response
+                    and self._active_callsign.hold_current_color_gate
+                )
+                if hold_gate:
+                    is_correct = (not inside_aperture) and (not self._outside_tube)
+                    expected = f"{self._ball_color}:HOLD"
+                else:
+                    is_correct = inside_aperture and (not self._outside_tube)
+                    expected = f"{self._ball_color}:PASS"
 
                 if is_correct:
                     self._gate_hits += 1
@@ -697,8 +765,8 @@ class AuditoryCapacityEngine:
 
                 self._record_event(
                     kind=AuditoryCapacityEventKind.GATE,
-                    expected=f"{self._ball_color}/{expected_shape}",
-                    response=f"{gate.color}/{gate.shape}/{('PASS' if inside_aperture else 'MISS')}",
+                    expected=expected,
+                    response=f"{gate.color}/{gate.shape}/{('PASS' if inside_aperture else 'SKIP')}",
                     is_correct=is_correct,
                     score=1.0 if is_correct else 0.0,
                     response_time_s=None,
@@ -714,12 +782,17 @@ class AuditoryCapacityEngine:
         if self._sim_elapsed_s >= self._next_callsign_at_s and self._active_callsign is None:
             cue = self._gen.next_callsign_cue(difficulty=self._difficulty)
             expects = cue in self._assigned_callsigns
+            hold_current_color_gate = self._gen.should_hold_current_color_gate(
+                expects_response=expects,
+                probability=self._cfg.callsign_hold_probability,
+            )
             issued = self._sim_elapsed_s
             self._active_callsign = _CueState(
                 target=cue,
                 issued_at_s=issued,
                 expires_at_s=issued + self._cfg.cue_window_s,
                 expects_response=expects,
+                hold_current_color_gate=hold_current_color_gate,
             )
             self._next_callsign_at_s = self._sim_elapsed_s + self._gen.jittered_interval(
                 base_s=self._cfg.callsign_interval_s,
@@ -734,9 +807,12 @@ class AuditoryCapacityEngine:
 
         # Expired with no response.
         if active.expects_response:
+            expected = active.target
+            if active.hold_current_color_gate:
+                expected = f"{expected}:HOLD"
             self._record_event(
                 kind=AuditoryCapacityEventKind.CALLSIGN,
-                expected=active.target,
+                expected=expected,
                 response="MISS",
                 is_correct=False,
                 score=0.0,
@@ -858,9 +934,12 @@ class AuditoryCapacityEngine:
 
         rt = max(0.0, self._sim_elapsed_s - active.issued_at_s)
         if active.expects_response:
+            expected = active.target
+            if active.hold_current_color_gate:
+                expected = f"{expected}:HOLD"
             self._record_event(
                 kind=AuditoryCapacityEventKind.CALLSIGN,
-                expected=active.target,
+                expected=expected,
                 response=active.target,
                 is_correct=True,
                 score=1.0,
@@ -1003,12 +1082,6 @@ class AuditoryCapacityEngine:
                 self._last_update_at_s = now
                 self._accumulator_s = 0.0
 
-    def _shape_for_color(self, color: str) -> str:
-        for rule in self._rules:
-            if rule.color == color:
-                return rule.required_shape
-        return "CIRCLE"
-
     def _build_payload(self) -> AuditoryCapacityPayload:
         sequence_display: str | None = None
         sequence_open = False
@@ -1043,6 +1116,11 @@ class AuditoryCapacityEngine:
             ball_color_strength=float(self._ball_color_strength),
             assigned_callsigns=self._assigned_callsigns,
             callsign_cue=None if self._active_callsign is None else self._active_callsign.target,
+            callsign_blocks_gate=(
+                False
+                if self._active_callsign is None
+                else bool(self._active_callsign.hold_current_color_gate)
+            ),
             beep_active=self._active_beep is not None,
             color_command=None if self._active_color is None else self._active_color.target,
             sequence_display=sequence_display,

@@ -14,13 +14,14 @@ Deterministic timing/scoring/RNG/state lives in cfast_trainer/* (core modules).
 from __future__ import annotations
 
 import json
+import importlib.util
 import math
 import os
 import random
 import shutil
 import subprocess
 import sys
-import tempfile
+import time
 from array import array
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -112,133 +113,207 @@ class _TargetRecognitionSceneGlyph:
 
 
 class _OfflineTtsSpeaker:
-    """Best-effort offline TTS rendered to pygame Sound objects."""
+    """Best-effort offline TTS via isolated subprocesses.
 
-    def __init__(self, *, channel: pygame.mixer.Channel | None) -> None:
-        self._channel = channel
+    The old in-process pyttsx3 path could hard-crash the app. This wrapper
+    keeps TTS out-of-process while preserving spoken commands/chatter behavior.
+    """
+
+    _max_queue = 24
+    _max_utterance_s = 12.0
+
+    def __init__(self) -> None:
         self._enabled = False
+        self._backends: list[str] = []
         self._backend: str | None = None
-        self._cache: dict[str, pygame.mixer.Sound] = {}
+        self._pending: list[str] = []
+        self._active_proc: subprocess.Popen[bytes] | None = None
+        self._active_started_s = 0.0
 
-        if self._channel is None:
-            return
         if os.environ.get("CFAST_DISABLE_TTS", "0") == "1":
             return
         if os.environ.get("SDL_AUDIODRIVER", "").strip().lower() == "dummy":
             # Keep automated/headless runs silent and stable.
             return
 
-        self._backend = self._detect_backend()
+        self._backends = self._resolve_backends()
+        self._backend = self._backends[0] if self._backends else None
         self._enabled = self._backend is not None
 
     @property
     def enabled(self) -> bool:
         return bool(self._enabled)
 
+    @property
+    def pending_count(self) -> int:
+        active = 1 if self._active_proc is not None else 0
+        return active + len(self._pending)
+
     def speak(self, text: str) -> None:
-        if not self._enabled or self._channel is None:
+        if not self._enabled:
             return
         phrase = " ".join(str(text).strip().split())
         if phrase == "":
             return
+        if self._pending and self._pending[-1] == phrase:
+            return
+        self._pending.append(phrase)
+        if len(self._pending) > self._max_queue:
+            del self._pending[: len(self._pending) - self._max_queue]
 
-        sound = self._cache.get(phrase)
-        if sound is None:
-            sound = self._synthesize_sound(phrase)
-            if sound is None:
+    def update(self) -> None:
+        if not self._enabled:
+            return
+
+        proc = self._active_proc
+        if proc is not None:
+            if proc.poll() is None:
+                if (time.monotonic() - self._active_started_s) > self._max_utterance_s:
+                    self._terminate_process(proc)
+                    self._active_proc = None
+            else:
+                self._active_proc = None
+
+        if self._active_proc is not None:
+            return
+        if not self._pending:
+            return
+
+        while self._pending and self._enabled:
+            next_text = self._pending[0]
+            launched = self._launch_process(next_text)
+            if launched is not None:
+                del self._pending[0]
+                self._active_proc = launched
+                self._active_started_s = time.monotonic()
                 return
-            self._cache[phrase] = sound
+            self._drop_current_backend()
 
-        if self._channel.get_busy():
-            self._channel.queue(sound)
-        else:
-            self._channel.play(sound)
+        if not self._enabled:
+            self._pending.clear()
 
     def stop(self) -> None:
-        if self._channel is not None:
-            try:
-                self._channel.stop()
-            except Exception:
-                pass
-        self._cache.clear()
+        self._pending.clear()
+        proc = self._active_proc
+        self._active_proc = None
+        if proc is not None:
+            self._terminate_process(proc)
 
     @staticmethod
-    def _detect_backend() -> str | None:
-        # macOS native offline TTS.
-        if sys.platform == "darwin" and (
-            shutil.which("say") is not None or Path("/usr/bin/say").exists()
-        ):
-            return "say"
-        # Windows offline SAPI via PowerShell.
-        if os.name == "nt" and shutil.which("powershell") is not None:
-            return "powershell"
-        # Linux fallback if installed.
-        if shutil.which("espeak") is not None:
-            return "espeak"
-        return None
+    def _terminate_process(proc: subprocess.Popen[bytes]) -> None:
+        try:
+            proc.terminate()
+        except Exception:
+            return
+        try:
+            proc.wait(timeout=0.5)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
 
-    def _synthesize_sound(self, text: str) -> pygame.mixer.Sound | None:
+    @staticmethod
+    def _resolve_backends() -> list[str]:
+        supported = ("pyttsx3-subprocess", "say", "powershell", "espeak")
+        forced = os.environ.get("CFAST_TTS_BACKEND", "").strip().lower()
+        if forced in supported and _OfflineTtsSpeaker._backend_available(forced):
+            return [forced]
+
+        candidates: list[str] = []
+        if sys.platform == "darwin":
+            candidates.append("say")
+        if os.name == "nt":
+            candidates.append("powershell")
+        candidates.extend(("pyttsx3-subprocess", "espeak"))
+
+        seen: set[str] = set()
+        resolved: list[str] = []
+        for name in candidates:
+            if name in seen:
+                continue
+            seen.add(name)
+            if _OfflineTtsSpeaker._backend_available(name):
+                resolved.append(name)
+        return resolved
+
+    @staticmethod
+    def _backend_available(name: str) -> bool:
+        if name == "say":
+            return (shutil.which("say") is not None) or Path("/usr/bin/say").exists()
+        if name == "powershell":
+            return (shutil.which("powershell") is not None) or (shutil.which("pwsh") is not None)
+        if name == "pyttsx3-subprocess":
+            return importlib.util.find_spec("pyttsx3") is not None
+        if name == "espeak":
+            return shutil.which("espeak") is not None
+        return False
+
+    def _drop_current_backend(self) -> None:
+        backend = self._backend
+        if backend is None:
+            self._enabled = False
+            return
+        self._backends = [name for name in self._backends if name != backend]
+        self._backend = self._backends[0] if self._backends else None
+        self._enabled = self._backend is not None
+
+    def _launch_process(self, text: str) -> subprocess.Popen[bytes] | None:
         backend = self._backend
         if backend is None:
             return None
 
-        phrase = " ".join(str(text).strip().split())
-        if phrase == "":
-            return None
-
-        suffix = ".aiff" if backend == "say" else ".wav"
-        fd, out_path = tempfile.mkstemp(prefix="cfast_tts_", suffix=suffix)
-        os.close(fd)
-
         try:
-            if backend == "say":
-                say_cmd = shutil.which("say") or "/usr/bin/say"
-                subprocess.run(
-                    [say_cmd, "-r", "176", "-o", out_path, phrase],
-                    check=False,
+            if backend == "pyttsx3-subprocess":
+                script = (
+                    "import sys\n"
+                    "txt=' '.join(sys.argv[1:]).strip()\n"
+                    "import pyttsx3\n"
+                    "e=pyttsx3.init()\n"
+                    "e.setProperty('rate', 176)\n"
+                    "e.setProperty('volume', 0.95)\n"
+                    "e.say(txt)\n"
+                    "e.runAndWait()\n"
+                )
+                return subprocess.Popen(
+                    [sys.executable, "-c", script, text],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
-                    timeout=8.0,
                 )
-            elif backend == "powershell":
+
+            if backend == "say":
+                return subprocess.Popen(
+                    [shutil.which("say") or "/usr/bin/say", "-r", "176", text],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+
+            if backend == "powershell":
+                ps_bin = shutil.which("powershell") or shutil.which("pwsh")
+                if ps_bin is None:
+                    return None
                 script = (
                     "Add-Type -AssemblyName System.Speech; "
-                    "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
-                    "$s.Rate = 1; "
-                    "$out = [Console]::In.ReadLine(); "
-                    "$txt = [Console]::In.ReadToEnd(); "
-                    "$s.SetOutputToWaveFile($out); "
-                    "$s.Speak($txt); "
-                    "$s.SetOutputToDefaultAudioDevice();"
+                    "$s=New-Object System.Speech.Synthesis.SpeechSynthesizer; "
+                    "$s.Rate=1; "
+                    "$txt=($args -join ' '); "
+                    "$s.Speak($txt);"
                 )
-                subprocess.run(
-                    ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
-                    input=f"{out_path}\n{phrase}",
-                    text=True,
-                    check=False,
+                return subprocess.Popen(
+                    [ps_bin, "-NoProfile", "-NonInteractive", "-Command", script, text],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
-                    timeout=10.0,
-                )
-            elif backend == "espeak":
-                subprocess.run(
-                    ["espeak", "-s", "176", "-w", out_path, phrase],
-                    check=False,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    timeout=8.0,
                 )
 
-            if not Path(out_path).exists() or Path(out_path).stat().st_size <= 0:
-                return None
-            return pygame.mixer.Sound(out_path)
+            if backend == "espeak":
+                return subprocess.Popen(
+                    ["espeak", "-s", "176", text],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
         except Exception:
             return None
-        finally:
-            try:
-                Path(out_path).unlink(missing_ok=True)
-            except Exception:
-                pass
+        return None
 
 
 class _AuditoryCapacityAudioAdapter:
@@ -250,6 +325,13 @@ class _AuditoryCapacityAudioAdapter:
 
     _sample_rate = 22050
     _amp = 32767
+    _ambient_asset_manifest: tuple[tuple[str, float, float, float], ...] = (
+        ("bg_noise_loop.wav", 0.26, 2.40, 0.00),
+        ("bg_restaurant_loop.wav", 0.23, 1.65, 0.25),
+        ("bg_book_reader_loop.wav", 0.21, 1.20, 0.45),
+        ("bg_conversation_close_loop.wav", 0.25, 1.45, 0.60),
+        ("bg_mature_distraction_loop.wav", 0.19, 0.30, 1.95),
+    )
 
     def __init__(self) -> None:
         self._available = False
@@ -257,7 +339,13 @@ class _AuditoryCapacityAudioAdapter:
         self._sequence_cache: dict[str, pygame.mixer.Sound] = {}
 
         self._noise_sound: pygame.mixer.Sound | None = None
-        self._distortion_sound: pygame.mixer.Sound | None = None
+        self._ambient_tracks: dict[str, tuple[pygame.mixer.Sound, float, float, float]] = {}
+        self._ambient_slots: list[str | None] = [None, None]
+        self._ambient_started_at_s = 0.0
+        self._next_ambient_change_at_s = 0.0
+        self._ambient_assets_dir = (
+            Path(__file__).resolve().parents[1] / "assets" / "audio" / "auditory_capacity"
+        )
         self._beep_sound: pygame.mixer.Sound | None = None
         self._color_sounds: dict[str, pygame.mixer.Sound] = {}
 
@@ -265,25 +353,24 @@ class _AuditoryCapacityAudioAdapter:
         self._dist_channel: pygame.mixer.Channel | None = None
         self._cue_channel: pygame.mixer.Channel | None = None
         self._alert_channel: pygame.mixer.Channel | None = None
-        self._voice_channel: pygame.mixer.Channel | None = None
 
         self._last_callsign_cue: str | None = None
         self._last_color_command: str | None = None
         self._last_beep_active = False
         self._last_sequence_display: str | None = None
         self._last_assigned_callsigns: tuple[str, ...] = ()
-        self._tts = _OfflineTtsSpeaker(channel=None)
+        self._tts = _OfflineTtsSpeaker()
         self._voice_rng = random.Random(0xAC710)
         self._next_chatter_at_s = 0.0
         self._chatter_lines: tuple[str, ...] = (
-            "Maintain centerline.",
-            "Stay on task.",
-            "Prioritize call signs.",
-            "Keep the aircraft steady.",
-            "Avoid false trigger.",
-            "Track and respond.",
-            "Prepare for next command.",
-            "Focus under workload.",
+            "Table for two is ready at the window.",
+            "Can someone clear table seven please.",
+            "Chapter one. The rain began before sunrise.",
+            "He walked slowly down the corridor and stopped at the door.",
+            "I thought you said Tuesday, not Thursday.",
+            "No, I already sent that message this morning.",
+            "A nearby chair scrapes across the floor.",
+            "Someone laughs loudly and then coughs.",
         )
 
         try:
@@ -296,11 +383,7 @@ class _AuditoryCapacityAudioAdapter:
                 seed=0xAC01,
                 gain=0.35,
             )
-            self._distortion_sound = self._build_noise_sound(
-                duration_s=0.70,
-                seed=0xAC02,
-                gain=0.70,
-            )
+            self._ambient_tracks = self._load_ambient_tracks(fallback_noise=self._noise_sound)
             self._beep_sound = self._build_tone_sound(1120.0, 0.11, gain=0.42)
             self._color_sounds = {
                 "RED": self._build_tone_sound(380.0, 0.14, gain=0.30),
@@ -313,27 +396,25 @@ class _AuditoryCapacityAudioAdapter:
             self._dist_channel = pygame.mixer.Channel(1)
             self._cue_channel = pygame.mixer.Channel(2)
             self._alert_channel = pygame.mixer.Channel(3)
-            self._voice_channel = pygame.mixer.Channel(4)
-            self._voice_channel.set_volume(0.92)
-            self._tts = _OfflineTtsSpeaker(channel=self._voice_channel)
 
             self._available = True
         except Exception:
             self._available = False
 
     def sync(self, *, phase: Phase, payload: AuditoryCapacityPayload | None) -> None:
-        if not self._available:
-            return
         if payload is None or phase not in (Phase.PRACTICE, Phase.SCORED):
             self.stop()
             return
 
-        self._sync_background_layers(payload=payload)
+        self._sync_assigned_callsigns(payload=payload)
+        if self._available:
+            self._sync_background_layers(payload=payload)
         self._sync_callsign_cue(payload=payload)
         self._sync_beep_cue(payload=payload)
         self._sync_color_cue(payload=payload)
         self._sync_sequence_cue(payload=payload)
         self._sync_voice_chatter(payload=payload)
+        self._tts.update()
 
     def stop(self) -> None:
         if not self._available:
@@ -358,29 +439,169 @@ class _AuditoryCapacityAudioAdapter:
         self._last_sequence_display = None
         self._last_assigned_callsigns = ()
         self._next_chatter_at_s = 0.0
+        self._ambient_slots = [None, None]
+        self._ambient_started_at_s = 0.0
+        self._next_ambient_change_at_s = 0.0
 
     def _sync_background_layers(self, *, payload: AuditoryCapacityPayload) -> None:
         assert self._bg_channel is not None
         assert self._dist_channel is not None
-        assert self._noise_sound is not None
-        assert self._distortion_sound is not None
+        if not self._ambient_tracks:
+            return
 
-        if not self._bg_channel.get_busy():
-            self._bg_channel.play(self._noise_sound, loops=-1)
-        if not self._dist_channel.get_busy():
-            self._dist_channel.play(self._distortion_sound, loops=-1)
+        now_s = float(pygame.time.get_ticks()) / 1000.0
+        if self._ambient_started_at_s <= 0.0:
+            self._ambient_started_at_s = now_s
+
+        if self._next_ambient_change_at_s <= 0.0 or now_s >= self._next_ambient_change_at_s:
+            self._replan_ambient_mix(now_s=now_s, payload=payload)
 
         noise_level = max(0.0, min(1.0, float(payload.background_noise_level)))
         distortion_level = max(0.0, min(1.0, float(payload.distortion_level)))
 
-        self._bg_channel.set_volume(0.05 + (noise_level * 0.17))
-        self._dist_channel.set_volume(0.01 + (distortion_level * 0.12))
+        channels = (self._bg_channel, self._dist_channel)
+        for idx, channel in enumerate(channels):
+            active_key = self._ambient_slots[idx]
+            if active_key is None:
+                channel.set_volume(0.0)
+                if channel.get_busy():
+                    channel.stop()
+                continue
 
+            item = self._ambient_tracks.get(active_key)
+            if item is None:
+                self._ambient_slots[idx] = None
+                channel.stop()
+                continue
+
+            sound, base_volume, _, _ = item
+            if not channel.get_busy():
+                channel.play(sound, loops=-1)
+
+            layer_gain = 0.58 + (0.38 * noise_level) + (0.08 * distortion_level)
+            volume = max(0.0, min(1.0, base_volume * layer_gain))
+            channel.set_volume(volume)
+
+    def _load_ambient_tracks(
+        self,
+        *,
+        fallback_noise: pygame.mixer.Sound | None,
+    ) -> dict[str, tuple[pygame.mixer.Sound, float, float, float]]:
+        tracks: dict[str, tuple[pygame.mixer.Sound, float, float, float]] = {}
+
+        for filename, base_volume, base_weight, late_weight in self._ambient_asset_manifest:
+            sound = self._load_loop_sound(filename)
+            if sound is None:
+                continue
+            tracks[filename] = (
+                sound,
+                float(base_volume),
+                float(base_weight),
+                float(late_weight),
+            )
+
+        if not tracks and fallback_noise is not None:
+            tracks["generated_noise"] = (fallback_noise, 0.22, 1.00, 0.00)
+        return tracks
+
+    def _load_loop_sound(self, filename: str) -> pygame.mixer.Sound | None:
+        path = self._ambient_assets_dir / filename
+        if not path.exists():
+            return None
+        try:
+            return pygame.mixer.Sound(str(path))
+        except Exception:
+            return None
+
+    def _replan_ambient_mix(self, *, now_s: float, payload: AuditoryCapacityPayload) -> None:
+        assert self._bg_channel is not None
+        assert self._dist_channel is not None
+
+        available = list(self._ambient_tracks.keys())
+        if not available:
+            self._next_ambient_change_at_s = now_s + 5.0
+            return
+
+        elapsed_s = max(0.0, now_s - self._ambient_started_at_s)
+        elapsed_ratio = max(0.0, min(1.0, elapsed_s / 240.0))
+        noise_level = max(0.0, min(1.0, float(payload.background_noise_level)))
+
+        silence_prob = max(0.05, 0.17 - (0.08 * elapsed_ratio))
+        two_prob = min(0.84, 0.44 + (0.22 * elapsed_ratio) + (0.16 * noise_level))
+        one_prob = max(0.0, 1.0 - silence_prob - two_prob)
+
+        roll = self._voice_rng.random()
+        if roll < silence_prob:
+            target_count = 0
+        elif roll < (silence_prob + one_prob):
+            target_count = 1
+        else:
+            target_count = 2
+        target_count = min(target_count, len(available), 2)
+
+        selected = self._pick_ambient_keys(target_count=target_count, elapsed_ratio=elapsed_ratio)
+        channels = (self._bg_channel, self._dist_channel)
+        for idx, channel in enumerate(channels):
+            new_key = selected[idx] if idx < len(selected) else None
+            old_key = self._ambient_slots[idx]
+            if new_key == old_key:
+                if new_key is None:
+                    if channel.get_busy():
+                        channel.stop()
+                else:
+                    item = self._ambient_tracks.get(new_key)
+                    if item is not None and not channel.get_busy():
+                        channel.play(item[0], loops=-1)
+                continue
+
+            if channel.get_busy():
+                channel.stop()
+            self._ambient_slots[idx] = new_key
+            if new_key is not None:
+                item = self._ambient_tracks.get(new_key)
+                if item is not None:
+                    channel.play(item[0], loops=-1)
+
+        if target_count == 0:
+            window_s = self._voice_rng.uniform(1.2, 2.8)
+        elif target_count == 1:
+            window_s = self._voice_rng.uniform(5.6, 10.8) - (1.5 * noise_level)
+        else:
+            window_s = self._voice_rng.uniform(4.0, 8.2) - (1.2 * noise_level)
+        self._next_ambient_change_at_s = now_s + max(1.0, float(window_s))
+
+    def _pick_ambient_keys(self, *, target_count: int, elapsed_ratio: float) -> list[str]:
+        if target_count <= 0:
+            return []
+
+        pool = list(self._ambient_tracks.keys())
+        picked: list[str] = []
+        for _ in range(min(target_count, len(pool))):
+            total_weight = 0.0
+            for key in pool:
+                _, _, base_weight, late_weight = self._ambient_tracks[key]
+                total_weight += max(0.001, base_weight + (late_weight * elapsed_ratio))
+
+            pick = self._voice_rng.uniform(0.0, total_weight)
+            running = 0.0
+            chosen = pool[-1]
+            for key in pool:
+                _, _, base_weight, late_weight = self._ambient_tracks[key]
+                running += max(0.001, base_weight + (late_weight * elapsed_ratio))
+                if running >= pick:
+                    chosen = key
+                    break
+
+            picked.append(chosen)
+            pool.remove(chosen)
+
+        return picked
+
+    def _sync_assigned_callsigns(self, *, payload: AuditoryCapacityPayload) -> None:
         assigned = tuple(str(v) for v in payload.assigned_callsigns)
         if assigned != self._last_assigned_callsigns and assigned:
-            self._tts.speak("Assigned call signs.")
-            for callsign in assigned:
-                self._tts.speak(callsign)
+            joined = ", ".join(assigned)
+            self._tts.speak(f"Assigned call signs. {joined}.")
             self._last_assigned_callsigns = assigned
 
     def _sync_callsign_cue(self, *, payload: AuditoryCapacityPayload) -> None:
@@ -390,13 +611,16 @@ class _AuditoryCapacityAudioAdapter:
             return
         if cue == self._last_callsign_cue:
             return
-        sound = self._callsign_cache.get(cue)
-        if sound is None:
-            sound = self._build_callsign_sound(cue)
-            self._callsign_cache[cue] = sound
-        self._play_cue(sound, volume=0.50)
-        mode = "respond" if cue in payload.assigned_callsigns else "ignore"
-        self._tts.speak(f"Call sign. {cue}. {mode}.")
+        if self._available:
+            sound = self._callsign_cache.get(cue)
+            if sound is None:
+                sound = self._build_callsign_sound(cue)
+                self._callsign_cache[cue] = sound
+            self._play_cue(sound, volume=0.50)
+        if payload.callsign_blocks_gate:
+            self._tts.speak(f"Call sign {cue}. Hold current color gate.")
+        else:
+            self._tts.speak(f"Call sign {cue}.")
         self._last_callsign_cue = cue
 
     def _sync_beep_cue(self, *, payload: AuditoryCapacityPayload) -> None:
@@ -428,16 +652,16 @@ class _AuditoryCapacityAudioAdapter:
             return
         if sequence == self._last_sequence_display:
             return
-        sound = self._sequence_cache.get(sequence)
-        if sound is None:
-            sound = self._build_sequence_sound(sequence)
-            self._sequence_cache[sequence] = sound
-        self._play_cue(sound, volume=0.52)
+        if self._available:
+            sound = self._sequence_cache.get(sequence)
+            if sound is None:
+                sound = self._build_sequence_sound(sequence)
+                self._sequence_cache[sequence] = sound
+            self._play_cue(sound, volume=0.52)
         digits = [ch for ch in sequence if ch.isdigit()]
         if digits:
-            self._tts.speak("Sequence.")
-            for digit in digits:
-                self._tts.speak(digit)
+            spoken = " ".join(digits)
+            self._tts.speak(f"Sequence. {spoken}.")
         self._last_sequence_display = sequence
 
     def _sync_voice_chatter(self, *, payload: AuditoryCapacityPayload) -> None:
@@ -445,10 +669,12 @@ class _AuditoryCapacityAudioAdapter:
             return
         if not self._chatter_lines:
             return
+        if self._tts.pending_count > 3:
+            return
 
         now_s = float(pygame.time.get_ticks()) / 1000.0
         if self._next_chatter_at_s <= 0.0:
-            self._next_chatter_at_s = now_s + 4.5
+            self._next_chatter_at_s = now_s + 2.8
             return
         if now_s < self._next_chatter_at_s:
             return
@@ -456,9 +682,9 @@ class _AuditoryCapacityAudioAdapter:
         line = str(self._voice_rng.choice(self._chatter_lines))
         self._tts.speak(line)
 
-        base = 6.8 + (float(payload.background_noise_level) * 4.0)
-        jitter = self._voice_rng.uniform(-1.4, 1.6)
-        self._next_chatter_at_s = now_s + max(4.0, base + jitter)
+        base = 4.6 + (float(payload.background_noise_level) * 2.4)
+        jitter = self._voice_rng.uniform(-0.9, 1.2)
+        self._next_chatter_at_s = now_s + max(3.5, base + jitter)
 
     def _play_cue(self, sound: pygame.mixer.Sound, *, volume: float) -> None:
         if not self._available:
@@ -2574,8 +2800,9 @@ class CognitiveTestScreen:
             if payload.callsign_cue is None:
                 info_lines.append("Radio cue: —")
             else:
-                cue_mode = "RESPOND" if payload.callsign_cue in payload.assigned_callsigns else "IGNORE"
-                info_lines.append(f"Radio cue: {payload.callsign_cue} ({cue_mode})")
+                info_lines.append(f"Radio cue: {payload.callsign_cue}")
+                if payload.callsign_blocks_gate:
+                    info_lines.append("Gate cue: HOLD current-color gate")
 
             info_lines.append(f"Beep cue: {'ACTIVE' if payload.beep_active else '—'}")
             info_lines.append(f"Color command: {payload.color_command or '—'}")
@@ -2586,11 +2813,6 @@ class CognitiveTestScreen:
                 info_lines.append("Sequence: enter digits and press Enter")
             else:
                 info_lines.append("Sequence: —")
-
-            info_lines.append("")
-            info_lines.append("Color -> required gate shape")
-            for rule in payload.color_rules:
-                info_lines.append(f"{rule.color:>6}: {rule.required_shape}")
 
             info_lines.append("")
             info_lines.append(
