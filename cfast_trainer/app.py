@@ -16,7 +16,10 @@ from __future__ import annotations
 import json
 import math
 import os
+import queue
 import random
+import threading
+from array import array
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -104,6 +107,371 @@ class _TargetRecognitionSceneGlyph:
     alpha: float
     max_alpha: float
     matching_labels: tuple[str, ...]
+
+
+class _OfflineTtsSpeaker:
+    """Best-effort offline TTS worker using pyttsx3.
+
+    This is an adapter-only utility. If pyttsx3 is unavailable or fails to
+    initialize, it quietly disables itself.
+    """
+
+    def __init__(self) -> None:
+        self._enabled = False
+        self._queue: queue.Queue[str | None] = queue.Queue(maxsize=16)
+        self._thread: threading.Thread | None = None
+
+        if os.environ.get("CFAST_DISABLE_TTS", "0") == "1":
+            return
+        if os.environ.get("SDL_AUDIODRIVER", "").strip().lower() == "dummy":
+            # Keep automated/headless runs silent and stable.
+            return
+        try:
+            import pyttsx3  # type: ignore[import-not-found]  # noqa: F401
+        except Exception:
+            return
+
+        self._thread = threading.Thread(target=self._run_loop, name="cfast-tts", daemon=True)
+        self._thread.start()
+        self._enabled = True
+
+    @property
+    def enabled(self) -> bool:
+        return self._enabled
+
+    def speak(self, text: str) -> None:
+        if not self._enabled:
+            return
+        message = str(text).strip()
+        if message == "":
+            return
+        # Keep freshest prompts if queue is saturated.
+        while self._queue.full():
+            try:
+                self._queue.get_nowait()
+            except queue.Empty:
+                break
+        try:
+            self._queue.put_nowait(message)
+        except queue.Full:
+            pass
+
+    def stop(self) -> None:
+        if not self._enabled:
+            return
+        self._enabled = False
+        try:
+            self._queue.put_nowait(None)
+        except queue.Full:
+            pass
+        if self._thread is not None:
+            self._thread.join(timeout=1.2)
+        self._thread = None
+
+    def _run_loop(self) -> None:
+        try:
+            import pyttsx3  # type: ignore[import-not-found]
+
+            engine = pyttsx3.init()
+            try:
+                engine.setProperty("rate", 176)
+            except Exception:
+                pass
+            try:
+                engine.setProperty("volume", 0.95)
+            except Exception:
+                pass
+        except Exception:
+            self._enabled = False
+            return
+
+        while self._enabled:
+            try:
+                item = self._queue.get(timeout=0.20)
+            except queue.Empty:
+                continue
+            if item is None:
+                break
+            try:
+                engine.say(item)
+                engine.runAndWait()
+            except Exception:
+                # Continue with subsequent prompts.
+                pass
+        try:
+            engine.stop()
+        except Exception:
+            pass
+
+
+class _AuditoryCapacityAudioAdapter:
+    """Pygame audio adapter for Auditory Capacity cues/background.
+
+    This stays outside deterministic core logic. It reacts to payload state
+    transitions and emits local sounds only.
+    """
+
+    _sample_rate = 22050
+    _amp = 32767
+
+    def __init__(self) -> None:
+        self._available = False
+        self._callsign_cache: dict[str, pygame.mixer.Sound] = {}
+        self._sequence_cache: dict[str, pygame.mixer.Sound] = {}
+
+        self._noise_sound: pygame.mixer.Sound | None = None
+        self._distortion_sound: pygame.mixer.Sound | None = None
+        self._beep_sound: pygame.mixer.Sound | None = None
+        self._color_sounds: dict[str, pygame.mixer.Sound] = {}
+
+        self._bg_channel: pygame.mixer.Channel | None = None
+        self._dist_channel: pygame.mixer.Channel | None = None
+        self._cue_channel: pygame.mixer.Channel | None = None
+        self._alert_channel: pygame.mixer.Channel | None = None
+
+        self._last_callsign_cue: str | None = None
+        self._last_color_command: str | None = None
+        self._last_beep_active = False
+        self._last_sequence_display: str | None = None
+        self._last_assigned_callsigns: tuple[str, ...] = ()
+        self._tts = _OfflineTtsSpeaker()
+
+        try:
+            if pygame.mixer.get_init() is None:
+                pygame.mixer.init(frequency=self._sample_rate, size=-16, channels=1, buffer=512)
+            pygame.mixer.set_num_channels(max(8, int(pygame.mixer.get_num_channels())))
+
+            self._noise_sound = self._build_noise_sound(
+                duration_s=1.30,
+                seed=0xAC01,
+                gain=0.35,
+            )
+            self._distortion_sound = self._build_noise_sound(
+                duration_s=0.70,
+                seed=0xAC02,
+                gain=0.70,
+            )
+            self._beep_sound = self._build_tone_sound(1120.0, 0.11, gain=0.42)
+            self._color_sounds = {
+                "RED": self._build_tone_sound(380.0, 0.14, gain=0.30),
+                "GREEN": self._build_tone_sound(510.0, 0.14, gain=0.30),
+                "BLUE": self._build_tone_sound(640.0, 0.14, gain=0.30),
+                "YELLOW": self._build_tone_sound(780.0, 0.14, gain=0.30),
+            }
+
+            self._bg_channel = pygame.mixer.Channel(0)
+            self._dist_channel = pygame.mixer.Channel(1)
+            self._cue_channel = pygame.mixer.Channel(2)
+            self._alert_channel = pygame.mixer.Channel(3)
+
+            self._available = True
+        except Exception:
+            self._available = False
+
+    def sync(self, *, phase: Phase, payload: AuditoryCapacityPayload | None) -> None:
+        if not self._available:
+            return
+        if payload is None or phase not in (Phase.PRACTICE, Phase.SCORED):
+            self.stop()
+            return
+
+        self._sync_background_layers(payload=payload)
+        self._sync_callsign_cue(payload=payload)
+        self._sync_beep_cue(payload=payload)
+        self._sync_color_cue(payload=payload)
+        self._sync_sequence_cue(payload=payload)
+
+    def stop(self) -> None:
+        if not self._available:
+            self._tts.stop()
+        else:
+            channels = (
+                self._bg_channel,
+                self._dist_channel,
+                self._cue_channel,
+                self._alert_channel,
+            )
+            for channel in channels:
+                if channel is not None:
+                    try:
+                        channel.stop()
+                    except Exception:
+                        pass
+            self._tts.stop()
+        self._last_callsign_cue = None
+        self._last_color_command = None
+        self._last_beep_active = False
+        self._last_sequence_display = None
+        self._last_assigned_callsigns = ()
+
+    def _sync_background_layers(self, *, payload: AuditoryCapacityPayload) -> None:
+        assert self._bg_channel is not None
+        assert self._dist_channel is not None
+        assert self._noise_sound is not None
+        assert self._distortion_sound is not None
+
+        if not self._bg_channel.get_busy():
+            self._bg_channel.play(self._noise_sound, loops=-1)
+        if not self._dist_channel.get_busy():
+            self._dist_channel.play(self._distortion_sound, loops=-1)
+
+        noise_level = max(0.0, min(1.0, float(payload.background_noise_level)))
+        distortion_level = max(0.0, min(1.0, float(payload.distortion_level)))
+
+        self._bg_channel.set_volume(0.05 + (noise_level * 0.17))
+        self._dist_channel.set_volume(0.01 + (distortion_level * 0.12))
+
+        assigned = tuple(str(v) for v in payload.assigned_callsigns)
+        if assigned != self._last_assigned_callsigns and assigned:
+            phrase = ", ".join(assigned)
+            self._tts.speak(f"Assigned call signs. {phrase}")
+            self._last_assigned_callsigns = assigned
+
+    def _sync_callsign_cue(self, *, payload: AuditoryCapacityPayload) -> None:
+        cue = payload.callsign_cue
+        if cue is None:
+            self._last_callsign_cue = None
+            return
+        if cue == self._last_callsign_cue:
+            return
+        sound = self._callsign_cache.get(cue)
+        if sound is None:
+            sound = self._build_callsign_sound(cue)
+            self._callsign_cache[cue] = sound
+        self._play_cue(sound, volume=0.50)
+        self._tts.speak(f"Call sign. {cue}")
+        self._last_callsign_cue = cue
+
+    def _sync_beep_cue(self, *, payload: AuditoryCapacityPayload) -> None:
+        active = bool(payload.beep_active)
+        if active and not self._last_beep_active and self._beep_sound is not None:
+            assert self._alert_channel is not None
+            self._alert_channel.set_volume(0.70)
+            self._alert_channel.play(self._beep_sound)
+        self._last_beep_active = active
+
+    def _sync_color_cue(self, *, payload: AuditoryCapacityPayload) -> None:
+        command = payload.color_command
+        if command is None:
+            self._last_color_command = None
+            return
+        if command == self._last_color_command:
+            return
+        sound = self._color_sounds.get(command)
+        if sound is not None:
+            self._play_cue(sound, volume=0.42)
+        self._tts.speak(f"Color. {command}")
+        self._last_color_command = command
+
+    def _sync_sequence_cue(self, *, payload: AuditoryCapacityPayload) -> None:
+        sequence = payload.sequence_display
+        if sequence is None:
+            self._last_sequence_display = None
+            return
+        if sequence == self._last_sequence_display:
+            return
+        sound = self._sequence_cache.get(sequence)
+        if sound is None:
+            sound = self._build_sequence_sound(sequence)
+            self._sequence_cache[sequence] = sound
+        self._play_cue(sound, volume=0.52)
+        digit_phrase = " ".join(ch for ch in sequence if ch.isdigit())
+        if digit_phrase != "":
+            self._tts.speak(f"Sequence. {digit_phrase}")
+        self._last_sequence_display = sequence
+
+    def _play_cue(self, sound: pygame.mixer.Sound, *, volume: float) -> None:
+        if not self._available:
+            return
+        assert self._cue_channel is not None
+        self._cue_channel.set_volume(max(0.0, min(1.0, volume)))
+        self._cue_channel.play(sound)
+
+    def _build_callsign_sound(self, callsign: str) -> pygame.mixer.Sound:
+        code = sum(ord(ch) for ch in callsign)
+        freq_a = 290.0 + (code % 380)
+        freq_b = 430.0 + ((code // 3) % 440)
+        pcm = self._concat_pcm(
+            (
+                self._render_tone_pcm(freq_a, 0.10, gain=0.35),
+                self._render_silence_pcm(0.030),
+                self._render_tone_pcm(freq_b, 0.15, gain=0.33),
+            )
+        )
+        return pygame.mixer.Sound(buffer=pcm.tobytes())
+
+    def _build_sequence_sound(self, sequence: str) -> pygame.mixer.Sound:
+        dtmf = {
+            "0": 330.0,
+            "1": 350.0,
+            "2": 390.0,
+            "3": 430.0,
+            "4": 470.0,
+            "5": 510.0,
+            "6": 560.0,
+            "7": 610.0,
+            "8": 670.0,
+            "9": 730.0,
+        }
+        parts: list[array[int]] = []
+        digits = [ch for ch in str(sequence) if ch.isdigit()]
+        for digit in digits:
+            freq = dtmf.get(digit, 420.0)
+            parts.append(self._render_tone_pcm(freq, 0.075, gain=0.32))
+            parts.append(self._render_silence_pcm(0.020))
+        if not parts:
+            parts.append(self._render_tone_pcm(420.0, 0.08, gain=0.28))
+        pcm = self._concat_pcm(tuple(parts))
+        return pygame.mixer.Sound(buffer=pcm.tobytes())
+
+    def _build_noise_sound(
+        self,
+        *,
+        duration_s: float,
+        seed: int,
+        gain: float,
+    ) -> pygame.mixer.Sound:
+        rng = random.Random(int(seed))
+        sample_count = max(1, int(self._sample_rate * duration_s))
+        out = array("h")
+        smooth = 0.0
+        for _ in range(sample_count):
+            raw = rng.uniform(-1.0, 1.0)
+            smooth = (smooth * 0.86) + (raw * 0.14)
+            sample = int(max(-1.0, min(1.0, smooth * gain)) * self._amp)
+            out.append(sample)
+        return pygame.mixer.Sound(buffer=out.tobytes())
+
+    def _build_tone_sound(self, frequency_hz: float, duration_s: float, *, gain: float) -> pygame.mixer.Sound:
+        pcm = self._render_tone_pcm(frequency_hz, duration_s, gain=gain)
+        return pygame.mixer.Sound(buffer=pcm.tobytes())
+
+    def _render_tone_pcm(self, frequency_hz: float, duration_s: float, *, gain: float) -> array[int]:
+        sample_count = max(1, int(self._sample_rate * duration_s))
+        fade_n = max(1, int(self._sample_rate * 0.008))
+        out = array("h")
+        for idx in range(sample_count):
+            envelope = 1.0
+            if idx < fade_n:
+                envelope = idx / float(fade_n)
+            tail = sample_count - idx - 1
+            if tail < fade_n:
+                envelope = min(envelope, tail / float(fade_n))
+            phase = (2.0 * math.pi * float(frequency_hz) * idx) / float(self._sample_rate)
+            sample = math.sin(phase) * gain * max(0.0, envelope)
+            out.append(int(max(-1.0, min(1.0, sample)) * self._amp))
+        return out
+
+    def _render_silence_pcm(self, duration_s: float) -> array[int]:
+        sample_count = max(1, int(self._sample_rate * duration_s))
+        return array("h", [0] * sample_count)
+
+    @staticmethod
+    def _concat_pcm(parts: tuple[array[int], ...]) -> array[int]:
+        out = array("h")
+        for part in parts:
+            out.extend(part)
+        return out
 
 
 WINDOW_SIZE = (960, 540)
@@ -1213,6 +1581,7 @@ class CognitiveTestScreen:
         self._system_logic_payload_id: int | None = None
         self._system_logic_folder_index = 0
         self._system_logic_doc_index = 0
+        self._auditory_audio: _AuditoryCapacityAudioAdapter | None = None
 
         self._target_recognition_reset_practice_breakdown()
         self._target_recognition_reset_scene_subtask()
@@ -1248,9 +1617,11 @@ class CognitiveTestScreen:
         # Emergency exit: allow a hard escape from any state (including SCORED).
         if event.type == pygame.KEYDOWN:
             if event.key == pygame.K_F12:
+                self._stop_auditory_audio()
                 self._app.pop()
                 return
             if event.key == pygame.K_ESCAPE and (event.mod & pygame.KMOD_SHIFT):
+                self._stop_auditory_audio()
                 self._app.pop()
                 return
 
@@ -1428,6 +1799,7 @@ class CognitiveTestScreen:
         key = event.key
 
         if key in (pygame.K_ESCAPE, pygame.K_BACKSPACE) and self._engine.can_exit():
+            self._stop_auditory_audio()
             self._app.pop()
             return
 
@@ -1449,6 +1821,7 @@ class CognitiveTestScreen:
                 self._math_choice = 1
                 return
             if snap.phase is Phase.RESULTS:
+                self._stop_auditory_audio()
                 self._app.pop()
                 return
             if tr_payload is not None:
@@ -1658,6 +2031,7 @@ class CognitiveTestScreen:
             p if isinstance(p, ColoursLettersNumbersPayload) else None
         )
         ac: AuditoryCapacityPayload | None = p if isinstance(p, AuditoryCapacityPayload) else None
+        self._sync_auditory_audio(phase=snap.phase, payload=ac)
         dr: DigitRecognitionPayload | None = None
         if p is not None:
             if isinstance(p, DigitRecognitionPayload):
@@ -1797,6 +2171,25 @@ class CognitiveTestScreen:
         while clipped and font.size(f"{clipped}...")[0] > max_width:
             clipped = clipped[:-1]
         return f"{clipped}..." if clipped else "..."
+
+    def _sync_auditory_audio(
+        self,
+        *,
+        phase: Phase,
+        payload: AuditoryCapacityPayload | None,
+    ) -> None:
+        if payload is None or phase not in (Phase.PRACTICE, Phase.SCORED):
+            self._stop_auditory_audio()
+            return
+        if self._auditory_audio is None:
+            self._auditory_audio = _AuditoryCapacityAudioAdapter()
+        self._auditory_audio.sync(phase=phase, payload=payload)
+
+    def _stop_auditory_audio(self) -> None:
+        if self._auditory_audio is None:
+            return
+        self._auditory_audio.stop()
+        self._auditory_audio = None
 
     def _read_sensory_motor_control(self) -> tuple[float, float]:
         keys = pygame.key.get_pressed()
