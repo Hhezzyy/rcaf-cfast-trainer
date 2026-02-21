@@ -135,13 +135,15 @@ class _OfflineTtsSpeaker:
     _max_queue = 24
     _max_utterance_s = 12.0
 
-    def __init__(self) -> None:
+    def __init__(self, *, rate_wpm: int = 150, volume: float = 0.95) -> None:
         self._enabled = False
         self._backends: list[str] = []
         self._backend: str | None = None
         self._pending: list[str] = []
         self._active_proc: subprocess.Popen[bytes] | None = None
         self._active_started_s = 0.0
+        self._rate_wpm = max(90, min(220, int(rate_wpm)))
+        self._volume = max(0.10, min(1.00, float(volume)))
 
         if os.environ.get("CFAST_DISABLE_TTS", "0") == "1":
             return
@@ -283,8 +285,8 @@ class _OfflineTtsSpeaker:
                     "txt=' '.join(sys.argv[1:]).strip()\n"
                     "import pyttsx3\n"
                     "e=pyttsx3.init()\n"
-                    "e.setProperty('rate', 150)\n"
-                    "e.setProperty('volume', 0.95)\n"
+                    f"e.setProperty('rate', {self._rate_wpm})\n"
+                    f"e.setProperty('volume', {self._volume:.3f})\n"
                     "e.say(txt)\n"
                     "e.runAndWait()\n"
                 )
@@ -296,7 +298,7 @@ class _OfflineTtsSpeaker:
 
             if backend == "say":
                 return subprocess.Popen(
-                    [shutil.which("say") or "/usr/bin/say", "-r", "150", text],
+                    [shutil.which("say") or "/usr/bin/say", "-r", str(self._rate_wpm), text],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                 )
@@ -309,6 +311,7 @@ class _OfflineTtsSpeaker:
                     "Add-Type -AssemblyName System.Speech; "
                     "$s=New-Object System.Speech.Synthesis.SpeechSynthesizer; "
                     "$s.Rate=1; "
+                    f"$s.Volume={int(max(0, min(100, round(self._volume * 100))))}; "
                     "$txt=($args -join ' '); "
                     "$s.Speak($txt);"
                 )
@@ -320,7 +323,14 @@ class _OfflineTtsSpeaker:
 
             if backend == "espeak":
                 return subprocess.Popen(
-                    ["espeak", "-s", "150", text],
+                    [
+                        "espeak",
+                        "-s",
+                        str(self._rate_wpm),
+                        "-a",
+                        str(int(max(10, min(200, round(self._volume * 100))))),
+                        text,
+                    ],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                 )
@@ -339,11 +349,11 @@ class _AuditoryCapacityAudioAdapter:
     _sample_rate = 22050
     _amp = 32767
     _ambient_asset_manifest: tuple[tuple[str, float, float, float], ...] = (
-        ("bg_noise_loop.wav", 0.48, 2.40, 0.00),
-        ("bg_restaurant_loop.wav", 0.48, 1.70, 0.25),
-        ("bg_book_reader_loop.wav", 0.48, 1.30, 0.40),
-        ("bg_conversation_close_loop.wav", 0.48, 1.55, 0.65),
-        ("bg_mature_distraction_loop.wav", 0.48, 0.05, 0.24),
+        ("bg_mature_distraction_loop.wav", 0.62, 5.40, 1.40),
+        ("bg_noise_loop.wav", 0.56, 1.55, 0.10),
+        ("bg_restaurant_loop.wav", 0.52, 1.20, 0.20),
+        ("bg_book_reader_loop.wav", 0.50, 1.10, 0.30),
+        ("bg_conversation_close_loop.wav", 0.52, 1.15, 0.35),
     )
 
     def __init__(self) -> None:
@@ -376,7 +386,8 @@ class _AuditoryCapacityAudioAdapter:
         self._last_beep_active = False
         self._last_sequence_display: str | None = None
         self._last_assigned_callsigns: tuple[str, ...] = ()
-        self._tts = _OfflineTtsSpeaker()
+        self._tts_commands = _OfflineTtsSpeaker(rate_wpm=140, volume=0.36)
+        self._tts_story = _OfflineTtsSpeaker(rate_wpm=132, volume=0.34)
         self._voice_rng = random.Random(0xAC710)
         self._next_chatter_at_s = 0.0
         self._story_index = 0
@@ -446,11 +457,13 @@ class _AuditoryCapacityAudioAdapter:
         self._sync_color_cue(payload=payload)
         self._sync_sequence_cue(payload=payload)
         self._sync_voice_chatter(payload=payload)
-        self._tts.update()
+        self._tts_commands.update()
+        self._tts_story.update()
 
     def stop(self) -> None:
         if not self._available:
-            self._tts.stop()
+            self._tts_commands.stop()
+            self._tts_story.stop()
         else:
             channels = (
                 self._bg_channel,
@@ -464,7 +477,8 @@ class _AuditoryCapacityAudioAdapter:
                         channel.stop()
                     except Exception:
                         pass
-            self._tts.stop()
+            self._tts_commands.stop()
+            self._tts_story.stop()
         self._last_callsign_cue = None
         self._last_color_command = None
         self._last_beep_active = False
@@ -555,7 +569,7 @@ class _AuditoryCapacityAudioAdapter:
                 continue
 
             base_volume = float(item.base_volume)
-            layer_gain = 0.90 + (0.16 * noise_level) + (0.02 * distortion_level)
+            layer_gain = 0.98 + (0.12 * noise_level) + (0.02 * distortion_level)
             volume = max(0.0, min(1.0, base_volume * layer_gain))
             channel.set_volume(volume)
 
@@ -678,13 +692,6 @@ class _AuditoryCapacityAudioAdapter:
             base_weight = float(track.base_weight)
             late_weight = float(track.late_weight)
             weight = max(0.001, base_weight + (late_weight * elapsed_ratio))
-            if "mature" in key.lower():
-                # Rare overall, and heavily penalized if recently used.
-                since_mature = max(0.0, now_s - self._last_mature_clip_at_s)
-                if since_mature < 30.0:
-                    weight *= 0.08
-                elif since_mature < 60.0:
-                    weight *= 0.28
             weighted.append((key, weight))
             total_weight += weight
 
@@ -843,7 +850,7 @@ class _AuditoryCapacityAudioAdapter:
         assigned = tuple(str(v) for v in payload.assigned_callsigns)
         if assigned != self._last_assigned_callsigns and assigned:
             joined = ", ".join(assigned)
-            self._tts.speak(f"Assigned call signs. {joined}.")
+            self._tts_commands.speak(f"Assigned call signs. {joined}.")
             self._last_assigned_callsigns = assigned
 
     def _sync_callsign_cue(self, *, payload: AuditoryCapacityPayload) -> None:
@@ -858,20 +865,19 @@ class _AuditoryCapacityAudioAdapter:
             if sound is None:
                 sound = self._build_callsign_sound(cue)
                 self._callsign_cache[cue] = sound
-            self._play_cue(sound, volume=0.50)
+            self._play_cue(sound, volume=0.30)
         if payload.callsign_blocks_gate:
-            self._tts.speak(f"Call sign {cue}. Hold current color gate.")
+            self._tts_commands.speak(f"Call sign {cue}. Hold current color gate.")
         else:
-            self._tts.speak(f"Call sign {cue}.")
+            self._tts_commands.speak(f"Call sign {cue}.")
         self._last_callsign_cue = cue
 
     def _sync_beep_cue(self, *, payload: AuditoryCapacityPayload) -> None:
         active = bool(payload.beep_active)
         if active and not self._last_beep_active and self._beep_sound is not None:
             assert self._alert_channel is not None
-            self._alert_channel.set_volume(0.70)
+            self._alert_channel.set_volume(0.58)
             self._alert_channel.play(self._beep_sound)
-            self._tts.speak("Beep.")
         self._last_beep_active = active
 
     def _sync_color_cue(self, *, payload: AuditoryCapacityPayload) -> None:
@@ -883,8 +889,8 @@ class _AuditoryCapacityAudioAdapter:
             return
         sound = self._color_sounds.get(command)
         if sound is not None:
-            self._play_cue(sound, volume=0.42)
-        self._tts.speak(f"Change color. {command}.")
+            self._play_cue(sound, volume=0.28)
+        self._tts_commands.speak(f"Change color. {command}.")
         self._last_color_command = command
 
     def _sync_sequence_cue(self, *, payload: AuditoryCapacityPayload) -> None:
@@ -899,19 +905,19 @@ class _AuditoryCapacityAudioAdapter:
             if sound is None:
                 sound = self._build_sequence_sound(sequence)
                 self._sequence_cache[sequence] = sound
-            self._play_cue(sound, volume=0.52)
+            self._play_cue(sound, volume=0.34)
         digits = [ch for ch in sequence if ch.isdigit()]
         if digits:
             spoken = " ".join(digits)
-            self._tts.speak(f"Sequence. {spoken}.")
+            self._tts_commands.speak(f"Sequence. {spoken}.")
         self._last_sequence_display = sequence
 
     def _sync_voice_chatter(self, *, payload: AuditoryCapacityPayload) -> None:
-        if not self._tts.enabled:
+        if not self._tts_story.enabled:
             return
         if not self._story_segments:
             return
-        if self._tts.pending_count > 2:
+        if self._tts_story.pending_count > 2:
             return
 
         now_s = float(pygame.time.get_ticks()) / 1000.0
@@ -923,7 +929,7 @@ class _AuditoryCapacityAudioAdapter:
 
         segment = str(self._story_segments[self._story_index % len(self._story_segments)])
         self._story_index += 1
-        self._tts.speak(segment)
+        self._tts_story.speak(segment)
 
         words = max(1, len(segment.split()))
         nominal_read_time_s = words / 2.55
