@@ -327,11 +327,11 @@ class _AuditoryCapacityAudioAdapter:
     _sample_rate = 22050
     _amp = 32767
     _ambient_asset_manifest: tuple[tuple[str, float, float, float], ...] = (
-        ("bg_noise_loop.wav", 0.26, 2.40, 0.00),
-        ("bg_restaurant_loop.wav", 0.23, 1.70, 0.25),
-        ("bg_book_reader_loop.wav", 0.21, 1.30, 0.40),
-        ("bg_conversation_close_loop.wav", 0.25, 1.55, 0.65),
-        ("bg_mature_distraction_loop.wav", 0.18, 0.05, 0.24),
+        ("bg_noise_loop.wav", 0.48, 2.40, 0.00),
+        ("bg_restaurant_loop.wav", 0.48, 1.70, 0.25),
+        ("bg_book_reader_loop.wav", 0.48, 1.30, 0.40),
+        ("bg_conversation_close_loop.wav", 0.48, 1.55, 0.65),
+        ("bg_mature_distraction_loop.wav", 0.48, 0.05, 0.24),
     )
 
     def __init__(self) -> None:
@@ -380,6 +380,9 @@ class _AuditoryCapacityAudioAdapter:
         try:
             if pygame.mixer.get_init() is None:
                 pygame.mixer.init(frequency=self._sample_rate, size=-16, channels=1, buffer=512)
+            mix_state = pygame.mixer.get_init()
+            if mix_state is not None:
+                self._sample_rate = int(mix_state[0])
             pygame.mixer.set_num_channels(max(8, int(pygame.mixer.get_num_channels())))
 
             self._noise_sound = self._build_noise_sound(
@@ -526,7 +529,7 @@ class _AuditoryCapacityAudioAdapter:
                 continue
 
             _, base_volume, _, _ = item
-            layer_gain = 0.58 + (0.38 * noise_level) + (0.08 * distortion_level)
+            layer_gain = 0.90 + (0.16 * noise_level) + (0.02 * distortion_level)
             volume = max(0.0, min(1.0, base_volume * layer_gain))
             channel.set_volume(volume)
 
@@ -714,6 +717,7 @@ class _AuditoryCapacityAudioAdapter:
             segment = array("h", samples[start : start + take_n])
 
         self._apply_edge_fade(segment, fade_s=0.012)
+        self._normalize_segment_level(segment, target_rms=5600.0, peak_ceiling=0.88)
         if len(segment) <= 0:
             return None
         try:
@@ -721,11 +725,10 @@ class _AuditoryCapacityAudioAdapter:
         except Exception:
             return None
 
-    @staticmethod
-    def _apply_edge_fade(samples: array[int], *, fade_s: float) -> None:
+    def _apply_edge_fade(self, samples: array[int], *, fade_s: float) -> None:
         if len(samples) <= 2:
             return
-        fade_n = max(1, int(22050 * max(0.001, float(fade_s))))
+        fade_n = max(1, int(self._sample_rate * max(0.001, float(fade_s))))
         fade_n = min(fade_n, len(samples) // 2)
         if fade_n <= 0:
             return
@@ -736,6 +739,33 @@ class _AuditoryCapacityAudioAdapter:
             tail = int(samples[tail_idx] * gain)
             samples[idx] = max(-32768, min(32767, head))
             samples[tail_idx] = max(-32768, min(32767, tail))
+
+    @staticmethod
+    def _normalize_segment_level(samples: array[int], *, target_rms: float, peak_ceiling: float) -> None:
+        if len(samples) <= 0:
+            return
+        peak = 0
+        energy = 0.0
+        for value in samples:
+            v = abs(int(value))
+            if v > peak:
+                peak = v
+            energy += float(value) * float(value)
+        if peak <= 0:
+            return
+
+        rms = math.sqrt(energy / float(len(samples)))
+        if rms <= 1e-6:
+            return
+
+        desired_gain = float(target_rms) / rms
+        peak_limit = max(0.05, min(0.99, float(peak_ceiling))) * 32767.0
+        max_gain = peak_limit / float(peak)
+        gain = max(0.05, min(desired_gain, max_gain))
+
+        for idx, value in enumerate(samples):
+            out = int(round(float(value) * gain))
+            samples[idx] = max(-32768, min(32767, out))
 
     def _sync_assigned_callsigns(self, *, payload: AuditoryCapacityPayload) -> None:
         assigned = tuple(str(v) for v in payload.assigned_callsigns)
