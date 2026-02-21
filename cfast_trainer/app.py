@@ -22,6 +22,7 @@ import shutil
 import subprocess
 import sys
 import time
+import wave
 from array import array
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -327,10 +328,10 @@ class _AuditoryCapacityAudioAdapter:
     _amp = 32767
     _ambient_asset_manifest: tuple[tuple[str, float, float, float], ...] = (
         ("bg_noise_loop.wav", 0.26, 2.40, 0.00),
-        ("bg_restaurant_loop.wav", 0.23, 1.65, 0.25),
-        ("bg_book_reader_loop.wav", 0.21, 1.20, 0.45),
-        ("bg_conversation_close_loop.wav", 0.25, 1.45, 0.60),
-        ("bg_mature_distraction_loop.wav", 0.19, 0.30, 1.95),
+        ("bg_restaurant_loop.wav", 0.23, 1.70, 0.25),
+        ("bg_book_reader_loop.wav", 0.21, 1.30, 0.40),
+        ("bg_conversation_close_loop.wav", 0.25, 1.55, 0.65),
+        ("bg_mature_distraction_loop.wav", 0.18, 0.05, 0.24),
     )
 
     def __init__(self) -> None:
@@ -339,10 +340,13 @@ class _AuditoryCapacityAudioAdapter:
         self._sequence_cache: dict[str, pygame.mixer.Sound] = {}
 
         self._noise_sound: pygame.mixer.Sound | None = None
-        self._ambient_tracks: dict[str, tuple[pygame.mixer.Sound, float, float, float]] = {}
+        self._ambient_tracks: dict[str, tuple[array[int], float, float, float]] = {}
         self._ambient_slots: list[str | None] = [None, None]
+        self._ambient_active_sounds: list[pygame.mixer.Sound | None] = [None, None]
+        self._ambient_target_layers = 0
         self._ambient_started_at_s = 0.0
         self._next_ambient_change_at_s = 0.0
+        self._last_mature_clip_at_s = -10_000.0
         self._ambient_assets_dir = (
             Path(__file__).resolve().parents[1] / "assets" / "audio" / "auditory_capacity"
         )
@@ -383,7 +387,7 @@ class _AuditoryCapacityAudioAdapter:
                 seed=0xAC01,
                 gain=0.35,
             )
-            self._ambient_tracks = self._load_ambient_tracks(fallback_noise=self._noise_sound)
+            self._ambient_tracks = self._load_ambient_tracks()
             self._beep_sound = self._build_tone_sound(1120.0, 0.11, gain=0.42)
             self._color_sounds = {
                 "RED": self._build_tone_sound(380.0, 0.14, gain=0.30),
@@ -440,8 +444,11 @@ class _AuditoryCapacityAudioAdapter:
         self._last_assigned_callsigns = ()
         self._next_chatter_at_s = 0.0
         self._ambient_slots = [None, None]
+        self._ambient_active_sounds = [None, None]
+        self._ambient_target_layers = 0
         self._ambient_started_at_s = 0.0
         self._next_ambient_change_at_s = 0.0
+        self._last_mature_clip_at_s = -10_000.0
 
     def _sync_background_layers(self, *, payload: AuditoryCapacityPayload) -> None:
         assert self._bg_channel is not None
@@ -458,12 +465,54 @@ class _AuditoryCapacityAudioAdapter:
 
         noise_level = max(0.0, min(1.0, float(payload.background_noise_level)))
         distortion_level = max(0.0, min(1.0, float(payload.distortion_level)))
+        elapsed_ratio = max(0.0, min(1.0, (now_s - self._ambient_started_at_s) / 240.0))
 
         channels = (self._bg_channel, self._dist_channel)
         for idx, channel in enumerate(channels):
+            should_play = idx < self._ambient_target_layers
+            if not should_play:
+                self._ambient_slots[idx] = None
+                self._ambient_active_sounds[idx] = None
+                channel.set_volume(0.0)
+                if channel.get_busy():
+                    channel.stop()
+                continue
+
+            active_key = self._ambient_slots[idx]
+            needs_snippet = (active_key is None) or (not channel.get_busy())
+            if needs_snippet:
+                exclude = self._ambient_slots[1 - idx] if len(self._ambient_slots) > 1 else None
+                next_key = self._pick_ambient_key(
+                    elapsed_ratio=elapsed_ratio,
+                    now_s=now_s,
+                    exclude=exclude,
+                )
+                if next_key is None:
+                    self._ambient_slots[idx] = None
+                    self._ambient_active_sounds[idx] = None
+                    channel.set_volume(0.0)
+                    if channel.get_busy():
+                        channel.stop()
+                    continue
+
+                snippet_sound = self._build_ambient_snippet_sound(next_key, elapsed_ratio=elapsed_ratio)
+                if snippet_sound is None:
+                    self._ambient_slots[idx] = None
+                    self._ambient_active_sounds[idx] = None
+                    channel.set_volume(0.0)
+                    if channel.get_busy():
+                        channel.stop()
+                    continue
+
+                self._ambient_slots[idx] = next_key
+                self._ambient_active_sounds[idx] = snippet_sound
+                channel.play(snippet_sound)
+                if "mature" in next_key.lower():
+                    self._last_mature_clip_at_s = now_s
+
             active_key = self._ambient_slots[idx]
             if active_key is None:
-                channel.set_volume(0.0)
+                self._ambient_active_sounds[idx] = None
                 if channel.get_busy():
                     channel.stop()
                 continue
@@ -471,54 +520,105 @@ class _AuditoryCapacityAudioAdapter:
             item = self._ambient_tracks.get(active_key)
             if item is None:
                 self._ambient_slots[idx] = None
-                channel.stop()
+                self._ambient_active_sounds[idx] = None
+                if channel.get_busy():
+                    channel.stop()
                 continue
 
-            sound, base_volume, _, _ = item
-            if not channel.get_busy():
-                channel.play(sound, loops=-1)
-
+            _, base_volume, _, _ = item
             layer_gain = 0.58 + (0.38 * noise_level) + (0.08 * distortion_level)
             volume = max(0.0, min(1.0, base_volume * layer_gain))
             channel.set_volume(volume)
 
-    def _load_ambient_tracks(
-        self,
-        *,
-        fallback_noise: pygame.mixer.Sound | None,
-    ) -> dict[str, tuple[pygame.mixer.Sound, float, float, float]]:
-        tracks: dict[str, tuple[pygame.mixer.Sound, float, float, float]] = {}
+    def _load_ambient_tracks(self) -> dict[str, tuple[array[int], float, float, float]]:
+        tracks: dict[str, tuple[array[int], float, float, float]] = {}
 
         for filename, base_volume, base_weight, late_weight in self._ambient_asset_manifest:
-            sound = self._load_loop_sound(filename)
-            if sound is None:
+            pcm = self._load_loop_pcm(filename)
+            if pcm is None:
                 continue
             tracks[filename] = (
-                sound,
+                pcm,
                 float(base_volume),
                 float(base_weight),
                 float(late_weight),
             )
 
-        if not tracks and fallback_noise is not None:
-            tracks["generated_noise"] = (fallback_noise, 0.22, 1.00, 0.00)
+        if not tracks:
+            tracks["generated_noise"] = (
+                self._render_noise_pcm(duration_s=18.0, seed=0xAC22, gain=0.34),
+                0.22,
+                1.00,
+                0.00,
+            )
         return tracks
 
-    def _load_loop_sound(self, filename: str) -> pygame.mixer.Sound | None:
+    def _load_loop_pcm(self, filename: str) -> array[int] | None:
         path = self._ambient_assets_dir / filename
         if not path.exists():
             return None
         try:
-            return pygame.mixer.Sound(str(path))
+            with wave.open(str(path), "rb") as wav_file:
+                channels = int(wav_file.getnchannels())
+                sample_width = int(wav_file.getsampwidth())
+                sample_rate = int(wav_file.getframerate())
+                frame_count = int(wav_file.getnframes())
+                raw = wav_file.readframes(frame_count)
         except Exception:
             return None
 
-    def _replan_ambient_mix(self, *, now_s: float, payload: AuditoryCapacityPayload) -> None:
-        assert self._bg_channel is not None
-        assert self._dist_channel is not None
+        if sample_width != 2:
+            return None
+        if channels <= 0:
+            return None
 
-        available = list(self._ambient_tracks.keys())
-        if not available:
+        samples = array("h")
+        samples.frombytes(raw)
+        if len(samples) <= 16:
+            return None
+
+        if channels > 1:
+            mono = array("h")
+            for idx in range(0, len(samples), channels):
+                acc = 0
+                used = 0
+                for c in range(channels):
+                    j = idx + c
+                    if j >= len(samples):
+                        break
+                    acc += int(samples[j])
+                    used += 1
+                if used > 0:
+                    mono.append(int(acc / used))
+            samples = mono
+
+        if sample_rate != self._sample_rate:
+            samples = self._resample_pcm(samples=samples, src_rate=sample_rate, dst_rate=self._sample_rate)
+        if len(samples) <= 64:
+            return None
+        return samples
+
+    @staticmethod
+    def _resample_pcm(*, samples: array[int], src_rate: int, dst_rate: int) -> array[int]:
+        if src_rate <= 0 or dst_rate <= 0 or len(samples) == 0:
+            return array("h")
+        if src_rate == dst_rate:
+            return array("h", samples)
+
+        out_count = max(1, int(round((len(samples) * dst_rate) / float(src_rate))))
+        out = array("h")
+        max_src = len(samples) - 1
+        for idx in range(out_count):
+            src_idx = int((idx * src_rate) / float(dst_rate))
+            if src_idx < 0:
+                src_idx = 0
+            if src_idx > max_src:
+                src_idx = max_src
+            out.append(int(samples[src_idx]))
+        return out
+
+    def _replan_ambient_mix(self, *, now_s: float, payload: AuditoryCapacityPayload) -> None:
+        if not self._ambient_tracks:
             self._next_ambient_change_at_s = now_s + 5.0
             return
 
@@ -526,8 +626,9 @@ class _AuditoryCapacityAudioAdapter:
         elapsed_ratio = max(0.0, min(1.0, elapsed_s / 240.0))
         noise_level = max(0.0, min(1.0, float(payload.background_noise_level)))
 
-        silence_prob = max(0.05, 0.17 - (0.08 * elapsed_ratio))
-        two_prob = min(0.84, 0.44 + (0.22 * elapsed_ratio) + (0.16 * noise_level))
+        # Keep ambience present most of the time, with brief breathers only.
+        silence_prob = max(0.01, 0.07 - (0.05 * elapsed_ratio))
+        two_prob = min(0.90, 0.58 + (0.17 * elapsed_ratio) + (0.12 * noise_level))
         one_prob = max(0.0, 1.0 - silence_prob - two_prob)
 
         roll = self._voice_rng.random()
@@ -537,65 +638,104 @@ class _AuditoryCapacityAudioAdapter:
             target_count = 1
         else:
             target_count = 2
-        target_count = min(target_count, len(available), 2)
+        self._ambient_target_layers = min(target_count, len(self._ambient_tracks), 2)
 
-        selected = self._pick_ambient_keys(target_count=target_count, elapsed_ratio=elapsed_ratio)
-        channels = (self._bg_channel, self._dist_channel)
-        for idx, channel in enumerate(channels):
-            new_key = selected[idx] if idx < len(selected) else None
-            old_key = self._ambient_slots[idx]
-            if new_key == old_key:
-                if new_key is None:
-                    if channel.get_busy():
-                        channel.stop()
-                else:
-                    item = self._ambient_tracks.get(new_key)
-                    if item is not None and not channel.get_busy():
-                        channel.play(item[0], loops=-1)
-                continue
-
-            if channel.get_busy():
-                channel.stop()
-            self._ambient_slots[idx] = new_key
-            if new_key is not None:
-                item = self._ambient_tracks.get(new_key)
-                if item is not None:
-                    channel.play(item[0], loops=-1)
-
-        if target_count == 0:
-            window_s = self._voice_rng.uniform(1.2, 2.8)
-        elif target_count == 1:
-            window_s = self._voice_rng.uniform(5.6, 10.8) - (1.5 * noise_level)
+        if self._ambient_target_layers == 0:
+            window_s = self._voice_rng.uniform(0.55, 1.40)
+        elif self._ambient_target_layers == 1:
+            window_s = self._voice_rng.uniform(4.8, 7.4) - (1.0 * noise_level)
         else:
-            window_s = self._voice_rng.uniform(4.0, 8.2) - (1.2 * noise_level)
-        self._next_ambient_change_at_s = now_s + max(1.0, float(window_s))
+            window_s = self._voice_rng.uniform(3.2, 5.8) - (0.8 * noise_level)
+        self._next_ambient_change_at_s = now_s + max(0.45, float(window_s))
 
-    def _pick_ambient_keys(self, *, target_count: int, elapsed_ratio: float) -> list[str]:
-        if target_count <= 0:
-            return []
+    def _pick_ambient_key(
+        self,
+        *,
+        elapsed_ratio: float,
+        now_s: float,
+        exclude: str | None = None,
+    ) -> str | None:
+        keys = [k for k in self._ambient_tracks if k != exclude]
+        if not keys:
+            keys = list(self._ambient_tracks.keys())
+        if not keys:
+            return None
 
-        pool = list(self._ambient_tracks.keys())
-        picked: list[str] = []
-        for _ in range(min(target_count, len(pool))):
-            total_weight = 0.0
-            for key in pool:
-                _, _, base_weight, late_weight = self._ambient_tracks[key]
-                total_weight += max(0.001, base_weight + (late_weight * elapsed_ratio))
+        total_weight = 0.0
+        weighted: list[tuple[str, float]] = []
+        for key in keys:
+            _, _, base_weight, late_weight = self._ambient_tracks[key]
+            weight = max(0.001, base_weight + (late_weight * elapsed_ratio))
+            if "mature" in key.lower():
+                # Rare overall, and heavily penalized if recently used.
+                since_mature = max(0.0, now_s - self._last_mature_clip_at_s)
+                if since_mature < 30.0:
+                    weight *= 0.08
+                elif since_mature < 60.0:
+                    weight *= 0.28
+            weighted.append((key, weight))
+            total_weight += weight
 
-            pick = self._voice_rng.uniform(0.0, total_weight)
-            running = 0.0
-            chosen = pool[-1]
-            for key in pool:
-                _, _, base_weight, late_weight = self._ambient_tracks[key]
-                running += max(0.001, base_weight + (late_weight * elapsed_ratio))
-                if running >= pick:
-                    chosen = key
-                    break
+        pick = self._voice_rng.uniform(0.0, total_weight)
+        running = 0.0
+        for key, weight in weighted:
+            running += weight
+            if running >= pick:
+                return key
+        return weighted[-1][0]
 
-            picked.append(chosen)
-            pool.remove(chosen)
+    def _build_ambient_snippet_sound(
+        self,
+        key: str,
+        *,
+        elapsed_ratio: float,
+    ) -> pygame.mixer.Sound | None:
+        item = self._ambient_tracks.get(key)
+        if item is None:
+            return None
+        samples, _, _, _ = item
+        if len(samples) <= 64:
+            return None
 
-        return picked
+        is_mature = "mature" in key.lower()
+        if is_mature:
+            lo_s = 1.4
+            hi_s = 3.4 + (1.2 * elapsed_ratio)
+        else:
+            lo_s = 2.2
+            hi_s = 5.8 + (2.0 * elapsed_ratio)
+
+        length_s = self._voice_rng.uniform(lo_s, hi_s)
+        take_n = max(128, int(length_s * self._sample_rate))
+        if take_n >= len(samples):
+            segment = array("h", samples)
+        else:
+            start = self._voice_rng.randint(0, len(samples) - take_n)
+            segment = array("h", samples[start : start + take_n])
+
+        self._apply_edge_fade(segment, fade_s=0.012)
+        if len(segment) <= 0:
+            return None
+        try:
+            return pygame.mixer.Sound(buffer=segment.tobytes())
+        except Exception:
+            return None
+
+    @staticmethod
+    def _apply_edge_fade(samples: array[int], *, fade_s: float) -> None:
+        if len(samples) <= 2:
+            return
+        fade_n = max(1, int(22050 * max(0.001, float(fade_s))))
+        fade_n = min(fade_n, len(samples) // 2)
+        if fade_n <= 0:
+            return
+        for idx in range(fade_n):
+            gain = idx / float(fade_n)
+            head = int(samples[idx] * gain)
+            tail_idx = len(samples) - idx - 1
+            tail = int(samples[tail_idx] * gain)
+            samples[idx] = max(-32768, min(32767, head))
+            samples[tail_idx] = max(-32768, min(32767, tail))
 
     def _sync_assigned_callsigns(self, *, payload: AuditoryCapacityPayload) -> None:
         assigned = tuple(str(v) for v in payload.assigned_callsigns)
@@ -737,6 +877,10 @@ class _AuditoryCapacityAudioAdapter:
         seed: int,
         gain: float,
     ) -> pygame.mixer.Sound:
+        pcm = self._render_noise_pcm(duration_s=duration_s, seed=seed, gain=gain)
+        return pygame.mixer.Sound(buffer=pcm.tobytes())
+
+    def _render_noise_pcm(self, *, duration_s: float, seed: int, gain: float) -> array[int]:
         rng = random.Random(int(seed))
         sample_count = max(1, int(self._sample_rate * duration_s))
         out = array("h")
@@ -746,7 +890,7 @@ class _AuditoryCapacityAudioAdapter:
             smooth = (smooth * 0.86) + (raw * 0.14)
             sample = int(max(-1.0, min(1.0, smooth * gain)) * self._amp)
             out.append(sample)
-        return pygame.mixer.Sound(buffer=out.tobytes())
+        return out
 
     def _build_tone_sound(self, frequency_hz: float, duration_s: float, *, gain: float) -> pygame.mixer.Sound:
         pcm = self._render_tone_pcm(frequency_hz, duration_s, gain=gain)
