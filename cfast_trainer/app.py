@@ -113,6 +113,18 @@ class _TargetRecognitionSceneGlyph:
     matching_labels: tuple[str, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class _AmbientTrack:
+    path: Path | None
+    base_volume: float
+    base_weight: float
+    late_weight: float
+    sample_rate: int
+    channels: int
+    frame_count: int
+    is_generated_noise: bool = False
+
+
 class _OfflineTtsSpeaker:
     """Best-effort offline TTS via isolated subprocesses.
 
@@ -271,7 +283,7 @@ class _OfflineTtsSpeaker:
                     "txt=' '.join(sys.argv[1:]).strip()\n"
                     "import pyttsx3\n"
                     "e=pyttsx3.init()\n"
-                    "e.setProperty('rate', 176)\n"
+                    "e.setProperty('rate', 150)\n"
                     "e.setProperty('volume', 0.95)\n"
                     "e.say(txt)\n"
                     "e.runAndWait()\n"
@@ -284,7 +296,7 @@ class _OfflineTtsSpeaker:
 
             if backend == "say":
                 return subprocess.Popen(
-                    [shutil.which("say") or "/usr/bin/say", "-r", "176", text],
+                    [shutil.which("say") or "/usr/bin/say", "-r", "150", text],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                 )
@@ -308,7 +320,7 @@ class _OfflineTtsSpeaker:
 
             if backend == "espeak":
                 return subprocess.Popen(
-                    ["espeak", "-s", "176", text],
+                    ["espeak", "-s", "150", text],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                 )
@@ -340,7 +352,8 @@ class _AuditoryCapacityAudioAdapter:
         self._sequence_cache: dict[str, pygame.mixer.Sound] = {}
 
         self._noise_sound: pygame.mixer.Sound | None = None
-        self._ambient_tracks: dict[str, tuple[array[int], float, float, float]] = {}
+        self._mixer_channels = 1
+        self._ambient_tracks: dict[str, _AmbientTrack] = {}
         self._ambient_slots: list[str | None] = [None, None]
         self._ambient_active_sounds: list[pygame.mixer.Sound | None] = [None, None]
         self._ambient_target_layers = 0
@@ -366,15 +379,26 @@ class _AuditoryCapacityAudioAdapter:
         self._tts = _OfflineTtsSpeaker()
         self._voice_rng = random.Random(0xAC710)
         self._next_chatter_at_s = 0.0
-        self._chatter_lines: tuple[str, ...] = (
-            "Table for two is ready at the window.",
-            "Can someone clear table seven please.",
-            "Chapter one. The rain began before sunrise.",
-            "He walked slowly down the corridor and stopped at the door.",
-            "I thought you said Tuesday, not Thursday.",
-            "No, I already sent that message this morning.",
-            "A nearby chair scrapes across the floor.",
-            "Someone laughs loudly and then coughs.",
+        self._story_index = 0
+        self._story_segments: tuple[str, ...] = (
+            "Chapter one. The rain started before sunrise, and the streetlights stayed on.",
+            "At the station, two conductors argued over a missing timetable and a locked office door.",
+            "The clerk counted envelopes twice, then wrote a note to no one in particular.",
+            "By noon the market was full, plates clattered, and voices bounced off the ceiling.",
+            "A child asked for directions while someone nearby read a page from an old novel.",
+            "He crossed the hall, paused at the stairs, and listened for footsteps that never came.",
+            "At table seven, two strangers compared watch times and disagreed by three minutes.",
+            "The server dropped a spoon; chairs scraped; a phone rang and went unanswered.",
+            "A narrator read steadily, describing a ship that left port under low clouds.",
+            "In the next paragraph, the captain checked a compass, then folded the map.",
+            "Back at the terminal, an announcement repeated with static in the middle of each sentence.",
+            "Someone laughed too loudly, then apologized, then started the same story again.",
+            "The reader turned another page and continued without looking up from the text.",
+            "Outside, traffic paused at the light and moved again before the rain eased.",
+            "A mechanic tightened one bolt, loosened another, and wrote the change in a notebook.",
+            "Two voices nearby switched topics from weather to schedules to unfinished errands.",
+            "The chapter ended with a door closing and the hallway lights dimming.",
+            "Then the next chapter began immediately, as if no one had left the room.",
         )
 
         try:
@@ -383,6 +407,7 @@ class _AuditoryCapacityAudioAdapter:
             mix_state = pygame.mixer.get_init()
             if mix_state is not None:
                 self._sample_rate = int(mix_state[0])
+                self._mixer_channels = max(1, int(mix_state[2]))
             pygame.mixer.set_num_channels(max(8, int(pygame.mixer.get_num_channels())))
 
             self._noise_sound = self._build_noise_sound(
@@ -446,6 +471,7 @@ class _AuditoryCapacityAudioAdapter:
         self._last_sequence_display = None
         self._last_assigned_callsigns = ()
         self._next_chatter_at_s = 0.0
+        self._story_index = 0
         self._ambient_slots = [None, None]
         self._ambient_active_sounds = [None, None]
         self._ambient_target_layers = 0
@@ -472,7 +498,7 @@ class _AuditoryCapacityAudioAdapter:
 
         channels = (self._bg_channel, self._dist_channel)
         for idx, channel in enumerate(channels):
-            should_play = idx < self._ambient_target_layers
+            should_play = (idx < self._ambient_target_layers) or channel.get_busy()
             if not should_play:
                 self._ambient_slots[idx] = None
                 self._ambient_active_sounds[idx] = None
@@ -528,36 +554,46 @@ class _AuditoryCapacityAudioAdapter:
                     channel.stop()
                 continue
 
-            _, base_volume, _, _ = item
+            base_volume = float(item.base_volume)
             layer_gain = 0.90 + (0.16 * noise_level) + (0.02 * distortion_level)
             volume = max(0.0, min(1.0, base_volume * layer_gain))
             channel.set_volume(volume)
 
-    def _load_ambient_tracks(self) -> dict[str, tuple[array[int], float, float, float]]:
-        tracks: dict[str, tuple[array[int], float, float, float]] = {}
+    def _load_ambient_tracks(self) -> dict[str, _AmbientTrack]:
+        tracks: dict[str, _AmbientTrack] = {}
 
         for filename, base_volume, base_weight, late_weight in self._ambient_asset_manifest:
-            pcm = self._load_loop_pcm(filename)
-            if pcm is None:
+            path = self._ambient_assets_dir / filename
+            meta = self._probe_wav_metadata(path)
+            if meta is None:
                 continue
-            tracks[filename] = (
-                pcm,
-                float(base_volume),
-                float(base_weight),
-                float(late_weight),
+            sample_rate, channels, frame_count = meta
+            tracks[filename] = _AmbientTrack(
+                path=path,
+                base_volume=float(base_volume),
+                base_weight=float(base_weight),
+                late_weight=float(late_weight),
+                sample_rate=sample_rate,
+                channels=channels,
+                frame_count=frame_count,
+                is_generated_noise=False,
             )
 
         if not tracks:
-            tracks["generated_noise"] = (
-                self._render_noise_pcm(duration_s=18.0, seed=0xAC22, gain=0.34),
-                0.22,
-                1.00,
-                0.00,
+            tracks["generated_noise"] = _AmbientTrack(
+                path=None,
+                base_volume=0.22,
+                base_weight=1.00,
+                late_weight=0.00,
+                sample_rate=self._sample_rate,
+                channels=1,
+                frame_count=max(1, int(self._sample_rate * 18)),
+                is_generated_noise=True,
             )
         return tracks
 
-    def _load_loop_pcm(self, filename: str) -> array[int] | None:
-        path = self._ambient_assets_dir / filename
+    @staticmethod
+    def _probe_wav_metadata(path: Path) -> tuple[int, int, int] | None:
         if not path.exists():
             return None
         try:
@@ -566,40 +602,11 @@ class _AuditoryCapacityAudioAdapter:
                 sample_width = int(wav_file.getsampwidth())
                 sample_rate = int(wav_file.getframerate())
                 frame_count = int(wav_file.getnframes())
-                raw = wav_file.readframes(frame_count)
         except Exception:
             return None
-
-        if sample_width != 2:
+        if sample_width != 2 or channels <= 0 or frame_count <= 0 or sample_rate <= 0:
             return None
-        if channels <= 0:
-            return None
-
-        samples = array("h")
-        samples.frombytes(raw)
-        if len(samples) <= 16:
-            return None
-
-        if channels > 1:
-            mono = array("h")
-            for idx in range(0, len(samples), channels):
-                acc = 0
-                used = 0
-                for c in range(channels):
-                    j = idx + c
-                    if j >= len(samples):
-                        break
-                    acc += int(samples[j])
-                    used += 1
-                if used > 0:
-                    mono.append(int(acc / used))
-            samples = mono
-
-        if sample_rate != self._sample_rate:
-            samples = self._resample_pcm(samples=samples, src_rate=sample_rate, dst_rate=self._sample_rate)
-        if len(samples) <= 64:
-            return None
-        return samples
+        return sample_rate, channels, frame_count
 
     @staticmethod
     def _resample_pcm(*, samples: array[int], src_rate: int, dst_rate: int) -> array[int]:
@@ -630,8 +637,8 @@ class _AuditoryCapacityAudioAdapter:
         noise_level = max(0.0, min(1.0, float(payload.background_noise_level)))
 
         # Keep ambience present most of the time, with brief breathers only.
-        silence_prob = max(0.01, 0.07 - (0.05 * elapsed_ratio))
-        two_prob = min(0.90, 0.58 + (0.17 * elapsed_ratio) + (0.12 * noise_level))
+        silence_prob = max(0.01, 0.04 - (0.02 * elapsed_ratio))
+        two_prob = min(0.90, 0.68 + (0.10 * elapsed_ratio) + (0.08 * noise_level))
         one_prob = max(0.0, 1.0 - silence_prob - two_prob)
 
         roll = self._voice_rng.random()
@@ -644,12 +651,12 @@ class _AuditoryCapacityAudioAdapter:
         self._ambient_target_layers = min(target_count, len(self._ambient_tracks), 2)
 
         if self._ambient_target_layers == 0:
-            window_s = self._voice_rng.uniform(0.55, 1.40)
+            window_s = self._voice_rng.uniform(8.0, 22.0)
         elif self._ambient_target_layers == 1:
-            window_s = self._voice_rng.uniform(4.8, 7.4) - (1.0 * noise_level)
+            window_s = self._voice_rng.uniform(70.0, 150.0) - (10.0 * noise_level)
         else:
-            window_s = self._voice_rng.uniform(3.2, 5.8) - (0.8 * noise_level)
-        self._next_ambient_change_at_s = now_s + max(0.45, float(window_s))
+            window_s = self._voice_rng.uniform(55.0, 120.0) - (8.0 * noise_level)
+        self._next_ambient_change_at_s = now_s + max(6.0, float(window_s))
 
     def _pick_ambient_key(
         self,
@@ -667,7 +674,9 @@ class _AuditoryCapacityAudioAdapter:
         total_weight = 0.0
         weighted: list[tuple[str, float]] = []
         for key in keys:
-            _, _, base_weight, late_weight = self._ambient_tracks[key]
+            track = self._ambient_tracks[key]
+            base_weight = float(track.base_weight)
+            late_weight = float(track.late_weight)
             weight = max(0.001, base_weight + (late_weight * elapsed_ratio))
             if "mature" in key.lower():
                 # Rare overall, and heavily penalized if recently used.
@@ -693,37 +702,100 @@ class _AuditoryCapacityAudioAdapter:
         *,
         elapsed_ratio: float,
     ) -> pygame.mixer.Sound | None:
-        item = self._ambient_tracks.get(key)
-        if item is None:
+        track = self._ambient_tracks.get(key)
+        if track is None:
             return None
-        samples, _, _, _ = item
-        if len(samples) <= 64:
-            return None
-
         is_mature = "mature" in key.lower()
         if is_mature:
-            lo_s = 1.4
-            hi_s = 3.4 + (1.2 * elapsed_ratio)
+            lo_s = 22.0
+            hi_s = 46.0 + (18.0 * elapsed_ratio)
         else:
-            lo_s = 2.2
-            hi_s = 5.8 + (2.0 * elapsed_ratio)
+            lo_s = 70.0
+            hi_s = 150.0 + (40.0 * elapsed_ratio)
 
         length_s = self._voice_rng.uniform(lo_s, hi_s)
-        take_n = max(128, int(length_s * self._sample_rate))
-        if take_n >= len(samples):
-            segment = array("h", samples)
+        if track.is_generated_noise:
+            seed = self._voice_rng.randint(0, 2_147_483_647)
+            segment = self._render_noise_pcm(duration_s=length_s, seed=seed, gain=0.34)
         else:
-            start = self._voice_rng.randint(0, len(samples) - take_n)
-            segment = array("h", samples[start : start + take_n])
+            if track.path is None or track.frame_count <= 1:
+                return None
+
+            source_take_frames = max(64, int(length_s * track.sample_rate))
+            if source_take_frames >= track.frame_count:
+                source_take_frames = track.frame_count
+                start_frame = 0
+            else:
+                start_frame = self._voice_rng.randint(0, track.frame_count - source_take_frames)
+
+            source_pcm = self._read_wav_segment_pcm(
+                path=track.path,
+                channels=track.channels,
+                start_frame=start_frame,
+                frame_count=source_take_frames,
+            )
+            if source_pcm is None or len(source_pcm) <= 32:
+                return None
+
+            segment = source_pcm
+            if track.sample_rate != self._sample_rate:
+                segment = self._resample_pcm(
+                    samples=segment,
+                    src_rate=track.sample_rate,
+                    dst_rate=self._sample_rate,
+                )
+            if len(segment) <= 32:
+                return None
 
         self._apply_edge_fade(segment, fade_s=0.012)
         self._normalize_segment_level(segment, target_rms=5600.0, peak_ceiling=0.88)
         if len(segment) <= 0:
             return None
         try:
-            return pygame.mixer.Sound(buffer=segment.tobytes())
+            return self._sound_from_pcm(segment)
         except Exception:
             return None
+
+    @staticmethod
+    def _read_wav_segment_pcm(
+        *,
+        path: Path,
+        channels: int,
+        start_frame: int,
+        frame_count: int,
+    ) -> array[int] | None:
+        try:
+            with wave.open(str(path), "rb") as wav_file:
+                wav_file.setpos(max(0, int(start_frame)))
+                raw = wav_file.readframes(max(1, int(frame_count)))
+        except Exception:
+            return None
+
+        if not raw:
+            return None
+
+        samples = array("h")
+        samples.frombytes(raw)
+        if len(samples) <= 0:
+            return None
+
+        if channels <= 1:
+            return samples
+
+        mono = array("h")
+        step = max(1, int(channels))
+        for idx in range(0, len(samples), step):
+            acc = 0
+            used = 0
+            for c in range(step):
+                pos = idx + c
+                if pos >= len(samples):
+                    break
+                acc += int(samples[pos])
+                used += 1
+            if used > 0:
+                mono.append(int(acc / used))
+        return mono if len(mono) > 0 else None
 
     def _apply_edge_fade(self, samples: array[int], *, fade_s: float) -> None:
         if len(samples) <= 2:
@@ -837,24 +909,27 @@ class _AuditoryCapacityAudioAdapter:
     def _sync_voice_chatter(self, *, payload: AuditoryCapacityPayload) -> None:
         if not self._tts.enabled:
             return
-        if not self._chatter_lines:
+        if not self._story_segments:
             return
-        if self._tts.pending_count > 3:
+        if self._tts.pending_count > 2:
             return
 
         now_s = float(pygame.time.get_ticks()) / 1000.0
         if self._next_chatter_at_s <= 0.0:
-            self._next_chatter_at_s = now_s + 2.8
+            self._next_chatter_at_s = now_s + 1.2
             return
         if now_s < self._next_chatter_at_s:
             return
 
-        line = str(self._voice_rng.choice(self._chatter_lines))
-        self._tts.speak(line)
+        segment = str(self._story_segments[self._story_index % len(self._story_segments)])
+        self._story_index += 1
+        self._tts.speak(segment)
 
-        base = 4.6 + (float(payload.background_noise_level) * 2.4)
-        jitter = self._voice_rng.uniform(-0.9, 1.2)
-        self._next_chatter_at_s = now_s + max(3.5, base + jitter)
+        words = max(1, len(segment.split()))
+        nominal_read_time_s = words / 2.55
+        noise_slowdown = 0.7 * float(payload.background_noise_level)
+        jitter = self._voice_rng.uniform(-0.5, 0.8)
+        self._next_chatter_at_s = now_s + max(4.0, nominal_read_time_s + noise_slowdown + jitter)
 
     def _play_cue(self, sound: pygame.mixer.Sound, *, volume: float) -> None:
         if not self._available:
@@ -874,7 +949,7 @@ class _AuditoryCapacityAudioAdapter:
                 self._render_tone_pcm(freq_b, 0.15, gain=0.33),
             )
         )
-        return pygame.mixer.Sound(buffer=pcm.tobytes())
+        return self._sound_from_pcm(pcm)
 
     def _build_sequence_sound(self, sequence: str) -> pygame.mixer.Sound:
         dtmf = {
@@ -898,7 +973,7 @@ class _AuditoryCapacityAudioAdapter:
         if not parts:
             parts.append(self._render_tone_pcm(420.0, 0.08, gain=0.28))
         pcm = self._concat_pcm(tuple(parts))
-        return pygame.mixer.Sound(buffer=pcm.tobytes())
+        return self._sound_from_pcm(pcm)
 
     def _build_noise_sound(
         self,
@@ -908,7 +983,7 @@ class _AuditoryCapacityAudioAdapter:
         gain: float,
     ) -> pygame.mixer.Sound:
         pcm = self._render_noise_pcm(duration_s=duration_s, seed=seed, gain=gain)
-        return pygame.mixer.Sound(buffer=pcm.tobytes())
+        return self._sound_from_pcm(pcm)
 
     def _render_noise_pcm(self, *, duration_s: float, seed: int, gain: float) -> array[int]:
         rng = random.Random(int(seed))
@@ -924,7 +999,7 @@ class _AuditoryCapacityAudioAdapter:
 
     def _build_tone_sound(self, frequency_hz: float, duration_s: float, *, gain: float) -> pygame.mixer.Sound:
         pcm = self._render_tone_pcm(frequency_hz, duration_s, gain=gain)
-        return pygame.mixer.Sound(buffer=pcm.tobytes())
+        return self._sound_from_pcm(pcm)
 
     def _render_tone_pcm(self, frequency_hz: float, duration_s: float, *, gain: float) -> array[int]:
         sample_count = max(1, int(self._sample_rate * duration_s))
@@ -952,6 +1027,22 @@ class _AuditoryCapacityAudioAdapter:
         for part in parts:
             out.extend(part)
         return out
+
+    def _sound_from_pcm(self, mono_pcm: array[int]) -> pygame.mixer.Sound:
+        pcm = self._to_mixer_channels(mono_pcm)
+        return pygame.mixer.Sound(buffer=pcm.tobytes())
+
+    def _to_mixer_channels(self, mono_pcm: array[int]) -> array[int]:
+        channels = max(1, int(self._mixer_channels))
+        if channels == 1:
+            return mono_pcm
+
+        interleaved = array("h")
+        for sample in mono_pcm:
+            val = int(sample)
+            for _ in range(channels):
+                interleaved.append(val)
+        return interleaved
 
 
 WINDOW_SIZE = (960, 540)
