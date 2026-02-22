@@ -1209,12 +1209,297 @@ WINDOW_SIZE = (960, 540)
 TARGET_FPS = 60
 
 
+@dataclass(slots=True)
+class _AuditoryGlScene:
+    world: pygame.Rect
+    payload: AuditoryCapacityPayload | None
+    time_remaining_s: float | None
+
+
+class _OpenGLAuditoryRenderer:
+    """Optional OpenGL renderer for the Auditory Capacity tube scene.
+
+    This keeps deterministic engine logic unchanged and only replaces the tube viewport
+    draw path when OpenGL is available.
+    """
+
+    def __init__(self, *, window_size: tuple[int, int]) -> None:
+        from OpenGL import GL as gl  # type: ignore[import-not-found]
+
+        self._gl = gl
+        self._win_w = max(1, int(window_size[0]))
+        self._win_h = max(1, int(window_size[1]))
+
+        tex = gl.glGenTextures(1)
+        if isinstance(tex, (tuple, list)):
+            tex = tex[0]
+        self._ui_texture_id = int(tex)
+        self._ui_tex_size: tuple[int, int] = (0, 0)
+
+        gl.glDisable(gl.GL_CULL_FACE)
+        gl.glDisable(gl.GL_LIGHTING)
+        gl.glEnable(gl.GL_BLEND)
+        gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA)
+        gl.glLineWidth(1.0)
+
+    def resize(self, *, window_size: tuple[int, int]) -> None:
+        self._win_w = max(1, int(window_size[0]))
+        self._win_h = max(1, int(window_size[1]))
+
+    def render_frame(
+        self,
+        *,
+        ui_surface: pygame.Surface,
+        scene: _AuditoryGlScene | None,
+    ) -> None:
+        gl = self._gl
+
+        gl.glViewport(0, 0, self._win_w, self._win_h)
+        gl.glClearColor(0.01, 0.02, 0.06, 1.0)
+        gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT)
+
+        if scene is not None:
+            self._draw_auditory_scene(scene=scene)
+
+        self._draw_ui_surface(ui_surface=ui_surface)
+
+    def _draw_auditory_scene(self, *, scene: _AuditoryGlScene) -> None:
+        gl = self._gl
+        rect = scene.world
+        payload = scene.payload
+
+        vw = max(1, int(rect.w))
+        vh = max(1, int(rect.h))
+        vx = int(rect.x)
+        vy = int(self._win_h - rect.bottom)
+
+        gl.glEnable(gl.GL_SCISSOR_TEST)
+        gl.glScissor(vx, vy, vw, vh)
+        gl.glClearColor(0.03, 0.06, 0.15, 1.0)
+        gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT)
+        gl.glDisable(gl.GL_SCISSOR_TEST)
+
+        gl.glViewport(vx, vy, vw, vh)
+        gl.glEnable(gl.GL_DEPTH_TEST)
+        gl.glDisable(gl.GL_TEXTURE_2D)
+
+        gl.glMatrixMode(gl.GL_PROJECTION)
+        gl.glLoadIdentity()
+        self._set_perspective(fovy_deg=46.0, aspect=max(0.20, vw / float(vh)), z_near=0.1, z_far=80.0)
+
+        gl.glMatrixMode(gl.GL_MODELVIEW)
+        gl.glLoadIdentity()
+
+        tube_rx = 1.00
+        tube_ry = 0.64
+        z_near = 2.0
+        z_far = 26.0
+        ring_steps = 28
+        ring_count = 24
+
+        for idx in range(ring_count):
+            t = idx / float(max(1, ring_count - 1))
+            z = -(z_near + ((z_far - z_near) * t))
+            lum = 0.76 - (0.54 * t)
+            gl.glColor3f(0.10 * lum, 0.38 * lum, 0.90 * lum)
+            gl.glBegin(gl.GL_LINE_LOOP)
+            for n in range(ring_steps):
+                a = (n / float(ring_steps)) * math.tau
+                gl.glVertex3f(math.cos(a) * tube_rx, math.sin(a) * tube_ry, z)
+            gl.glEnd()
+
+        for a in (0.0, math.pi * 0.5, math.pi, math.pi * 1.5):
+            gl.glColor3f(0.16, 0.24, 0.46)
+            gl.glBegin(gl.GL_LINE_STRIP)
+            for idx in range(ring_count):
+                t = idx / float(max(1, ring_count - 1))
+                z = -(z_near + ((z_far - z_near) * t))
+                gl.glVertex3f(math.cos(a) * tube_rx, math.sin(a) * tube_ry, z)
+            gl.glEnd()
+
+        gl.glColor3f(0.72, 0.18, 0.22)
+        gl.glBegin(gl.GL_LINES)
+        gl.glVertex3f(0.0, tube_ry * 0.96, -3.1)
+        gl.glVertex3f(0.0, -tube_ry * 0.96, -3.1)
+        gl.glVertex3f(-tube_rx * 0.96, 0.0, -3.1)
+        gl.glVertex3f(tube_rx * 0.96, 0.0, -3.1)
+        gl.glEnd()
+
+        if payload is not None:
+            y_half_span = max(0.08, float(payload.tube_half_height))
+            x_half_span = max(0.08, float(payload.tube_half_width))
+
+            gates: list[tuple[float, AuditoryCapacityGate, float, float]] = []
+            for gate in payload.gates:
+                rel = gate.x_norm - payload.ball_x
+                if rel < -0.08:
+                    continue
+                z = -(3.4 + (rel * 5.2))
+                if z < -70.0 or z > -0.6:
+                    continue
+                gy = max(-1.0, min(1.0, gate.y_norm / y_half_span)) * (tube_ry * 0.92)
+                gates.append((z, gate, 0.0, gy))
+
+            for z, gate, gx, gy in sorted(gates, key=lambda g: g[0]):
+                color = self._gate_color(gate.color)
+                gl.glColor3f(color[0], color[1], color[2])
+                radius = 0.12 + (max(0.06, min(0.36, gate.aperture_norm)) * 1.12)
+                dz = 0.30
+                self._draw_gate_shape_wire(shape=gate.shape, x=gx, y=gy, z=z + dz, radius=radius)
+                self._draw_gate_shape_wire(shape=gate.shape, x=gx, y=gy, z=z, radius=radius)
+
+                gl.glBegin(gl.GL_LINES)
+                gl.glVertex3f(gx - radius, gy, z)
+                gl.glVertex3f(gx - radius, gy, z + dz)
+                gl.glVertex3f(gx + radius, gy, z)
+                gl.glVertex3f(gx + radius, gy, z + dz)
+                gl.glVertex3f(gx, gy - radius, z)
+                gl.glVertex3f(gx, gy - radius, z + dz)
+                gl.glVertex3f(gx, gy + radius, z)
+                gl.glVertex3f(gx, gy + radius, z + dz)
+                gl.glEnd()
+
+            bx = max(-1.0, min(1.0, payload.ball_x / x_half_span)) * (tube_rx * 0.90)
+            by = max(-1.0, min(1.0, payload.ball_y / y_half_span)) * (tube_ry * 0.90)
+            ball_z = -2.6
+            ball_r = 0.10
+            if abs(payload.ball_x) > payload.tube_half_width or abs(payload.ball_y) > payload.tube_half_height:
+                gl.glColor3f(0.95, 0.35, 0.38)
+            else:
+                gl.glColor3f(0.92, 0.95, 1.0)
+            gl.glBegin(gl.GL_TRIANGLE_FAN)
+            gl.glVertex3f(bx, by, ball_z)
+            segments = 24
+            for i in range(segments + 1):
+                a = (i / float(segments)) * math.tau
+                gl.glVertex3f(bx + (math.cos(a) * ball_r), by + (math.sin(a) * ball_r), ball_z)
+            gl.glEnd()
+
+        gl.glDisable(gl.GL_DEPTH_TEST)
+
+    def _draw_ui_surface(self, *, ui_surface: pygame.Surface) -> None:
+        gl = self._gl
+        w = max(1, int(ui_surface.get_width()))
+        h = max(1, int(ui_surface.get_height()))
+
+        pixels = pygame.image.tostring(ui_surface, "RGBA", True)
+
+        gl.glViewport(0, 0, self._win_w, self._win_h)
+        gl.glDisable(gl.GL_DEPTH_TEST)
+        gl.glEnable(gl.GL_TEXTURE_2D)
+        gl.glBindTexture(gl.GL_TEXTURE_2D, self._ui_texture_id)
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR)
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE)
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE)
+
+        if self._ui_tex_size != (w, h):
+            gl.glTexImage2D(
+                gl.GL_TEXTURE_2D,
+                0,
+                gl.GL_RGBA,
+                w,
+                h,
+                0,
+                gl.GL_RGBA,
+                gl.GL_UNSIGNED_BYTE,
+                pixels,
+            )
+            self._ui_tex_size = (w, h)
+        else:
+            gl.glTexSubImage2D(
+                gl.GL_TEXTURE_2D,
+                0,
+                0,
+                0,
+                w,
+                h,
+                gl.GL_RGBA,
+                gl.GL_UNSIGNED_BYTE,
+                pixels,
+            )
+
+        gl.glMatrixMode(gl.GL_PROJECTION)
+        gl.glLoadIdentity()
+        gl.glOrtho(0.0, float(self._win_w), 0.0, float(self._win_h), -1.0, 1.0)
+        gl.glMatrixMode(gl.GL_MODELVIEW)
+        gl.glLoadIdentity()
+
+        gl.glColor4f(1.0, 1.0, 1.0, 1.0)
+        gl.glBegin(gl.GL_QUADS)
+        gl.glTexCoord2f(0.0, 0.0)
+        gl.glVertex2f(0.0, 0.0)
+        gl.glTexCoord2f(1.0, 0.0)
+        gl.glVertex2f(float(self._win_w), 0.0)
+        gl.glTexCoord2f(1.0, 1.0)
+        gl.glVertex2f(float(self._win_w), float(self._win_h))
+        gl.glTexCoord2f(0.0, 1.0)
+        gl.glVertex2f(0.0, float(self._win_h))
+        gl.glEnd()
+        gl.glDisable(gl.GL_TEXTURE_2D)
+
+    def _set_perspective(self, *, fovy_deg: float, aspect: float, z_near: float, z_far: float) -> None:
+        gl = self._gl
+        fovy = float(fovy_deg)
+        near = max(0.01, float(z_near))
+        far = max(near + 0.10, float(z_far))
+        top = near * math.tan(math.radians(fovy * 0.5))
+        bottom = -top
+        right = top * float(aspect)
+        left = -right
+        gl.glFrustum(left, right, bottom, top, near, far)
+
+    @staticmethod
+    def _gate_color(name: str) -> tuple[float, float, float]:
+        palette = {
+            "RED": (0.92, 0.32, 0.34),
+            "GREEN": (0.34, 0.88, 0.56),
+            "BLUE": (0.36, 0.62, 0.94),
+            "YELLOW": (0.94, 0.82, 0.34),
+        }
+        return palette.get(str(name).upper(), (0.86, 0.88, 0.92))
+
+    def _draw_gate_shape_wire(self, *, shape: str, x: float, y: float, z: float, radius: float) -> None:
+        gl = self._gl
+        token = str(shape).upper()
+        if token == "TRIANGLE":
+            gl.glBegin(gl.GL_LINE_LOOP)
+            gl.glVertex3f(x, y + radius, z)
+            gl.glVertex3f(x - radius, y - radius, z)
+            gl.glVertex3f(x + radius, y - radius, z)
+            gl.glEnd()
+            return
+        if token == "SQUARE":
+            gl.glBegin(gl.GL_LINE_LOOP)
+            gl.glVertex3f(x - radius, y - radius, z)
+            gl.glVertex3f(x + radius, y - radius, z)
+            gl.glVertex3f(x + radius, y + radius, z)
+            gl.glVertex3f(x - radius, y + radius, z)
+            gl.glEnd()
+            return
+
+        gl.glBegin(gl.GL_LINE_LOOP)
+        segments = 20
+        for i in range(segments):
+            a = (i / float(segments)) * math.tau
+            gl.glVertex3f(x + (math.cos(a) * radius), y + (math.sin(a) * radius), z)
+        gl.glEnd()
+
+
 class App:
-    def __init__(self, surface: pygame.Surface, font: pygame.font.Font) -> None:
+    def __init__(
+        self,
+        surface: pygame.Surface,
+        font: pygame.font.Font,
+        *,
+        opengl_enabled: bool = False,
+    ) -> None:
         self._surface = surface
         self._font = font
         self._screens: list[Screen] = []
         self._running = True
+        self._opengl_enabled = bool(opengl_enabled)
+        self._auditory_gl_scene: _AuditoryGlScene | None = None
 
     @property
     def running(self) -> bool:
@@ -1223,6 +1508,22 @@ class App:
     @property
     def font(self) -> pygame.font.Font:
         return self._font
+
+    @property
+    def surface(self) -> pygame.Surface:
+        return self._surface
+
+    @property
+    def opengl_enabled(self) -> bool:
+        return self._opengl_enabled
+
+    def set_surface(self, surface: pygame.Surface) -> None:
+        self._surface = surface
+
+    def set_opengl_enabled(self, enabled: bool) -> None:
+        self._opengl_enabled = bool(enabled)
+        if not self._opengl_enabled:
+            self._auditory_gl_scene = None
 
     def push(self, screen: Screen) -> None:
         self._screens.append(screen)
@@ -1246,7 +1547,26 @@ class App:
     def render(self) -> None:
         if not self._screens:
             return
+        self._auditory_gl_scene = None
         self._screens[-1].render(self._surface)
+
+    def queue_auditory_gl_scene(
+        self,
+        *,
+        world: pygame.Rect,
+        payload: AuditoryCapacityPayload | None,
+        time_remaining_s: float | None,
+    ) -> None:
+        if not self._opengl_enabled:
+            return
+        self._auditory_gl_scene = _AuditoryGlScene(
+            world=pygame.Rect(world),
+            payload=payload,
+            time_remaining_s=time_remaining_s,
+        )
+
+    def consume_auditory_gl_scene(self) -> _AuditoryGlScene | None:
+        return self._auditory_gl_scene
 
 
 class PlaceholderScreen:
@@ -3162,12 +3482,22 @@ class CognitiveTestScreen:
         pygame.draw.rect(surface, border, info_panel, 1)
 
         world = tube_panel.inflate(-18, -28)
-        self._render_auditory_capacity_tube_chase_view(
-            surface=surface,
-            world=world,
-            payload=payload,
-            time_remaining_s=snap.time_remaining_s,
-        )
+        if self._app.opengl_enabled:
+            self._app.queue_auditory_gl_scene(
+                world=world,
+                payload=payload,
+                time_remaining_s=snap.time_remaining_s,
+            )
+            # Keep the tube viewport transparent so the OpenGL scene remains visible.
+            surface.fill((0, 0, 0, 0), world)
+            pygame.draw.rect(surface, (72, 96, 170), world, 2)
+        else:
+            self._render_auditory_capacity_tube_chase_view(
+                surface=surface,
+                world=world,
+                payload=payload,
+                time_remaining_s=snap.time_remaining_s,
+            )
 
         if payload is not None:
             metrics = self._tiny_font.render(
@@ -7879,12 +8209,42 @@ def run(*, max_frames: int | None = None, event_injector: Callable[[int], None] 
     _init_joysticks()
 
     pygame.display.set_caption("RCAF CFAST Trainer")
-    surface = pygame.display.set_mode(WINDOW_SIZE, pygame.RESIZABLE)
+    window_flags = pygame.RESIZABLE
+    opengl_window_flags = pygame.RESIZABLE | pygame.OPENGL | pygame.DOUBLEBUF
+
+    video_driver = os.environ.get("SDL_VIDEODRIVER", "").strip().lower()
+    want_gl = os.environ.get("CFAST_USE_OPENGL", "1").strip().lower() not in {
+        "0",
+        "false",
+        "off",
+        "no",
+    }
+    can_try_gl = want_gl and video_driver != "dummy"
+
+    display_surface: pygame.Surface
+    app_surface: pygame.Surface
+    gl_renderer: _OpenGLAuditoryRenderer | None = None
+    active_window_flags = window_flags
+
+    if can_try_gl:
+        try:
+            display_surface = pygame.display.set_mode(WINDOW_SIZE, opengl_window_flags)
+            gl_renderer = _OpenGLAuditoryRenderer(window_size=display_surface.get_size())
+            app_surface = pygame.Surface(display_surface.get_size(), pygame.SRCALPHA)
+            active_window_flags = opengl_window_flags
+        except Exception:
+            display_surface = pygame.display.set_mode(WINDOW_SIZE, window_flags)
+            app_surface = display_surface
+            gl_renderer = None
+            active_window_flags = window_flags
+    else:
+        display_surface = pygame.display.set_mode(WINDOW_SIZE, window_flags)
+        app_surface = display_surface
 
     font = pygame.font.Font(None, 36)
     clock = pygame.time.Clock()
 
-    app = App(surface=surface, font=font)
+    app = App(surface=app_surface, font=font, opengl_enabled=(gl_renderer is not None))
 
     workouts = PlaceholderScreen(app, "90-minute workouts")
     drills = PlaceholderScreen(app, "Individual drills")
@@ -8092,16 +8452,60 @@ def run(*, max_frames: int | None = None, event_injector: Callable[[int], None] 
     app.push(MenuScreen(app, "Main Menu", main_items, is_root=True))
 
     frame = 0
+    resize_events: set[int] = {pygame.VIDEORESIZE}
+    for token in ("WINDOWRESIZED", "WINDOWSIZECHANGED"):
+        ev = getattr(pygame, token, None)
+        if isinstance(ev, int):
+            resize_events.add(ev)
     try:
         while app.running:
             if event_injector is not None:
                 event_injector(frame)
 
             for event in pygame.event.get():
+                if gl_renderer is not None and event.type in resize_events:
+                    next_w = int(
+                        getattr(
+                            event,
+                            "w",
+                            getattr(event, "x", display_surface.get_width()),
+                        )
+                    )
+                    next_h = int(
+                        getattr(
+                            event,
+                            "h",
+                            getattr(event, "y", display_surface.get_height()),
+                        )
+                    )
+                    if next_w > 0 and next_h > 0:
+                        try:
+                            display_surface = pygame.display.set_mode((next_w, next_h), active_window_flags)
+                        except Exception:
+                            display_surface = pygame.display.set_mode((next_w, next_h), window_flags)
+                            gl_renderer = None
+                            active_window_flags = window_flags
+                            app.set_opengl_enabled(False)
+                            app.set_surface(display_surface)
                 app.handle_event(event)
+
+            if gl_renderer is not None:
+                current_display = pygame.display.get_surface()
+                if current_display is not None:
+                    display_surface = current_display
+                window_size = display_surface.get_size()
+                if app.surface.get_size() != window_size:
+                    app.set_surface(pygame.Surface(window_size, pygame.SRCALPHA))
+                gl_renderer.resize(window_size=window_size)
+                app.surface.fill((0, 0, 0, 0))
 
             app.render()
 
+            if gl_renderer is not None:
+                gl_renderer.render_frame(
+                    ui_surface=app.surface,
+                    scene=app.consume_auditory_gl_scene(),
+                )
             pygame.display.flip()
 
             frame += 1
