@@ -398,13 +398,13 @@ class _AuditoryCapacityAudioAdapter:
         self._last_sequence_display: str | None = None
         self._last_assigned_callsigns: tuple[str, ...] = ()
         self._tts_callsign = _OfflineTtsSpeaker(
-            rate_wpm=136,
+            rate_wpm=168,
             volume=0.22,
             backend_preference=("pyttsx3-subprocess", "say", "espeak", "powershell"),
         )
-        self._tts_commands = _OfflineTtsSpeaker(rate_wpm=140, volume=0.30)
+        self._tts_commands = _OfflineTtsSpeaker(rate_wpm=172, volume=0.30)
         self._tts_story = _OfflineTtsSpeaker(
-            rate_wpm=132,
+            rate_wpm=160,
             volume=0.22,
             backend_preference=("pyttsx3-subprocess", "say", "espeak", "powershell"),
         )
