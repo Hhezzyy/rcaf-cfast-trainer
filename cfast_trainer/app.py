@@ -35,6 +35,7 @@ import pygame
 
 from .airborne_numerical import AirborneScenario, TEMPLATES_BY_NAME, build_airborne_numerical_test
 from .auditory_capacity import (
+    AuditoryCapacityGate,
     AuditoryCapacityEngine,
     AuditoryCapacityPayload,
     build_auditory_capacity_test,
@@ -575,8 +576,8 @@ class _AuditoryCapacityAudioAdapter:
                 self._ambient_active_sounds[idx] = snippet_sound
                 channel.play(snippet_sound)
                 self._ambient_recent_keys.append(next_key)
-                if len(self._ambient_recent_keys) > 3:
-                    del self._ambient_recent_keys[:-3]
+                if len(self._ambient_recent_keys) > 6:
+                    del self._ambient_recent_keys[:-6]
                 if "mature" in next_key.lower():
                     self._last_mature_clip_at_s = now_s
 
@@ -789,6 +790,8 @@ class _AuditoryCapacityAudioAdapter:
                 segment = self._extend_segment_with_variation(
                     source=segment,
                     target_count=target_take_samples,
+                    source_key=key,
+                    elapsed_ratio=elapsed_ratio,
                 )
             elif len(segment) > target_take_samples:
                 segment = array("h", segment[:target_take_samples])
@@ -802,7 +805,14 @@ class _AuditoryCapacityAudioAdapter:
         except Exception:
             return None
 
-    def _extend_segment_with_variation(self, *, source: array[int], target_count: int) -> array[int]:
+    def _extend_segment_with_variation(
+        self,
+        *,
+        source: array[int],
+        target_count: int,
+        source_key: str,
+        elapsed_ratio: float,
+    ) -> array[int]:
         if len(source) <= 0 or target_count <= 0:
             return array("h")
         if len(source) >= target_count:
@@ -817,12 +827,23 @@ class _AuditoryCapacityAudioAdapter:
             remaining = target_count - len(out)
             chunk_n = min(remaining, self._voice_rng.randint(min_chunk, max_chunk))
 
-            if source_n <= chunk_n:
-                start = 0
-                frag = array("h", source)
+            donor = None
+            if self._voice_rng.random() < 0.38:
+                donor = self._sample_donor_chunk(
+                    source_key=source_key,
+                    target_samples=chunk_n,
+                    elapsed_ratio=elapsed_ratio,
+                )
+
+            if donor is not None and len(donor) > 0:
+                frag = donor
             else:
-                start = self._voice_rng.randint(0, source_n - chunk_n)
-                frag = array("h", source[start : start + chunk_n])
+                if source_n <= chunk_n:
+                    start = 0
+                    frag = array("h", source)
+                else:
+                    start = self._voice_rng.randint(0, source_n - chunk_n)
+                    frag = array("h", source[start : start + chunk_n])
 
             if self._voice_rng.random() < 0.20:
                 frag.reverse()
@@ -836,6 +857,65 @@ class _AuditoryCapacityAudioAdapter:
             out.extend(frag[:remaining])
 
         return out
+
+    def _sample_donor_chunk(
+        self,
+        *,
+        source_key: str,
+        target_samples: int,
+        elapsed_ratio: float,
+    ) -> array[int] | None:
+        candidate_keys = [k for k in self._ambient_tracks if k != source_key]
+        if not candidate_keys:
+            return None
+
+        if self._ambient_recent_keys:
+            filtered = [k for k in candidate_keys if k not in self._ambient_recent_keys]
+            if filtered:
+                candidate_keys = filtered
+
+        key = self._voice_rng.choice(candidate_keys)
+        track = self._ambient_tracks.get(key)
+        if track is None:
+            return None
+
+        if track.is_generated_noise:
+            seed = self._voice_rng.randint(0, 2_147_483_647)
+            return self._render_noise_pcm(
+                duration_s=max(0.10, target_samples / float(self._sample_rate)),
+                seed=seed,
+                gain=0.30,
+            )
+
+        if track.path is None or track.frame_count <= 1:
+            return None
+
+        desired_frames = max(32, int((target_samples / float(self._sample_rate)) * track.sample_rate))
+        desired_frames = min(desired_frames, track.frame_count)
+        if desired_frames <= 0:
+            return None
+
+        if desired_frames >= track.frame_count:
+            start_frame = 0
+        else:
+            start_frame = self._voice_rng.randint(0, track.frame_count - desired_frames)
+
+        pcm = self._read_wav_segment_pcm(
+            path=track.path,
+            channels=track.channels,
+            start_frame=start_frame,
+            frame_count=desired_frames,
+        )
+        if pcm is None or len(pcm) <= 0:
+            return None
+
+        if track.sample_rate != self._sample_rate:
+            pcm = self._resample_pcm(samples=pcm, src_rate=track.sample_rate, dst_rate=self._sample_rate)
+        if len(pcm) <= 0:
+            return None
+        if len(pcm) > target_samples:
+            return array("h", pcm[:target_samples])
+        return pcm
 
     @staticmethod
     def _read_wav_segment_pcm(
@@ -3082,53 +3162,9 @@ class CognitiveTestScreen:
         pygame.draw.rect(surface, border, info_panel, 1)
 
         world = tube_panel.inflate(-18, -28)
-        pygame.draw.rect(surface, (2, 4, 10), world)
-        pygame.draw.rect(surface, (82, 94, 128), world, 1)
+        self._render_auditory_capacity_tube_chase_view(surface=surface, world=world, payload=payload)
 
         if payload is not None:
-            x_half_span = 1.25
-            y_half_span = 0.95
-
-            def to_px_x(x_norm: float) -> int:
-                return int(round(world.centerx + (x_norm / x_half_span) * (world.w / 2.0)))
-
-            def to_px_y(y_norm: float) -> int:
-                return int(round(world.centery + (y_norm / y_half_span) * (world.h / 2.0)))
-
-            tube_w = int(round((payload.tube_half_width / x_half_span) * world.w))
-            tube_h = int(round((payload.tube_half_height / y_half_span) * world.h))
-            tube_rect = pygame.Rect(0, 0, max(12, tube_w), max(12, tube_h))
-            tube_rect.center = world.center
-
-            pygame.draw.rect(surface, (14, 20, 48), tube_rect)
-            pygame.draw.rect(surface, (148, 162, 206), tube_rect, 2)
-
-            for gate in payload.gates:
-                gx = to_px_x(gate.x_norm)
-                gy = to_px_y(gate.y_norm)
-                aperture_px = max(9, int(round((gate.aperture_norm / y_half_span) * (world.h / 2.0))))
-                gate_color = self._auditory_color_rgb(gate.color, 1.0)
-
-                pygame.draw.line(surface, (52, 66, 94), (gx, tube_rect.top), (gx, tube_rect.bottom), 1)
-                pygame.draw.line(surface, gate_color, (gx, gy - aperture_px), (gx, gy + aperture_px), 3)
-                self._draw_auditory_gate_shape(
-                    surface,
-                    shape=gate.shape,
-                    center=(gx, gy),
-                    size=max(6, min(12, world.h // 20)),
-                    color=gate_color,
-                )
-
-            ball_x = to_px_x(payload.ball_x)
-            ball_y = to_px_y(payload.ball_y)
-            ball_color = self._auditory_color_rgb(payload.ball_color, payload.ball_color_strength)
-            ball_radius = max(6, min(12, world.h // 22))
-            pygame.draw.circle(surface, ball_color, (ball_x, ball_y), ball_radius)
-            pygame.draw.circle(surface, (248, 252, 255), (ball_x, ball_y), ball_radius, 1)
-
-            if abs(payload.ball_x) > payload.tube_half_width or abs(payload.ball_y) > payload.tube_half_height:
-                pygame.draw.rect(surface, (240, 64, 74), tube_rect, 2)
-
             metrics = self._tiny_font.render(
                 f"Ctrl {payload.control_x:+.2f},{payload.control_y:+.2f}  Drift {payload.disturbance_x:+.2f},{payload.disturbance_y:+.2f}",
                 True,
@@ -3264,6 +3300,200 @@ class CognitiveTestScreen:
             return
         rect = pygame.Rect(cx - half, cy - half, half * 2, half * 2)
         pygame.draw.rect(surface, color, rect, 2)
+
+    def _render_auditory_capacity_tube_chase_view(
+        self,
+        *,
+        surface: pygame.Surface,
+        world: pygame.Rect,
+        payload: AuditoryCapacityPayload | None,
+    ) -> None:
+        pygame.draw.rect(surface, (2, 4, 10), world)
+        pygame.draw.rect(surface, (82, 94, 128), world, 1)
+
+        near_w = max(34, int(round(world.w * 0.88)))
+        near_h = max(26, int(round(world.h * 0.76)))
+        near_rect = pygame.Rect(0, 0, near_w, near_h)
+        near_rect.midbottom = (world.centerx, world.bottom - max(10, world.h // 18))
+
+        # Keep the pseudo camera narrow (about 30 degrees) to match the guide's chase view.
+        fov_deg = 30.0
+        fov_term = max(0.20, min(1.20, math.tan(math.radians(fov_deg * 0.5)) * 2.8))
+        far_scale = 0.20 + (0.08 * fov_term)
+        far_w = max(16, int(round(near_w * far_scale)))
+        far_h = max(12, int(round(near_h * far_scale)))
+        far_rect = pygame.Rect(0, 0, far_w, far_h)
+        far_rect.center = (world.centerx, world.y + max(20, world.h // 7))
+
+        near_tl = near_rect.topleft
+        near_tr = near_rect.topright
+        near_br = near_rect.bottomright
+        near_bl = near_rect.bottomleft
+        far_tl = far_rect.topleft
+        far_tr = far_rect.topright
+        far_br = far_rect.bottomright
+        far_bl = far_rect.bottomleft
+
+        pygame.draw.polygon(surface, (10, 14, 30), (near_tl, near_tr, far_tr, far_tl))
+        pygame.draw.polygon(surface, (8, 12, 26), (near_bl, near_br, far_br, far_bl))
+        pygame.draw.polygon(surface, (8, 12, 24), (near_tl, near_bl, far_bl, far_tl))
+        pygame.draw.polygon(surface, (8, 12, 24), (near_tr, near_br, far_br, far_tr))
+
+        for t in (0.18, 0.32, 0.46, 0.60, 0.74, 0.88):
+            ring = self._auditory_tube_rect_at_depth(near_rect=near_rect, far_rect=far_rect, t=t)
+            shade = int(round(110.0 - (54.0 * t)))
+            pygame.draw.rect(
+                surface,
+                (max(24, shade - 20), max(30, shade - 8), max(52, shade + 18)),
+                ring,
+                1,
+            )
+
+        edge_color = (150, 164, 208)
+        if payload is not None and (
+            abs(payload.ball_x) > payload.tube_half_width or abs(payload.ball_y) > payload.tube_half_height
+        ):
+            edge_color = (240, 64, 74)
+        pygame.draw.rect(surface, edge_color, near_rect, 2)
+        pygame.draw.rect(surface, (110, 122, 160), far_rect, 1)
+
+        if payload is None:
+            return
+
+        gates_to_draw: list[tuple[float, AuditoryCapacityGate, pygame.Rect]] = []
+        far_depth = 2.00 + (0.60 * fov_term)
+        for gate in payload.gates:
+            relative_depth = gate.x_norm - payload.ball_x
+            if relative_depth < -0.04:
+                continue
+            t = max(0.0, min(1.0, relative_depth / far_depth))
+            gate_rect = self._auditory_tube_rect_at_depth(near_rect=near_rect, far_rect=far_rect, t=t)
+            if gate_rect.w < 10 or gate_rect.h < 10:
+                continue
+            gates_to_draw.append((t, gate, gate_rect))
+
+        for t, gate, gate_rect in sorted(gates_to_draw, key=lambda item: item[0], reverse=True):
+            gate_color = self._auditory_color_rgb(gate.color, 1.0)
+            depth_brightness = 0.30 + ((1.0 - t) * 0.70)
+            gate_edge = self._auditory_mix_rgb(
+                gate_color,
+                (16, 20, 32),
+                mix=max(0.0, min(1.0, 1.0 - depth_brightness)),
+            )
+            gate_fill = self._auditory_mix_rgb(gate_edge, (10, 14, 24), mix=0.65)
+            width = max(1, min(4, int(round(1.0 + ((1.0 - t) * 2.2)))))
+
+            y_half_span = max(0.06, float(payload.tube_half_height))
+            y_ratio = max(-1.0, min(1.0, gate.y_norm / y_half_span))
+            gap_center = gate_rect.centery + int(round(y_ratio * (gate_rect.h * 0.32)))
+            aperture_px = max(5, int(round((gate.aperture_norm / y_half_span) * (gate_rect.h * 0.50))))
+
+            gap_top = max(gate_rect.top + width + 2, gap_center - aperture_px)
+            gap_bottom = min(gate_rect.bottom - width - 2, gap_center + aperture_px)
+            if gap_bottom <= gap_top + 2:
+                mid = (gap_top + gap_bottom) // 2
+                gap_top = mid - 2
+                gap_bottom = mid + 2
+
+            pygame.draw.rect(surface, gate_edge, gate_rect, width)
+
+            inner_left = gate_rect.left + width
+            inner_width = max(2, gate_rect.w - (width * 2))
+            top_h = max(0, gap_top - (gate_rect.top + width))
+            if top_h > 0:
+                pygame.draw.rect(
+                    surface,
+                    gate_fill,
+                    pygame.Rect(inner_left, gate_rect.top + width, inner_width, top_h),
+                )
+            bot_h = max(0, (gate_rect.bottom - width) - gap_bottom)
+            if bot_h > 0:
+                pygame.draw.rect(
+                    surface,
+                    gate_fill,
+                    pygame.Rect(inner_left, gap_bottom, inner_width, bot_h),
+                )
+
+            pygame.draw.line(
+                surface,
+                gate_edge,
+                (inner_left, gap_top),
+                (inner_left + inner_width, gap_top),
+                width,
+            )
+            pygame.draw.line(
+                surface,
+                gate_edge,
+                (inner_left, gap_bottom),
+                (inner_left + inner_width, gap_bottom),
+                width,
+            )
+
+            shape_size = max(4, int(round(3.0 + ((1.0 - t) * 11.0))))
+            shape_y = max(gate_rect.top + shape_size + 2, gap_top - shape_size - 2)
+            self._draw_auditory_gate_shape(
+                surface,
+                shape=gate.shape,
+                center=(gate_rect.centerx, shape_y),
+                size=shape_size,
+                color=gate_edge,
+            )
+
+        x_half_span = max(0.08, float(payload.tube_half_width))
+        y_half_span = max(0.08, float(payload.tube_half_height))
+        x_ratio = max(-1.0, min(1.0, payload.ball_x / x_half_span))
+        y_ratio = max(-1.0, min(1.0, payload.ball_y / y_half_span))
+
+        ball_x = near_rect.centerx + int(round(x_ratio * (near_rect.w * 0.46)))
+        ball_y = near_rect.centery + int(round(y_ratio * (near_rect.h * 0.40)))
+        ball_x = max(near_rect.left + 8, min(near_rect.right - 8, ball_x))
+        ball_y = max(near_rect.top + 8, min(near_rect.bottom - 8, ball_y))
+
+        ball_radius = max(6, min(14, near_rect.h // 14))
+        shadow_center = (
+            ball_x + max(1, ball_radius // 3),
+            min(near_rect.bottom - 2, ball_y + ball_radius + 2),
+        )
+        pygame.draw.circle(surface, (10, 10, 14), shadow_center, max(3, ball_radius // 2))
+
+        ball_color = self._auditory_color_rgb(payload.ball_color, payload.ball_color_strength)
+        pygame.draw.circle(surface, ball_color, (ball_x, ball_y), ball_radius)
+        pygame.draw.circle(surface, (248, 252, 255), (ball_x, ball_y), ball_radius, 1)
+        pygame.draw.circle(
+            surface,
+            (255, 255, 255),
+            (ball_x - max(1, ball_radius // 3), ball_y - max(1, ball_radius // 3)),
+            max(1, ball_radius // 4),
+        )
+
+    @staticmethod
+    def _auditory_tube_rect_at_depth(
+        *,
+        near_rect: pygame.Rect,
+        far_rect: pygame.Rect,
+        t: float,
+    ) -> pygame.Rect:
+        depth = max(0.0, min(1.0, float(t)))
+        rect = pygame.Rect(0, 0, 0, 0)
+        rect.w = max(1, int(round(near_rect.w + ((far_rect.w - near_rect.w) * depth))))
+        rect.h = max(1, int(round(near_rect.h + ((far_rect.h - near_rect.h) * depth))))
+        rect.centerx = int(round(near_rect.centerx + ((far_rect.centerx - near_rect.centerx) * depth)))
+        rect.centery = int(round(near_rect.centery + ((far_rect.centery - near_rect.centery) * depth)))
+        return rect
+
+    @staticmethod
+    def _auditory_mix_rgb(
+        a: tuple[int, int, int],
+        b: tuple[int, int, int],
+        *,
+        mix: float,
+    ) -> tuple[int, int, int]:
+        m = max(0.0, min(1.0, float(mix)))
+        return (
+            int(round((a[0] * (1.0 - m)) + (b[0] * m))),
+            int(round((a[1] * (1.0 - m)) + (b[1] * m))),
+            int(round((a[2] * (1.0 - m)) + (b[2] * m))),
+        )
 
     def _render_math_reasoning(
         self,
