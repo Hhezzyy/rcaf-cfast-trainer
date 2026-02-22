@@ -135,7 +135,13 @@ class _OfflineTtsSpeaker:
     _max_queue = 24
     _max_utterance_s = 12.0
 
-    def __init__(self, *, rate_wpm: int = 150, volume: float = 0.95) -> None:
+    def __init__(
+        self,
+        *,
+        rate_wpm: int = 150,
+        volume: float = 0.95,
+        backend_preference: tuple[str, ...] | None = None,
+    ) -> None:
         self._enabled = False
         self._backends: list[str] = []
         self._backend: str | None = None
@@ -144,6 +150,7 @@ class _OfflineTtsSpeaker:
         self._active_started_s = 0.0
         self._rate_wpm = max(90, min(220, int(rate_wpm)))
         self._volume = max(0.10, min(1.00, float(volume)))
+        self._backend_preference = backend_preference
 
         if os.environ.get("CFAST_DISABLE_TTS", "0") == "1":
             return
@@ -228,19 +235,22 @@ class _OfflineTtsSpeaker:
             except Exception:
                 pass
 
-    @staticmethod
-    def _resolve_backends() -> list[str]:
+    def _resolve_backends(self) -> list[str]:
         supported = ("pyttsx3-subprocess", "say", "powershell", "espeak")
         forced = os.environ.get("CFAST_TTS_BACKEND", "").strip().lower()
-        if forced in supported and _OfflineTtsSpeaker._backend_available(forced):
+        if forced in supported and self._backend_available(forced):
             return [forced]
 
-        candidates: list[str] = []
-        if sys.platform == "darwin":
-            candidates.append("say")
-        if os.name == "nt":
-            candidates.append("powershell")
-        candidates.extend(("pyttsx3-subprocess", "espeak"))
+        candidates: list[str]
+        if self._backend_preference is not None and len(self._backend_preference) > 0:
+            candidates = [name for name in self._backend_preference if name in supported]
+        else:
+            candidates = []
+            if sys.platform == "darwin":
+                candidates.append("say")
+            if os.name == "nt":
+                candidates.append("powershell")
+            candidates.extend(("pyttsx3-subprocess", "espeak"))
 
         seen: set[str] = set()
         resolved: list[str] = []
@@ -248,7 +258,7 @@ class _OfflineTtsSpeaker:
             if name in seen:
                 continue
             seen.add(name)
-            if _OfflineTtsSpeaker._backend_available(name):
+            if self._backend_available(name):
                 resolved.append(name)
         return resolved
 
@@ -366,6 +376,7 @@ class _AuditoryCapacityAudioAdapter:
         self._ambient_tracks: dict[str, _AmbientTrack] = {}
         self._ambient_slots: list[str | None] = [None, None]
         self._ambient_active_sounds: list[pygame.mixer.Sound | None] = [None, None]
+        self._ambient_recent_keys: list[str] = []
         self._ambient_target_layers = 0
         self._ambient_started_at_s = 0.0
         self._next_ambient_change_at_s = 0.0
@@ -386,8 +397,17 @@ class _AuditoryCapacityAudioAdapter:
         self._last_beep_active = False
         self._last_sequence_display: str | None = None
         self._last_assigned_callsigns: tuple[str, ...] = ()
-        self._tts_commands = _OfflineTtsSpeaker(rate_wpm=140, volume=0.36)
-        self._tts_story = _OfflineTtsSpeaker(rate_wpm=132, volume=0.34)
+        self._tts_callsign = _OfflineTtsSpeaker(
+            rate_wpm=136,
+            volume=0.22,
+            backend_preference=("pyttsx3-subprocess", "say", "espeak", "powershell"),
+        )
+        self._tts_commands = _OfflineTtsSpeaker(rate_wpm=140, volume=0.30)
+        self._tts_story = _OfflineTtsSpeaker(
+            rate_wpm=132,
+            volume=0.22,
+            backend_preference=("pyttsx3-subprocess", "say", "espeak", "powershell"),
+        )
         self._voice_rng = random.Random(0xAC710)
         self._next_chatter_at_s = 0.0
         self._story_index = 0
@@ -457,11 +477,13 @@ class _AuditoryCapacityAudioAdapter:
         self._sync_color_cue(payload=payload)
         self._sync_sequence_cue(payload=payload)
         self._sync_voice_chatter(payload=payload)
+        self._tts_callsign.update()
         self._tts_commands.update()
         self._tts_story.update()
 
     def stop(self) -> None:
         if not self._available:
+            self._tts_callsign.stop()
             self._tts_commands.stop()
             self._tts_story.stop()
         else:
@@ -477,6 +499,7 @@ class _AuditoryCapacityAudioAdapter:
                         channel.stop()
                     except Exception:
                         pass
+            self._tts_callsign.stop()
             self._tts_commands.stop()
             self._tts_story.stop()
         self._last_callsign_cue = None
@@ -488,6 +511,7 @@ class _AuditoryCapacityAudioAdapter:
         self._story_index = 0
         self._ambient_slots = [None, None]
         self._ambient_active_sounds = [None, None]
+        self._ambient_recent_keys = []
         self._ambient_target_layers = 0
         self._ambient_started_at_s = 0.0
         self._next_ambient_change_at_s = 0.0
@@ -550,6 +574,9 @@ class _AuditoryCapacityAudioAdapter:
                 self._ambient_slots[idx] = next_key
                 self._ambient_active_sounds[idx] = snippet_sound
                 channel.play(snippet_sound)
+                self._ambient_recent_keys.append(next_key)
+                if len(self._ambient_recent_keys) > 3:
+                    del self._ambient_recent_keys[:-3]
                 if "mature" in next_key.lower():
                     self._last_mature_clip_at_s = now_s
 
@@ -680,6 +707,10 @@ class _AuditoryCapacityAudioAdapter:
         exclude: str | None = None,
     ) -> str | None:
         keys = [k for k in self._ambient_tracks if k != exclude]
+        if self._ambient_recent_keys:
+            filtered = [k for k in keys if k not in self._ambient_recent_keys]
+            if filtered:
+                keys = filtered
         if not keys:
             keys = list(self._ambient_tracks.keys())
         if not keys:
@@ -721,6 +752,7 @@ class _AuditoryCapacityAudioAdapter:
             hi_s = 150.0 + (40.0 * elapsed_ratio)
 
         length_s = self._voice_rng.uniform(lo_s, hi_s)
+        target_take_samples = max(256, int(length_s * self._sample_rate))
         if track.is_generated_noise:
             seed = self._voice_rng.randint(0, 2_147_483_647)
             segment = self._render_noise_pcm(duration_s=length_s, seed=seed, gain=0.34)
@@ -753,6 +785,13 @@ class _AuditoryCapacityAudioAdapter:
                 )
             if len(segment) <= 32:
                 return None
+            if len(segment) < target_take_samples:
+                segment = self._extend_segment_with_variation(
+                    source=segment,
+                    target_count=target_take_samples,
+                )
+            elif len(segment) > target_take_samples:
+                segment = array("h", segment[:target_take_samples])
 
         self._apply_edge_fade(segment, fade_s=0.012)
         self._normalize_segment_level(segment, target_rms=5600.0, peak_ceiling=0.88)
@@ -762,6 +801,41 @@ class _AuditoryCapacityAudioAdapter:
             return self._sound_from_pcm(segment)
         except Exception:
             return None
+
+    def _extend_segment_with_variation(self, *, source: array[int], target_count: int) -> array[int]:
+        if len(source) <= 0 or target_count <= 0:
+            return array("h")
+        if len(source) >= target_count:
+            return array("h", source[:target_count])
+
+        out = array("h")
+        source_n = len(source)
+        min_chunk = max(128, int(self._sample_rate * 0.35))
+        max_chunk = max(min_chunk + 64, int(self._sample_rate * 1.40))
+
+        while len(out) < target_count:
+            remaining = target_count - len(out)
+            chunk_n = min(remaining, self._voice_rng.randint(min_chunk, max_chunk))
+
+            if source_n <= chunk_n:
+                start = 0
+                frag = array("h", source)
+            else:
+                start = self._voice_rng.randint(0, source_n - chunk_n)
+                frag = array("h", source[start : start + chunk_n])
+
+            if self._voice_rng.random() < 0.20:
+                frag.reverse()
+
+            gain = self._voice_rng.uniform(0.90, 1.08)
+            for idx, value in enumerate(frag):
+                scaled = int(round(float(value) * gain))
+                frag[idx] = max(-32768, min(32767, scaled))
+
+            self._apply_edge_fade(frag, fade_s=0.006)
+            out.extend(frag[:remaining])
+
+        return out
 
     @staticmethod
     def _read_wav_segment_pcm(
@@ -850,7 +924,7 @@ class _AuditoryCapacityAudioAdapter:
         assigned = tuple(str(v) for v in payload.assigned_callsigns)
         if assigned != self._last_assigned_callsigns and assigned:
             joined = ", ".join(assigned)
-            self._tts_commands.speak(f"Assigned call signs. {joined}.")
+            self._tts_callsign.speak(f"Assigned call signs. {joined}.")
             self._last_assigned_callsigns = assigned
 
     def _sync_callsign_cue(self, *, payload: AuditoryCapacityPayload) -> None:
@@ -865,11 +939,11 @@ class _AuditoryCapacityAudioAdapter:
             if sound is None:
                 sound = self._build_callsign_sound(cue)
                 self._callsign_cache[cue] = sound
-            self._play_cue(sound, volume=0.30)
+            self._play_cue(sound, volume=0.18)
         if payload.callsign_blocks_gate:
-            self._tts_commands.speak(f"Call sign {cue}. Hold current color gate.")
+            self._tts_callsign.speak(f"Call sign {cue}. Hold current color gate.")
         else:
-            self._tts_commands.speak(f"Call sign {cue}.")
+            self._tts_callsign.speak(f"Call sign {cue}.")
         self._last_callsign_cue = cue
 
     def _sync_beep_cue(self, *, payload: AuditoryCapacityPayload) -> None:
