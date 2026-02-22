@@ -1235,12 +1235,83 @@ class _OpenGLAuditoryRenderer:
             tex = tex[0]
         self._ui_texture_id = int(tex)
         self._ui_tex_size: tuple[int, int] = (0, 0)
+        self._vortex_texture_id = self._create_texture_id()
+        self._vortex_tex_size: tuple[int, int] = (0, 0)
+        self._vortex_rgba: bytes = b""
+        self._init_vortex_texture(size=640)
 
         gl.glDisable(gl.GL_CULL_FACE)
         gl.glDisable(gl.GL_LIGHTING)
         gl.glEnable(gl.GL_BLEND)
         gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA)
         gl.glLineWidth(1.0)
+
+    def _create_texture_id(self) -> int:
+        tex = self._gl.glGenTextures(1)
+        if isinstance(tex, (tuple, list)):
+            tex = tex[0]
+        return int(tex)
+
+    def _init_vortex_texture(self, *, size: int) -> None:
+        gl = self._gl
+        tex_size = max(64, int(size))
+        self._vortex_rgba = self._build_vortex_rgba(size=tex_size)
+        self._vortex_tex_size = (tex_size, tex_size)
+
+        gl.glBindTexture(gl.GL_TEXTURE_2D, self._vortex_texture_id)
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR)
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_S, gl.GL_REPEAT)
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_T, gl.GL_REPEAT)
+        gl.glTexImage2D(
+            gl.GL_TEXTURE_2D,
+            0,
+            gl.GL_RGBA,
+            tex_size,
+            tex_size,
+            0,
+            gl.GL_RGBA,
+            gl.GL_UNSIGNED_BYTE,
+            self._vortex_rgba,
+        )
+
+    @staticmethod
+    def _build_vortex_rgba(*, size: int) -> bytes:
+        n = max(64, int(size))
+        cx = (n - 1) * 0.5
+        cy = (n - 1) * 0.5
+        inv = 1.0 / max(1.0, float(n - 1))
+        out = bytearray(n * n * 4)
+
+        for y in range(n):
+            ny = ((float(y) - cy) * 2.0) * inv
+            for x in range(n):
+                nx = ((float(x) - cx) * 2.0) * inv
+                r = math.sqrt((nx * nx) + (ny * ny))
+                a = math.atan2(ny, nx)
+                # Deterministic swirl field.
+                swirl = (
+                    math.sin((r * 23.0) - (a * 5.6))
+                    + math.cos((r * 31.0) + (a * 7.3))
+                    + math.sin(((nx * 17.0) - (ny * 13.0)))
+                )
+                swirl_n = (swirl + 3.0) / 6.0
+                falloff = max(0.0, min(1.0, 1.25 - (r * 0.95)))
+                grain = math.sin((x * 0.173) + (y * 0.217)) * 0.09
+                lum = max(0.0, min(1.0, (swirl_n * 0.64) + (falloff * 0.30) + grain))
+
+                red = int(round(16 + (lum * 38)))
+                green = int(round(36 + (lum * 84)))
+                blue = int(round(68 + (lum * 146)))
+                alpha = 255
+
+                i = ((y * n) + x) * 4
+                out[i] = max(0, min(255, red))
+                out[i + 1] = max(0, min(255, green))
+                out[i + 2] = max(0, min(255, blue))
+                out[i + 3] = alpha
+
+        return bytes(out)
 
     def resize(self, *, window_size: tuple[int, int]) -> None:
         self._win_w = max(1, int(window_size[0]))
@@ -1280,15 +1351,46 @@ class _OpenGLAuditoryRenderer:
         gl.glDisable(gl.GL_SCISSOR_TEST)
 
         gl.glViewport(vx, vy, vw, vh)
-        gl.glEnable(gl.GL_DEPTH_TEST)
+        self._set_ortho_2d(width=vw, height=vh)
+        gl.glDisable(gl.GL_DEPTH_TEST)
+        gl.glEnable(gl.GL_TEXTURE_2D)
+        gl.glBindTexture(gl.GL_TEXTURE_2D, self._vortex_texture_id)
+        gl.glColor4f(1.0, 1.0, 1.0, 1.0)
+        gl.glBegin(gl.GL_QUADS)
+        gl.glTexCoord2f(0.0, 0.0)
+        gl.glVertex2f(0.0, 0.0)
+        gl.glTexCoord2f(1.0, 0.0)
+        gl.glVertex2f(float(vw), 0.0)
+        gl.glTexCoord2f(1.0, 1.0)
+        gl.glVertex2f(float(vw), float(vh))
+        gl.glTexCoord2f(0.0, 1.0)
+        gl.glVertex2f(0.0, float(vh))
+        gl.glEnd()
         gl.glDisable(gl.GL_TEXTURE_2D)
 
-        gl.glMatrixMode(gl.GL_PROJECTION)
-        gl.glLoadIdentity()
-        self._set_perspective(fovy_deg=46.0, aspect=max(0.20, vw / float(vh)), z_near=0.1, z_far=80.0)
+        cx = float(vw) * 0.50
+        cy = float(vh) * 0.50
+        max_r = min(vw, vh) * 0.54
+        rings_2d = 20
+        for idx in range(rings_2d):
+            t = idx / float(max(1, rings_2d - 1))
+            r = max_r * (0.10 + (0.90 * t))
+            alpha = 0.12 * (1.0 - t)
+            gl.glColor4f(0.10, 0.18, 0.38, alpha)
+            gl.glBegin(gl.GL_LINE_LOOP)
+            seg = 48
+            for n in range(seg):
+                a = (n / float(seg)) * math.tau
+                gl.glVertex2f(cx + (math.cos(a) * r), cy + (math.sin(a) * r * 0.94))
+            gl.glEnd()
 
-        gl.glMatrixMode(gl.GL_MODELVIEW)
-        gl.glLoadIdentity()
+        self._set_perspective(
+            fovy_deg=46.0,
+            aspect=max(0.20, vw / float(vh)),
+            z_near=0.10,
+            z_far=80.0,
+        )
+        gl.glEnable(gl.GL_DEPTH_TEST)
 
         tube_rx = 1.00
         tube_ry = 0.64
@@ -1301,7 +1403,7 @@ class _OpenGLAuditoryRenderer:
             t = idx / float(max(1, ring_count - 1))
             z = -(z_near + ((z_far - z_near) * t))
             lum = 0.76 - (0.54 * t)
-            gl.glColor3f(0.10 * lum, 0.38 * lum, 0.90 * lum)
+            gl.glColor4f(0.10 * lum, 0.38 * lum, 0.90 * lum, 0.84)
             gl.glBegin(gl.GL_LINE_LOOP)
             for n in range(ring_steps):
                 a = (n / float(ring_steps)) * math.tau
@@ -1309,7 +1411,7 @@ class _OpenGLAuditoryRenderer:
             gl.glEnd()
 
         for a in (0.0, math.pi * 0.5, math.pi, math.pi * 1.5):
-            gl.glColor3f(0.16, 0.24, 0.46)
+            gl.glColor4f(0.16, 0.24, 0.46, 0.74)
             gl.glBegin(gl.GL_LINE_STRIP)
             for idx in range(ring_count):
                 t = idx / float(max(1, ring_count - 1))
@@ -1317,7 +1419,7 @@ class _OpenGLAuditoryRenderer:
                 gl.glVertex3f(math.cos(a) * tube_rx, math.sin(a) * tube_ry, z)
             gl.glEnd()
 
-        gl.glColor3f(0.72, 0.18, 0.22)
+        gl.glColor4f(0.72, 0.18, 0.22, 0.82)
         gl.glBegin(gl.GL_LINES)
         gl.glVertex3f(0.0, tube_ry * 0.96, -3.1)
         gl.glVertex3f(0.0, -tube_ry * 0.96, -3.1)
@@ -1329,25 +1431,26 @@ class _OpenGLAuditoryRenderer:
             y_half_span = max(0.08, float(payload.tube_half_height))
             x_half_span = max(0.08, float(payload.tube_half_width))
 
-            gates: list[tuple[float, AuditoryCapacityGate, float, float]] = []
+            gates: list[tuple[float, AuditoryCapacityGate, float, float, float]] = []
             for gate in payload.gates:
                 rel = gate.x_norm - payload.ball_x
                 if rel < -0.08:
                     continue
-                z = -(3.4 + (rel * 5.2))
-                if z < -70.0 or z > -0.6:
+                z = -(3.5 + (rel * 5.0))
+                if z < -72.0 or z > -0.8:
                     continue
                 gy = max(-1.0, min(1.0, gate.y_norm / y_half_span)) * (tube_ry * 0.92)
-                gates.append((z, gate, 0.0, gy))
+                lane = (((gate.gate_id % 5) - 2) / 2.0) * 0.32
+                gx = lane * (0.64 + (0.30 * min(1.0, max(0.0, rel / 2.4))))
+                radius = 0.11 + (max(0.06, min(0.36, gate.aperture_norm)) * 1.10)
+                gates.append((z, gate, gx, gy, radius))
 
-            for z, gate, gx, gy in sorted(gates, key=lambda g: g[0]):
+            for z, gate, gx, gy, radius in sorted(gates, key=lambda g: g[0]):
                 color = self._gate_color(gate.color)
-                gl.glColor3f(color[0], color[1], color[2])
-                radius = 0.12 + (max(0.06, min(0.36, gate.aperture_norm)) * 1.12)
+                gl.glColor4f(color[0], color[1], color[2], 0.95)
                 dz = 0.30
-                self._draw_gate_shape_wire(shape=gate.shape, x=gx, y=gy, z=z + dz, radius=radius)
-                self._draw_gate_shape_wire(shape=gate.shape, x=gx, y=gy, z=z, radius=radius)
-
+                self._draw_gate_shape_wire_3d(shape=gate.shape, x=gx, y=gy, z=z + dz, radius=radius)
+                self._draw_gate_shape_wire_3d(shape=gate.shape, x=gx, y=gy, z=z, radius=radius)
                 gl.glBegin(gl.GL_LINES)
                 gl.glVertex3f(gx - radius, gy, z)
                 gl.glVertex3f(gx - radius, gy, z + dz)
@@ -1363,19 +1466,69 @@ class _OpenGLAuditoryRenderer:
             by = max(-1.0, min(1.0, payload.ball_y / y_half_span)) * (tube_ry * 0.90)
             ball_z = -2.6
             ball_r = 0.10
+
             if abs(payload.ball_x) > payload.tube_half_width or abs(payload.ball_y) > payload.tube_half_height:
-                gl.glColor3f(0.95, 0.35, 0.38)
+                ball_edge = (0.95, 0.35, 0.38, 0.98)
             else:
-                gl.glColor3f(0.92, 0.95, 1.0)
-            gl.glBegin(gl.GL_TRIANGLE_FAN)
-            gl.glVertex3f(bx, by, ball_z)
-            segments = 24
-            for i in range(segments + 1):
-                a = (i / float(segments)) * math.tau
-                gl.glVertex3f(bx + (math.cos(a) * ball_r), by + (math.sin(a) * ball_r), ball_z)
-            gl.glEnd()
+                ball_edge = (0.92, 0.95, 1.0, 0.98)
+
+            gl.glColor4f(0.56, 0.60, 0.70, 0.78)
+            self._draw_filled_disc_3d(
+                x=bx + (ball_r * 0.20),
+                y=by - (ball_r * 0.25),
+                z=ball_z - 0.05,
+                radius=ball_r * 0.92,
+            )
+            gl.glColor4f(0.92, 0.95, 1.0, 0.98)
+            self._draw_filled_disc_3d(x=bx, y=by, z=ball_z, radius=ball_r)
+            gl.glColor4f(ball_edge[0], ball_edge[1], ball_edge[2], ball_edge[3])
+            self._draw_disc_outline_3d(x=bx, y=by, z=ball_z, radius=ball_r)
+            gl.glColor4f(1.0, 1.0, 1.0, 0.90)
+            self._draw_filled_disc_3d(
+                x=bx - (ball_r * 0.33),
+                y=by + (ball_r * 0.32),
+                z=ball_z + 0.001,
+                radius=ball_r * 0.28,
+            )
 
         gl.glDisable(gl.GL_DEPTH_TEST)
+        self._set_ortho_2d(width=vw, height=vh)
+
+        gl.glColor4f(0.08, 0.18, 0.56, 0.92)
+        gl.glBegin(gl.GL_QUADS)
+        gl.glVertex2f(0.0, float(vh - 18))
+        gl.glVertex2f(float(vw), float(vh - 18))
+        gl.glVertex2f(float(vw), float(vh))
+        gl.glVertex2f(0.0, float(vh))
+        gl.glEnd()
+
+        gl.glColor4f(0.46, 0.50, 0.62, 0.70)
+        bar_w = 132.0
+        bar_h = 15.0
+        bar_x = float(vw) - bar_w - 16.0
+        bar_y = 12.0
+        gl.glBegin(gl.GL_QUADS)
+        gl.glVertex2f(bar_x, bar_y)
+        gl.glVertex2f(bar_x + bar_w, bar_y)
+        gl.glVertex2f(bar_x + bar_w, bar_y + bar_h)
+        gl.glVertex2f(bar_x, bar_y + bar_h)
+        gl.glEnd()
+
+        gl.glColor4f(0.16, 0.18, 0.22, 0.70)
+        gl.glBegin(gl.GL_LINE_LOOP)
+        gl.glVertex2f(bar_x, bar_y)
+        gl.glVertex2f(bar_x + bar_w, bar_y)
+        gl.glVertex2f(bar_x + bar_w, bar_y + bar_h)
+        gl.glVertex2f(bar_x, bar_y + bar_h)
+        gl.glEnd()
+
+        gl.glColor4f(0.16, 0.34, 0.84, 0.90)
+        gl.glBegin(gl.GL_LINE_LOOP)
+        gl.glVertex2f(1.0, 1.0)
+        gl.glVertex2f(float(vw - 1), 1.0)
+        gl.glVertex2f(float(vw - 1), float(vh - 1))
+        gl.glVertex2f(1.0, float(vh - 1))
+        gl.glEnd()
 
     def _draw_ui_surface(self, *, ui_surface: pygame.Surface) -> None:
         gl = self._gl
@@ -1438,6 +1591,14 @@ class _OpenGLAuditoryRenderer:
         gl.glEnd()
         gl.glDisable(gl.GL_TEXTURE_2D)
 
+    def _set_ortho_2d(self, *, width: int, height: int) -> None:
+        gl = self._gl
+        gl.glMatrixMode(gl.GL_PROJECTION)
+        gl.glLoadIdentity()
+        gl.glOrtho(0.0, float(width), 0.0, float(height), -1.0, 1.0)
+        gl.glMatrixMode(gl.GL_MODELVIEW)
+        gl.glLoadIdentity()
+
     def _set_perspective(self, *, fovy_deg: float, aspect: float, z_near: float, z_far: float) -> None:
         gl = self._gl
         fovy = float(fovy_deg)
@@ -1447,7 +1608,11 @@ class _OpenGLAuditoryRenderer:
         bottom = -top
         right = top * float(aspect)
         left = -right
+        gl.glMatrixMode(gl.GL_PROJECTION)
+        gl.glLoadIdentity()
         gl.glFrustum(left, right, bottom, top, near, far)
+        gl.glMatrixMode(gl.GL_MODELVIEW)
+        gl.glLoadIdentity()
 
     @staticmethod
     def _gate_color(name: str) -> tuple[float, float, float]:
@@ -1459,7 +1624,7 @@ class _OpenGLAuditoryRenderer:
         }
         return palette.get(str(name).upper(), (0.86, 0.88, 0.92))
 
-    def _draw_gate_shape_wire(self, *, shape: str, x: float, y: float, z: float, radius: float) -> None:
+    def _draw_gate_shape_wire_3d(self, *, shape: str, x: float, y: float, z: float, radius: float) -> None:
         gl = self._gl
         token = str(shape).upper()
         if token == "TRIANGLE":
@@ -1478,8 +1643,22 @@ class _OpenGLAuditoryRenderer:
             gl.glEnd()
             return
 
+        self._draw_disc_outline_3d(x=x, y=y, z=z, radius=radius)
+
+    def _draw_filled_disc_3d(self, *, x: float, y: float, z: float, radius: float) -> None:
+        gl = self._gl
+        gl.glBegin(gl.GL_TRIANGLE_FAN)
+        gl.glVertex3f(x, y, z)
+        segments = 28
+        for i in range(segments + 1):
+            a = (i / float(segments)) * math.tau
+            gl.glVertex3f(x + (math.cos(a) * radius), y + (math.sin(a) * radius), z)
+        gl.glEnd()
+
+    def _draw_disc_outline_3d(self, *, x: float, y: float, z: float, radius: float) -> None:
+        gl = self._gl
         gl.glBegin(gl.GL_LINE_LOOP)
-        segments = 20
+        segments = 28
         for i in range(segments):
             a = (i / float(segments)) * math.tau
             gl.glVertex3f(x + (math.cos(a) * radius), y + (math.sin(a) * radius), z)
@@ -3472,7 +3651,7 @@ class CognitiveTestScreen:
 
         body = pygame.Rect(frame.x + 8, header.bottom + 8, frame.w - 16, frame.h - header_h - 18)
         gap = max(8, min(14, body.w // 52))
-        tube_panel_w = int(body.w * 0.62)
+        tube_panel_w = int(body.w * 0.74)
         tube_panel = pygame.Rect(body.x, body.y, tube_panel_w, body.h)
         info_panel = pygame.Rect(tube_panel.right + gap, body.y, body.w - tube_panel_w - gap, body.h)
 
@@ -3490,6 +3669,22 @@ class CognitiveTestScreen:
             )
             # Keep the tube viewport transparent so the OpenGL scene remains visible.
             surface.fill((0, 0, 0, 0), world)
+            top_strip = pygame.Rect(world.x + 1, world.y + 1, world.w - 2, 18)
+            pygame.draw.rect(surface, (18, 42, 136), top_strip)
+            strip_text = self._tiny_font.render("Auditory Capacity Test", True, (226, 236, 255))
+            surface.blit(strip_text, strip_text.get_rect(center=top_strip.center))
+
+            if snap.time_remaining_s is not None:
+                rem = max(0, int(round(snap.time_remaining_s)))
+                timer = pygame.Rect(world.right - 148, world.y + 14, 136, 46)
+                t_surf = pygame.Surface(timer.size, pygame.SRCALPHA)
+                t_surf.fill((86, 96, 122, 164))
+                surface.blit(t_surf, timer.topleft)
+                pygame.draw.rect(surface, (136, 146, 174), timer, 1, border_radius=8)
+                t_label = self._small_font.render("Seconds", True, (236, 242, 255))
+                t_val = self._small_font.render(str(rem), True, (236, 242, 255))
+                surface.blit(t_label, t_label.get_rect(center=(timer.centerx, timer.y + 15)))
+                surface.blit(t_val, t_val.get_rect(center=(timer.centerx, timer.y + 33)))
             pygame.draw.rect(surface, (72, 96, 170), world, 2)
         else:
             self._render_auditory_capacity_tube_chase_view(
@@ -3498,14 +3693,6 @@ class CognitiveTestScreen:
                 payload=payload,
                 time_remaining_s=snap.time_remaining_s,
             )
-
-        if payload is not None:
-            metrics = self._tiny_font.render(
-                f"Ctrl {payload.control_x:+.2f},{payload.control_y:+.2f}  Drift {payload.disturbance_x:+.2f},{payload.disturbance_y:+.2f}",
-                True,
-                text_muted,
-            )
-            surface.blit(metrics, (world.x + 8, world.y + 6))
 
         info_lines: list[str] = []
         if payload is None:
@@ -3644,269 +3831,151 @@ class CognitiveTestScreen:
         payload: AuditoryCapacityPayload | None,
         time_remaining_s: float | None,
     ) -> None:
-        pygame.draw.rect(surface, (8, 14, 34), world)
-        pygame.draw.rect(surface, (72, 96, 170), world, 2)
+        def build_vortex() -> pygame.Surface:
+            bg = pygame.Surface((world.w, world.h), pygame.SRCALPHA)
+            bg.fill((18, 34, 72))
+            cx0 = world.w // 2
+            cy0 = world.h // 2
+            max_rx = world.w * 0.51
+            max_ry = world.h * 0.51
+
+            for i in range(72, 0, -1):
+                t = i / 72.0
+                rx = max(4, int(round(max_rx * (t**1.03))))
+                ry = max(4, int(round(max_ry * (t**1.03))))
+                ring = pygame.Rect(0, 0, rx * 2, ry * 2)
+                ring.center = (cx0, cy0)
+                lum = int(round(28 + (98 * (1.0 - t))))
+                pygame.draw.ellipse(bg, (10 + lum // 6, 22 + lum // 2, 52 + lum), ring, 1)
+
+            arm_count = 16
+            steps = 124
+            for arm in range(arm_count):
+                phase = (arm / float(arm_count)) * math.tau
+                prev: tuple[int, int] | None = None
+                for step in range(steps):
+                    s = step / float(max(1, steps - 1))
+                    theta = phase + (s * math.tau * 2.6)
+                    radius = s**1.08
+                    px = int(round(cx0 + math.cos(theta) * max_rx * radius))
+                    py = int(round(cy0 + math.sin(theta) * max_ry * radius))
+                    if prev is not None:
+                        lum = int(round(48 + (96 * (1.0 - s))))
+                        pygame.draw.line(bg, (lum // 4, lum // 2, lum), prev, (px, py), 1)
+                    prev = (px, py)
+
+            rng = random.Random((world.w * 9241) + (world.h * 7519) + 131)
+            specks = max(1200, (world.w * world.h) // 180)
+            for _ in range(specks):
+                x = rng.randrange(0, world.w)
+                y = rng.randrange(0, world.h)
+                dx = (x - cx0) / max(1.0, max_rx)
+                dy = (y - cy0) / max(1.0, max_ry)
+                dist = min(1.0, math.sqrt((dx * dx) + (dy * dy)))
+                alpha = int(round(20 + (84 * dist)))
+                lum = int(round(108 + (124 * rng.random())))
+                bg.set_at((x, y), (lum // 4, lum // 2, lum, alpha))
+
+            return bg
+
+        key = ("auditory_vortex_reference", world.w, world.h)
+        surface.blit(self._get_instrument_sprite(key, build_vortex), world.topleft)
+
+        top_strip = pygame.Rect(world.x + 1, world.y + 1, world.w - 2, 18)
+        pygame.draw.rect(surface, (18, 42, 136), top_strip)
+        strip_text = self._tiny_font.render("Auditory Capacity Test", True, (226, 236, 255))
+        surface.blit(strip_text, strip_text.get_rect(center=top_strip.center))
 
         cx = world.centerx
         cy = world.centery
-        focal = float(min(world.w, world.h)) * 1.12
-        cam_z = -0.85
-        tube_rx = 1.00
-        tube_ry = 0.64
-        z_near = 1.10
-        z_far = 11.0
-
-        # True 3D tube rings (software projection).
-        ring_count = 18
-        ring_steps = 24
-        ring_zs = [z_near + ((z_far - z_near) * (i / float(ring_count - 1))) for i in range(ring_count)]
-        for z in reversed(ring_zs):
-            pts: list[tuple[int, int]] = []
-            for n in range(ring_steps):
-                a = (n / float(ring_steps)) * math.tau
-                p = self._auditory_project_point(
-                    x=math.cos(a) * tube_rx,
-                    y=math.sin(a) * tube_ry,
-                    z=z,
-                    cx=cx,
-                    cy=cy,
-                    focal=focal,
-                    cam_z=cam_z,
-                )
-                if p is None:
-                    continue
-                pts.append((p[0], p[1]))
-            if len(pts) < 3:
-                continue
-            t = (z - z_near) / max(1e-6, (z_far - z_near))
-            lum = int(round(142 - (90 * t)))
-            col = (lum // 4, lum // 2, lum)
-            pygame.draw.lines(surface, col, True, pts, 1)
-
-        # Longitudinal rails reinforce depth perception.
-        for a in (0.0, math.pi * 0.5, math.pi, math.pi * 1.5):
-            prev: tuple[int, int] | None = None
-            for z in ring_zs:
-                p = self._auditory_project_point(
-                    x=math.cos(a) * tube_rx,
-                    y=math.sin(a) * tube_ry,
-                    z=z,
-                    cx=cx,
-                    cy=cy,
-                    focal=focal,
-                    cam_z=cam_z,
-                )
-                if p is None:
-                    continue
-                cur = (p[0], p[1])
-                if prev is not None:
-                    pygame.draw.line(surface, (42, 62, 114), prev, cur, 1)
-                prev = cur
-
-        # Center crosshair aligned to tube axis.
-        axis_top = self._auditory_project_point(
-            x=0.0,
-            y=tube_ry * 0.96,
-            z=2.3,
-            cx=cx,
-            cy=cy,
-            focal=focal,
-            cam_z=cam_z,
-        )
-        axis_bottom = self._auditory_project_point(
-            x=0.0,
-            y=-tube_ry * 0.96,
-            z=2.3,
-            cx=cx,
-            cy=cy,
-            focal=focal,
-            cam_z=cam_z,
-        )
-        axis_left = self._auditory_project_point(
-            x=-tube_rx * 0.96,
-            y=0.0,
-            z=2.3,
-            cx=cx,
-            cy=cy,
-            focal=focal,
-            cam_z=cam_z,
-        )
-        axis_right = self._auditory_project_point(
-            x=tube_rx * 0.96,
-            y=0.0,
-            z=2.3,
-            cx=cx,
-            cy=cy,
-            focal=focal,
-            cam_z=cam_z,
-        )
-        if axis_top and axis_bottom:
-            pygame.draw.line(surface, (132, 34, 42), (axis_top[0], axis_top[1]), (axis_bottom[0], axis_bottom[1]), 1)
-        if axis_left and axis_right:
-            pygame.draw.line(surface, (132, 34, 42), (axis_left[0], axis_left[1]), (axis_right[0], axis_right[1]), 1)
+        cross = (136, 32, 38)
+        pygame.draw.line(surface, cross, (cx, world.top + 1), (cx, world.bottom - 1), 1)
+        pygame.draw.line(surface, cross, (world.left + 1, cy), (world.right - 1, cy), 1)
 
         if time_remaining_s is not None:
             rem = max(0, int(round(time_remaining_s)))
-            timer = pygame.Rect(world.right - 152, world.y + 14, 140, 48)
+            timer = pygame.Rect(world.right - 148, world.y + 14, 136, 46)
             t_surf = pygame.Surface(timer.size, pygame.SRCALPHA)
-            t_surf.fill((86, 96, 122, 166))
+            t_surf.fill((86, 96, 122, 164))
             surface.blit(t_surf, timer.topleft)
             pygame.draw.rect(surface, (136, 146, 174), timer, 1, border_radius=8)
             t_label = self._small_font.render("Seconds", True, (236, 242, 255))
             t_val = self._small_font.render(str(rem), True, (236, 242, 255))
-            surface.blit(t_label, t_label.get_rect(center=(timer.centerx, timer.y + 16)))
-            surface.blit(t_val, t_val.get_rect(center=(timer.centerx, timer.y + 34)))
+            surface.blit(t_label, t_label.get_rect(center=(timer.centerx, timer.y + 15)))
+            surface.blit(t_val, t_val.get_rect(center=(timer.centerx, timer.y + 33)))
 
-        if payload is None:
-            return
+        if payload is not None:
+            y_half_span = max(0.08, float(payload.tube_half_height))
+            x_half_span = max(0.08, float(payload.tube_half_width))
 
-        y_half_span = max(0.08, float(payload.tube_half_height))
-        x_half_span = max(0.08, float(payload.tube_half_width))
+            gates: list[tuple[float, AuditoryCapacityGate, float, float]] = []
+            far_depth = 2.20
+            for gate in payload.gates:
+                rel = gate.x_norm - payload.ball_x
+                if rel < -0.08:
+                    continue
+                depth = max(0.0, min(1.0, rel / far_depth))
+                approach = 1.0 - depth
+                gy = max(-1.0, min(1.0, gate.y_norm / y_half_span))
+                lane = (((gate.gate_id % 5) - 2) / 2.0) * 0.34
+                gates.append((approach, gate, lane, gy))
 
-        gate_draws: list[tuple[float, AuditoryCapacityGate, float, float]] = []
-        for gate in payload.gates:
-            rel = gate.x_norm - payload.ball_x
-            if rel < -0.05:
-                continue
-            z = 2.10 + (rel * 4.0)
-            if z > z_far + 1.0:
-                continue
-            gy = max(-1.0, min(1.0, gate.y_norm / y_half_span)) * (tube_ry * 0.92)
-            gate_draws.append((z, gate, 0.0, gy))
+            for approach, gate, lane, gy in sorted(gates, key=lambda g: g[0]):
+                sx = cx + int(round(lane * ((world.w * 0.10) + (world.w * 0.22 * approach))))
+                sy = cy + int(round(gy * ((world.h * 0.10) + (world.h * 0.22 * approach))))
+                size = max(4, int(round(min(world.w, world.h) * (0.012 + (0.060 * approach)))))
+                gate_color = self._auditory_color_rgb(gate.color, 1.0)
+                draw_color = self._auditory_mix_rgb((24, 34, 64), gate_color, mix=0.30 + (0.70 * approach))
+                self._draw_auditory_gate_shape(
+                    surface,
+                    shape=gate.shape,
+                    center=(sx, sy),
+                    size=size,
+                    color=draw_color,
+                )
 
-        for z, gate, gx, gy in sorted(gate_draws, key=lambda g: g[0], reverse=True):
-            c_front = self._auditory_project_point(
-                x=gx,
-                y=gy,
-                z=z,
-                cx=cx,
-                cy=cy,
-                focal=focal,
-                cam_z=cam_z,
-            )
-            c_back = self._auditory_project_point(
-                x=gx,
-                y=gy,
-                z=z + 0.22,
-                cx=cx,
-                cy=cy,
-                focal=focal,
-                cam_z=cam_z,
-            )
-            if c_front is None or c_back is None:
-                continue
-
-            gate_radius_world = 0.11 + (max(0.06, min(0.36, gate.aperture_norm)) * 1.10)
-            size_front = self._auditory_project_radius(
-                radius=gate_radius_world,
-                z=z,
-                focal=focal,
-                cam_z=cam_z,
-            )
-            size_back = self._auditory_project_radius(
-                radius=gate_radius_world,
-                z=z + 0.22,
-                focal=focal,
-                cam_z=cam_z,
-            )
-            if size_front < 3 or size_back < 2:
-                continue
-
-            gate_color = self._auditory_color_rgb(gate.color, 1.0)
-            front_color = self._auditory_mix_rgb((18, 28, 52), gate_color, mix=0.82)
-            back_color = self._auditory_mix_rgb((12, 20, 38), gate_color, mix=0.58)
-
-            self._draw_auditory_gate_shape(
-                surface,
-                shape=gate.shape,
-                center=(c_back[0], c_back[1]),
-                size=size_back,
-                color=back_color,
-            )
-            self._draw_auditory_gate_shape(
-                surface,
-                shape=gate.shape,
-                center=(c_front[0], c_front[1]),
-                size=size_front,
-                color=front_color,
-            )
-
-            # Four connectors between front/back shape planes.
-            pygame.draw.line(
-                surface,
-                back_color,
-                (c_front[0] - size_front, c_front[1]),
-                (c_back[0] - size_back, c_back[1]),
-                1,
-            )
-            pygame.draw.line(
-                surface,
-                back_color,
-                (c_front[0] + size_front, c_front[1]),
-                (c_back[0] + size_back, c_back[1]),
-                1,
-            )
-            pygame.draw.line(
-                surface,
-                back_color,
-                (c_front[0], c_front[1] - size_front),
-                (c_back[0], c_back[1] - size_back),
-                1,
-            )
-            pygame.draw.line(
-                surface,
-                back_color,
-                (c_front[0], c_front[1] + size_front),
-                (c_back[0], c_back[1] + size_back),
-                1,
-            )
-
-        bx = max(-1.0, min(1.0, payload.ball_x / x_half_span)) * (tube_rx * 0.90)
-        by = max(-1.0, min(1.0, payload.ball_y / y_half_span)) * (tube_ry * 0.90)
-        ball_z = 1.55
-        ball_center = self._auditory_project_point(
-            x=bx,
-            y=by,
-            z=ball_z,
-            cx=cx,
-            cy=cy,
-            focal=focal,
-            cam_z=cam_z,
-        )
-        if ball_center is not None:
-            ball_r = self._auditory_project_radius(radius=0.085, z=ball_z, focal=focal, cam_z=cam_z)
-            ball_r = max(4, min(14, ball_r))
+            bx = max(-1.0, min(1.0, payload.ball_x / x_half_span))
+            by = max(-1.0, min(1.0, payload.ball_y / y_half_span))
+            ball_x = cx + int(round(bx * (world.w * 0.26)))
+            ball_y = cy + int(round(by * (world.h * 0.26)))
+            ball_x = max(world.left + 9, min(world.right - 9, ball_x))
+            ball_y = max(world.top + 9, min(world.bottom - 9, ball_y))
+            ball_radius = max(5, min(13, world.h // 23))
             outer_color = (248, 252, 255)
             if abs(payload.ball_x) > payload.tube_half_width or abs(payload.ball_y) > payload.tube_half_height:
                 outer_color = (244, 78, 86)
             pygame.draw.circle(
                 surface,
                 (186, 194, 218),
-                (ball_center[0] + max(1, ball_r // 4), ball_center[1] + max(1, ball_r // 3)),
-                max(2, ball_r - 2),
+                (ball_x + max(1, ball_radius // 4), ball_y + max(1, ball_radius // 3)),
+                max(2, ball_radius - 2),
             )
-            pygame.draw.circle(surface, (236, 244, 255), (ball_center[0], ball_center[1]), ball_r)
-            pygame.draw.circle(surface, outer_color, (ball_center[0], ball_center[1]), ball_r, 1)
+            pygame.draw.circle(surface, (236, 244, 255), (ball_x, ball_y), ball_radius)
+            pygame.draw.circle(surface, outer_color, (ball_x, ball_y), ball_radius, 1)
             pygame.draw.circle(
                 surface,
                 (255, 255, 255),
-                (
-                    ball_center[0] - max(1, ball_r // 3),
-                    ball_center[1] - max(1, ball_r // 3),
-                ),
-                max(1, ball_r // 4),
+                (ball_x - max(1, ball_radius // 3), ball_y - max(1, ball_radius // 3)),
+                max(1, ball_radius // 4),
             )
 
-        bar = pygame.Rect(world.right - 144, world.bottom - 26, 126, 14)
-        pygame.draw.rect(surface, (76, 86, 114), bar, border_radius=6)
-        pygame.draw.rect(surface, (120, 130, 160), bar, 1, border_radius=6)
-        lvl = min(
-            1.0,
-            math.hypot(float(payload.control_x), float(payload.control_y))
-            + (0.35 * min(1.0, math.hypot(float(payload.disturbance_x), float(payload.disturbance_y)))),
-        )
-        fill = pygame.Rect(bar.x + 5, bar.y + 4, int(round((bar.w - 10) * (0.12 + (0.88 * lvl)))), bar.h - 8)
-        pygame.draw.rect(surface, (164, 172, 184), fill, border_radius=4)
+            bar = pygame.Rect(world.right - 144, world.bottom - 26, 126, 14)
+            pygame.draw.rect(surface, (76, 86, 114), bar, border_radius=6)
+            pygame.draw.rect(surface, (120, 130, 160), bar, 1, border_radius=6)
+            lvl = min(
+                1.0,
+                math.hypot(float(payload.control_x), float(payload.control_y))
+                + (0.35 * min(1.0, math.hypot(float(payload.disturbance_x), float(payload.disturbance_y)))),
+            )
+            fill = pygame.Rect(
+                bar.x + 5,
+                bar.y + 4,
+                int(round((bar.w - 10) * (0.12 + (0.88 * lvl)))),
+                bar.h - 8,
+            )
+            pygame.draw.rect(surface, (164, 172, 184), fill, border_radius=4)
+
+        pygame.draw.rect(surface, (72, 96, 170), world, 2)
 
     @staticmethod
     def _auditory_mix_rgb(
@@ -3921,38 +3990,6 @@ class CognitiveTestScreen:
             int(round((a[1] * (1.0 - m)) + (b[1] * m))),
             int(round((a[2] * (1.0 - m)) + (b[2] * m))),
         )
-
-    @staticmethod
-    def _auditory_project_point(
-        *,
-        x: float,
-        y: float,
-        z: float,
-        cx: int,
-        cy: int,
-        focal: float,
-        cam_z: float,
-    ) -> tuple[int, int, float] | None:
-        depth = float(z) - float(cam_z)
-        if depth <= 0.08:
-            return None
-        scale = float(focal) / depth
-        sx = int(round(float(cx) + (float(x) * scale)))
-        sy = int(round(float(cy) - (float(y) * scale)))
-        return sx, sy, scale
-
-    @staticmethod
-    def _auditory_project_radius(
-        *,
-        radius: float,
-        z: float,
-        focal: float,
-        cam_z: float,
-    ) -> int:
-        depth = float(z) - float(cam_z)
-        if depth <= 0.08:
-            return 0
-        return max(1, int(round(float(radius) * (float(focal) / depth))))
 
     def _render_math_reasoning(
         self,
@@ -8209,10 +8246,40 @@ def run(*, max_frames: int | None = None, event_injector: Callable[[int], None] 
     _init_joysticks()
 
     pygame.display.set_caption("RCAF CFAST Trainer")
-    window_flags = pygame.RESIZABLE
-    opengl_window_flags = pygame.RESIZABLE | pygame.OPENGL | pygame.DOUBLEBUF
 
     video_driver = os.environ.get("SDL_VIDEODRIVER", "").strip().lower()
+    fullscreen_default = sys.platform == "darwin"
+    want_fullscreen = os.environ.get(
+        "CFAST_FULLSCREEN",
+        "1" if fullscreen_default else "0",
+    ).strip().lower() not in {
+        "0",
+        "false",
+        "off",
+        "no",
+    }
+    use_fullscreen = want_fullscreen and video_driver != "dummy"
+
+    window_size = WINDOW_SIZE
+    if use_fullscreen:
+        desktop_sizes: list[tuple[int, int]] = []
+        try:
+            desktop_sizes = list(pygame.display.get_desktop_sizes())
+        except Exception:
+            desktop_sizes = []
+        if desktop_sizes:
+            window_size = desktop_sizes[0]
+        else:
+            try:
+                info = pygame.display.Info()
+                if info.current_w > 0 and info.current_h > 0:
+                    window_size = (int(info.current_w), int(info.current_h))
+            except Exception:
+                window_size = WINDOW_SIZE
+
+    window_flags = pygame.FULLSCREEN if use_fullscreen else pygame.RESIZABLE
+    opengl_window_flags = window_flags | pygame.OPENGL | pygame.DOUBLEBUF
+
     want_gl = os.environ.get("CFAST_USE_OPENGL", "1").strip().lower() not in {
         "0",
         "false",
@@ -8228,17 +8295,17 @@ def run(*, max_frames: int | None = None, event_injector: Callable[[int], None] 
 
     if can_try_gl:
         try:
-            display_surface = pygame.display.set_mode(WINDOW_SIZE, opengl_window_flags)
+            display_surface = pygame.display.set_mode(window_size, opengl_window_flags)
             gl_renderer = _OpenGLAuditoryRenderer(window_size=display_surface.get_size())
             app_surface = pygame.Surface(display_surface.get_size(), pygame.SRCALPHA)
             active_window_flags = opengl_window_flags
         except Exception:
-            display_surface = pygame.display.set_mode(WINDOW_SIZE, window_flags)
+            display_surface = pygame.display.set_mode(window_size, window_flags)
             app_surface = display_surface
             gl_renderer = None
             active_window_flags = window_flags
     else:
-        display_surface = pygame.display.set_mode(WINDOW_SIZE, window_flags)
+        display_surface = pygame.display.set_mode(window_size, window_flags)
         app_surface = display_surface
 
     font = pygame.font.Font(None, 36)
