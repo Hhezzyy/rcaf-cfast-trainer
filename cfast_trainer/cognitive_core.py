@@ -152,6 +152,10 @@ class TimedTextInputTest:
     def scored_duration_s(self) -> float:
         return float(self._scored_duration_s)
 
+    @property
+    def clock(self) -> Clock:
+        return self._clock
+
     def events(self) -> list[QuestionEvent]:
         # Return a copy to keep internal state encapsulated.
         return list(self._events)

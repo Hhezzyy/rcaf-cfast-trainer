@@ -4,6 +4,7 @@ This task adds cognitive tests under a "Tests" submenu:
 - Numerical Operations (mental arithmetic)
 - Mathematics Reasoning (multiple-choice word problems)
 - Airborne Numerical Test (HHMM timing with map/table UI)
+- Cognitive Updating (multitask menu-driven system updates)
 - Table Reading (cross-reference lookup tables)
 - Sensory Motor Apparatus (joystick/pedal coordination tracking)
 - Auditory Capacity (multichannel auditory + psychomotor load)
@@ -51,9 +52,9 @@ from .colours_letters_numbers import (
     build_colours_letters_numbers_test,
 )
 from .cognitive_updating import (
-    CognitiveUpdatingDocument,
-    CognitiveUpdatingPanel,
     CognitiveUpdatingPayload,
+    CognitiveUpdatingRuntime,
+    CognitiveUpdatingRuntimeSnapshot,
     build_cognitive_updating_test,
 )
 from .cognitive_core import Phase, TestSnapshot
@@ -417,7 +418,7 @@ class _AuditoryCapacityAudioAdapter:
         )
         self._voice_rng = random.Random(0xAC710)
         self._next_chatter_at_s = 0.0
-        self._story_index = 0
+        self._story_index = -1
         self._story_segments: tuple[str, ...] = (
             "Chapter one. The rain started before sunrise, and the streetlights stayed on.",
             "At the station, two conductors argued over a missing timetable and a locked office door.",
@@ -437,6 +438,32 @@ class _AuditoryCapacityAudioAdapter:
             "Two voices nearby switched topics from weather to schedules to unfinished errands.",
             "The chapter ended with a door closing and the hallway lights dimming.",
             "Then the next chapter began immediately, as if no one had left the room.",
+            "He set the cup beside the radio and turned the dial until the static thinned out.",
+            "The bulletin listed delays, route changes, and one cancellation with no explanation.",
+            "A courier arrived late, signed the logbook, and left before anyone asked a question.",
+            "Near the window, someone traced circles on the glass while counting under their breath.",
+            "Three pages were missing from the binder, but the index still showed their numbers.",
+            "On platform four, a whistle blew twice and then stopped halfway through a third note.",
+            "The supervisor checked the wall clock, then checked a wristwatch, then frowned.",
+            "A cart rolled by with empty crates that rattled louder than expected in the corridor.",
+            "At the far desk, a light blinked in a pattern no one bothered to explain.",
+            "The intercom clicked on, repeated a sentence, and cut off before the last word.",
+            "By evening, the rain had slowed, but the sidewalks still reflected every passing sign.",
+            "A driver unfolded a map on the hood and marked two streets with a blue pen.",
+            "Inside the waiting room, a heater hummed while a newspaper page turned every few seconds.",
+            "Someone asked for gate numbers twice, then nodded as if the answer was different.",
+            "The recorder kept running after the interview ended, capturing chairs and footsteps.",
+            "A technician replaced a battery, tightened a screw, and wrote the time on tape.",
+            "In the warehouse, a forklift reversed, paused, and reversed again to clear a pallet.",
+            "A printed checklist hung by the door with four boxes still empty at shift change.",
+            "The final paragraph mentioned a key, a locker, and a code written on scrap paper.",
+            "No one agreed on the exact minute the signal started, only that everyone heard it.",
+            "The morning report arrived folded in half with coffee rings across the margin.",
+            "A thin voice from the next room read names from a list and waited for replies.",
+            "Two mechanics compared torque values and then checked the same wrench twice.",
+            "By the loading bay, wind pushed a loose sign until it tapped against the wall.",
+            "A student repeated the instructions quietly, then repeated them again without looking up.",
+            "At the end of the chapter, the narrator said to continue and turned the page.",
         )
 
         try:
@@ -515,7 +542,7 @@ class _AuditoryCapacityAudioAdapter:
         self._last_sequence_display = None
         self._last_assigned_callsigns = ()
         self._next_chatter_at_s = 0.0
-        self._story_index = 0
+        self._story_index = -1
         self._ambient_slots = [None, None]
         self._ambient_active_sounds = [None, None]
         self._ambient_recent_keys = []
@@ -523,6 +550,64 @@ class _AuditoryCapacityAudioAdapter:
         self._ambient_started_at_s = 0.0
         self._next_ambient_change_at_s = 0.0
         self._last_mature_clip_at_s = -10_000.0
+
+    def debug_state(self, *, payload: AuditoryCapacityPayload | None = None) -> dict[str, object]:
+        def _slot_label(key: str | None) -> str:
+            if key is None or key.strip() == "":
+                return "—"
+            label = key
+            if label.endswith(".wav"):
+                label = label[:-4]
+            if label.startswith("bg_"):
+                label = label[3:]
+            if label.endswith("_loop"):
+                label = label[:-5]
+            return label
+
+        bg_busy = False
+        dist_busy = False
+        cue_busy = False
+        alert_busy = False
+        try:
+            bg_busy = bool(self._bg_channel.get_busy()) if self._bg_channel is not None else False
+            dist_busy = bool(self._dist_channel.get_busy()) if self._dist_channel is not None else False
+            cue_busy = bool(self._cue_channel.get_busy()) if self._cue_channel is not None else False
+            alert_busy = bool(self._alert_channel.get_busy()) if self._alert_channel is not None else False
+        except Exception:
+            bg_busy = False
+            dist_busy = False
+            cue_busy = False
+            alert_busy = False
+
+        ambient_slots = tuple(_slot_label(v) for v in self._ambient_slots)
+        noise_level = None if payload is None else float(payload.background_noise_level)
+        distortion_level = None if payload is None else float(payload.distortion_level)
+
+        return {
+            "audio_available": bool(self._available),
+            "ambient_layers_target": int(self._ambient_target_layers),
+            "ambient_slots": ambient_slots,
+            "ambient_recent": tuple(_slot_label(v) for v in self._ambient_recent_keys[-3:]),
+            "channels_busy": {
+                "bg": bg_busy,
+                "dist": dist_busy,
+                "cue": cue_busy,
+                "alert": alert_busy,
+            },
+            "cue_state": {
+                "callsign": self._last_callsign_cue,
+                "color": self._last_color_command,
+                "beep_active": bool(self._last_beep_active),
+                "sequence": self._last_sequence_display,
+            },
+            "tts_pending": {
+                "callsign": int(self._tts_callsign.pending_count),
+                "commands": int(self._tts_commands.pending_count),
+                "story": int(self._tts_story.pending_count),
+            },
+            "noise_level": noise_level,
+            "distortion_level": distortion_level,
+        }
 
     def _sync_background_layers(self, *, payload: AuditoryCapacityPayload) -> None:
         assert self._bg_channel is not None
@@ -538,7 +623,6 @@ class _AuditoryCapacityAudioAdapter:
             self._replan_ambient_mix(now_s=now_s, payload=payload)
 
         noise_level = max(0.0, min(1.0, float(payload.background_noise_level)))
-        distortion_level = max(0.0, min(1.0, float(payload.distortion_level)))
         elapsed_ratio = max(0.0, min(1.0, (now_s - self._ambient_started_at_s) / 240.0))
 
         channels = (self._bg_channel, self._dist_channel)
@@ -603,7 +687,9 @@ class _AuditoryCapacityAudioAdapter:
                 continue
 
             base_volume = float(item.base_volume)
-            layer_gain = 0.98 + (0.12 * noise_level) + (0.02 * distortion_level)
+            # Keep early-phase ambience noticeably quieter and ramp toward full intensity.
+            intensity = 0.30 + (0.70 * noise_level)
+            layer_gain = intensity
             volume = max(0.0, min(1.0, base_volume * layer_gain))
             channel.set_volume(volume)
 
@@ -685,8 +771,8 @@ class _AuditoryCapacityAudioAdapter:
         noise_level = max(0.0, min(1.0, float(payload.background_noise_level)))
 
         # Keep ambience present most of the time, with brief breathers only.
-        silence_prob = max(0.01, 0.04 - (0.02 * elapsed_ratio))
-        two_prob = min(0.90, 0.68 + (0.10 * elapsed_ratio) + (0.08 * noise_level))
+        silence_prob = max(0.01, 0.08 - (0.03 * elapsed_ratio) - (0.03 * noise_level))
+        two_prob = min(0.88, 0.20 + (0.26 * elapsed_ratio) + (0.42 * noise_level))
         one_prob = max(0.0, 1.0 - silence_prob - two_prob)
 
         roll = self._voice_rng.random()
@@ -1079,6 +1165,12 @@ class _AuditoryCapacityAudioAdapter:
             return
         if self._tts_story.pending_count > 2:
             return
+        if self._story_index < 0:
+            if len(self._story_segments) > 1:
+                # Avoid always starting from the first sentence.
+                self._story_index = self._voice_rng.randint(1, len(self._story_segments) - 1)
+            else:
+                self._story_index = 0
 
         now_s = float(pygame.time.get_ticks()) / 1000.0
         if self._next_chatter_at_s <= 0.0:
@@ -1250,6 +1342,11 @@ class _OpenGLAuditoryRenderer:
         gl.glDisable(gl.GL_LIGHTING)
         gl.glEnable(gl.GL_BLEND)
         gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA)
+        gl.glEnable(gl.GL_LINE_SMOOTH)
+        if hasattr(gl, "GL_LINE_SMOOTH_HINT") and hasattr(gl, "GL_NICEST"):
+            gl.glHint(gl.GL_LINE_SMOOTH_HINT, gl.GL_NICEST)
+        if hasattr(gl, "GL_MULTISAMPLE"):
+            gl.glEnable(gl.GL_MULTISAMPLE)
         gl.glLineWidth(1.0)
 
     def _create_texture_id(self) -> int:
@@ -1390,6 +1487,16 @@ class _OpenGLAuditoryRenderer:
                 gl.glVertex2f(cx + (math.cos(a) * r), cy + (math.sin(a) * r * 0.94))
             gl.glEnd()
 
+        gl.glBegin(gl.GL_TRIANGLE_FAN)
+        gl.glColor4f(0.04, 0.10, 0.28, 0.04)
+        gl.glVertex2f(cx, cy)
+        seg = 64
+        for n in range(seg + 1):
+            a = (n / float(seg)) * math.tau
+            gl.glColor4f(0.01, 0.02, 0.08, 0.34)
+            gl.glVertex2f(cx + (math.cos(a) * max_r), cy + (math.sin(a) * max_r * 0.92))
+        gl.glEnd()
+
         self._set_perspective(
             fovy_deg=46.0,
             aspect=max(0.20, vw / float(vh)),
@@ -1398,40 +1505,55 @@ class _OpenGLAuditoryRenderer:
         )
         gl.glEnable(gl.GL_DEPTH_TEST)
 
-        tube_rx = 1.00
-        tube_ry = 0.64
+        tube_rx = 0.88
+        tube_ry = 0.54
         z_near = 2.0
         z_far = 26.0
         ring_steps = 28
         ring_count = 24
+        ring_spacing = (z_far - z_near) / float(max(1, ring_count - 1))
+        flow_speed_units_per_s = 1.45
+        flow_offset = (
+            (float(pygame.time.get_ticks()) / 1000.0) * flow_speed_units_per_s
+        ) % max(0.001, ring_spacing)
 
+        ring_centers: list[tuple[float, float, float, float]] = []
         for idx in range(ring_count):
             t = idx / float(max(1, ring_count - 1))
-            z = -(z_near + ((z_far - z_near) * t))
+            z = -(z_near + ((z_far - z_near) * t)) + flow_offset
+            off_x, off_y = self._tube_offset_at_depth(z=z, z_near=z_near, z_far=z_far)
+            ring_centers.append((z, off_x, off_y, t))
             lum = 0.76 - (0.54 * t)
             gl.glColor4f(0.10 * lum, 0.38 * lum, 0.90 * lum, 0.84)
             gl.glBegin(gl.GL_LINE_LOOP)
             for n in range(ring_steps):
                 a = (n / float(ring_steps)) * math.tau
-                gl.glVertex3f(math.cos(a) * tube_rx, math.sin(a) * tube_ry, z)
+                gl.glVertex3f(
+                    off_x + (math.cos(a) * tube_rx),
+                    off_y + (math.sin(a) * tube_ry),
+                    z,
+                )
             gl.glEnd()
 
         for a in (0.0, math.pi * 0.5, math.pi, math.pi * 1.5):
             gl.glColor4f(0.16, 0.24, 0.46, 0.74)
             gl.glBegin(gl.GL_LINE_STRIP)
-            for idx in range(ring_count):
-                t = idx / float(max(1, ring_count - 1))
-                z = -(z_near + ((z_far - z_near) * t))
-                gl.glVertex3f(math.cos(a) * tube_rx, math.sin(a) * tube_ry, z)
+            for z, off_x, off_y, _ in ring_centers:
+                gl.glVertex3f(
+                    off_x + (math.cos(a) * tube_rx),
+                    off_y + (math.sin(a) * tube_ry),
+                    z,
+                )
             gl.glEnd()
 
-        gl.glColor4f(0.72, 0.18, 0.22, 0.82)
-        gl.glBegin(gl.GL_LINES)
-        gl.glVertex3f(0.0, tube_ry * 0.96, -3.1)
-        gl.glVertex3f(0.0, -tube_ry * 0.96, -3.1)
-        gl.glVertex3f(-tube_rx * 0.96, 0.0, -3.1)
-        gl.glVertex3f(tube_rx * 0.96, 0.0, -3.1)
-        gl.glEnd()
+        base_cross_x, base_cross_y = self._tube_offset_at_depth(
+            z=-3.1,
+            z_near=z_near,
+            z_far=z_far,
+        )
+        cross_x = base_cross_x
+        cross_y = base_cross_y
+        cross_z = -3.1
 
         if payload is not None:
             y_half_span = max(0.08, float(payload.tube_half_height))
@@ -1439,24 +1561,52 @@ class _OpenGLAuditoryRenderer:
 
             gates: list[tuple[float, AuditoryCapacityGate, float, float, float]] = []
             for gate in payload.gates:
-                rel = gate.x_norm - payload.ball_x
+                rel = gate.x_norm
                 if rel < -0.08:
                     continue
                 z = -(3.5 + (rel * 5.0))
                 if z < -72.0 or z > -0.8:
                     continue
+                gate_off_x, gate_off_y = self._tube_offset_at_depth(
+                    z=z,
+                    z_near=z_near,
+                    z_far=z_far,
+                )
                 gy = max(-1.0, min(1.0, gate.y_norm / y_half_span)) * (tube_ry * 0.92)
                 lane = (((gate.gate_id % 5) - 2) / 2.0) * 0.32
-                gx = lane * (0.64 + (0.30 * min(1.0, max(0.0, rel / 2.4))))
+                gx = gate_off_x + (lane * (0.56 + (0.26 * min(1.0, max(0.0, rel / 2.4)))))
+                gy = gate_off_y + gy
                 radius = 0.11 + (max(0.06, min(0.36, gate.aperture_norm)) * 1.10)
                 gates.append((z, gate, gx, gy, radius))
 
             for z, gate, gx, gy, radius in sorted(gates, key=lambda g: g[0]):
                 color = self._gate_color(gate.color)
-                gl.glColor4f(color[0], color[1], color[2], 0.95)
                 dz = 0.30
+                gl.glColor4f(color[0] * 0.36, color[1] * 0.42, color[2] * 0.48, 0.24)
+                self._draw_gate_shape_filled_3d(
+                    shape=gate.shape,
+                    x=gx,
+                    y=gy,
+                    z=z + (dz * 0.5),
+                    radius=radius * 0.95,
+                )
+                gl.glColor4f(color[0], color[1], color[2], 0.95)
                 self._draw_gate_shape_wire_3d(shape=gate.shape, x=gx, y=gy, z=z + dz, radius=radius)
                 self._draw_gate_shape_wire_3d(shape=gate.shape, x=gx, y=gy, z=z, radius=radius)
+                gl.glColor4f(
+                    min(1.0, color[0] + 0.24),
+                    min(1.0, color[1] + 0.24),
+                    min(1.0, color[2] + 0.24),
+                    0.72,
+                )
+                self._draw_gate_shape_wire_3d(
+                    shape=gate.shape,
+                    x=gx,
+                    y=gy,
+                    z=z + (dz * 0.38),
+                    radius=radius * 0.92,
+                )
+                gl.glColor4f(color[0] * 0.78, color[1] * 0.78, color[2] * 0.78, 0.72)
                 gl.glBegin(gl.GL_LINES)
                 gl.glVertex3f(gx - radius, gy, z)
                 gl.glVertex3f(gx - radius, gy, z + dz)
@@ -1470,8 +1620,19 @@ class _OpenGLAuditoryRenderer:
 
             bx = max(-1.0, min(1.0, payload.ball_x / x_half_span)) * (tube_rx * 0.90)
             by = max(-1.0, min(1.0, payload.ball_y / y_half_span)) * (tube_ry * 0.90)
-            ball_z = -2.6
+            travel_t = (float(pygame.time.get_ticks()) / 1000.0) * flow_speed_units_per_s
+            ball_z = -2.60 + (0.10 * math.sin(travel_t * 1.2))
             ball_r = 0.10
+            ball_off_x, ball_off_y = self._tube_offset_at_depth(
+                z=ball_z,
+                z_near=z_near,
+                z_far=z_far,
+            )
+            bx += ball_off_x
+            by += ball_off_y
+            cross_x = bx
+            cross_y = by
+            cross_z = ball_z + 0.002
 
             if abs(payload.ball_x) > payload.tube_half_width or abs(payload.ball_y) > payload.tube_half_height:
                 ball_edge = (0.95, 0.35, 0.38, 0.98)
@@ -1498,6 +1659,14 @@ class _OpenGLAuditoryRenderer:
             )
 
         gl.glDisable(gl.GL_DEPTH_TEST)
+        gl.glColor4f(0.72, 0.18, 0.22, 0.84)
+        gl.glBegin(gl.GL_LINES)
+        gl.glVertex3f(cross_x, cross_y + (tube_ry * 0.96), cross_z)
+        gl.glVertex3f(cross_x, cross_y - (tube_ry * 0.96), cross_z)
+        gl.glVertex3f(cross_x - (tube_rx * 0.96), cross_y, cross_z)
+        gl.glVertex3f(cross_x + (tube_rx * 0.96), cross_y, cross_z)
+        gl.glEnd()
+
         self._set_ortho_2d(width=vw, height=vh)
 
         gl.glColor4f(0.08, 0.18, 0.56, 0.92)
@@ -1520,12 +1689,45 @@ class _OpenGLAuditoryRenderer:
         gl.glVertex2f(bar_x, bar_y + bar_h)
         gl.glEnd()
 
-        gl.glColor4f(0.16, 0.18, 0.22, 0.70)
+        gl.glColor4f(0.16, 0.18, 0.22, 0.78)
         gl.glBegin(gl.GL_LINE_LOOP)
         gl.glVertex2f(bar_x, bar_y)
         gl.glVertex2f(bar_x + bar_w, bar_y)
         gl.glVertex2f(bar_x + bar_w, bar_y + bar_h)
         gl.glVertex2f(bar_x, bar_y + bar_h)
+        gl.glEnd()
+
+        inner_x = bar_x + 4.0
+        inner_y = bar_y + 4.0
+        inner_w = bar_w - 8.0
+        inner_h = bar_h - 8.0
+        gl.glColor4f(0.12, 0.14, 0.18, 0.84)
+        gl.glBegin(gl.GL_QUADS)
+        gl.glVertex2f(inner_x, inner_y)
+        gl.glVertex2f(inner_x + inner_w, inner_y)
+        gl.glVertex2f(inner_x + inner_w, inner_y + inner_h)
+        gl.glVertex2f(inner_x, inner_y + inner_h)
+        gl.glEnd()
+
+        lvl = 0.16
+        if payload is not None:
+            lvl = min(
+                1.0,
+                math.hypot(float(payload.control_x), float(payload.control_y))
+                + (0.35 * min(1.0, math.hypot(float(payload.disturbance_x), float(payload.disturbance_y)))),
+            )
+        fill_w = max(2.0, inner_w * (0.12 + (0.88 * lvl)))
+        gl.glColor4f(0.76, 0.80, 0.86, 0.90)
+        gl.glBegin(gl.GL_QUADS)
+        gl.glVertex2f(inner_x, inner_y)
+        gl.glVertex2f(inner_x + fill_w, inner_y)
+        gl.glVertex2f(inner_x + fill_w, inner_y + inner_h)
+        gl.glVertex2f(inner_x, inner_y + inner_h)
+        gl.glEnd()
+        gl.glColor4f(0.94, 0.96, 0.98, 0.70)
+        gl.glBegin(gl.GL_LINES)
+        gl.glVertex2f(inner_x + 1.0, inner_y + 1.0)
+        gl.glVertex2f(inner_x + max(2.0, fill_w - 1.0), inner_y + 1.0)
         gl.glEnd()
 
         gl.glColor4f(0.16, 0.34, 0.84, 0.90)
@@ -1534,6 +1736,13 @@ class _OpenGLAuditoryRenderer:
         gl.glVertex2f(float(vw - 1), 1.0)
         gl.glVertex2f(float(vw - 1), float(vh - 1))
         gl.glVertex2f(1.0, float(vh - 1))
+        gl.glEnd()
+        gl.glColor4f(0.38, 0.52, 0.88, 0.72)
+        gl.glBegin(gl.GL_LINE_LOOP)
+        gl.glVertex2f(4.0, 4.0)
+        gl.glVertex2f(float(vw - 4), 4.0)
+        gl.glVertex2f(float(vw - 4), float(vh - 4))
+        gl.glVertex2f(4.0, float(vh - 4))
         gl.glEnd()
 
     def _draw_ui_surface(self, *, ui_surface: pygame.Surface) -> None:
@@ -1621,6 +1830,24 @@ class _OpenGLAuditoryRenderer:
         gl.glLoadIdentity()
 
     @staticmethod
+    def _tube_offset_at_depth(*, z: float, z_near: float, z_far: float) -> tuple[float, float]:
+        span = max(0.001, float(z_far) - float(z_near))
+        depth = max(0.0, min(1.0, ((-float(z)) - float(z_near)) / span))
+        curve = depth**1.18
+
+        # Deterministic S-curves that are gentle near the player and stronger farther out.
+        x_wave = (math.sin((depth * math.tau * 1.05) + 0.45) * 0.74) + (
+            math.sin((depth * math.tau * 2.25) - 0.35) * 0.26
+        )
+        y_wave = (math.sin((depth * math.tau * 1.45) + 1.45) * 0.72) + (
+            math.sin((depth * math.tau * 2.55) + 0.80) * 0.28
+        )
+
+        off_x = x_wave * (0.58 * curve)
+        off_y = y_wave * (0.35 * curve)
+        return off_x, off_y
+
+    @staticmethod
     def _gate_color(name: str) -> tuple[float, float, float]:
         palette = {
             "RED": (0.92, 0.32, 0.34),
@@ -1650,6 +1877,26 @@ class _OpenGLAuditoryRenderer:
             return
 
         self._draw_disc_outline_3d(x=x, y=y, z=z, radius=radius)
+
+    def _draw_gate_shape_filled_3d(self, *, shape: str, x: float, y: float, z: float, radius: float) -> None:
+        gl = self._gl
+        token = str(shape).upper()
+        if token == "TRIANGLE":
+            gl.glBegin(gl.GL_TRIANGLES)
+            gl.glVertex3f(x, y + radius, z)
+            gl.glVertex3f(x - radius, y - radius, z)
+            gl.glVertex3f(x + radius, y - radius, z)
+            gl.glEnd()
+            return
+        if token == "SQUARE":
+            gl.glBegin(gl.GL_QUADS)
+            gl.glVertex3f(x - radius, y - radius, z)
+            gl.glVertex3f(x + radius, y - radius, z)
+            gl.glVertex3f(x + radius, y + radius, z)
+            gl.glVertex3f(x - radius, y + radius, z)
+            gl.glEnd()
+            return
+        self._draw_filled_disc_3d(x=x, y=y, z=z, radius=radius)
 
     def _draw_filled_disc_3d(self, *, x: float, y: float, z: float, radius: float) -> None:
         gl = self._gl
@@ -2818,9 +3065,30 @@ class CognitiveTestScreen:
         self._system_logic_folder_index = 0
         self._system_logic_doc_index = 0
         self._cognitive_updating_payload_id: int | None = None
-        self._cognitive_updating_panel_index = 0
-        self._cognitive_updating_doc_index = 0
+        self._cognitive_updating_runtime: CognitiveUpdatingRuntime | None = None
+        self._cognitive_updating_upper_tab_index = 0
+        self._cognitive_updating_lower_tab_index = 1
+        self._cognitive_updating_hitboxes: dict[str, pygame.Rect] = {}
+        self._cognitive_updating_phase_start_ms = 0
+        self._cognitive_updating_parcel_values = ["", "", ""]
+        self._cognitive_updating_active_parcel_field = 0
+        self._cognitive_updating_comms_input = ""
+        self._cognitive_updating_speed_knots: int | None = None
+        self._cognitive_updating_pump_on: bool | None = None
+        self._cognitive_updating_active_tank: int | None = None
+        self._cognitive_updating_alpha_armed = False
+        self._cognitive_updating_bravo_armed = False
+        self._cognitive_updating_air_sensor_armed = False
+        self._cognitive_updating_ground_sensor_armed = False
+        self._cognitive_updating_dispenser_lit: int | None = None
         self._auditory_audio: _AuditoryCapacityAudioAdapter | None = None
+        self._auditory_audio_debug: dict[str, object] = {}
+        self._auditory_testing_menu = os.environ.get("CFAST_AUDITORY_TESTING_MENU", "1").strip().lower() not in {
+            "0",
+            "false",
+            "off",
+            "no",
+        }
 
         self._target_recognition_reset_practice_breakdown()
         self._target_recognition_reset_scene_subtask()
@@ -2865,6 +3133,9 @@ class CognitiveTestScreen:
             if event.key == pygame.K_ESCAPE and (event.mod & pygame.KMOD_SHIFT):
                 self._stop_auditory_audio()
                 self._app.pop()
+                return
+            if snap.title == "Auditory Capacity" and event.key == pygame.K_F9:
+                self._auditory_testing_menu = not self._auditory_testing_menu
                 return
 
         dr: DigitRecognitionPayload | None = None
@@ -3035,6 +3306,103 @@ class CognitiveTestScreen:
                         self._engine.submit_answer(f"MEM:{code}")
                         return
 
+        if (
+            event.type == pygame.MOUSEBUTTONDOWN
+            and getattr(event, "button", 0) == 1
+            and cognitive_updating_payload is not None
+            and snap.phase in (Phase.PRACTICE, Phase.SCORED)
+        ):
+            self._cognitive_updating_sync_payload(cognitive_updating_payload)
+            runtime = self._cognitive_updating_runtime
+            pos = getattr(event, "pos", None)
+            if pos is not None and runtime is not None:
+                for code, rect in reversed(list(self._cognitive_updating_hitboxes.items())):
+                    if not rect.collidepoint(pos):
+                        continue
+
+                    if code == "upper_prev":
+                        self._cognitive_updating_shift_upper_tab(-1)
+                        return
+                    if code == "upper_next":
+                        self._cognitive_updating_shift_upper_tab(1)
+                        return
+                    if code == "lower_prev":
+                        self._cognitive_updating_shift_lower_tab(-1)
+                        return
+                    if code == "lower_next":
+                        self._cognitive_updating_shift_lower_tab(1)
+                        return
+                    if code == "camera_alpha":
+                        runtime.toggle_camera("alpha")
+                        self._cognitive_updating_refresh_runtime_state()
+                        return
+                    if code == "camera_bravo":
+                        runtime.toggle_camera("bravo")
+                        self._cognitive_updating_refresh_runtime_state()
+                        return
+                    if code == "sensor_air":
+                        runtime.toggle_sensor("air")
+                        self._cognitive_updating_refresh_runtime_state()
+                        return
+                    if code == "sensor_ground":
+                        runtime.toggle_sensor("ground")
+                        self._cognitive_updating_refresh_runtime_state()
+                        return
+                    if code == "knots_dec":
+                        runtime.adjust_knots(-1)
+                        self._cognitive_updating_refresh_runtime_state()
+                        return
+                    if code == "knots_inc":
+                        runtime.adjust_knots(1)
+                        self._cognitive_updating_refresh_runtime_state()
+                        return
+                    if code == "pump_on":
+                        runtime.set_pump(True)
+                        self._cognitive_updating_refresh_runtime_state()
+                        return
+                    if code == "pump_off":
+                        runtime.set_pump(False)
+                        self._cognitive_updating_refresh_runtime_state()
+                        return
+                    if code == "objective_activate":
+                        runtime.activate_dispenser()
+                        self._cognitive_updating_refresh_runtime_state()
+                        return
+                    if code == "comms_submit":
+                        raw_submission = runtime.build_submission_raw()
+                        if raw_submission == "":
+                            return
+                        accepted = self._engine.submit_answer(raw_submission)
+                        if accepted:
+                            runtime.clear_comms()
+                            self._cognitive_updating_refresh_runtime_state()
+                            self._input = ""
+                        return
+                    if code.startswith("tank:"):
+                        try:
+                            runtime.set_active_tank(int(code.split(":", 1)[1]))
+                            self._cognitive_updating_refresh_runtime_state()
+                        except ValueError:
+                            pass
+                        return
+                    if code.startswith("parcel_field:"):
+                        try:
+                            runtime.set_parcel_field(int(code.split(":", 1)[1]))
+                            self._cognitive_updating_refresh_runtime_state()
+                        except ValueError:
+                            pass
+                        return
+                    if code.startswith("objective_digit:"):
+                        digit = code.split(":", 1)[1]
+                        runtime.append_parcel_digit(digit)
+                        self._cognitive_updating_refresh_runtime_state()
+                        return
+                    if code.startswith("comms_digit:"):
+                        digit = code.split(":", 1)[1]
+                        runtime.append_comms_digit(digit)
+                        self._cognitive_updating_refresh_runtime_state()
+                        return
+
         if event.type != pygame.KEYDOWN:
             return
 
@@ -3075,6 +3443,20 @@ class CognitiveTestScreen:
                     if accepted:
                         self._input = ""
                 return
+            if cognitive_updating_payload is not None:
+                self._cognitive_updating_sync_payload(cognitive_updating_payload)
+                runtime = self._cognitive_updating_runtime
+                if runtime is None:
+                    return
+                raw_submission = runtime.build_submission_raw()
+                if raw_submission == "":
+                    return
+                accepted = self._engine.submit_answer(raw_submission)
+                if accepted:
+                    runtime.clear_comms()
+                    self._cognitive_updating_refresh_runtime_state()
+                    self._input = ""
+                return
             if dr is not None and not dr.accepting_input:
                 return
             if math_payload is not None and self._input == "":
@@ -3088,6 +3470,8 @@ class CognitiveTestScreen:
             if accepted:
                 self._input = ""
                 self._math_choice = 1
+                if cognitive_updating_payload is not None:
+                    self._cognitive_updating_comms_input = ""
             return
 
         if snap.phase not in (Phase.PRACTICE, Phase.SCORED):
@@ -3137,22 +3521,50 @@ class CognitiveTestScreen:
 
         if cognitive_updating_payload is not None:
             self._cognitive_updating_sync_payload(cognitive_updating_payload)
+            runtime = self._cognitive_updating_runtime
 
             if key == pygame.K_TAB:
                 delta = -1 if (event.mod & pygame.KMOD_SHIFT) else 1
-                self._cognitive_updating_shift_panel(cognitive_updating_payload, delta)
+                self._cognitive_updating_shift_upper_tab(delta)
                 return
-            if key == pygame.K_LEFT:
-                self._cognitive_updating_shift_panel(cognitive_updating_payload, -1)
+            if key in (pygame.K_q, pygame.K_LEFT):
+                self._cognitive_updating_shift_upper_tab(-1)
                 return
-            if key == pygame.K_RIGHT:
-                self._cognitive_updating_shift_panel(cognitive_updating_payload, 1)
+            if key in (pygame.K_e, pygame.K_RIGHT):
+                self._cognitive_updating_shift_upper_tab(1)
                 return
-            if key == pygame.K_UP:
-                self._cognitive_updating_shift_document(cognitive_updating_payload, -1)
+            if key in (pygame.K_a, pygame.K_UP):
+                self._cognitive_updating_shift_lower_tab(-1)
                 return
-            if key == pygame.K_DOWN:
-                self._cognitive_updating_shift_document(cognitive_updating_payload, 1)
+            if key in (pygame.K_d, pygame.K_DOWN):
+                self._cognitive_updating_shift_lower_tab(1)
+                return
+            if key == pygame.K_BACKSPACE:
+                # No backspace editing for Cognitive Updating.
+                return
+
+            if runtime is None:
+                return
+
+            if key in (pygame.K_MINUS, pygame.K_KP_MINUS) and self._cognitive_updating_lower_tab_index == 0:
+                runtime.adjust_knots(-1)
+                self._cognitive_updating_refresh_runtime_state()
+                return
+            if key in (pygame.K_EQUALS, pygame.K_KP_PLUS) and self._cognitive_updating_lower_tab_index == 0:
+                runtime.adjust_knots(1)
+                self._cognitive_updating_refresh_runtime_state()
+                return
+
+            ch = event.unicode
+            if ch and ch.isdigit():
+                if self._cognitive_updating_upper_tab_index == 2:
+                    runtime.append_comms_digit(ch)
+                    self._cognitive_updating_refresh_runtime_state()
+                    return
+                runtime.append_parcel_digit(ch)
+                self._cognitive_updating_refresh_runtime_state()
+                return
+            if ch:
                 return
 
         if system_logic_payload is not None:
@@ -3267,7 +3679,14 @@ class CognitiveTestScreen:
             and self._input.strip() != ""
             and not isinstance(snap.payload, TargetRecognitionPayload)
         ):
-            self._engine.submit_answer(self._input)
+            if isinstance(snap.payload, CognitiveUpdatingPayload):
+                self._cognitive_updating_sync_payload(snap.payload)
+                runtime = self._cognitive_updating_runtime
+                raw_submission = runtime.build_submission_raw() if runtime is not None else ""
+                if raw_submission != "":
+                    self._engine.submit_answer(raw_submission)
+            else:
+                self._engine.submit_answer(self._input)
             self._input = ""
             self._engine.update()
             snap = self._engine.snapshot()
@@ -3452,12 +3871,15 @@ class CognitiveTestScreen:
         if self._auditory_audio is None:
             self._auditory_audio = _AuditoryCapacityAudioAdapter()
         self._auditory_audio.sync(phase=phase, payload=payload)
+        self._auditory_audio_debug = self._auditory_audio.debug_state(payload=payload)
 
     def _stop_auditory_audio(self) -> None:
         if self._auditory_audio is None:
+            self._auditory_audio_debug = {}
             return
         self._auditory_audio.stop()
         self._auditory_audio = None
+        self._auditory_audio_debug = {}
 
     def _read_sensory_motor_control(self) -> tuple[float, float]:
         keys = pygame.key.get_pressed()
@@ -3652,16 +4074,41 @@ class CognitiveTestScreen:
         text_main = (232, 238, 252)
         text_muted = (172, 182, 216)
 
-        surface.fill(bg)
+        def build_bg() -> pygame.Surface:
+            layer = pygame.Surface((w, h), pygame.SRCALPHA)
+            hh = max(1, h - 1)
+            for y in range(h):
+                t = y / float(hh)
+                c = self._auditory_mix_rgb((12, 18, 44), bg, mix=t)
+                pygame.draw.line(layer, (c[0], c[1], c[2], 255), (0, y), (w, y))
+            return layer
+
+        surface.blit(self._get_instrument_sprite(("auditory_panel_bg_v2", w, h), build_bg), (0, 0))
 
         margin = max(10, min(20, w // 42))
         frame = pygame.Rect(margin, margin, w - margin * 2, h - margin * 2)
-        pygame.draw.rect(surface, panel_bg, frame)
-        pygame.draw.rect(surface, border, frame, 2)
+        self._draw_auditory_glass_panel(
+            surface,
+            frame,
+            top_color=(18, 26, 62),
+            bottom_color=panel_bg,
+            border_color=border,
+            border_radius=7,
+            gloss_alpha=44,
+        )
+        pygame.draw.rect(surface, (56, 72, 122), frame.inflate(-6, -6), 1, border_radius=6)
 
         header_h = 46
         header = pygame.Rect(frame.x + 2, frame.y + 2, frame.w - 4, header_h)
-        pygame.draw.rect(surface, (16, 26, 58), header)
+        self._draw_auditory_glass_panel(
+            surface,
+            header,
+            top_color=(26, 40, 86),
+            bottom_color=(16, 26, 58),
+            border_color=(104, 122, 174),
+            border_radius=6,
+            gloss_alpha=52,
+        )
         pygame.draw.line(surface, border, (header.x, header.bottom), (header.right, header.bottom), 1)
 
         phase_label = {
@@ -3688,15 +4135,35 @@ class CognitiveTestScreen:
             surface.blit(timer, timer.get_rect(topright=(frame.right - 12, header.bottom + 6)))
 
         body = pygame.Rect(frame.x + 8, header.bottom + 8, frame.w - 16, frame.h - header_h - 18)
-        gap = max(8, min(14, body.w // 52))
-        tube_panel_w = int(body.w * 0.74)
-        tube_panel = pygame.Rect(body.x, body.y, tube_panel_w, body.h)
-        info_panel = pygame.Rect(tube_panel.right + gap, body.y, body.w - tube_panel_w - gap, body.h)
+        is_active_play = snap.phase in (Phase.PRACTICE, Phase.SCORED)
+        if is_active_play:
+            tube_panel = pygame.Rect(body.x, body.y, body.w, body.h)
+            info_panel: pygame.Rect | None = None
+        else:
+            gap = max(8, min(14, body.w // 52))
+            tube_panel_w = int(body.w * 0.74)
+            tube_panel = pygame.Rect(body.x, body.y, tube_panel_w, body.h)
+            info_panel = pygame.Rect(tube_panel.right + gap, body.y, body.w - tube_panel_w - gap, body.h)
 
-        pygame.draw.rect(surface, (9, 14, 34), tube_panel)
-        pygame.draw.rect(surface, border, tube_panel, 1)
-        pygame.draw.rect(surface, (9, 14, 34), info_panel)
-        pygame.draw.rect(surface, border, info_panel, 1)
+        self._draw_auditory_glass_panel(
+            surface,
+            tube_panel,
+            top_color=(12, 20, 48),
+            bottom_color=(8, 14, 34),
+            border_color=(88, 108, 168),
+            border_radius=6,
+            gloss_alpha=36,
+        )
+        if info_panel is not None:
+            self._draw_auditory_glass_panel(
+                surface,
+                info_panel,
+                top_color=(14, 22, 54),
+                bottom_color=(8, 14, 34),
+                border_color=(88, 108, 168),
+                border_radius=6,
+                gloss_alpha=30,
+            )
 
         world = tube_panel.inflate(-18, -28)
         if self._app.opengl_enabled:
@@ -3708,22 +4175,36 @@ class CognitiveTestScreen:
             # Keep the tube viewport transparent so the OpenGL scene remains visible.
             surface.fill((0, 0, 0, 0), world)
             top_strip = pygame.Rect(world.x + 1, world.y + 1, world.w - 2, 18)
-            pygame.draw.rect(surface, (18, 42, 136), top_strip)
+            self._draw_auditory_glass_panel(
+                surface,
+                top_strip,
+                top_color=(22, 56, 172),
+                bottom_color=(10, 32, 120),
+                border_color=(84, 112, 188),
+                border_radius=0,
+                gloss_alpha=28,
+            )
             strip_text = self._tiny_font.render("Auditory Capacity Test", True, (226, 236, 255))
             surface.blit(strip_text, strip_text.get_rect(center=top_strip.center))
 
             if snap.time_remaining_s is not None:
                 rem = max(0, int(round(snap.time_remaining_s)))
                 timer = pygame.Rect(world.right - 148, world.y + 14, 136, 46)
-                t_surf = pygame.Surface(timer.size, pygame.SRCALPHA)
-                t_surf.fill((86, 96, 122, 164))
-                surface.blit(t_surf, timer.topleft)
-                pygame.draw.rect(surface, (136, 146, 174), timer, 1, border_radius=8)
+                self._draw_auditory_glass_panel(
+                    surface,
+                    timer,
+                    top_color=(122, 136, 160),
+                    bottom_color=(68, 80, 106),
+                    border_color=(148, 164, 194),
+                    border_radius=9,
+                    gloss_alpha=56,
+                )
                 t_label = self._small_font.render("Seconds", True, (236, 242, 255))
                 t_val = self._small_font.render(str(rem), True, (236, 242, 255))
                 surface.blit(t_label, t_label.get_rect(center=(timer.centerx, timer.y + 15)))
                 surface.blit(t_val, t_val.get_rect(center=(timer.centerx, timer.y + 33)))
-            pygame.draw.rect(surface, (72, 96, 170), world, 2)
+            pygame.draw.rect(surface, (20, 42, 140), world, 2)
+            pygame.draw.rect(surface, (78, 104, 178), world.inflate(-4, -4), 1)
         else:
             self._render_auditory_capacity_tube_chase_view(
                 surface=surface,
@@ -3732,46 +4213,89 @@ class CognitiveTestScreen:
                 time_remaining_s=snap.time_remaining_s,
             )
 
-        info_lines: list[str] = []
-        if payload is None:
-            info_lines.extend(str(snap.prompt).split("\n"))
-        else:
-            assigned = ", ".join(payload.assigned_callsigns) if payload.assigned_callsigns else "—"
-            info_lines.append(f"Assigned call signs: {assigned}")
-            if payload.callsign_cue is None:
-                info_lines.append("Radio cue: —")
+        if payload is not None and is_active_play:
+            target_shape: str | None = None
+            for rule in payload.color_rules:
+                if str(rule.color).upper() == str(payload.ball_color).upper():
+                    target_shape = str(rule.required_shape).upper()
+                    break
+
+            if target_shape is not None:
+                hud_w = min(340, max(220, world.w - 220))
+                hud = pygame.Rect(world.x + 12, world.y + 24, hud_w, 40)
+                self._draw_auditory_glass_panel(
+                    surface,
+                    hud,
+                    top_color=(38, 58, 108),
+                    bottom_color=(20, 34, 76),
+                    border_color=(106, 128, 188),
+                    border_radius=7,
+                    gloss_alpha=32,
+                )
+                rule_text = self._tiny_font.render(
+                    f"Gate rule: {payload.ball_color} -> {target_shape}",
+                    True,
+                    (236, 242, 255),
+                )
+                cue_text = (
+                    "Instructor: HOLD current-color gates"
+                    if payload.callsign_blocks_gate
+                    else "Default: pass target-shape gates"
+                )
+                cue_surf = self._tiny_font.render(cue_text, True, (184, 200, 234))
+                surface.blit(rule_text, (hud.x + 10, hud.y + 6))
+                surface.blit(cue_surf, (hud.x + 10, hud.y + 22))
+
+        if info_panel is not None:
+            info_lines: list[str] = []
+            if payload is None:
+                info_lines.extend(str(snap.prompt).split("\n"))
             else:
-                info_lines.append(f"Radio cue: {payload.callsign_cue}")
+                assigned = ", ".join(payload.assigned_callsigns) if payload.assigned_callsigns else "—"
+                info_lines.append(f"Assigned call signs: {assigned}")
+                if payload.callsign_cue is None:
+                    info_lines.append("Radio cue: —")
+                else:
+                    info_lines.append(f"Radio cue: {payload.callsign_cue}")
                 if payload.callsign_blocks_gate:
                     info_lines.append("Gate cue: HOLD current-color gate")
 
-            info_lines.append(f"Beep cue: {'ACTIVE' if payload.beep_active else '—'}")
-            info_lines.append(f"Color command: {payload.color_command or '—'}")
+                target_shape: str | None = None
+                for rule in payload.color_rules:
+                    if str(rule.color).upper() == str(payload.ball_color).upper():
+                        target_shape = str(rule.required_shape).upper()
+                        break
+                if target_shape is not None:
+                    info_lines.append(f"Gate rule: {payload.ball_color} -> {target_shape}")
+                    info_lines.append("Pass target-shape gates; avoid others")
 
-            if payload.sequence_display is not None:
-                info_lines.append(f"Sequence: {payload.sequence_display}")
-            elif payload.sequence_response_open:
-                info_lines.append("Sequence: enter digits and press Enter")
-            else:
-                info_lines.append("Sequence: —")
+                info_lines.append(f"Beep cue: {'ACTIVE' if payload.beep_active else '—'}")
+                info_lines.append(f"Color command: {payload.color_command or '—'}")
 
-            info_lines.append("")
-            info_lines.append(
-                f"Gates hit/miss: {payload.gate_hits}/{payload.gate_misses}  Collisions: {payload.collisions}"
-            )
-            info_lines.append(
-                f"False alarms: {payload.false_alarms}  Noise: {int(round(payload.background_noise_level*100))}%"
-            )
-            info_lines.append(f"Distortion: {int(round(payload.distortion_level*100))}%")
+                if payload.sequence_display is not None:
+                    info_lines.append(f"Sequence: {payload.sequence_display}")
+                elif payload.sequence_response_open:
+                    info_lines.append("Sequence: enter digits and press Enter")
+                else:
+                    info_lines.append("Sequence: —")
 
-        info_rect = info_panel.inflate(-10, -10)
-        y = info_rect.y
-        for line in info_lines:
-            rendered = self._tiny_font.render(line, True, text_main if line != "" else text_muted)
-            surface.blit(rendered, (info_rect.x, y))
-            y += 18
-            if y > info_rect.bottom - 18:
-                break
+                info_lines.append("")
+                info_lines.append(
+                    f"Gates hit/miss: {payload.gate_hits}/{payload.gate_misses}  Collisions: {payload.collisions}"
+                )
+                info_lines.append(
+                    f"False alarms: {payload.false_alarms}  Noise: {int(round(payload.background_noise_level*100))}%"
+                )
+                info_lines.append(f"Distortion: {int(round(payload.distortion_level*100))}%")
+
+            info_rect = info_panel.inflate(-10, -10)
+            y = info_rect.y
+            for line in info_lines:
+                rendered = self._tiny_font.render(line, True, text_main if line != "" else text_muted)
+                surface.blit(rendered, (info_rect.x, y))
+                y += 18
+                if y > info_rect.bottom - 18:
+                    break
 
         if snap.phase in (Phase.INSTRUCTIONS, Phase.PRACTICE_DONE, Phase.RESULTS):
             prompt_rect = pygame.Rect(
@@ -3780,8 +4304,15 @@ class CognitiveTestScreen:
                 tube_panel.w - 20,
                 86,
             )
-            pygame.draw.rect(surface, (10, 16, 42), prompt_rect)
-            pygame.draw.rect(surface, (78, 94, 136), prompt_rect, 1)
+            self._draw_auditory_glass_panel(
+                surface,
+                prompt_rect,
+                top_color=(16, 26, 62),
+                bottom_color=(10, 16, 42),
+                border_color=(90, 106, 152),
+                border_radius=6,
+                gloss_alpha=32,
+            )
             self._draw_wrapped_text(
                 surface,
                 str(snap.prompt),
@@ -3791,6 +4322,15 @@ class CognitiveTestScreen:
                 max_lines=6,
             )
 
+        if self._auditory_testing_menu:
+            self._render_auditory_testing_menu(
+                surface=surface,
+                snap=snap,
+                payload=payload,
+                frame=frame,
+                header=header,
+            )
+
         footer_text = (
             "C: callsign  Space: beep  Q/W/E/R: color  Digits+Enter: sequence  |  WASD/arrows or HOTAS to fly"
         )
@@ -3798,6 +4338,10 @@ class CognitiveTestScreen:
             footer_text = "Enter: Return to Tests"
         elif snap.phase in (Phase.INSTRUCTIONS, Phase.PRACTICE_DONE):
             footer_text = "Enter: Continue  |  Esc/Backspace: Back"
+        if self._auditory_testing_menu:
+            footer_text += "  |  F9: hide testing menu"
+        else:
+            footer_text += "  |  F9: show testing menu"
 
         foot = self._tiny_font.render(footer_text, True, text_muted)
         surface.blit(foot, foot.get_rect(midbottom=(frame.centerx, frame.bottom - 10)))
@@ -3848,18 +4392,49 @@ class CognitiveTestScreen:
         center: tuple[int, int],
         size: int,
         color: tuple[int, int, int],
+        depth: float = 1.0,
     ) -> None:
         cx, cy = center
         half = max(3, int(size))
-        if shape == "CIRCLE":
-            pygame.draw.circle(surface, color, (cx, cy), half, 2)
+        d = max(0.0, min(1.0, float(depth)))
+        stroke = max(1, 1 + int(round((half * 0.16) + (d * 1.6))))
+        shadow_offset = max(1, int(round(1 + (d * 2.2))))
+        shadow = (
+            max(0, min(255, int(round(color[0] * 0.20)))),
+            max(0, min(255, int(round(color[1] * 0.24)))),
+            max(0, min(255, int(round(color[2] * 0.26)))),
+        )
+        rim = (
+            max(0, min(255, int(round(color[0] * 0.86)))),
+            max(0, min(255, int(round(color[1] * 0.86)))),
+            max(0, min(255, int(round(color[2] * 0.86)))),
+        )
+        highlight = (
+            max(0, min(255, int(round((color[0] * 0.74) + 66)))),
+            max(0, min(255, int(round((color[1] * 0.74) + 66)))),
+            max(0, min(255, int(round((color[2] * 0.74) + 66)))),
+        )
+
+        def _offset(points: list[tuple[int, int]], dx: int, dy: int) -> list[tuple[int, int]]:
+            return [(x + dx, y + dy) for x, y in points]
+
+        token = str(shape).upper()
+        if token == "CIRCLE":
+            pygame.draw.circle(surface, shadow, (cx + shadow_offset, cy + shadow_offset), half, stroke + 1)
+            pygame.draw.circle(surface, rim, (cx, cy), half, stroke + 1)
+            pygame.draw.circle(surface, highlight, (cx - 1, cy - 1), max(2, half - 1), stroke)
             return
-        if shape == "TRIANGLE":
+        if token == "TRIANGLE":
             pts = [(cx, cy - half), (cx - half, cy + half), (cx + half, cy + half)]
-            pygame.draw.polygon(surface, color, pts, 2)
+            pygame.draw.polygon(surface, shadow, _offset(pts, shadow_offset, shadow_offset), stroke + 1)
+            pygame.draw.polygon(surface, rim, pts, stroke + 1)
+            pygame.draw.polygon(surface, highlight, _offset(pts, -1, -1), stroke)
             return
         rect = pygame.Rect(cx - half, cy - half, half * 2, half * 2)
-        pygame.draw.rect(surface, color, rect, 2)
+        sh_rect = rect.move(shadow_offset, shadow_offset)
+        pygame.draw.rect(surface, shadow, sh_rect, stroke + 1)
+        pygame.draw.rect(surface, rim, rect, stroke + 1)
+        pygame.draw.rect(surface, highlight, rect.move(-1, -1), stroke)
 
     def _render_auditory_capacity_tube_chase_view(
         self,
@@ -3870,73 +4445,120 @@ class CognitiveTestScreen:
         time_remaining_s: float | None,
     ) -> None:
         def build_vortex() -> pygame.Surface:
-            bg = pygame.Surface((world.w, world.h), pygame.SRCALPHA)
-            bg.fill((18, 34, 72))
+            tex_size = max(196, min(1024, max(world.w, world.h)))
+            rgba = _OpenGLAuditoryRenderer._build_vortex_rgba(size=tex_size)
+            tex = pygame.image.frombuffer(bytearray(rgba), (tex_size, tex_size), "RGBA").copy()
+            bg = pygame.transform.smoothscale(tex, (world.w, world.h))
+
             cx0 = world.w // 2
             cy0 = world.h // 2
-            max_rx = world.w * 0.51
-            max_ry = world.h * 0.51
+            max_rx = world.w * 0.50
+            max_ry = world.h * 0.50
 
-            for i in range(72, 0, -1):
-                t = i / 72.0
-                rx = max(4, int(round(max_rx * (t**1.03))))
-                ry = max(4, int(round(max_ry * (t**1.03))))
+            ring_surface = pygame.Surface((world.w, world.h), pygame.SRCALPHA)
+            ring_count = 34
+            for i in range(ring_count):
+                t = i / float(max(1, ring_count - 1))
+                rx = max(6, int(round(max_rx * (0.16 + (0.84 * t)))))
+                ry = max(6, int(round(max_ry * (0.16 + (0.84 * t)))))
                 ring = pygame.Rect(0, 0, rx * 2, ry * 2)
                 ring.center = (cx0, cy0)
-                lum = int(round(28 + (98 * (1.0 - t))))
-                pygame.draw.ellipse(bg, (10 + lum // 6, 22 + lum // 2, 52 + lum), ring, 1)
+                alpha = int(round(56 * (1.0 - t)))
+                pygame.draw.ellipse(
+                    ring_surface,
+                    (36, 72, 168, alpha),
+                    ring,
+                    1,
+                )
 
-            arm_count = 16
-            steps = 124
+            arm_count = 20
+            steps = 140
             for arm in range(arm_count):
                 phase = (arm / float(arm_count)) * math.tau
                 prev: tuple[int, int] | None = None
                 for step in range(steps):
                     s = step / float(max(1, steps - 1))
-                    theta = phase + (s * math.tau * 2.6)
-                    radius = s**1.08
+                    theta = phase + (s * math.tau * 2.8)
+                    radius = s**1.07
                     px = int(round(cx0 + math.cos(theta) * max_rx * radius))
                     py = int(round(cy0 + math.sin(theta) * max_ry * radius))
                     if prev is not None:
-                        lum = int(round(48 + (96 * (1.0 - s))))
-                        pygame.draw.line(bg, (lum // 4, lum // 2, lum), prev, (px, py), 1)
+                        alpha = int(round(48 * (1.0 - s)))
+                        pygame.draw.aaline(
+                            ring_surface,
+                            (78, 120, 220, alpha),
+                            prev,
+                            (px, py),
+                        )
                     prev = (px, py)
 
-            rng = random.Random((world.w * 9241) + (world.h * 7519) + 131)
-            specks = max(1200, (world.w * world.h) // 180)
+            vignette = pygame.Surface((world.w, world.h), pygame.SRCALPHA)
+            for i in range(44):
+                t = i / 43.0
+                rx = int(round((world.w * 0.52) * (1.0 - (t * 0.92))))
+                ry = int(round((world.h * 0.52) * (1.0 - (t * 0.92))))
+                if rx <= 1 or ry <= 1:
+                    continue
+                alpha = int(round(5 + (72 * (t**1.35))))
+                pygame.draw.ellipse(
+                    vignette,
+                    (4, 10, 28, alpha),
+                    pygame.Rect(cx0 - rx, cy0 - ry, rx * 2, ry * 2),
+                    1,
+                )
+
+            rng = random.Random((world.w * 9241) + (world.h * 7519) + 133)
+            specks = max(1400, (world.w * world.h) // 170)
+            stars = pygame.Surface((world.w, world.h), pygame.SRCALPHA)
             for _ in range(specks):
                 x = rng.randrange(0, world.w)
                 y = rng.randrange(0, world.h)
                 dx = (x - cx0) / max(1.0, max_rx)
                 dy = (y - cy0) / max(1.0, max_ry)
                 dist = min(1.0, math.sqrt((dx * dx) + (dy * dy)))
-                alpha = int(round(20 + (84 * dist)))
-                lum = int(round(108 + (124 * rng.random())))
-                bg.set_at((x, y), (lum // 4, lum // 2, lum, alpha))
+                alpha = int(round(20 + (86 * dist)))
+                lum = int(round(122 + (122 * rng.random())))
+                stars.set_at((x, y), (lum // 5, lum // 2, lum, alpha))
 
+            bg.blit(ring_surface, (0, 0))
+            bg.blit(stars, (0, 0))
+            bg.blit(vignette, (0, 0))
             return bg
 
-        key = ("auditory_vortex_reference", world.w, world.h)
+        key = ("auditory_vortex_reference_v2", world.w, world.h)
         surface.blit(self._get_instrument_sprite(key, build_vortex), world.topleft)
 
         top_strip = pygame.Rect(world.x + 1, world.y + 1, world.w - 2, 18)
-        pygame.draw.rect(surface, (18, 42, 136), top_strip)
+        self._draw_auditory_glass_panel(
+            surface,
+            top_strip,
+            top_color=(22, 56, 172),
+            bottom_color=(10, 32, 120),
+            border_color=(84, 112, 188),
+            border_radius=0,
+            gloss_alpha=28,
+        )
         strip_text = self._tiny_font.render("Auditory Capacity Test", True, (226, 236, 255))
         surface.blit(strip_text, strip_text.get_rect(center=top_strip.center))
 
         cx = world.centerx
         cy = world.centery
         cross = (136, 32, 38)
-        pygame.draw.line(surface, cross, (cx, world.top + 1), (cx, world.bottom - 1), 1)
-        pygame.draw.line(surface, cross, (world.left + 1, cy), (world.right - 1, cy), 1)
+        cross_x = cx
+        cross_y = cy
 
         if time_remaining_s is not None:
             rem = max(0, int(round(time_remaining_s)))
             timer = pygame.Rect(world.right - 148, world.y + 14, 136, 46)
-            t_surf = pygame.Surface(timer.size, pygame.SRCALPHA)
-            t_surf.fill((86, 96, 122, 164))
-            surface.blit(t_surf, timer.topleft)
-            pygame.draw.rect(surface, (136, 146, 174), timer, 1, border_radius=8)
+            self._draw_auditory_glass_panel(
+                surface,
+                timer,
+                top_color=(122, 136, 160),
+                bottom_color=(68, 80, 106),
+                border_color=(148, 164, 194),
+                border_radius=9,
+                gloss_alpha=56,
+            )
             t_label = self._small_font.render("Seconds", True, (236, 242, 255))
             t_val = self._small_font.render(str(rem), True, (236, 242, 255))
             surface.blit(t_label, t_label.get_rect(center=(timer.centerx, timer.y + 15)))
@@ -3949,7 +4571,7 @@ class CognitiveTestScreen:
             gates: list[tuple[float, AuditoryCapacityGate, float, float]] = []
             far_depth = 2.20
             for gate in payload.gates:
-                rel = gate.x_norm - payload.ball_x
+                rel = gate.x_norm
                 if rel < -0.08:
                     continue
                 depth = max(0.0, min(1.0, rel / far_depth))
@@ -3959,9 +4581,9 @@ class CognitiveTestScreen:
                 gates.append((approach, gate, lane, gy))
 
             for approach, gate, lane, gy in sorted(gates, key=lambda g: g[0]):
-                sx = cx + int(round(lane * ((world.w * 0.10) + (world.w * 0.22 * approach))))
-                sy = cy + int(round(gy * ((world.h * 0.10) + (world.h * 0.22 * approach))))
-                size = max(4, int(round(min(world.w, world.h) * (0.012 + (0.060 * approach)))))
+                sx = cx + int(round(lane * ((world.w * 0.08) + (world.w * 0.19 * approach))))
+                sy = cy + int(round(gy * ((world.h * 0.08) + (world.h * 0.19 * approach))))
+                size = max(4, int(round(min(world.w, world.h) * (0.014 + (0.064 * approach)))))
                 gate_color = self._auditory_color_rgb(gate.color, 1.0)
                 draw_color = self._auditory_mix_rgb((24, 34, 64), gate_color, mix=0.30 + (0.70 * approach))
                 self._draw_auditory_gate_shape(
@@ -3970,36 +4592,36 @@ class CognitiveTestScreen:
                     center=(sx, sy),
                     size=size,
                     color=draw_color,
+                    depth=approach,
                 )
 
             bx = max(-1.0, min(1.0, payload.ball_x / x_half_span))
             by = max(-1.0, min(1.0, payload.ball_y / y_half_span))
-            ball_x = cx + int(round(bx * (world.w * 0.26)))
-            ball_y = cy + int(round(by * (world.h * 0.26)))
+            ball_x = cx + int(round(bx * (world.w * 0.22)))
+            ball_y = cy + int(round(by * (world.h * 0.22)))
             ball_x = max(world.left + 9, min(world.right - 9, ball_x))
             ball_y = max(world.top + 9, min(world.bottom - 9, ball_y))
+            cross_x = ball_x
+            cross_y = ball_y
             ball_radius = max(5, min(13, world.h // 23))
-            outer_color = (248, 252, 255)
-            if abs(payload.ball_x) > payload.tube_half_width or abs(payload.ball_y) > payload.tube_half_height:
-                outer_color = (244, 78, 86)
-            pygame.draw.circle(
+            danger = abs(payload.ball_x) > payload.tube_half_width or abs(payload.ball_y) > payload.tube_half_height
+            self._draw_auditory_ball_3d(
                 surface,
-                (186, 194, 218),
-                (ball_x + max(1, ball_radius // 4), ball_y + max(1, ball_radius // 3)),
-                max(2, ball_radius - 2),
-            )
-            pygame.draw.circle(surface, (236, 244, 255), (ball_x, ball_y), ball_radius)
-            pygame.draw.circle(surface, outer_color, (ball_x, ball_y), ball_radius, 1)
-            pygame.draw.circle(
-                surface,
-                (255, 255, 255),
-                (ball_x - max(1, ball_radius // 3), ball_y - max(1, ball_radius // 3)),
-                max(1, ball_radius // 4),
+                center=(ball_x, ball_y),
+                radius=ball_radius,
+                danger=danger,
             )
 
             bar = pygame.Rect(world.right - 144, world.bottom - 26, 126, 14)
-            pygame.draw.rect(surface, (76, 86, 114), bar, border_radius=6)
-            pygame.draw.rect(surface, (120, 130, 160), bar, 1, border_radius=6)
+            self._draw_auditory_glass_panel(
+                surface,
+                bar,
+                top_color=(88, 98, 124),
+                bottom_color=(58, 68, 92),
+                border_color=(126, 138, 168),
+                border_radius=7,
+                gloss_alpha=28,
+            )
             lvl = min(
                 1.0,
                 math.hypot(float(payload.control_x), float(payload.control_y))
@@ -4011,9 +4633,24 @@ class CognitiveTestScreen:
                 int(round((bar.w - 10) * (0.12 + (0.88 * lvl)))),
                 bar.h - 8,
             )
-            pygame.draw.rect(surface, (164, 172, 184), fill, border_radius=4)
+            self._draw_auditory_glass_panel(
+                surface,
+                fill,
+                top_color=(210, 216, 226),
+                bottom_color=(136, 146, 168),
+                border_color=(226, 230, 238),
+                border_radius=4,
+                gloss_alpha=20,
+            )
 
-        pygame.draw.rect(surface, (72, 96, 170), world, 2)
+        self._draw_auditory_crosshair(
+            surface,
+            world=world,
+            center=(cross_x, cross_y),
+            color=cross,
+        )
+        pygame.draw.rect(surface, (20, 42, 140), world, 2)
+        pygame.draw.rect(surface, (78, 104, 178), world.inflate(-4, -4), 1)
 
     @staticmethod
     def _auditory_mix_rgb(
@@ -4028,6 +4665,284 @@ class CognitiveTestScreen:
             int(round((a[1] * (1.0 - m)) + (b[1] * m))),
             int(round((a[2] * (1.0 - m)) + (b[2] * m))),
         )
+
+    @staticmethod
+    def _draw_auditory_glass_panel(
+        surface: pygame.Surface,
+        rect: pygame.Rect,
+        *,
+        top_color: tuple[int, int, int],
+        bottom_color: tuple[int, int, int],
+        border_color: tuple[int, int, int],
+        border_radius: int = 0,
+        gloss_alpha: int = 0,
+    ) -> None:
+        if rect.w <= 0 or rect.h <= 0:
+            return
+
+        panel = pygame.Surface(rect.size, pygame.SRCALPHA)
+        h = max(1, rect.h - 1)
+        for y in range(rect.h):
+            t = y / float(h)
+            color = (
+                int(round((top_color[0] * (1.0 - t)) + (bottom_color[0] * t))),
+                int(round((top_color[1] * (1.0 - t)) + (bottom_color[1] * t))),
+                int(round((top_color[2] * (1.0 - t)) + (bottom_color[2] * t))),
+                255,
+            )
+            pygame.draw.line(panel, color, (0, y), (rect.w, y))
+
+        if border_radius > 0:
+            mask = pygame.Surface(rect.size, pygame.SRCALPHA)
+            pygame.draw.rect(mask, (255, 255, 255, 255), mask.get_rect(), border_radius=border_radius)
+            panel.blit(mask, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
+
+        if gloss_alpha > 0:
+            gloss_h = max(2, rect.h // 2)
+            for y in range(gloss_h):
+                alpha = int(round(gloss_alpha * (1.0 - (y / float(max(1, gloss_h - 1))))))
+                pygame.draw.line(
+                    panel,
+                    (255, 255, 255, alpha),
+                    (2, y + 1),
+                    (max(2, rect.w - 3), y + 1),
+                )
+
+        surface.blit(panel, rect.topleft)
+        pygame.draw.rect(surface, border_color, rect, 1, border_radius=border_radius)
+
+    @staticmethod
+    def _draw_auditory_crosshair(
+        surface: pygame.Surface,
+        *,
+        world: pygame.Rect,
+        center: tuple[int, int],
+        color: tuple[int, int, int],
+    ) -> None:
+        cx, cy = center
+        glow = (
+            max(0, min(255, color[0] + 26)),
+            max(0, min(255, color[1] + 8)),
+            max(0, min(255, color[2] + 8)),
+            56,
+        )
+        glow_layer = pygame.Surface((world.w, world.h), pygame.SRCALPHA)
+        rel_x = cx - world.x
+        rel_y = cy - world.y
+        pygame.draw.line(glow_layer, glow, (rel_x, 0), (rel_x, world.h - 1), 3)
+        pygame.draw.line(glow_layer, glow, (0, rel_y), (world.w - 1, rel_y), 3)
+        surface.blit(glow_layer, world.topleft)
+
+        pygame.draw.aaline(surface, color, (cx, world.top + 1), (cx, world.bottom - 1))
+        pygame.draw.aaline(surface, color, (world.left + 1, cy), (world.right - 1, cy))
+
+    @staticmethod
+    def _draw_auditory_ball_3d(
+        surface: pygame.Surface,
+        *,
+        center: tuple[int, int],
+        radius: int,
+        danger: bool,
+    ) -> None:
+        cx, cy = center
+        r = max(2, int(radius))
+        shadow_color = (92, 108, 146)
+        pygame.draw.circle(
+            surface,
+            shadow_color,
+            (cx + max(1, r // 3), cy + max(1, r // 3)),
+            max(2, r - 1),
+        )
+
+        lo = (150, 166, 204)
+        hi = (242, 248, 255)
+        for i in range(r, 0, -1):
+            t = i / float(max(1, r))
+            mix = t**0.72
+            col = (
+                int(round((lo[0] * (1.0 - mix)) + (hi[0] * mix))),
+                int(round((lo[1] * (1.0 - mix)) + (hi[1] * mix))),
+                int(round((lo[2] * (1.0 - mix)) + (hi[2] * mix))),
+            )
+            pygame.draw.circle(surface, col, (cx, cy), i)
+
+        edge = (248, 252, 255)
+        if danger:
+            edge = (244, 82, 92)
+        pygame.draw.circle(surface, edge, (cx, cy), r, 2)
+
+        pygame.draw.circle(
+            surface,
+            (255, 255, 255),
+            (cx - max(1, r // 3), cy - max(1, r // 3)),
+            max(1, r // 4),
+        )
+
+    @staticmethod
+    def _fmt_debug_seconds(value: float | None) -> str:
+        if value is None:
+            return "—"
+        v = max(0.0, float(value))
+        return f"{v:.1f}s"
+
+    def _render_auditory_testing_menu(
+        self,
+        *,
+        surface: pygame.Surface,
+        snap: TestSnapshot,
+        payload: AuditoryCapacityPayload | None,
+        frame: pygame.Rect,
+        header: pygame.Rect,
+    ) -> None:
+        lines: list[str] = []
+        lines.append(f"Phase: {snap.phase.value}")
+
+        if payload is None:
+            lines.append("Waiting for runtime payload...")
+        else:
+            ball_color = str(payload.ball_color).upper()
+            target_shape: str | None = None
+            for rule in payload.color_rules:
+                if str(rule.color).upper() == ball_color:
+                    target_shape = str(rule.required_shape).upper()
+                    break
+
+            desired_color = payload.color_command or ball_color
+            lines.append(f"Ball color: {ball_color}    Target color: {desired_color}")
+            lines.append(f"Rule shape for {ball_color}: {target_shape or 'N/A'}")
+
+            callsign_cue = payload.callsign_cue or "—"
+            assigned = ", ".join(payload.assigned_callsigns) if payload.assigned_callsigns else "—"
+            should_press_call = payload.callsign_cue is not None and payload.callsign_cue in payload.assigned_callsigns
+            lines.append(f"Assigned callsigns: {assigned}")
+            lines.append(f"Call cue: {callsign_cue}    Press C now: {'YES' if should_press_call else 'NO'}")
+            lines.append(f"Beep active: {'YES' if payload.beep_active else 'NO'}    Press trigger now: {'YES' if payload.beep_active else 'NO'}")
+            lines.append(f"Color cue: {payload.color_command or '—'}")
+
+            if payload.sequence_display is not None:
+                lines.append(f"Sequence display: {payload.sequence_display}")
+            elif payload.sequence_response_open:
+                lines.append(f"Sequence response open: YES    typed: {self._input or '—'}")
+            else:
+                lines.append("Sequence state: idle")
+
+            nearest_gate: AuditoryCapacityGate | None = None
+            nearest_delta = 1_000_000.0
+            for gate in payload.gates:
+                if gate.x_norm < payload.ball_x:
+                    continue
+                delta = float(gate.x_norm - payload.ball_x)
+                if delta < nearest_delta:
+                    nearest_delta = delta
+                    nearest_gate = gate
+
+            if nearest_gate is None and payload.gates:
+                nearest_gate = min(payload.gates, key=lambda g: abs(float(g.x_norm - payload.ball_x)))
+                nearest_delta = abs(float(nearest_gate.x_norm - payload.ball_x))
+
+            if nearest_gate is not None:
+                gate_color = str(nearest_gate.color).upper()
+                gate_shape = str(nearest_gate.shape).upper()
+                should_pass_gate = (
+                    gate_shape == target_shape if target_shape is not None else gate_color == ball_color
+                )
+                if payload.callsign_blocks_gate and gate_color == ball_color:
+                    should_pass_gate = False
+                action = "PASS" if should_pass_gate else "AVOID"
+                lines.append(
+                    f"Next gate: {gate_color}/{gate_shape}  dx={nearest_delta:.2f}  Action: {action}"
+                )
+            else:
+                lines.append("Next gate: —")
+
+            lines.append(
+                "Cue timers left:"
+                f" CALL {self._fmt_debug_seconds(payload.callsign_time_left_s)}"
+                f"  BEEP {self._fmt_debug_seconds(payload.beep_time_left_s)}"
+                f"  COLOR {self._fmt_debug_seconds(payload.color_time_left_s)}"
+            )
+            lines.append(
+                "Sequence timers:"
+                f" SHOW {self._fmt_debug_seconds(payload.sequence_show_time_left_s)}"
+                f"  RESP {self._fmt_debug_seconds(payload.sequence_response_time_left_s)}"
+            )
+            lines.append(
+                "Next events in:"
+                f" GATE {self._fmt_debug_seconds(payload.next_gate_in_s)}"
+                f"  CALL {self._fmt_debug_seconds(payload.next_callsign_in_s)}"
+                f"  BEEP {self._fmt_debug_seconds(payload.next_beep_in_s)}"
+                f"  COLOR {self._fmt_debug_seconds(payload.next_color_in_s)}"
+                f"  SEQ {self._fmt_debug_seconds(payload.next_sequence_in_s)}"
+            )
+
+            audio = self._auditory_audio_debug
+            if audio:
+                available = bool(audio.get("audio_available", False))
+                layers = int(audio.get("ambient_layers_target", 0))
+                lines.append(f"Audio available: {'YES' if available else 'NO'}  Ambient layers target: {layers}")
+
+                slots_raw = audio.get("ambient_slots")
+                if isinstance(slots_raw, tuple | list):
+                    slot_a = str(slots_raw[0]) if len(slots_raw) > 0 else "—"
+                    slot_b = str(slots_raw[1]) if len(slots_raw) > 1 else "—"
+                else:
+                    slot_a = "—"
+                    slot_b = "—"
+                lines.append(f"Ambient tracks: L1={slot_a}  L2={slot_b}")
+
+                busy_raw = audio.get("channels_busy")
+                if isinstance(busy_raw, dict):
+                    busy_text = (
+                        f"bg={int(bool(busy_raw.get('bg', False)))} "
+                        f"dist={int(bool(busy_raw.get('dist', False)))} "
+                        f"cue={int(bool(busy_raw.get('cue', False)))} "
+                        f"alert={int(bool(busy_raw.get('alert', False)))}"
+                    )
+                    lines.append(f"Channels busy: {busy_text}")
+
+                tts_raw = audio.get("tts_pending")
+                if isinstance(tts_raw, dict):
+                    lines.append(
+                        "TTS queue:"
+                        f" call={int(tts_raw.get('callsign', 0))}"
+                        f" cmd={int(tts_raw.get('commands', 0))}"
+                        f" story={int(tts_raw.get('story', 0))}"
+                    )
+
+                noise_level = audio.get("noise_level")
+                distortion_level = audio.get("distortion_level")
+                if isinstance(noise_level, int | float) and isinstance(distortion_level, int | float):
+                    lines.append(
+                        f"Mix levels: noise={int(round(float(noise_level) * 100))}%"
+                        f" distortion={int(round(float(distortion_level) * 100))}%"
+                    )
+
+        panel_w = min(520, max(360, frame.w // 2))
+        panel_x = frame.right - panel_w - 10
+        panel_y = header.bottom + 8
+        desired_h = 48 + (len(lines) * 16)
+        panel_h = min(frame.bottom - panel_y - 10, max(180, desired_h))
+        panel = pygame.Rect(panel_x, panel_y, panel_w, panel_h)
+
+        self._draw_auditory_glass_panel(
+            surface,
+            panel,
+            top_color=(14, 26, 62),
+            bottom_color=(8, 16, 40),
+            border_color=(114, 136, 198),
+            border_radius=8,
+            gloss_alpha=42,
+        )
+        title = self._small_font.render("Auditory Testing Menu", True, (236, 242, 255))
+        surface.blit(title, (panel.x + 10, panel.y + 8))
+
+        y = panel.y + 36
+        for line in lines:
+            txt = self._tiny_font.render(line, True, (214, 226, 252))
+            surface.blit(txt, (panel.x + 10, y))
+            y += 16
+            if y > panel.bottom - 16:
+                break
 
     def _render_math_reasoning(
         self,
@@ -4418,48 +5333,43 @@ class CognitiveTestScreen:
     def _cognitive_updating_sync_payload(self, payload: CognitiveUpdatingPayload) -> None:
         payload_id = id(payload)
         if payload_id == self._cognitive_updating_payload_id:
+            self._cognitive_updating_refresh_runtime_state()
             return
         self._cognitive_updating_payload_id = payload_id
-        self._cognitive_updating_panel_index = 0
-        self._cognitive_updating_doc_index = 0
+        self._cognitive_updating_upper_tab_index = 0
+        self._cognitive_updating_lower_tab_index = 1
+        clock = getattr(self._engine, "clock", None)
+        if not hasattr(clock, "now"):
+            clock = RealClock()
+        self._cognitive_updating_runtime = CognitiveUpdatingRuntime(payload=payload, clock=clock)
+        self._cognitive_updating_refresh_runtime_state()
+        self._cognitive_updating_hitboxes.clear()
 
-    def _cognitive_updating_shift_panel(self, payload: CognitiveUpdatingPayload, delta: int) -> None:
-        if not payload.panels:
-            return
-        self._cognitive_updating_panel_index = (
-            self._cognitive_updating_panel_index + delta
-        ) % len(payload.panels)
-        self._cognitive_updating_doc_index = 0
+    def _cognitive_updating_shift_upper_tab(self, delta: int) -> None:
+        self._cognitive_updating_upper_tab_index = (self._cognitive_updating_upper_tab_index + delta) % 3
 
-    def _cognitive_updating_shift_document(self, payload: CognitiveUpdatingPayload, delta: int) -> None:
-        if not payload.panels:
-            return
-        panel = payload.panels[self._cognitive_updating_panel_index % len(payload.panels)]
-        if not panel.documents:
-            self._cognitive_updating_doc_index = 0
-            return
-        self._cognitive_updating_doc_index = (
-            self._cognitive_updating_doc_index + delta
-        ) % len(panel.documents)
+    def _cognitive_updating_shift_lower_tab(self, delta: int) -> None:
+        self._cognitive_updating_lower_tab_index = (self._cognitive_updating_lower_tab_index + delta) % 3
 
-    def _cognitive_updating_active_panel(self, payload: CognitiveUpdatingPayload) -> CognitiveUpdatingPanel | None:
-        if not payload.panels:
+    def _cognitive_updating_refresh_runtime_state(self) -> CognitiveUpdatingRuntimeSnapshot | None:
+        runtime = self._cognitive_updating_runtime
+        if runtime is None:
             return None
-        self._cognitive_updating_panel_index %= len(payload.panels)
-        return payload.panels[self._cognitive_updating_panel_index]
-
-    def _cognitive_updating_active_document(
-        self,
-        payload: CognitiveUpdatingPayload,
-    ) -> CognitiveUpdatingDocument | None:
-        active_panel = self._cognitive_updating_active_panel(payload)
-        if active_panel is None:
-            return None
-        documents = active_panel.documents
-        if not documents:
-            return None
-        self._cognitive_updating_doc_index %= len(documents)
-        return documents[self._cognitive_updating_doc_index]
+        snap = runtime.snapshot()
+        self._cognitive_updating_phase_start_ms = pygame.time.get_ticks() - (snap.elapsed_s * 1000)
+        self._cognitive_updating_parcel_values = list(snap.parcel_values)
+        self._cognitive_updating_active_parcel_field = snap.active_parcel_field
+        self._cognitive_updating_comms_input = snap.comms_input
+        self._cognitive_updating_speed_knots = snap.current_knots
+        self._cognitive_updating_pump_on = snap.pump_on
+        self._cognitive_updating_active_tank = snap.active_tank
+        self._cognitive_updating_alpha_armed = snap.alpha_armed
+        self._cognitive_updating_bravo_armed = snap.bravo_armed
+        self._cognitive_updating_air_sensor_armed = snap.air_sensor_armed
+        self._cognitive_updating_ground_sensor_armed = snap.ground_sensor_armed
+        self._cognitive_updating_dispenser_lit = snap.dispenser_lit
+        self._input = snap.comms_input
+        return snap
 
     def _render_system_logic_screen(
         self,
@@ -4502,7 +5412,7 @@ class CognitiveTestScreen:
         phase_text = self._tiny_font.render(phase_label, True, text_muted)
         surface.blit(phase_text, (header.x + 12, header.y + (header.h - phase_text.get_height()) // 2))
 
-        title = self._small_font.render("System Logic", True, text_main)
+        title = self._small_font.render(str(snap.title), True, text_main)
         surface.blit(title, title.get_rect(midleft=(header.x + 135, header.centery)))
 
         stats_text = self._tiny_font.render(
@@ -4693,183 +5603,406 @@ class CognitiveTestScreen:
         payload: CognitiveUpdatingPayload | None,
     ) -> None:
         w, h = surface.get_size()
-        bg = (6, 8, 14)
-        panel_bg = (18, 22, 36)
-        panel_soft = (30, 34, 52)
-        panel_header = (44, 136, 220)
-        accent = (230, 164, 42)
-        border = (208, 220, 238)
-        text_main = (236, 242, 250)
-        text_muted = (178, 192, 210)
+        bg = (0, 0, 0)
+        panel_bg = (10, 10, 14)
+        card_bg = (90, 90, 92)
+        header_blue = (49, 143, 220)
+        accent_orange = (231, 160, 35)
+        text_main = (238, 242, 248)
+        text_muted = (188, 198, 214)
+        border = (226, 233, 242)
+
+        def _label(name: str, *, center: bool) -> str:
+            if center and name == "Messages":
+                return "Message"
+            if center and name == "Objectives":
+                return "Objective"
+            return name
+
+        def _draw_card(rect: pygame.Rect, title: str, *, title_h: int = 34) -> None:
+            pygame.draw.rect(surface, panel_bg, rect)
+            pygame.draw.rect(surface, border, rect, 2)
+            top = pygame.Rect(rect.x, rect.y, rect.w, title_h)
+            pygame.draw.rect(surface, header_blue, top)
+            pygame.draw.rect(surface, border, top, 1)
+            txt = self._small_font.render(title, True, text_main)
+            surface.blit(txt, txt.get_rect(center=top.center))
+
+        def _draw_tabbar(rect: pygame.Rect, names: tuple[str, str, str], active: int, prefix: str) -> None:
+            pygame.draw.rect(surface, header_blue, rect)
+            pygame.draw.rect(surface, border, rect, 2)
+            side_w = max(120, min(170, rect.w // 4))
+            left = pygame.Rect(rect.x + 2, rect.y + 2, side_w, rect.h - 4)
+            right = pygame.Rect(rect.right - side_w - 2, rect.y + 2, side_w, rect.h - 4)
+            center = pygame.Rect(left.right + 4, rect.y + 2, right.x - left.right - 8, rect.h - 4)
+            pygame.draw.rect(surface, accent_orange, left, border_radius=4)
+            pygame.draw.rect(surface, accent_orange, right, border_radius=4)
+            left_name = names[(active - 1) % len(names)]
+            center_name = names[active % len(names)]
+            right_name = names[(active + 1) % len(names)]
+            left_txt = self._small_font.render(_label(left_name, center=False), True, text_main)
+            center_txt = self._small_font.render(_label(center_name, center=True), True, text_main)
+            right_txt = self._small_font.render(_label(right_name, center=False), True, text_main)
+            surface.blit(left_txt, left_txt.get_rect(center=left.center))
+            surface.blit(center_txt, center_txt.get_rect(center=center.center))
+            surface.blit(right_txt, right_txt.get_rect(center=right.center))
+            self._cognitive_updating_hitboxes[f"{prefix}_prev"] = left
+            self._cognitive_updating_hitboxes[f"{prefix}_next"] = right
+
+        def _mmss(seconds: int) -> str:
+            value = max(0, int(seconds))
+            return f"{value // 60:02d}:{value % 60:02d}"
 
         surface.fill(bg)
-        margin = max(10, min(24, w // 34))
-        frame = pygame.Rect(margin, margin, max(280, w - margin * 2), max(220, h - margin * 2))
+        margin = max(10, min(22, min(w, h) // 30))
+        frame = pygame.Rect(margin, margin, max(320, w - margin * 2), max(380, h - margin * 2))
         pygame.draw.rect(surface, bg, frame)
         pygame.draw.rect(surface, border, frame, 2)
 
-        header = pygame.Rect(frame.x + 2, frame.y + 2, frame.w - 4, max(42, min(56, h // 8)))
-        pygame.draw.rect(surface, bg, header)
-        title = self._app.font.render("Cognitive Updating", True, text_main)
-        surface.blit(title, title.get_rect(center=header.center))
+        self._cognitive_updating_hitboxes.clear()
+        title_h = max(52, min(72, frame.h // 10))
+        title_rect = pygame.Rect(frame.x + 8, frame.y + 8, frame.w - 16, title_h)
+        arrow = self._big_font.render("←", True, text_main)
+        surface.blit(arrow, (title_rect.x + 4, title_rect.y + (title_rect.h - arrow.get_height()) // 2))
+        title = self._app.font.render("Multitasking", True, text_main)
+        surface.blit(title, title.get_rect(center=title_rect.center))
 
-        phase_label = {
-            Phase.INSTRUCTIONS: "Instructions",
-            Phase.PRACTICE: "Practice",
-            Phase.PRACTICE_DONE: "Practice Complete",
-            Phase.SCORED: "Timed Test",
-            Phase.RESULTS: "Results",
-        }.get(snap.phase, "Task")
-        phase_text = self._tiny_font.render(phase_label, True, text_muted)
-        surface.blit(phase_text, (frame.x + 10, header.bottom + 4))
-
-        stats_text = self._tiny_font.render(
-            f"Scored {snap.correct_scored}/{snap.attempted_scored}",
-            True,
-            text_muted,
-        )
-        surface.blit(stats_text, stats_text.get_rect(topright=(frame.right - 10, header.bottom + 4)))
-
-        content = pygame.Rect(
-            frame.x + 8,
-            header.bottom + 24,
-            frame.w - 16,
-            frame.h - (header.bottom - frame.y) - 34,
-        )
-        pygame.draw.rect(surface, panel_bg, content)
-        pygame.draw.rect(surface, border, content, 1)
-
+        content = pygame.Rect(frame.x + 6, title_rect.bottom + 6, frame.w - 12, frame.bottom - title_rect.bottom - 14)
         if payload is None or snap.phase not in (Phase.PRACTICE, Phase.SCORED):
+            pygame.draw.rect(surface, panel_bg, content)
+            pygame.draw.rect(surface, border, content, 2)
             self._draw_wrapped_text(
                 surface,
                 str(snap.prompt),
-                content.inflate(-20, -16),
+                content.inflate(-28, -28),
                 color=text_main,
-                font=self._small_font,
-                max_lines=14,
+                font=self._app.font,
+                max_lines=16,
             )
+            footer = "Enter: Continue" if snap.phase in (Phase.INSTRUCTIONS, Phase.PRACTICE_DONE) else "Enter: Return to Tests"
+            footer_text = self._small_font.render(footer, True, text_muted)
+            surface.blit(footer_text, footer_text.get_rect(midbottom=(frame.centerx, frame.bottom - 8)))
+            return
+
+        self._cognitive_updating_sync_payload(payload)
+        runtime_snap = self._cognitive_updating_refresh_runtime_state()
+        if runtime_snap is None:
+            runtime_snap = CognitiveUpdatingRuntimeSnapshot(
+                elapsed_s=0,
+                current_knots=payload.current_knots,
+                pump_on=payload.pump_on,
+                active_tank=payload.active_tank,
+                alpha_armed=False,
+                bravo_armed=False,
+                air_sensor_armed=False,
+                ground_sensor_armed=False,
+                parcel_values=("", "", ""),
+                active_parcel_field=0,
+                comms_input="",
+                dispenser_lit=payload.dispenser_lit,
+                air_time_left_s=payload.air_sensor_due_s,
+                ground_time_left_s=payload.ground_sensor_due_s,
+                comms_time_left_s=payload.comms_time_limit_s,
+                state_code=payload.comms_code,
+                operation_score_hint=0.0,
+                event_count=0,
+            )
+
+        air_left = runtime_snap.air_time_left_s
+        ground_left = runtime_snap.ground_time_left_s
+        comms_left = runtime_snap.comms_time_left_s
+        speed_knots = runtime_snap.current_knots
+        pump_on = runtime_snap.pump_on
+        active_tank = runtime_snap.active_tank
+        dispenser_lit = runtime_snap.dispenser_lit
+
+        warning_h = max(90, min(128, content.h // 7))
+        warning = pygame.Rect(content.x + 2, content.y + 2, int(content.w * 0.72), warning_h)
+        clock = pygame.Rect(
+            warning.right + 8,
+            warning.y,
+            content.right - warning.right - 10,
+            warning_h,
+        )
+        _draw_card(warning, "Warning")
+        _draw_card(clock, "Clock")
+
+        warning_y = warning.y + 42
+        for line in payload.warning_lines[:2]:
+            line_txt = self._app.font.render(self._fit_label(self._app.font, line, warning.w - 24), True, text_main)
+            surface.blit(line_txt, (warning.x + 12, warning_y))
+            warning_y += 38
+
+        clock_txt = self._big_font.render(payload.clock_hms, True, text_main)
+        if clock_txt.get_width() > clock.w - 16:
+            clock_txt = self._mid_font.render(payload.clock_hms, True, text_main)
+        surface.blit(clock_txt, clock_txt.get_rect(center=(clock.centerx, clock.centery + 8)))
+        if snap.time_remaining_s is not None:
+            rem = int(max(0, round(snap.time_remaining_s)))
+            rem_txt = self._tiny_font.render(f"{rem // 60:02d}:{rem % 60:02d}", True, text_muted)
+            surface.blit(rem_txt, rem_txt.get_rect(midbottom=(clock.centerx, clock.bottom - 4)))
+
+        upper_tabs = pygame.Rect(content.x + 2, warning.bottom + 8, content.w - 4, 32)
+        upper_rect = pygame.Rect(upper_tabs.x, upper_tabs.bottom + 4, upper_tabs.w, max(220, int(content.h * 0.34)))
+        lower_tabs = pygame.Rect(content.x + 2, upper_rect.bottom + 10, content.w - 4, 32)
+        lower_rect = pygame.Rect(lower_tabs.x, lower_tabs.bottom + 4, lower_tabs.w, content.bottom - lower_tabs.bottom - 6)
+
+        _draw_tabbar(
+            upper_tabs,
+            ("Messages", "Objectives", "Controls"),
+            self._cognitive_updating_upper_tab_index,
+            "upper",
+        )
+        _draw_tabbar(
+            lower_tabs,
+            ("Navigation", "Sensors", "Engine"),
+            self._cognitive_updating_lower_tab_index,
+            "lower",
+        )
+
+        pygame.draw.rect(surface, panel_bg, upper_rect)
+        pygame.draw.rect(surface, border, upper_rect, 2)
+        pygame.draw.rect(surface, panel_bg, lower_rect)
+        pygame.draw.rect(surface, border, lower_rect, 2)
+
+        upper_idx = self._cognitive_updating_upper_tab_index % 3
+        lower_idx = self._cognitive_updating_lower_tab_index % 3
+
+        if upper_idx == 0:
+            lines_rect = upper_rect.inflate(-22, -20)
+            line_y = lines_rect.y
+            for line in payload.message_lines:
+                rendered = self._app.font.render(self._fit_label(self._app.font, line, lines_rect.w), True, text_main)
+                surface.blit(rendered, (lines_rect.x, line_y))
+                line_y += max(34, self._app.font.get_linesize() + 8)
+                if line_y > lines_rect.bottom - 24:
+                    break
+
+        elif upper_idx == 1:
+            pad = 10
+            parcel_h = max(138, int(upper_rect.h * 0.53))
+            parcel_rect = pygame.Rect(upper_rect.x + pad, upper_rect.y + pad, upper_rect.w - pad * 2, parcel_h)
+            _draw_card(parcel_rect, "Parcel Drop")
+
+            labels = ("Latitude", "Longitude", "Time")
+            row_h = max(28, min(46, (parcel_rect.h - 54) // 3))
+            for idx, label in enumerate(labels):
+                row_y = parcel_rect.y + 40 + idx * row_h
+                label_txt = self._app.font.render(label, True, text_main)
+                surface.blit(label_txt, (parcel_rect.x + 16, row_y + 2))
+                box_w = max(150, min(380, parcel_rect.w - 280))
+                box = pygame.Rect(parcel_rect.right - box_w - 24, row_y - 2, box_w, row_h - 4)
+                is_active = idx == self._cognitive_updating_active_parcel_field
+                pygame.draw.rect(surface, (239, 163, 33) if is_active else (226, 150, 30), box, border_radius=4)
+                value = self._cognitive_updating_parcel_values[idx]
+                if value != "":
+                    value_txt = self._small_font.render(value, True, (22, 22, 24))
+                    surface.blit(value_txt, (box.x + 8, box.y + (box.h - value_txt.get_height()) // 2))
+                self._cognitive_updating_hitboxes[f"parcel_field:{idx}"] = box
+
+            disp_y = parcel_rect.bottom + 8
+            disp_h = upper_rect.bottom - disp_y - 50
+            dispenser_rect = pygame.Rect(upper_rect.x + pad, disp_y, upper_rect.w - pad * 2, disp_h)
+            _draw_card(dispenser_rect, "Parcel Drop Dispenser")
+            row_mid_y = dispenser_rect.y + dispenser_rect.h // 2 + 4
+            act_txt = self._app.font.render("Activate", True, text_main)
+            surface.blit(act_txt, (dispenser_rect.x + 16, row_mid_y - act_txt.get_height() // 2))
+
+            circle_r = max(12, min(30, dispenser_rect.w // 28))
+            cx = dispenser_rect.x + 210
+            for idx in range(5):
+                col = (0, 220, 0) if idx < dispenser_lit else (220, 220, 220)
+                pygame.draw.circle(surface, col, (cx + idx * (circle_r * 2 + 14), row_mid_y), circle_r)
+                pygame.draw.circle(surface, (180, 180, 180), (cx + idx * (circle_r * 2 + 14), row_mid_y), circle_r, 1)
+
+            activate_btn = pygame.Rect(dispenser_rect.right - 84, dispenser_rect.y + 44, 64, 64)
+            pygame.draw.rect(surface, header_blue, activate_btn, border_radius=4)
+            self._cognitive_updating_hitboxes["objective_activate"] = activate_btn
+
+            keypad_y = upper_rect.bottom - 42
+            key_w = (upper_rect.w - 4) // 10
+            for digit in range(10):
+                key = pygame.Rect(upper_rect.x + 2 + digit * key_w, keypad_y, key_w - 2, 40)
+                pygame.draw.rect(surface, (70, 70, 72), key)
+                pygame.draw.rect(surface, (40, 40, 42), key, 1)
+                txt = self._app.font.render(str(digit), True, text_main)
+                surface.blit(txt, txt.get_rect(center=key.center))
+                self._cognitive_updating_hitboxes[f"objective_digit:{digit}"] = key
+
         else:
-            self._cognitive_updating_sync_payload(payload)
+            pad = 8
+            left_w = max(220, int(upper_rect.w * 0.56))
+            hyd_rect = pygame.Rect(upper_rect.x + pad, upper_rect.y + pad, left_w, upper_rect.h - pad * 2)
+            right_x = hyd_rect.right + 8
+            right_w = upper_rect.right - right_x - pad
+            pump_rect = pygame.Rect(right_x, upper_rect.y + pad, right_w, max(112, int(upper_rect.h * 0.44)))
+            comms_rect = pygame.Rect(right_x, pump_rect.bottom + 8, right_w, upper_rect.bottom - pump_rect.bottom - pad)
 
-            warning_rect = pygame.Rect(content.x + 8, content.y + 8, int(content.w * 0.70), max(92, h // 8))
-            clock_rect = pygame.Rect(
-                warning_rect.right + 8,
-                warning_rect.y,
-                content.right - warning_rect.right - 16,
-                warning_rect.h,
+            _draw_card(hyd_rect, "Hydraulics")
+            _draw_card(pump_rect, "Hydraulic Pump")
+            _draw_card(comms_rect, "Comms Code")
+
+            scale = pygame.Rect(hyd_rect.x + 70, hyd_rect.y + 42, hyd_rect.w - 130, hyd_rect.h - 58)
+            pygame.draw.rect(surface, card_bg, scale)
+            section_h = scale.h // 3
+            high_zone = pygame.Rect(scale.x, scale.y, scale.w, section_h)
+            mid_zone = pygame.Rect(scale.x, scale.y + section_h, scale.w, section_h)
+            low_zone = pygame.Rect(scale.x, scale.y + section_h * 2, scale.w, scale.h - section_h * 2)
+            pygame.draw.rect(surface, (242, 68, 33) if payload.pressure_value > payload.pressure_high else (226, 226, 226), high_zone)
+            pygame.draw.rect(
+                surface,
+                (0, 196, 0) if payload.pressure_low <= payload.pressure_value <= payload.pressure_high else (226, 226, 226),
+                mid_zone,
             )
+            pygame.draw.rect(surface, (242, 68, 33) if payload.pressure_value < payload.pressure_low else (226, 226, 226), low_zone)
+            pygame.draw.rect(surface, (80, 80, 82), scale, 1)
+            high_txt = self._app.font.render("High Pressure", True, (10, 10, 10))
+            mid_txt = self._app.font.render("Correct Pressure", True, (10, 10, 10))
+            low_txt = self._app.font.render("Low Pressure", True, (10, 10, 10))
+            surface.blit(high_txt, (high_zone.x + 8, high_zone.y + 8))
+            surface.blit(mid_txt, (mid_zone.x + 8, mid_zone.y + 8))
+            surface.blit(low_txt, (low_zone.x + 8, low_zone.y + 8))
 
-            for rect, label in ((warning_rect, "Warning"), (clock_rect, "Clock")):
-                pygame.draw.rect(surface, panel_soft, rect)
-                pygame.draw.rect(surface, border, rect, 2)
-                title_bar = pygame.Rect(rect.x, rect.y, rect.w, 28)
-                pygame.draw.rect(surface, panel_header, title_bar)
-                txt = self._small_font.render(label, True, text_main)
-                surface.blit(txt, txt.get_rect(center=title_bar.center))
+            on_btn = pygame.Rect(pump_rect.x + 24, pump_rect.y + 58, pump_rect.w // 2 - 28, 56)
+            off_btn = pygame.Rect(pump_rect.centerx + 4, pump_rect.y + 58, pump_rect.w // 2 - 28, 56)
+            pygame.draw.rect(surface, (0, 196, 0) if pump_on else (80, 80, 80), on_btn, border_radius=4)
+            pygame.draw.rect(surface, (136, 70, 56) if not pump_on else (80, 80, 80), off_btn, border_radius=4)
+            on_txt = self._app.font.render("On", True, text_main)
+            off_txt = self._app.font.render("Off", True, text_main)
+            surface.blit(on_txt, on_txt.get_rect(center=on_btn.center))
+            surface.blit(off_txt, off_txt.get_rect(center=off_btn.center))
+            self._cognitive_updating_hitboxes["pump_on"] = on_btn
+            self._cognitive_updating_hitboxes["pump_off"] = off_btn
 
-            y = warning_rect.y + 38
-            for line in payload.warning_lines[:3]:
-                t = self._small_font.render(line, True, text_main)
-                surface.blit(t, (warning_rect.x + 10, y))
-                y += 28
+            box = pygame.Rect(comms_rect.x + 18, comms_rect.y + 52, comms_rect.w - 116, 52)
+            pygame.draw.rect(surface, (230, 157, 38), box, border_radius=4)
+            comms_txt = self._app.font.render(self._cognitive_updating_comms_input, True, (20, 20, 22))
+            surface.blit(comms_txt, (box.x + 8, box.y + (box.h - comms_txt.get_height()) // 2))
+            submit = pygame.Rect(box.right + 10, box.y, 66, 52)
+            pygame.draw.rect(surface, header_blue, submit, border_radius=4)
+            self._cognitive_updating_hitboxes["comms_submit"] = submit
+            time_txt = self._small_font.render(f"Time remaining: {comms_left}", True, text_main)
+            surface.blit(time_txt, (box.x, box.bottom + 8))
 
-            clock_value = payload.clock_hms
-            clock_text = self._big_font.render(clock_value, True, text_main)
-            if clock_text.get_width() > clock_rect.w - 16:
-                clock_text = self._mid_font.render(clock_value, True, text_main)
-            surface.blit(clock_text, clock_text.get_rect(center=(clock_rect.centerx, clock_rect.centery + 6)))
-            if snap.time_remaining_s is not None:
-                rem = int(round(snap.time_remaining_s))
-                rem_text = self._tiny_font.render(
-                    f"Time left {rem // 60:02d}:{rem % 60:02d}",
-                    True,
-                    text_muted,
-                )
-                surface.blit(rem_text, rem_text.get_rect(midbottom=(clock_rect.centerx, clock_rect.bottom - 6)))
+            key_y = comms_rect.bottom - 44
+            key_w = max(30, min(80, (comms_rect.w - 36) // 4))
+            for idx, digit in enumerate(("1", "2", "3", "4")):
+                key = pygame.Rect(comms_rect.x + 12 + idx * (key_w + 4), key_y, key_w, 38)
+                pygame.draw.rect(surface, (70, 70, 72), key)
+                pygame.draw.rect(surface, (40, 40, 42), key, 1)
+                key_txt = self._app.font.render(digit, True, text_main)
+                surface.blit(key_txt, key_txt.get_rect(center=key.center))
+                self._cognitive_updating_hitboxes[f"comms_digit:{digit}"] = key
 
-            tabs_rect = pygame.Rect(content.x + 8, warning_rect.bottom + 10, content.w - 16, 34)
-            panel_rect = pygame.Rect(
-                tabs_rect.x,
-                tabs_rect.bottom + 6,
-                tabs_rect.w,
-                content.bottom - tabs_rect.bottom - 86,
-            )
-            question_rect = pygame.Rect(
-                panel_rect.x,
-                panel_rect.bottom + 6,
-                panel_rect.w,
-                content.bottom - panel_rect.bottom - 8,
-            )
+        if lower_idx == 0:
+            table_w = max(280, min(520, int(lower_rect.w * 0.58)))
+            table_h = max(170, min(250, int(lower_rect.h * 0.56)))
+            table = pygame.Rect(lower_rect.centerx - table_w // 2, lower_rect.y + 52, table_w, table_h)
+            pygame.draw.rect(surface, bg, table)
+            pygame.draw.rect(surface, border, table, 2)
+            pygame.draw.line(surface, border, (table.centerx, table.y), (table.centerx, table.bottom), 2)
+            header_split = table.y + 64
+            pygame.draw.line(surface, border, (table.x, header_split), (table.right, header_split), 2)
+            left_header = self._small_font.render("Required Knots", True, text_main)
+            right_header = self._small_font.render("Current Knots", True, text_main)
+            surface.blit(left_header, left_header.get_rect(center=(table.x + table.w // 4, table.y + 30)))
+            surface.blit(right_header, right_header.get_rect(center=(table.x + table.w * 3 // 4, table.y + 30)))
+            left_value = self._app.font.render(str(payload.required_knots), True, text_main)
+            right_value = self._app.font.render(str(speed_knots), True, text_main)
+            surface.blit(left_value, left_value.get_rect(center=(table.x + table.w // 4, table.y + table.h * 3 // 4)))
+            surface.blit(right_value, right_value.get_rect(center=(table.x + table.w * 3 // 4, table.y + table.h * 3 // 4)))
 
-            pygame.draw.rect(surface, panel_soft, panel_rect)
-            pygame.draw.rect(surface, border, panel_rect, 1)
-            pygame.draw.rect(surface, panel_soft, question_rect)
-            pygame.draw.rect(surface, border, question_rect, 1)
+            dec = pygame.Rect(lower_rect.centerx - 90, lower_rect.bottom - 70, 58, 58)
+            inc = pygame.Rect(lower_rect.centerx + 32, lower_rect.bottom - 70, 58, 58)
+            pygame.draw.circle(surface, text_main, dec.center, 29, 2)
+            pygame.draw.circle(surface, text_main, inc.center, 29, 2)
+            dec_txt = self._app.font.render("−", True, text_main)
+            inc_txt = self._app.font.render("+", True, text_main)
+            surface.blit(dec_txt, dec_txt.get_rect(center=dec.center))
+            surface.blit(inc_txt, inc_txt.get_rect(center=inc.center))
+            self._cognitive_updating_hitboxes["knots_dec"] = dec
+            self._cognitive_updating_hitboxes["knots_inc"] = inc
 
-            tab_gap = 6
-            tab_count = max(1, len(payload.panels))
-            tab_w = max(80, (tabs_rect.w - ((tab_count - 1) * tab_gap)) // tab_count)
-            x = tabs_rect.x
-            for idx, panel in enumerate(payload.panels):
-                tab = pygame.Rect(x, tabs_rect.y, tab_w, tabs_rect.h)
-                selected = idx == self._cognitive_updating_panel_index
-                pygame.draw.rect(surface, accent if selected else panel_header, tab)
-                pygame.draw.rect(surface, border, tab, 1)
-                tab_text = self._small_font.render(
-                    self._fit_label(self._small_font, panel.name, tab.w - 8),
-                    True,
+        elif lower_idx == 1:
+            pad = 10
+            video_h = max(120, int(lower_rect.h * 0.46))
+            video = pygame.Rect(lower_rect.x + pad, lower_rect.y + pad, lower_rect.w - pad * 2, video_h)
+            sensors = pygame.Rect(video.x, video.bottom + 10, video.w, lower_rect.bottom - video.bottom - 12)
+            _draw_card(video, "Video Recording")
+            _draw_card(sensors, "Sensors")
+
+            row1_y = video.y + 50
+            row2_y = row1_y + 64
+            alpha_txt = self._app.font.render("Alpha Camera Activation", True, text_main)
+            bravo_txt = self._app.font.render("Bravo Camera Activation", True, text_main)
+            surface.blit(alpha_txt, (video.x + 18, row1_y))
+            surface.blit(bravo_txt, (video.x + 18, row2_y))
+            alpha_btn = pygame.Rect(video.right - 186, row1_y - 6, 140, 48)
+            bravo_btn = pygame.Rect(video.right - 186, row2_y - 6, 140, 48)
+            pygame.draw.rect(surface, (0, 176, 0) if self._cognitive_updating_alpha_armed else header_blue, alpha_btn, border_radius=4)
+            pygame.draw.rect(surface, (0, 176, 0) if self._cognitive_updating_bravo_armed else header_blue, bravo_btn, border_radius=4)
+            alpha_btn_txt = self._small_font.render("Active" if self._cognitive_updating_alpha_armed else "Activate", True, text_main)
+            bravo_btn_txt = self._small_font.render("Active" if self._cognitive_updating_bravo_armed else "Activate", True, text_main)
+            surface.blit(alpha_btn_txt, alpha_btn_txt.get_rect(center=alpha_btn.center))
+            surface.blit(bravo_btn_txt, bravo_btn_txt.get_rect(center=bravo_btn.center))
+            self._cognitive_updating_hitboxes["camera_alpha"] = alpha_btn
+            self._cognitive_updating_hitboxes["camera_bravo"] = bravo_btn
+
+            air_row = sensors.y + 52
+            ground_row = air_row + 70
+            air_txt = self._app.font.render("Air Sensor", True, text_main)
+            ground_txt = self._app.font.render("Ground Sensor", True, text_main)
+            surface.blit(air_txt, (sensors.x + 18, air_row))
+            surface.blit(ground_txt, (sensors.x + 18, ground_row))
+            air_btn = pygame.Rect(sensors.x + 330, air_row - 8, 130, 52)
+            ground_btn = pygame.Rect(sensors.x + 330, ground_row - 8, 130, 52)
+            pygame.draw.rect(surface, (0, 176, 0) if self._cognitive_updating_air_sensor_armed else header_blue, air_btn, border_radius=4)
+            pygame.draw.rect(surface, (0, 176, 0) if self._cognitive_updating_ground_sensor_armed else header_blue, ground_btn, border_radius=4)
+            air_btn_txt = self._small_font.render("Active" if self._cognitive_updating_air_sensor_armed else "Activate", True, text_main)
+            ground_btn_txt = self._small_font.render("Active" if self._cognitive_updating_ground_sensor_armed else "Activate", True, text_main)
+            surface.blit(air_btn_txt, air_btn_txt.get_rect(center=air_btn.center))
+            surface.blit(ground_btn_txt, ground_btn_txt.get_rect(center=ground_btn.center))
+            air_time_txt = self._app.font.render(f"Time Left: {_mmss(air_left)}", True, text_muted)
+            ground_time_txt = self._app.font.render(f"Time Left: {_mmss(ground_left)}", True, text_muted)
+            surface.blit(air_time_txt, (air_btn.right + 34, air_row + 2))
+            surface.blit(ground_time_txt, (ground_btn.right + 34, ground_row + 2))
+            self._cognitive_updating_hitboxes["sensor_air"] = air_btn
+            self._cognitive_updating_hitboxes["sensor_ground"] = ground_btn
+
+        else:
+            col_w = max(150, (lower_rect.w - 24) // 3)
+            col_y = lower_rect.y + 32
+            for idx in range(3):
+                col_x = lower_rect.x + 8 + idx * col_w
+                top = col_y + 24
+                tank_top_x = col_x + 36
+                pygame.draw.lines(
+                    surface,
                     text_main,
+                    False,
+                    [
+                        (tank_top_x, top),
+                        (tank_top_x, top + 30),
+                        (tank_top_x + col_w - 70, top + 30),
+                        (tank_top_x + col_w - 70, top + 96),
+                    ],
+                    5,
                 )
-                surface.blit(tab_text, tab_text.get_rect(center=tab.center))
-                x += tab_w + tab_gap
+                tank_label = self._app.font.render(f"Tank {idx + 1} (L)", True, text_main)
+                surface.blit(tank_label, (col_x + 44, top + 118))
+                val = payload.tank_levels_l[idx]
+                val_txt = self._app.font.render(str(val), True, text_main)
+                surface.blit(val_txt, val_txt.get_rect(center=(col_x + col_w // 2, top + 210)))
+                btn = pygame.Rect(col_x + 22, top + 260, col_w - 40, 58)
+                is_active = active_tank == idx + 1
+                pygame.draw.rect(surface, (0, 96, 24) if is_active else (233, 70, 33), btn, border_radius=4)
+                btn_txt = self._app.font.render("On" if is_active else "Off", True, text_main)
+                surface.blit(btn_txt, btn_txt.get_rect(center=btn.center))
+                self._cognitive_updating_hitboxes[f"tank:{idx + 1}"] = btn
 
-            active_panel = self._cognitive_updating_active_panel(payload)
-            active_doc = self._cognitive_updating_active_document(payload)
-            if active_panel is not None:
-                panel_name = self._small_font.render(f"Panel: {active_panel.name}", True, text_main)
-                surface.blit(panel_name, (panel_rect.x + 10, panel_rect.y + 8))
-                if active_doc is not None:
-                    meta = self._tiny_font.render(
-                        f"Page {self._cognitive_updating_doc_index + 1}/{len(active_panel.documents)}  "
-                        f"{active_doc.title} [{active_doc.kind}]",
-                        True,
-                        text_muted,
-                    )
-                    surface.blit(meta, (panel_rect.x + 10, panel_rect.y + 34))
-                    line_y = panel_rect.y + 58
-                    for line in active_doc.lines:
-                        if line_y > panel_rect.bottom - 22:
-                            break
-                        rendered = self._small_font.render(
-                            self._fit_label(self._small_font, line, panel_rect.w - 20),
-                            True,
-                            text_main,
-                        )
-                        surface.blit(rendered, (panel_rect.x + 10, line_y))
-                        line_y += 24
-
-            prompt = self._tiny_font.render(payload.question, True, text_muted)
-            surface.blit(prompt, (question_rect.x + 10, question_rect.y + 8))
-            code_label = self._tiny_font.render(f"Scenario {payload.scenario_code}", True, text_muted)
-            surface.blit(code_label, code_label.get_rect(topright=(question_rect.right - 10, question_rect.y + 8)))
-
-            input_box = pygame.Rect(question_rect.x + 10, question_rect.bottom - 36, min(240, question_rect.w - 110), 28)
-            pygame.draw.rect(surface, (8, 10, 20), input_box)
-            pygame.draw.rect(surface, border, input_box, 2)
-            caret = "|" if (pygame.time.get_ticks() // 500) % 2 == 0 else ""
-            entry = self._small_font.render(self._input + caret, True, text_main)
-            surface.blit(entry, (input_box.x + 8, input_box.y + 4))
-            unit_text = self._tiny_font.render(f"Unit: {payload.answer_unit}", True, text_muted)
-            surface.blit(unit_text, unit_text.get_rect(midleft=(input_box.right + 10, input_box.centery)))
-
-        if snap.phase in (Phase.PRACTICE, Phase.SCORED):
-            footer = "Left/Right or Tab: Panel  |  Up/Down: Page  |  Digits + Enter: Submit"
-        elif snap.phase in (Phase.INSTRUCTIONS, Phase.PRACTICE_DONE):
-            footer = "Enter: Continue  |  Esc/Backspace: Back"
-        else:
-            footer = "Enter: Return to Tests"
+        footer = "Q/E upper menu  |  A/D lower menu  |  Enter submit comms code"
         footer_text = self._tiny_font.render(footer, True, text_muted)
-        surface.blit(footer_text, footer_text.get_rect(midbottom=(frame.centerx, frame.bottom - 10)))
+        surface.blit(footer_text, footer_text.get_rect(midbottom=(frame.centerx, frame.bottom - 8)))
 
     def _render_numerical_operations_question(
         self,
@@ -8518,19 +9651,35 @@ def run(*, max_frames: int | None = None, event_injector: Callable[[int], None] 
 
     video_driver = os.environ.get("SDL_VIDEODRIVER", "").strip().lower()
     fullscreen_default = sys.platform == "darwin"
-    want_fullscreen = os.environ.get(
-        "CFAST_FULLSCREEN",
-        "1" if fullscreen_default else "0",
-    ).strip().lower() not in {
-        "0",
-        "false",
-        "off",
-        "no",
-    }
-    use_fullscreen = want_fullscreen and video_driver != "dummy"
+    window_mode_env = os.environ.get("CFAST_WINDOW_MODE", "").strip().lower()
+
+    if window_mode_env in {"windowed", "resizable"}:
+        window_mode = "windowed"
+    elif window_mode_env in {"fullscreen", "exclusive"}:
+        window_mode = "fullscreen"
+    elif window_mode_env in {"borderless", "windowed_fullscreen", "desktop"}:
+        window_mode = "borderless"
+    else:
+        want_fullscreen = os.environ.get(
+            "CFAST_FULLSCREEN",
+            "1" if fullscreen_default else "0",
+        ).strip().lower() not in {
+            "0",
+            "false",
+            "off",
+            "no",
+        }
+        if want_fullscreen and video_driver != "dummy":
+            # Default to borderless/windowed-fullscreen on macOS for stability.
+            window_mode = "borderless" if sys.platform == "darwin" else "fullscreen"
+        else:
+            window_mode = "windowed"
+
+    if video_driver == "dummy":
+        window_mode = "windowed"
 
     window_size = WINDOW_SIZE
-    if use_fullscreen:
+    if window_mode in {"fullscreen", "borderless"}:
         desktop_sizes: list[tuple[int, int]] = []
         try:
             desktop_sizes = list(pygame.display.get_desktop_sizes())
@@ -8546,7 +9695,13 @@ def run(*, max_frames: int | None = None, event_injector: Callable[[int], None] 
             except Exception:
                 window_size = WINDOW_SIZE
 
-    window_flags = pygame.FULLSCREEN if use_fullscreen else pygame.RESIZABLE
+    if window_mode == "fullscreen":
+        window_flags = pygame.FULLSCREEN
+    elif window_mode == "borderless":
+        window_flags = pygame.NOFRAME
+    else:
+        window_flags = pygame.RESIZABLE
+
     opengl_window_flags = window_flags | pygame.OPENGL | pygame.DOUBLEBUF
 
     want_gl = os.environ.get("CFAST_USE_OPENGL", "1").strip().lower() not in {
@@ -8813,7 +9968,7 @@ def run(*, max_frames: int | None = None, event_injector: Callable[[int], None] 
                 event_injector(frame)
 
             for event in pygame.event.get():
-                if gl_renderer is not None and event.type in resize_events:
+                if event.type in resize_events:
                     next_w = int(
                         getattr(
                             event,
@@ -8829,13 +9984,21 @@ def run(*, max_frames: int | None = None, event_injector: Callable[[int], None] 
                         )
                     )
                     if next_w > 0 and next_h > 0:
-                        try:
-                            display_surface = pygame.display.set_mode((next_w, next_h), active_window_flags)
-                        except Exception:
-                            display_surface = pygame.display.set_mode((next_w, next_h), window_flags)
-                            gl_renderer = None
-                            active_window_flags = window_flags
-                            app.set_opengl_enabled(False)
+                        if gl_renderer is not None:
+                            try:
+                                display_surface = pygame.display.set_mode((next_w, next_h), active_window_flags)
+                            except Exception:
+                                display_surface = pygame.display.set_mode((next_w, next_h), window_flags)
+                                gl_renderer = None
+                                active_window_flags = window_flags
+                                app.set_opengl_enabled(False)
+                                app.set_surface(display_surface)
+                        else:
+                            try:
+                                display_surface = pygame.display.set_mode((next_w, next_h), active_window_flags)
+                            except Exception:
+                                display_surface = pygame.display.set_mode((next_w, next_h), window_flags)
+                                active_window_flags = window_flags
                             app.set_surface(display_surface)
                 app.handle_event(event)
 
@@ -8848,6 +10011,11 @@ def run(*, max_frames: int | None = None, event_injector: Callable[[int], None] 
                     app.set_surface(pygame.Surface(window_size, pygame.SRCALPHA))
                 gl_renderer.resize(window_size=window_size)
                 app.surface.fill((0, 0, 0, 0))
+            else:
+                current_display = pygame.display.get_surface()
+                if current_display is not None and app.surface is not current_display:
+                    display_surface = current_display
+                    app.set_surface(display_surface)
 
             app.render()
 
