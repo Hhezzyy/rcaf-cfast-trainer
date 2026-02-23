@@ -50,6 +50,12 @@ from .colours_letters_numbers import (
     ColoursLettersNumbersPayload,
     build_colours_letters_numbers_test,
 )
+from .cognitive_updating import (
+    CognitiveUpdatingDocument,
+    CognitiveUpdatingPanel,
+    CognitiveUpdatingPayload,
+    build_cognitive_updating_test,
+)
 from .cognitive_core import Phase, TestSnapshot
 from .digit_recognition import DigitRecognitionPayload, build_digit_recognition_test
 from .instrument_comprehension import (
@@ -2811,6 +2817,9 @@ class CognitiveTestScreen:
         self._system_logic_payload_id: int | None = None
         self._system_logic_folder_index = 0
         self._system_logic_doc_index = 0
+        self._cognitive_updating_payload_id: int | None = None
+        self._cognitive_updating_panel_index = 0
+        self._cognitive_updating_doc_index = 0
         self._auditory_audio: _AuditoryCapacityAudioAdapter | None = None
 
         self._target_recognition_reset_practice_breakdown()
@@ -2836,6 +2845,9 @@ class CognitiveTestScreen:
         )
         system_logic_payload: SystemLogicPayload | None = (
             p if isinstance(p, SystemLogicPayload) else None
+        )
+        cognitive_updating_payload: CognitiveUpdatingPayload | None = (
+            p if isinstance(p, CognitiveUpdatingPayload) else None
         )
         tr_payload: TargetRecognitionPayload | None = (
             p if isinstance(p, TargetRecognitionPayload) else None
@@ -3123,6 +3135,26 @@ class CognitiveTestScreen:
                 self._input += ch
             return
 
+        if cognitive_updating_payload is not None:
+            self._cognitive_updating_sync_payload(cognitive_updating_payload)
+
+            if key == pygame.K_TAB:
+                delta = -1 if (event.mod & pygame.KMOD_SHIFT) else 1
+                self._cognitive_updating_shift_panel(cognitive_updating_payload, delta)
+                return
+            if key == pygame.K_LEFT:
+                self._cognitive_updating_shift_panel(cognitive_updating_payload, -1)
+                return
+            if key == pygame.K_RIGHT:
+                self._cognitive_updating_shift_panel(cognitive_updating_payload, 1)
+                return
+            if key == pygame.K_UP:
+                self._cognitive_updating_shift_document(cognitive_updating_payload, -1)
+                return
+            if key == pygame.K_DOWN:
+                self._cognitive_updating_shift_document(cognitive_updating_payload, 1)
+                return
+
         if system_logic_payload is not None:
             self._system_logic_sync_payload(system_logic_payload)
 
@@ -3257,6 +3289,7 @@ class CognitiveTestScreen:
         )
         table_payload: TableReadingPayload | None = p if isinstance(p, TableReadingPayload) else None
         sl: SystemLogicPayload | None = p if isinstance(p, SystemLogicPayload) else None
+        cu: CognitiveUpdatingPayload | None = p if isinstance(p, CognitiveUpdatingPayload) else None
         cln: ColoursLettersNumbersPayload | None = (
             p if isinstance(p, ColoursLettersNumbersPayload) else None
         )
@@ -3277,6 +3310,7 @@ class CognitiveTestScreen:
         is_instrument_comprehension = snap.title == "Instrument Comprehension"
         is_target_recognition = snap.title == "Target Recognition"
         is_system_logic = snap.title == "System Logic"
+        is_cognitive_updating = snap.title == "Cognitive Updating"
         is_sensory_motor_apparatus = snap.title == "Sensory Motor Apparatus"
         is_table_reading = snap.title == "Table Reading"
         is_auditory_capacity = snap.title == "Auditory Capacity"
@@ -3292,6 +3326,8 @@ class CognitiveTestScreen:
             self._render_table_reading_screen(surface, snap, table_payload)
         elif is_system_logic:
             self._render_system_logic_screen(surface, snap, sl)
+        elif is_cognitive_updating:
+            self._render_cognitive_updating_screen(surface, snap, cu)
         elif is_angles_bearings:
             self._render_angles_bearings_screen(surface, snap, abd)
         elif is_colours_letters_numbers:
@@ -3346,6 +3382,8 @@ class CognitiveTestScreen:
             elif is_table_reading:
                 pass
             elif is_system_logic:
+                pass
+            elif is_cognitive_updating:
                 pass
             elif is_angles_bearings:
                 pass
@@ -4377,6 +4415,52 @@ class CognitiveTestScreen:
         self._system_logic_doc_index %= len(documents)
         return documents[self._system_logic_doc_index]
 
+    def _cognitive_updating_sync_payload(self, payload: CognitiveUpdatingPayload) -> None:
+        payload_id = id(payload)
+        if payload_id == self._cognitive_updating_payload_id:
+            return
+        self._cognitive_updating_payload_id = payload_id
+        self._cognitive_updating_panel_index = 0
+        self._cognitive_updating_doc_index = 0
+
+    def _cognitive_updating_shift_panel(self, payload: CognitiveUpdatingPayload, delta: int) -> None:
+        if not payload.panels:
+            return
+        self._cognitive_updating_panel_index = (
+            self._cognitive_updating_panel_index + delta
+        ) % len(payload.panels)
+        self._cognitive_updating_doc_index = 0
+
+    def _cognitive_updating_shift_document(self, payload: CognitiveUpdatingPayload, delta: int) -> None:
+        if not payload.panels:
+            return
+        panel = payload.panels[self._cognitive_updating_panel_index % len(payload.panels)]
+        if not panel.documents:
+            self._cognitive_updating_doc_index = 0
+            return
+        self._cognitive_updating_doc_index = (
+            self._cognitive_updating_doc_index + delta
+        ) % len(panel.documents)
+
+    def _cognitive_updating_active_panel(self, payload: CognitiveUpdatingPayload) -> CognitiveUpdatingPanel | None:
+        if not payload.panels:
+            return None
+        self._cognitive_updating_panel_index %= len(payload.panels)
+        return payload.panels[self._cognitive_updating_panel_index]
+
+    def _cognitive_updating_active_document(
+        self,
+        payload: CognitiveUpdatingPayload,
+    ) -> CognitiveUpdatingDocument | None:
+        active_panel = self._cognitive_updating_active_panel(payload)
+        if active_panel is None:
+            return None
+        documents = active_panel.documents
+        if not documents:
+            return None
+        self._cognitive_updating_doc_index %= len(documents)
+        return documents[self._cognitive_updating_doc_index]
+
     def _render_system_logic_screen(
         self,
         surface: pygame.Surface,
@@ -4601,6 +4685,191 @@ class CognitiveTestScreen:
             footer = "Enter: Return to Tests"
         footer_text = self._tiny_font.render(footer, True, text_muted)
         surface.blit(footer_text, footer_text.get_rect(midbottom=(frame.centerx, frame.bottom - 12)))
+
+    def _render_cognitive_updating_screen(
+        self,
+        surface: pygame.Surface,
+        snap: TestSnapshot,
+        payload: CognitiveUpdatingPayload | None,
+    ) -> None:
+        w, h = surface.get_size()
+        bg = (6, 8, 14)
+        panel_bg = (18, 22, 36)
+        panel_soft = (30, 34, 52)
+        panel_header = (44, 136, 220)
+        accent = (230, 164, 42)
+        border = (208, 220, 238)
+        text_main = (236, 242, 250)
+        text_muted = (178, 192, 210)
+
+        surface.fill(bg)
+        margin = max(10, min(24, w // 34))
+        frame = pygame.Rect(margin, margin, max(280, w - margin * 2), max(220, h - margin * 2))
+        pygame.draw.rect(surface, bg, frame)
+        pygame.draw.rect(surface, border, frame, 2)
+
+        header = pygame.Rect(frame.x + 2, frame.y + 2, frame.w - 4, max(42, min(56, h // 8)))
+        pygame.draw.rect(surface, bg, header)
+        title = self._app.font.render("Cognitive Updating", True, text_main)
+        surface.blit(title, title.get_rect(center=header.center))
+
+        phase_label = {
+            Phase.INSTRUCTIONS: "Instructions",
+            Phase.PRACTICE: "Practice",
+            Phase.PRACTICE_DONE: "Practice Complete",
+            Phase.SCORED: "Timed Test",
+            Phase.RESULTS: "Results",
+        }.get(snap.phase, "Task")
+        phase_text = self._tiny_font.render(phase_label, True, text_muted)
+        surface.blit(phase_text, (frame.x + 10, header.bottom + 4))
+
+        stats_text = self._tiny_font.render(
+            f"Scored {snap.correct_scored}/{snap.attempted_scored}",
+            True,
+            text_muted,
+        )
+        surface.blit(stats_text, stats_text.get_rect(topright=(frame.right - 10, header.bottom + 4)))
+
+        content = pygame.Rect(
+            frame.x + 8,
+            header.bottom + 24,
+            frame.w - 16,
+            frame.h - (header.bottom - frame.y) - 34,
+        )
+        pygame.draw.rect(surface, panel_bg, content)
+        pygame.draw.rect(surface, border, content, 1)
+
+        if payload is None or snap.phase not in (Phase.PRACTICE, Phase.SCORED):
+            self._draw_wrapped_text(
+                surface,
+                str(snap.prompt),
+                content.inflate(-20, -16),
+                color=text_main,
+                font=self._small_font,
+                max_lines=14,
+            )
+        else:
+            self._cognitive_updating_sync_payload(payload)
+
+            warning_rect = pygame.Rect(content.x + 8, content.y + 8, int(content.w * 0.70), max(92, h // 8))
+            clock_rect = pygame.Rect(
+                warning_rect.right + 8,
+                warning_rect.y,
+                content.right - warning_rect.right - 16,
+                warning_rect.h,
+            )
+
+            for rect, label in ((warning_rect, "Warning"), (clock_rect, "Clock")):
+                pygame.draw.rect(surface, panel_soft, rect)
+                pygame.draw.rect(surface, border, rect, 2)
+                title_bar = pygame.Rect(rect.x, rect.y, rect.w, 28)
+                pygame.draw.rect(surface, panel_header, title_bar)
+                txt = self._small_font.render(label, True, text_main)
+                surface.blit(txt, txt.get_rect(center=title_bar.center))
+
+            y = warning_rect.y + 38
+            for line in payload.warning_lines[:3]:
+                t = self._small_font.render(line, True, text_main)
+                surface.blit(t, (warning_rect.x + 10, y))
+                y += 28
+
+            clock_value = payload.clock_hms
+            clock_text = self._big_font.render(clock_value, True, text_main)
+            if clock_text.get_width() > clock_rect.w - 16:
+                clock_text = self._mid_font.render(clock_value, True, text_main)
+            surface.blit(clock_text, clock_text.get_rect(center=(clock_rect.centerx, clock_rect.centery + 6)))
+            if snap.time_remaining_s is not None:
+                rem = int(round(snap.time_remaining_s))
+                rem_text = self._tiny_font.render(
+                    f"Time left {rem // 60:02d}:{rem % 60:02d}",
+                    True,
+                    text_muted,
+                )
+                surface.blit(rem_text, rem_text.get_rect(midbottom=(clock_rect.centerx, clock_rect.bottom - 6)))
+
+            tabs_rect = pygame.Rect(content.x + 8, warning_rect.bottom + 10, content.w - 16, 34)
+            panel_rect = pygame.Rect(
+                tabs_rect.x,
+                tabs_rect.bottom + 6,
+                tabs_rect.w,
+                content.bottom - tabs_rect.bottom - 86,
+            )
+            question_rect = pygame.Rect(
+                panel_rect.x,
+                panel_rect.bottom + 6,
+                panel_rect.w,
+                content.bottom - panel_rect.bottom - 8,
+            )
+
+            pygame.draw.rect(surface, panel_soft, panel_rect)
+            pygame.draw.rect(surface, border, panel_rect, 1)
+            pygame.draw.rect(surface, panel_soft, question_rect)
+            pygame.draw.rect(surface, border, question_rect, 1)
+
+            tab_gap = 6
+            tab_count = max(1, len(payload.panels))
+            tab_w = max(80, (tabs_rect.w - ((tab_count - 1) * tab_gap)) // tab_count)
+            x = tabs_rect.x
+            for idx, panel in enumerate(payload.panels):
+                tab = pygame.Rect(x, tabs_rect.y, tab_w, tabs_rect.h)
+                selected = idx == self._cognitive_updating_panel_index
+                pygame.draw.rect(surface, accent if selected else panel_header, tab)
+                pygame.draw.rect(surface, border, tab, 1)
+                tab_text = self._small_font.render(
+                    self._fit_label(self._small_font, panel.name, tab.w - 8),
+                    True,
+                    text_main,
+                )
+                surface.blit(tab_text, tab_text.get_rect(center=tab.center))
+                x += tab_w + tab_gap
+
+            active_panel = self._cognitive_updating_active_panel(payload)
+            active_doc = self._cognitive_updating_active_document(payload)
+            if active_panel is not None:
+                panel_name = self._small_font.render(f"Panel: {active_panel.name}", True, text_main)
+                surface.blit(panel_name, (panel_rect.x + 10, panel_rect.y + 8))
+                if active_doc is not None:
+                    meta = self._tiny_font.render(
+                        f"Page {self._cognitive_updating_doc_index + 1}/{len(active_panel.documents)}  "
+                        f"{active_doc.title} [{active_doc.kind}]",
+                        True,
+                        text_muted,
+                    )
+                    surface.blit(meta, (panel_rect.x + 10, panel_rect.y + 34))
+                    line_y = panel_rect.y + 58
+                    for line in active_doc.lines:
+                        if line_y > panel_rect.bottom - 22:
+                            break
+                        rendered = self._small_font.render(
+                            self._fit_label(self._small_font, line, panel_rect.w - 20),
+                            True,
+                            text_main,
+                        )
+                        surface.blit(rendered, (panel_rect.x + 10, line_y))
+                        line_y += 24
+
+            prompt = self._tiny_font.render(payload.question, True, text_muted)
+            surface.blit(prompt, (question_rect.x + 10, question_rect.y + 8))
+            code_label = self._tiny_font.render(f"Scenario {payload.scenario_code}", True, text_muted)
+            surface.blit(code_label, code_label.get_rect(topright=(question_rect.right - 10, question_rect.y + 8)))
+
+            input_box = pygame.Rect(question_rect.x + 10, question_rect.bottom - 36, min(240, question_rect.w - 110), 28)
+            pygame.draw.rect(surface, (8, 10, 20), input_box)
+            pygame.draw.rect(surface, border, input_box, 2)
+            caret = "|" if (pygame.time.get_ticks() // 500) % 2 == 0 else ""
+            entry = self._small_font.render(self._input + caret, True, text_main)
+            surface.blit(entry, (input_box.x + 8, input_box.y + 4))
+            unit_text = self._tiny_font.render(f"Unit: {payload.answer_unit}", True, text_muted)
+            surface.blit(unit_text, unit_text.get_rect(midleft=(input_box.right + 10, input_box.centery)))
+
+        if snap.phase in (Phase.PRACTICE, Phase.SCORED):
+            footer = "Left/Right or Tab: Panel  |  Up/Down: Page  |  Digits + Enter: Submit"
+        elif snap.phase in (Phase.INSTRUCTIONS, Phase.PRACTICE_DONE):
+            footer = "Enter: Continue  |  Esc/Backspace: Back"
+        else:
+            footer = "Enter: Return to Tests"
+        footer_text = self._tiny_font.render(footer, True, text_muted)
+        surface.blit(footer_text, footer_text.get_rect(midbottom=(frame.centerx, frame.bottom - 10)))
 
     def _render_numerical_operations_question(
         self,
@@ -8487,6 +8756,19 @@ def run(*, max_frames: int | None = None, event_injector: Callable[[int], None] 
             )
         )
 
+    def open_cognitive_updating() -> None:
+        seed = _new_seed()
+        app.push(
+            CognitiveTestScreen(
+                app,
+                engine_factory=lambda: build_cognitive_updating_test(
+                    clock=real_clock,
+                    seed=seed,
+                    difficulty=0.5,
+                ),
+            )
+        )
+
     tests_menu = MenuScreen(
         app,
         "Tests",
@@ -8504,6 +8786,7 @@ def run(*, max_frames: int | None = None, event_injector: Callable[[int], None] 
             MenuItem("Table Reading", open_table_reading),
             MenuItem("Sensory Motor Apparatus", open_sensory_motor_apparatus),
             MenuItem("Auditory Capacity", open_auditory_capacity),
+            MenuItem("Cognitive Updating", open_cognitive_updating),
             MenuItem("Back", app.pop),
         ],
     )
