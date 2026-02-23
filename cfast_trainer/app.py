@@ -10035,3 +10035,7 @@ def run(*, max_frames: int | None = None, event_injector: Callable[[int], None] 
         pygame.quit()
 
     return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(run())
