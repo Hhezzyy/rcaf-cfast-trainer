@@ -2831,6 +2831,8 @@ class MenuScreen:
         self._items = items
         self._selected = 0
         self._is_root = is_root
+        # HOTAS devices can emit stale startup button events; debounce briefly.
+        self._joy_input_unlock_ms = pygame.time.get_ticks() + 900
         self._title_font = pygame.font.Font(None, 42)
         self._item_font = pygame.font.Font(None, 32)
         self._hint_font = pygame.font.Font(None, 22)
@@ -2841,6 +2843,8 @@ class MenuScreen:
             return
 
         if event.type == pygame.JOYHATMOTION:
+            if pygame.time.get_ticks() < self._joy_input_unlock_ms:
+                return
             # D-pad / hat navigation (works on many sticks).
             _, y = event.value
             if y == 1:
@@ -2850,6 +2854,8 @@ class MenuScreen:
             return
 
         if event.type == pygame.JOYBUTTONDOWN:
+            if pygame.time.get_ticks() < self._joy_input_unlock_ms:
+                return
             # Common mapping: 0 = select, 1 = back/cancel.
             if event.button == 0:
                 self._activate()
