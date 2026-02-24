@@ -5637,7 +5637,7 @@ class CognitiveTestScreen:
         def _draw_tabbar(rect: pygame.Rect, names: tuple[str, str, str], active: int, prefix: str) -> None:
             pygame.draw.rect(surface, header_blue, rect)
             pygame.draw.rect(surface, border, rect, 2)
-            side_w = max(120, min(170, rect.w // 4))
+            side_w = max(84, min(150, (rect.w - 12) // 3))
             left = pygame.Rect(rect.x + 2, rect.y + 2, side_w, rect.h - 4)
             right = pygame.Rect(rect.right - side_w - 2, rect.y + 2, side_w, rect.h - 4)
             center = pygame.Rect(left.right + 4, rect.y + 2, right.x - left.right - 8, rect.h - 4)
@@ -5748,10 +5748,24 @@ class CognitiveTestScreen:
             rem_txt = self._tiny_font.render(f"{rem // 60:02d}:{rem % 60:02d}", True, text_muted)
             surface.blit(rem_txt, rem_txt.get_rect(midbottom=(clock.centerx, clock.bottom - 4)))
 
-        upper_tabs = pygame.Rect(content.x + 2, warning.bottom + 8, content.w - 4, 32)
-        upper_rect = pygame.Rect(upper_tabs.x, upper_tabs.bottom + 4, upper_tabs.w, max(220, int(content.h * 0.34)))
-        lower_tabs = pygame.Rect(content.x + 2, upper_rect.bottom + 10, content.w - 4, 32)
-        lower_rect = pygame.Rect(lower_tabs.x, lower_tabs.bottom + 4, lower_tabs.w, content.bottom - lower_tabs.bottom - 6)
+        panel_gap = 10
+        panel_top = warning.bottom + 8
+        panel_h = content.bottom - panel_top - 8
+        panel_w = max(160, (content.w - panel_gap - 4) // 2)
+        upper_tabs = pygame.Rect(content.x + 2, panel_top, panel_w, 32)
+        upper_rect = pygame.Rect(
+            upper_tabs.x,
+            upper_tabs.bottom + 4,
+            upper_tabs.w,
+            max(180, panel_h - upper_tabs.h - 4),
+        )
+        lower_tabs = pygame.Rect(upper_tabs.right + panel_gap, panel_top, panel_w, 32)
+        lower_rect = pygame.Rect(
+            lower_tabs.x,
+            lower_tabs.bottom + 4,
+            lower_tabs.w,
+            max(180, panel_h - lower_tabs.h - 4),
+        )
 
         _draw_tabbar(
             upper_tabs,
@@ -5796,7 +5810,7 @@ class CognitiveTestScreen:
                 row_y = parcel_rect.y + 40 + idx * row_h
                 label_txt = self._app.font.render(label, True, text_main)
                 surface.blit(label_txt, (parcel_rect.x + 16, row_y + 2))
-                box_w = max(150, min(380, parcel_rect.w - 280))
+                box_w = max(110, min(260, parcel_rect.w // 2))
                 box = pygame.Rect(parcel_rect.right - box_w - 24, row_y - 2, box_w, row_h - 4)
                 is_active = idx == self._cognitive_updating_active_parcel_field
                 pygame.draw.rect(surface, (239, 163, 33) if is_active else (226, 150, 30), box, border_radius=4)
@@ -5815,13 +5829,15 @@ class CognitiveTestScreen:
             surface.blit(act_txt, (dispenser_rect.x + 16, row_mid_y - act_txt.get_height() // 2))
 
             circle_r = max(12, min(30, dispenser_rect.w // 28))
-            cx = dispenser_rect.x + 210
+            activate_btn = pygame.Rect(dispenser_rect.right - 84, dispenser_rect.y + 44, 64, 64)
+            cx = max(dispenser_rect.x + 130, dispenser_rect.x + (dispenser_rect.w // 3))
+            max_cx = activate_btn.x - (circle_r * 2 + 12) * 5
+            cx = min(cx, max_cx)
             for idx in range(5):
                 col = (0, 220, 0) if idx < dispenser_lit else (220, 220, 220)
                 pygame.draw.circle(surface, col, (cx + idx * (circle_r * 2 + 14), row_mid_y), circle_r)
                 pygame.draw.circle(surface, (180, 180, 180), (cx + idx * (circle_r * 2 + 14), row_mid_y), circle_r, 1)
 
-            activate_btn = pygame.Rect(dispenser_rect.right - 84, dispenser_rect.y + 44, 64, 64)
             pygame.draw.rect(surface, header_blue, activate_btn, border_radius=4)
             self._cognitive_updating_hitboxes["objective_activate"] = activate_btn
 
@@ -5837,7 +5853,9 @@ class CognitiveTestScreen:
 
         else:
             pad = 8
-            left_w = max(220, int(upper_rect.w * 0.56))
+            min_right_w = 130
+            max_left_w = max(140, upper_rect.w - (pad * 3) - min_right_w)
+            left_w = max(140, min(int(upper_rect.w * 0.56), max_left_w))
             hyd_rect = pygame.Rect(upper_rect.x + pad, upper_rect.y + pad, left_w, upper_rect.h - pad * 2)
             right_x = hyd_rect.right + 8
             right_w = upper_rect.right - right_x - pad
@@ -5848,7 +5866,13 @@ class CognitiveTestScreen:
             _draw_card(pump_rect, "Hydraulic Pump")
             _draw_card(comms_rect, "Comms Code")
 
-            scale = pygame.Rect(hyd_rect.x + 70, hyd_rect.y + 42, hyd_rect.w - 130, hyd_rect.h - 58)
+            scale_margin = max(14, min(52, hyd_rect.w // 6))
+            scale = pygame.Rect(
+                hyd_rect.x + scale_margin,
+                hyd_rect.y + 42,
+                max(80, hyd_rect.w - (scale_margin * 2)),
+                max(80, hyd_rect.h - 58),
+            )
             pygame.draw.rect(surface, card_bg, scale)
             section_h = scale.h // 3
             high_zone = pygame.Rect(scale.x, scale.y, scale.w, section_h)
@@ -5869,8 +5893,9 @@ class CognitiveTestScreen:
             surface.blit(mid_txt, (mid_zone.x + 8, mid_zone.y + 8))
             surface.blit(low_txt, (low_zone.x + 8, low_zone.y + 8))
 
-            on_btn = pygame.Rect(pump_rect.x + 24, pump_rect.y + 58, pump_rect.w // 2 - 28, 56)
-            off_btn = pygame.Rect(pump_rect.centerx + 4, pump_rect.y + 58, pump_rect.w // 2 - 28, 56)
+            btn_w = max(42, pump_rect.w // 2 - 28)
+            on_btn = pygame.Rect(pump_rect.x + 14, pump_rect.y + 58, btn_w, 56)
+            off_btn = pygame.Rect(on_btn.right + 8, pump_rect.y + 58, btn_w, 56)
             pygame.draw.rect(surface, (0, 196, 0) if pump_on else (80, 80, 80), on_btn, border_radius=4)
             pygame.draw.rect(surface, (136, 70, 56) if not pump_on else (80, 80, 80), off_btn, border_radius=4)
             on_txt = self._app.font.render("On", True, text_main)
@@ -5880,20 +5905,22 @@ class CognitiveTestScreen:
             self._cognitive_updating_hitboxes["pump_on"] = on_btn
             self._cognitive_updating_hitboxes["pump_off"] = off_btn
 
-            box = pygame.Rect(comms_rect.x + 18, comms_rect.y + 52, comms_rect.w - 116, 52)
+            submit_w = max(52, min(66, comms_rect.w // 3))
+            box_w = max(70, comms_rect.w - submit_w - 36)
+            box = pygame.Rect(comms_rect.x + 12, comms_rect.y + 52, box_w, 52)
             pygame.draw.rect(surface, (230, 157, 38), box, border_radius=4)
             comms_txt = self._app.font.render(self._cognitive_updating_comms_input, True, (20, 20, 22))
             surface.blit(comms_txt, (box.x + 8, box.y + (box.h - comms_txt.get_height()) // 2))
-            submit = pygame.Rect(box.right + 10, box.y, 66, 52)
+            submit = pygame.Rect(box.right + 8, box.y, submit_w, 52)
             pygame.draw.rect(surface, header_blue, submit, border_radius=4)
             self._cognitive_updating_hitboxes["comms_submit"] = submit
             time_txt = self._small_font.render(f"Time remaining: {comms_left}", True, text_main)
             surface.blit(time_txt, (box.x, box.bottom + 8))
 
             key_y = comms_rect.bottom - 44
-            key_w = max(30, min(80, (comms_rect.w - 36) // 4))
+            key_w = max(26, min(72, (comms_rect.w - 28) // 4))
             for idx, digit in enumerate(("1", "2", "3", "4")):
-                key = pygame.Rect(comms_rect.x + 12 + idx * (key_w + 4), key_y, key_w, 38)
+                key = pygame.Rect(comms_rect.x + 8 + idx * (key_w + 2), key_y, key_w, 38)
                 pygame.draw.rect(surface, (70, 70, 72), key)
                 pygame.draw.rect(surface, (40, 40, 42), key, 1)
                 key_txt = self._app.font.render(digit, True, text_main)
@@ -5943,8 +5970,9 @@ class CognitiveTestScreen:
             bravo_txt = self._app.font.render("Bravo Camera Activation", True, text_main)
             surface.blit(alpha_txt, (video.x + 18, row1_y))
             surface.blit(bravo_txt, (video.x + 18, row2_y))
-            alpha_btn = pygame.Rect(video.right - 186, row1_y - 6, 140, 48)
-            bravo_btn = pygame.Rect(video.right - 186, row2_y - 6, 140, 48)
+            cam_btn_w = max(96, min(140, video.w // 3))
+            alpha_btn = pygame.Rect(video.right - cam_btn_w - 16, row1_y - 6, cam_btn_w, 48)
+            bravo_btn = pygame.Rect(video.right - cam_btn_w - 16, row2_y - 6, cam_btn_w, 48)
             pygame.draw.rect(surface, (0, 176, 0) if self._cognitive_updating_alpha_armed else header_blue, alpha_btn, border_radius=4)
             pygame.draw.rect(surface, (0, 176, 0) if self._cognitive_updating_bravo_armed else header_blue, bravo_btn, border_radius=4)
             alpha_btn_txt = self._small_font.render("Active" if self._cognitive_updating_alpha_armed else "Activate", True, text_main)
@@ -5960,8 +5988,9 @@ class CognitiveTestScreen:
             ground_txt = self._app.font.render("Ground Sensor", True, text_main)
             surface.blit(air_txt, (sensors.x + 18, air_row))
             surface.blit(ground_txt, (sensors.x + 18, ground_row))
-            air_btn = pygame.Rect(sensors.x + 330, air_row - 8, 130, 52)
-            ground_btn = pygame.Rect(sensors.x + 330, ground_row - 8, 130, 52)
+            sensor_btn_w = max(92, min(130, sensors.w // 3))
+            air_btn = pygame.Rect(sensors.right - sensor_btn_w - 150, air_row - 8, sensor_btn_w, 52)
+            ground_btn = pygame.Rect(sensors.right - sensor_btn_w - 150, ground_row - 8, sensor_btn_w, 52)
             pygame.draw.rect(surface, (0, 176, 0) if self._cognitive_updating_air_sensor_armed else header_blue, air_btn, border_radius=4)
             pygame.draw.rect(surface, (0, 176, 0) if self._cognitive_updating_ground_sensor_armed else header_blue, ground_btn, border_radius=4)
             air_btn_txt = self._small_font.render("Active" if self._cognitive_updating_air_sensor_armed else "Activate", True, text_main)
@@ -5970,13 +5999,13 @@ class CognitiveTestScreen:
             surface.blit(ground_btn_txt, ground_btn_txt.get_rect(center=ground_btn.center))
             air_time_txt = self._app.font.render(f"Time Left: {_mmss(air_left)}", True, text_muted)
             ground_time_txt = self._app.font.render(f"Time Left: {_mmss(ground_left)}", True, text_muted)
-            surface.blit(air_time_txt, (air_btn.right + 34, air_row + 2))
-            surface.blit(ground_time_txt, (ground_btn.right + 34, ground_row + 2))
+            surface.blit(air_time_txt, (air_btn.right + 12, air_row + 2))
+            surface.blit(ground_time_txt, (ground_btn.right + 12, ground_row + 2))
             self._cognitive_updating_hitboxes["sensor_air"] = air_btn
             self._cognitive_updating_hitboxes["sensor_ground"] = ground_btn
 
         else:
-            col_w = max(150, (lower_rect.w - 24) // 3)
+            col_w = max(92, (lower_rect.w - 24) // 3)
             col_y = lower_rect.y + 32
             for idx in range(3):
                 col_x = lower_rect.x + 8 + idx * col_w
