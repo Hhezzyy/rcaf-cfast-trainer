@@ -46,8 +46,12 @@ def test_headless_sim_multitask_sequence_math_and_color_hits() -> None:
         practice_rounds=1,
         round_duration_s=0.6,
         sequence_show_s=0.25,
+        memory_recall_delay_s=0.0,
+        memory_recall_delay_max_s=0.0,
         diamond_spawn_interval_s=0.2,
+        diamond_spawn_interval_max_s=0.2,
         diamond_speed_norm_per_s=0.85,
+        diamond_speed_max_norm_per_s=0.85,
         max_live_diamonds=5,
     )
 
@@ -76,7 +80,7 @@ def test_headless_sim_multitask_sequence_math_and_color_hits() -> None:
     assert engine.submit_answer(str(_solve_math(practice_payload.math_prompt))) is True
 
     # Practice completion follows the memory-cycle timer, not math submission.
-    clock.advance(0.35)
+    clock.advance(0.6)
     engine.update()
     assert engine.phase is Phase.PRACTICE_DONE
 
@@ -98,10 +102,10 @@ def test_headless_sim_multitask_sequence_math_and_color_hits() -> None:
 
     hit = False
     key_for_color = {
-        "RED": "R",
-        "YELLOW": "E",
-        "GREEN": "W",
-        "BLUE": "Q",
+        "RED": "Q",
+        "YELLOW": "W",
+        "GREEN": "E",
+        "BLUE": "R",
     }
     for _ in range(200):
         clock.advance(0.05)

@@ -3685,7 +3685,14 @@ class CognitiveTestScreen:
             if trace_test_1_payload is not None and self._input == "":
                 self._input = str(self._math_choice)
 
-            accepted = self._engine.submit_answer(self._input)
+            raw_submission = self._input
+            if scenario is not None:
+                if raw_submission == "":
+                    return
+                answer_digits = max(1, int(getattr(scenario, "answer_digits", 4)))
+                raw_submission = raw_submission.zfill(answer_digits)
+
+            accepted = self._engine.submit_answer(raw_submission)
             if accepted:
                 self._input = ""
                 self._math_choice = 1
@@ -3700,6 +3707,16 @@ class CognitiveTestScreen:
             return
 
         if cln_payload is not None:
+            memory_key = {
+                pygame.K_a: 1,
+                pygame.K_s: 2,
+                pygame.K_d: 3,
+                pygame.K_f: 4,
+            }.get(key)
+            if memory_key is not None and cln_payload.options_active:
+                self._engine.submit_answer(f"MEM:{memory_key}")
+                return
+
             color_key = {
                 pygame.K_q: "Q",
                 pygame.K_w: "W",
@@ -3958,7 +3975,8 @@ class CognitiveTestScreen:
 
         ch = event.unicode
         if scenario is not None:
-            if ch and ch.isdigit() and len(self._input) < 4:
+            answer_digits = max(1, int(getattr(scenario, "answer_digits", 4)))
+            if ch and ch.isdigit() and len(self._input) < answer_digits:
                 self._input += ch
             return
 
@@ -4209,12 +4227,30 @@ class CognitiveTestScreen:
             if scenario is not None and snap.phase in (Phase.PRACTICE, Phase.SCORED):
                 self._render_airborne_question(surface, snap, scenario)
             else:
-                prompt_lines = str(snap.prompt).split("\n")
-                y = 140
-                for line in prompt_lines[:10]:
-                    txt = self._small_font.render(line, True, (235, 235, 245))
-                    surface.blit(txt, (40, y))
-                    y += 26
+                if snap.phase in (Phase.PRACTICE, Phase.SCORED):
+                    prompt_rect = pygame.Rect(
+                        max(36, surface.get_width() // 10),
+                        max(90, surface.get_height() // 5),
+                        surface.get_width() - max(72, surface.get_width() // 5),
+                        max(120, min(200, surface.get_height() // 3)),
+                    )
+                    self._render_centered_prompt_panel(
+                        surface,
+                        prompt_rect,
+                        str(snap.prompt),
+                        fill=(18, 24, 72),
+                        border=(102, 118, 178),
+                        text_color=(235, 235, 245),
+                        preferred_size=max(28, min(46, surface.get_height() // 14)),
+                        min_size=max(18, min(28, surface.get_height() // 22)),
+                    )
+                else:
+                    prompt_lines = str(snap.prompt).split("\n")
+                    y = 140
+                    for line in prompt_lines[:10]:
+                        txt = self._small_font.render(line, True, (235, 235, 245))
+                        surface.blit(txt, (40, y))
+                        y += 26
 
         if snap.phase in (Phase.PRACTICE, Phase.SCORED):
             if is_numerical_ops:
@@ -4252,23 +4288,240 @@ class CognitiveTestScreen:
             elif vs is not None:
                 pass
             elif scenario is None and (dr is None or dr.accepting_input):
-                box = pygame.Rect(40, surface.get_height() - 120, 400, 44)
-                pygame.draw.rect(surface, (30, 30, 40), box)
-                pygame.draw.rect(surface, (90, 90, 110), box, 2)
-
-                caret = "|" if (pygame.time.get_ticks() // 500) % 2 == 0 else ""
-                entry = self._app.font.render(self._input + caret, True, (235, 235, 245))
-                surface.blit(entry, (box.x + 10, box.y + 8))
-
-                hint = self._small_font.render(snap.input_hint, True, (140, 140, 150))
-                surface.blit(hint, (40, surface.get_height() - 60))
+                box_w = max(300, min(520, int(surface.get_width() * 0.48)))
+                box_h = max(56, min(72, int(surface.get_height() * 0.10)))
+                box = pygame.Rect(
+                    (surface.get_width() - box_w) // 2,
+                    int(surface.get_height() * 0.68),
+                    box_w,
+                    box_h,
+                )
+                self._render_centered_input_box(
+                    surface,
+                    box,
+                    label="Answer",
+                    hint=snap.input_hint,
+                    entry_text=self._input,
+                    fill=(30, 30, 40),
+                    border=(90, 90, 110),
+                    label_color=(235, 235, 245),
+                    input_color=(235, 235, 245),
+                    hint_color=(140, 140, 150),
+                    label_font=self._small_font,
+                    input_font=self._app.font,
+                    hint_font=self._small_font,
+                )
 
         if not self._engine.can_exit() and snap.phase is Phase.SCORED:
             lock = self._small_font.render("Test in progress: cannot exit.", True, (140, 140, 150))
             surface.blit(lock, (460, surface.get_height() - 60))
 
+        if snap.phase is Phase.RESULTS and not self._pause_menu_active:
+            self._render_standard_results_overlay(surface, snap)
+
         if self._pause_menu_active:
             self._render_pause_overlay(surface)
+
+    def _render_standard_results_overlay(
+        self,
+        surface: pygame.Surface,
+        snap: TestSnapshot,
+    ) -> None:
+        w, h = surface.get_size()
+
+        dim = pygame.Surface((w, h), pygame.SRCALPHA)
+        dim.fill((4, 10, 30, 190))
+        surface.blit(dim, (0, 0))
+
+        panel_w = min(max(420, int(w * 0.82)), 1020)
+        panel_h = min(max(290, int(h * 0.76)), h - 26)
+        panel = pygame.Rect((w - panel_w) // 2, (h - panel_h) // 2, panel_w, panel_h)
+
+        pygame.draw.rect(surface, (6, 18, 108), panel, border_radius=14)
+        pygame.draw.rect(surface, (230, 238, 255), panel, 2, border_radius=14)
+
+        title_size = max(28, min(64, h // 13))
+        subtitle_size = max(24, min(52, h // 16))
+        hint_size = max(18, min(30, h // 34))
+
+        title_font = pygame.font.Font(None, title_size)
+        subtitle_font = pygame.font.Font(None, subtitle_size)
+        hint_font = pygame.font.Font(None, hint_size)
+
+        title = title_font.render(snap.title, True, (238, 245, 255))
+        surface.blit(title, title.get_rect(midtop=(panel.centerx, panel.y + 18)))
+
+        subtitle = subtitle_font.render("Results", True, (188, 204, 228))
+        subtitle_top = panel.y + 18 + title.get_height() + 4
+        surface.blit(subtitle, subtitle.get_rect(midtop=(panel.centerx, subtitle_top)))
+
+        prompt_lines = [
+            line.strip() for line in str(snap.prompt).splitlines() if line.strip() != ""
+        ]
+        if prompt_lines and prompt_lines[0].casefold() == "results":
+            prompt_lines = prompt_lines[1:]
+
+        score_line = f"Scored {snap.correct_scored}/{snap.attempted_scored}"
+        content_lines = [score_line] + prompt_lines
+        if not prompt_lines:
+            content_lines = [score_line]
+
+        body_top = panel.y + 18 + title.get_height() + subtitle.get_height() + 22
+        body_bottom = panel.bottom - hint_font.get_linesize() - 24
+        body_rect = pygame.Rect(
+            panel.x + 26,
+            body_top,
+            panel.w - 52,
+            max(40, body_bottom - body_top),
+        )
+
+        body_font, wrapped_lines = self._fit_results_text(
+            lines=content_lines,
+            max_width=body_rect.w,
+            max_height=body_rect.h,
+            preferred_size=max(20, min(34, h // 22)),
+            min_size=max(14, min(22, h // 34)),
+        )
+        line_h = body_font.get_linesize() + 4
+        start_y = body_rect.y + max(0, (body_rect.h - (len(wrapped_lines) * line_h)) // 2)
+        y = start_y
+        for line in wrapped_lines:
+            text = body_font.render(line, True, (238, 245, 255))
+            surface.blit(text, text.get_rect(midtop=(panel.centerx, y)))
+            y += line_h
+
+        hint = hint_font.render("Enter: Return to Tests", True, (188, 204, 228))
+        surface.blit(hint, hint.get_rect(midbottom=(panel.centerx, panel.bottom - 12)))
+
+    def _fit_results_text(
+        self,
+        *,
+        lines: list[str],
+        max_width: int,
+        max_height: int,
+        preferred_size: int,
+        min_size: int,
+    ) -> tuple[pygame.font.Font, list[str]]:
+        if max_width <= 0 or max_height <= 0:
+            fallback = pygame.font.Font(None, max(14, min_size))
+            return fallback, [""]
+
+        size = max(preferred_size, min_size)
+        while size >= min_size:
+            font = pygame.font.Font(None, size)
+            wrapped = self._wrap_centered_lines(lines=lines, font=font, max_width=max_width)
+            line_h = font.get_linesize() + 4
+            if len(wrapped) * line_h <= max_height:
+                return font, wrapped
+            size -= 1
+
+        font = pygame.font.Font(None, max(14, min_size))
+        wrapped = self._wrap_centered_lines(lines=lines, font=font, max_width=max_width)
+        line_h = font.get_linesize() + 4
+        max_lines = max(1, max_height // max(1, line_h))
+        if len(wrapped) > max_lines:
+            wrapped = wrapped[:max_lines]
+            if wrapped:
+                tail = wrapped[-1]
+                while tail and font.size(f"{tail}...")[0] > max_width:
+                    tail = tail[:-1]
+                wrapped[-1] = f"{tail}..." if tail else "..."
+        return font, wrapped
+
+    def _wrap_centered_lines(
+        self,
+        *,
+        lines: list[str],
+        font: pygame.font.Font,
+        max_width: int,
+    ) -> list[str]:
+        out: list[str] = []
+        for raw in lines:
+            text = raw.strip()
+            if text == "":
+                out.append("")
+                continue
+
+            words = text.split()
+            current = ""
+            for word in words:
+                trial = word if current == "" else f"{current} {word}"
+                if font.size(trial)[0] <= max_width:
+                    current = trial
+                else:
+                    if current:
+                        out.append(current)
+                    current = word
+            if current:
+                out.append(current)
+
+        return out if out else [""]
+
+    def _render_centered_prompt_panel(
+        self,
+        surface: pygame.Surface,
+        rect: pygame.Rect,
+        text: str,
+        *,
+        fill: tuple[int, int, int],
+        border: tuple[int, int, int],
+        text_color: tuple[int, int, int],
+        preferred_size: int,
+        min_size: int,
+    ) -> None:
+        pygame.draw.rect(surface, fill, rect, border_radius=14)
+        pygame.draw.rect(surface, border, rect, 2, border_radius=14)
+
+        lines = [line.strip() for line in str(text).splitlines() if line.strip() != ""]
+        if not lines:
+            lines = [""]
+
+        body = rect.inflate(-20, -18)
+        font, wrapped_lines = self._fit_results_text(
+            lines=lines,
+            max_width=body.w,
+            max_height=body.h,
+            preferred_size=preferred_size,
+            min_size=min_size,
+        )
+        line_h = font.get_linesize() + 4
+        y = body.y + max(0, (body.h - (len(wrapped_lines) * line_h)) // 2)
+        for line in wrapped_lines:
+            surf = font.render(line, True, text_color)
+            surface.blit(surf, surf.get_rect(midtop=(rect.centerx, y)))
+            y += line_h
+
+    def _render_centered_input_box(
+        self,
+        surface: pygame.Surface,
+        rect: pygame.Rect,
+        *,
+        label: str,
+        hint: str,
+        entry_text: str,
+        fill: tuple[int, int, int],
+        border: tuple[int, int, int],
+        label_color: tuple[int, int, int],
+        input_color: tuple[int, int, int],
+        hint_color: tuple[int, int, int],
+        label_font: pygame.font.Font,
+        input_font: pygame.font.Font,
+        hint_font: pygame.font.Font,
+    ) -> None:
+        pygame.draw.rect(surface, fill, rect, border_radius=12)
+        pygame.draw.rect(surface, border, rect, 2, border_radius=12)
+
+        label_surf = label_font.render(label, True, label_color)
+        surface.blit(label_surf, label_surf.get_rect(midbottom=(rect.centerx, rect.y - 8)))
+
+        caret = "|" if (pygame.time.get_ticks() // 500) % 2 == 0 else ""
+        entry_surf = input_font.render(entry_text + caret, True, input_color)
+        if entry_surf.get_width() > rect.w - 24:
+            entry_surf = self._small_font.render(entry_text + caret, True, input_color)
+        surface.blit(entry_surf, entry_surf.get_rect(center=rect.center))
+
+        hint_surf = hint_font.render(hint, True, hint_color)
+        surface.blit(hint_surf, hint_surf.get_rect(midtop=(rect.centerx, rect.bottom + 10)))
 
     def _render_pause_overlay(self, surface: pygame.Surface) -> None:
         dim = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
@@ -7609,23 +7862,33 @@ class CognitiveTestScreen:
             True,
             accent,
         )
-        surface.blit(stats, stats.get_rect(midtop=(frame.centerx, frame.y + 40)))
+        stats_rect = stats.get_rect(midtop=(frame.centerx, frame.y + 40))
+        surface.blit(stats, stats_rect)
 
         prompt = str(snap.prompt).strip().split("\n", 1)[0]
         if prompt == "":
             prompt = "0 + 0 ="
 
+        prompt_panel = pygame.Rect(
+            frame.x + max(28, frame.w // 10),
+            stats_rect.bottom + max(20, frame.h // 18),
+            frame.w - max(56, frame.w // 5),
+            max(120, min(190, frame.h // 4)),
+        )
+        pygame.draw.rect(surface, (10, 18, 92), prompt_panel, border_radius=14)
+        pygame.draw.rect(surface, (118, 150, 214), prompt_panel, 2, border_radius=14)
+        prompt_body = prompt_panel.inflate(-20, -18)
+
         prompt_surface = None
         for f in self._num_prompt_fonts:
             candidate = f.render(prompt, True, text_main)
-            if candidate.get_width() <= int(frame.w * 0.86):
+            if candidate.get_width() <= prompt_body.w:
                 prompt_surface = candidate
                 break
         if prompt_surface is None:
             prompt_surface = self._num_prompt_fonts[-1].render(prompt, True, text_main)
 
-        prompt_y = frame.y + int(frame.h * 0.36)
-        surface.blit(prompt_surface, prompt_surface.get_rect(center=(frame.centerx, prompt_y)))
+        surface.blit(prompt_surface, prompt_surface.get_rect(center=prompt_body.center))
 
     def _render_numerical_operations_answer_box(
         self,
@@ -7638,23 +7901,27 @@ class CognitiveTestScreen:
         box_border = (142, 168, 210)
         input_color = (12, 26, 88)
 
-        answer_label = self._small_font.render("Your Answer:", True, text_main)
-        box_w = max(220, min(380, int(w * 0.42)))
-        box_h = max(52, min(66, int(h * 0.12)))
-        box_x = (w - box_w) // 2
-        box_y = int(h * 0.62)
-        surface.blit(answer_label, answer_label.get_rect(midbottom=(w // 2, box_y - 8)))
-
-        box = pygame.Rect(box_x, box_y, box_w, box_h)
-        pygame.draw.rect(surface, box_fill, box)
-        pygame.draw.rect(surface, box_border, box, 2)
-
-        caret = "|" if (pygame.time.get_ticks() // 500) % 2 == 0 else ""
-        entry = self._num_input_font.render(self._input + caret, True, input_color)
-        surface.blit(entry, (box.x + 12, box.y + max(2, (box.h - entry.get_height()) // 2)))
-
-        hint = self._small_font.render(snap.input_hint, True, (194, 210, 236))
-        surface.blit(hint, hint.get_rect(midtop=(w // 2, box.bottom + 10)))
+        box = pygame.Rect(
+            (w - max(300, min(500, int(w * 0.50)))) // 2,
+            int(h * 0.62),
+            max(300, min(500, int(w * 0.50))),
+            max(60, min(78, int(h * 0.13))),
+        )
+        self._render_centered_input_box(
+            surface,
+            box,
+            label="Your Answer",
+            hint=snap.input_hint,
+            entry_text=self._input,
+            fill=box_fill,
+            border=box_border,
+            label_color=text_main,
+            input_color=input_color,
+            hint_color=(194, 210, 236),
+            label_font=self._small_font,
+            input_font=self._num_input_font,
+            hint_font=self._small_font,
+        )
 
     def _render_angles_bearings_screen(
         self,
@@ -12210,15 +12477,14 @@ class CognitiveTestScreen:
     ) -> None:
         w, h = surface.get_size()
 
-        bg = (2, 8, 114)
+        bg = (2, 7, 122)
         frame_border = (232, 240, 255)
-        panel_fill = (96, 101, 111)
-        panel_border = (200, 208, 226)
-        card_fill = (64, 67, 74)
-        card_border = (172, 182, 204)
         text_main = (238, 245, 255)
-        text_muted = (196, 207, 228)
-        text_dim = (155, 168, 194)
+        text_muted = (210, 220, 240)
+        dark_panel = (3, 8, 18)
+        green_panel = (0, 120, 16)
+        green_panel_dark = (0, 88, 14)
+        white_panel = (244, 244, 242)
 
         surface.fill(bg)
 
@@ -12226,9 +12492,17 @@ class CognitiveTestScreen:
         frame = pygame.Rect(margin, margin, w - margin * 2, h - margin * 2)
         pygame.draw.rect(surface, frame_border, frame, 1)
 
+        phase_label = {
+            Phase.INSTRUCTIONS: "Instructions",
+            Phase.PRACTICE: "Practice",
+            Phase.PRACTICE_DONE: "Practice Complete",
+            Phase.SCORED: "Timed Test",
+            Phase.RESULTS: "Results",
+        }.get(snap.phase, "Test")
+
         header_h = max(24, min(30, h // 18))
         header = pygame.Rect(frame.x + 2, frame.y + 2, frame.w - 4, header_h)
-        pygame.draw.rect(surface, (9, 20, 123), header)
+        pygame.draw.rect(surface, bg, header)
         pygame.draw.line(
             surface,
             frame_border,
@@ -12237,156 +12511,847 @@ class CognitiveTestScreen:
             1,
         )
 
-        surface.blit(
-            self._tiny_font.render("Airborne Numerical Test - Testing", True, text_main),
-            (header.x + 10, header.y + 5),
+        title = self._tiny_font.render(
+            f"Airborne Numerical Test - {phase_label}", True, text_main
         )
-        phase_label = "Practice" if snap.phase is Phase.PRACTICE else "Scored"
-        phase_surf = self._tiny_font.render(phase_label, True, text_muted)
-        surface.blit(phase_surf, phase_surf.get_rect(topright=(header.right - 10, header.y + 5)))
+        surface.blit(title, title.get_rect(center=header.center))
 
-        work = pygame.Rect(frame.x + 10, header.bottom + 8, frame.w - 20, frame.h - header_h - 18)
-        pygame.draw.rect(surface, panel_fill, work)
-        pygame.draw.rect(surface, panel_border, work, 1)
+        footer_h = max(28, min(34, h // 18))
+        footer = pygame.Rect(frame.x + 1, frame.bottom - footer_h - 1, frame.w - 2, footer_h)
+        pygame.draw.rect(surface, dark_panel, footer)
+        pygame.draw.line(surface, frame_border, (footer.x, footer.y), (footer.right, footer.y), 1)
 
-        side_w = max(210, min(300, work.w // 3))
-        left = pygame.Rect(work.x + 8, work.y + 8, work.w - side_w - 24, work.h - 16)
-        right = pygame.Rect(left.right + 8, work.y + 8, side_w, work.h - 16)
+        work = pygame.Rect(
+            frame.x + 1,
+            header.bottom + 1,
+            frame.w - 2,
+            footer.y - header.bottom - 2,
+        )
+        pygame.draw.line(surface, frame_border, (work.x, work.bottom), (work.right, work.bottom), 1)
 
-        map_h = int(left.h * 0.60)
-        map_rect = pygame.Rect(left.x, left.y, left.w, map_h)
-        table_rect = pygame.Rect(left.x, map_rect.bottom + 8, left.w, left.h - map_h - 8)
+        left_w = max(280, min(int(work.w * 0.38), 420))
+        left = pygame.Rect(work.x, work.y, left_w, work.h)
+        right = pygame.Rect(left.right, work.y, work.w - left_w, work.h)
+        pygame.draw.line(surface, frame_border, (left.right, work.y), (left.right, work.bottom), 1)
 
-        pygame.draw.rect(surface, card_fill, map_rect)
-        pygame.draw.rect(surface, card_border, map_rect, 1)
-        pygame.draw.rect(surface, card_fill, table_rect)
-        pygame.draw.rect(surface, card_border, table_rect, 1)
+        left_pad = max(16, min(20, left.w // 20))
+        right_pad = max(16, min(22, right.w // 24))
+        menu_h = max(124, min(160, int(left.h * 0.24)))
+        formula_h = max(54, min(72, int(left.h * 0.10)))
+        menu_rect = pygame.Rect(left.x + left_pad, left.y + 10, left.w - left_pad * 2, menu_h)
+        formula_rect = pygame.Rect(
+            left.x + 18,
+            left.bottom - formula_h - 12,
+            left.w - 36,
+            formula_h,
+        )
+        info_rect = pygame.Rect(
+            left.x + 18,
+            menu_rect.bottom + 12,
+            left.w - 36,
+            formula_rect.y - menu_rect.bottom - 24,
+        )
 
-        self._draw_airborne_map(surface, map_rect, scenario)
-        self._draw_airborne_table(surface, table_rect, scenario)
+        map_h = max(240, min(int(right.h * 0.56), right.h - 180))
+        mission_h = max(78, min(110, int(right.h * 0.18)))
+        table_h = max(96, right.h - map_h - mission_h - 40)
 
-        pygame.draw.rect(surface, card_fill, right)
-        pygame.draw.rect(surface, card_border, right, 1)
+        map_rect = pygame.Rect(
+            right.x + right_pad,
+            right.y + 14,
+            right.w - right_pad * 2,
+            map_h,
+        )
+        mission_rect = pygame.Rect(
+            right.x + max(120, int(right.w * 0.26)),
+            map_rect.bottom + 18,
+            right.w - max(240, int(right.w * 0.52)),
+            mission_h,
+        )
+        table_rect = pygame.Rect(
+            right.x + max(72, int(right.w * 0.12)),
+            mission_rect.bottom + 18,
+            right.w - max(144, int(right.w * 0.24)),
+            table_h,
+        )
 
-        prompt_text = str(snap.prompt).split("\n", 1)[0]
+        active_page = self._air_overlay or "intro"
+
+        self._draw_airborne_menu_panel(
+            surface,
+            menu_rect,
+            active_page=active_page,
+            show_distances=self._air_show_distances,
+            text_main=text_main,
+            text_muted=text_muted,
+        )
+
+        if active_page == "intro":
+            self._draw_airborne_reference_panel(
+                surface,
+                info_rect,
+                scenario=scenario,
+                active_page=active_page,
+                green_panel=green_panel,
+                green_panel_dark=green_panel_dark,
+                text_main=text_main,
+            )
+            self._draw_airborne_formula_panel(
+                surface,
+                formula_rect,
+                green_panel=green_panel,
+                green_panel_dark=green_panel_dark,
+                text_main=text_main,
+            )
+            self._draw_airborne_map_guide_panel(
+                surface,
+                map_rect,
+                scenario=scenario,
+                panel_bg=white_panel,
+                text_main=text_main,
+            )
+            self._draw_airborne_mission_panel(
+                surface,
+                mission_rect,
+                scenario=scenario,
+                dark_panel=dark_panel,
+                text_main=text_main,
+            )
+            self._draw_airborne_summary_panel(
+                surface,
+                table_rect,
+                scenario=scenario,
+                green_panel=green_panel,
+                green_panel_dark=green_panel_dark,
+                text_main=text_main,
+            )
+        else:
+            overlay_rect = pygame.Rect(
+                work.x + 12,
+                menu_rect.bottom + 12,
+                work.w - 24,
+                work.bottom - menu_rect.bottom - 24,
+            )
+            self._draw_airborne_overlay_panel(
+                surface,
+                overlay_rect,
+                scenario=scenario,
+                active_page=active_page,
+                green_panel=green_panel,
+                green_panel_dark=green_panel_dark,
+                dark_panel=dark_panel,
+                text_main=text_main,
+            )
+        self._draw_airborne_footer(
+            surface,
+            footer,
+            snap=snap,
+            scenario=scenario,
+            dark_panel=dark_panel,
+            text_main=text_main,
+        )
+
+    def _draw_airborne_menu_panel(
+        self,
+        surface: pygame.Surface,
+        rect: pygame.Rect,
+        *,
+        active_page: str,
+        show_distances: bool,
+        text_main: tuple[int, int, int],
+        text_muted: tuple[int, int, int],
+    ) -> None:
+        title = self._small_font.render("Menu", True, text_main)
+        surface.blit(title, (rect.x, rect.y))
+        pygame.draw.line(surface, text_main, (rect.x, rect.y + 20), (rect.right, rect.y + 20), 1)
+
+        entries = (
+            ("S", "Introduction", "intro"),
+            ("D", "Speed and Fuel Consumption", "fuel"),
+            ("F", "Speed and Parcel Weight", "parcel"),
+            ("A", "Hold for Distances", "distances"),
+        )
+        row_y = rect.y + 34
+        key_box = 18
+        for key_label, label, token in entries:
+            selected = show_distances if token == "distances" else token == active_page
+            chip = pygame.Rect(rect.x + 2, row_y - 1, key_box, key_box)
+            chip_fill = (
+                (255, 218, 220)
+                if token == "intro"
+                else (190, 122, 24)
+                if token == "fuel"
+                else (216, 220, 248)
+                if token == "parcel"
+                else (180, 214, 255)
+            )
+            if selected:
+                pygame.draw.rect(surface, (255, 255, 255), chip.inflate(4, 4), 1)
+            pygame.draw.rect(surface, chip_fill, chip)
+            pygame.draw.rect(surface, (26, 30, 38), chip, 1)
+            key_text = self._tiny_font.render(key_label, True, (18, 18, 24))
+            surface.blit(key_text, key_text.get_rect(center=chip.center))
+            label_color = text_main if selected else text_muted
+            text = self._small_font.render(label, True, label_color)
+            surface.blit(text, (chip.right + 12, row_y - 3))
+            row_y += 34
+
+    def _draw_airborne_reference_panel(
+        self,
+        surface: pygame.Surface,
+        rect: pygame.Rect,
+        *,
+        scenario: AirborneScenario,
+        active_page: str,
+        green_panel: tuple[int, int, int],
+        green_panel_dark: tuple[int, int, int],
+        text_main: tuple[int, int, int],
+    ) -> None:
+        pygame.draw.rect(surface, green_panel, rect)
+        pygame.draw.rect(surface, (208, 236, 208), rect, 1)
+
+        inner = rect.inflate(-12, -12)
+        title_map = {
+            "intro": "Introduction",
+            "fuel": "Speed and Fuel Consumption",
+            "parcel": "Speed and Parcel Weight",
+        }
+        title = self._small_font.render(title_map.get(active_page, "Reference"), True, text_main)
+        surface.blit(title, (inner.x, inner.y))
+
+        body = pygame.Rect(inner.x, inner.y + 30, inner.w, inner.h - 30)
+        if active_page == "fuel":
+            self._draw_airborne_reference_table(
+                surface,
+                body,
+                rows=[
+                    (str(speed), str(burn))
+                    for speed, burn in scenario.speed_fuel_table
+                ],
+                headers=(f"Speed ({scenario.speed_unit})", "Fuel"),
+                panel_fill=green_panel_dark,
+                text_main=text_main,
+            )
+            return
+        if active_page == "parcel":
+            self._draw_airborne_reference_table(
+                surface,
+                body,
+                rows=[
+                    (str(weight), str(speed))
+                    for weight, speed in scenario.weight_speed_table
+                ],
+                headers=("Weight (kg)", f"Speed ({scenario.speed_unit})"),
+                panel_fill=green_panel_dark,
+                text_main=text_main,
+            )
+            return
+
+        intro_text = (
+            "You are the operator of a large Remote Controlled Aerial Vehicle.\n\n"
+            "The Aerial Vehicle operates as part of a high-tech mail delivery service.\n\n"
+            "Always assume refuelling and deliveries and collections take no time.\n\n"
+            "Answer in whole numbers only. Always round up if the number is 0.5 or greater "
+            "and round down if the answer is 0.49 or less.\n\n"
+            "Work as quickly and as accurately as possible. However you will be given marks "
+            "for estimated answers."
+        )
         self._draw_wrapped_text(
             surface,
-            prompt_text,
-            pygame.Rect(right.x + 10, right.y + 8, right.w - 20, 66),
+            intro_text,
+            body,
             color=text_main,
             font=self._small_font,
-            max_lines=2,
-        )
-        surface.blit(
-            self._tiny_font.render("Enter HHMM (4 digits)", True, text_dim),
-            (right.x + 10, right.y + 72),
+            max_lines=11,
         )
 
-        info_lines = [
-            f"Start: {scenario.start_time_hhmm}",
-            f"Speed: {scenario.speed_value} {scenario.speed_unit}",
-            f"Fuel burn: {scenario.fuel_burn_per_hr} L/hr",
-            f"Parcel: {scenario.parcel_weight_kg} kg",
-            f"Target: {scenario.target_label}",
+    def _draw_airborne_reference_table(
+        self,
+        surface: pygame.Surface,
+        rect: pygame.Rect,
+        *,
+        rows: list[tuple[str, str]],
+        headers: tuple[str, str],
+        panel_fill: tuple[int, int, int],
+        text_main: tuple[int, int, int],
+    ) -> None:
+        pygame.draw.rect(surface, panel_fill, rect)
+        pygame.draw.rect(surface, (208, 236, 208), rect, 1)
+        left_x = rect.x + 8
+        right_x = rect.x + rect.w // 2 + 4
+        y = rect.y + 8
+        left_head = self._tiny_font.render(headers[0], True, text_main)
+        right_head = self._tiny_font.render(headers[1], True, text_main)
+        surface.blit(left_head, (left_x, y))
+        surface.blit(right_head, (right_x, y))
+        y += 20
+        pygame.draw.line(surface, (208, 236, 208), (rect.x + 6, y), (rect.right - 6, y), 1)
+        y += 6
+        for left_text, right_text in rows[:8]:
+            left = self._tiny_font.render(left_text, True, text_main)
+            right = self._tiny_font.render(right_text, True, text_main)
+            surface.blit(left, (left_x, y))
+            surface.blit(right, (right_x, y))
+            y += 18
+
+    def _draw_airborne_formula_panel(
+        self,
+        surface: pygame.Surface,
+        rect: pygame.Rect,
+        *,
+        green_panel: tuple[int, int, int],
+        green_panel_dark: tuple[int, int, int],
+        text_main: tuple[int, int, int],
+    ) -> None:
+        pygame.draw.rect(surface, green_panel, rect)
+        pygame.draw.rect(surface, (208, 236, 208), rect, 1)
+        formula = self._small_font.render("Speed =", True, text_main)
+        surface.blit(formula, (rect.x + 14, rect.y + rect.h // 2 - 10))
+        frac_x = rect.x + 100
+        distance = self._small_font.render("Distance", True, text_main)
+        time_txt = self._small_font.render("Time", True, text_main)
+        surface.blit(distance, (frac_x, rect.y + 8))
+        pygame.draw.line(
+            surface,
+            text_main,
+            (frac_x - 2, rect.centery),
+            (frac_x + 92, rect.centery),
+            2,
+        )
+        surface.blit(time_txt, (frac_x + 24, rect.centery + 6))
+        pygame.draw.rect(surface, green_panel_dark, rect, 1)
+
+    def _draw_airborne_map_guide_panel(
+        self,
+        surface: pygame.Surface,
+        rect: pygame.Rect,
+        *,
+        scenario: AirborneScenario,
+        panel_bg: tuple[int, int, int],
+        text_main: tuple[int, int, int],
+    ) -> None:
+        pygame.draw.rect(surface, (232, 240, 255), rect, 1)
+        canvas = rect.inflate(-28, -24)
+        pygame.draw.rect(surface, panel_bg, canvas)
+        pygame.draw.rect(surface, (14, 26, 84), canvas, 1)
+
+        step = max(12, min(18, canvas.w // 28))
+        for x in range(canvas.x, canvas.right + 1, step):
+            pygame.draw.line(surface, (222, 224, 226), (x, canvas.y), (x, canvas.bottom), 1)
+        for y in range(canvas.y, canvas.bottom + 1, step):
+            pygame.draw.line(surface, (222, 224, 226), (canvas.x, y), (canvas.right, y), 1)
+
+        template = TEMPLATES_BY_NAME.get(scenario.template_name)
+        if template is None:
+            return
+
+        plot = canvas.inflate(-22, -26)
+        node_px: list[tuple[int, int]] = []
+        for nx, ny in template.nodes:
+            x = int(plot.x + nx * plot.w)
+            y = int(plot.y + ny * plot.h)
+            node_px.append((x, y))
+
+        for idx, (ea, eb) in enumerate(template.edges):
+            a = node_px[ea]
+            b = node_px[eb]
+            pygame.draw.line(surface, (158, 160, 164), a, b, 2)
+            if self._air_show_distances:
+                self._draw_airborne_edge_distance(
+                    surface,
+                    a,
+                    b,
+                    value=str(scenario.edge_distances[idx]),
+                )
+
+        start_idx = scenario.route[0] if scenario.route else 0
+        for idx, (x, y) in enumerate(node_px):
+            if idx == start_idx:
+                fill = (255, 18, 24)
+                outline = (128, 0, 0)
+            else:
+                fill = (244, 244, 244)
+                outline = (156, 156, 156)
+            pygame.draw.circle(surface, fill, (x, y), 10)
+            pygame.draw.circle(surface, outline, (x, y), 10, 2)
+
+            label = self._small_font.render(scenario.node_names[idx], True, (42, 42, 42))
+            lx = x + 14 if x < canvas.centerx else x - label.get_width() - 14
+            ly = y - label.get_height() // 2
+            surface.blit(label, (lx, ly))
+
+        if scenario.route:
+            start_x, start_y = node_px[start_idx]
+            parcel = pygame.Rect(start_x + 18, start_y - 18, 40, 32)
+            pygame.draw.rect(surface, (72, 170, 214), parcel)
+            pygame.draw.rect(surface, (28, 98, 136), parcel, 2)
+            box = pygame.Rect(parcel.x + 8, parcel.y + 6, 22, 16)
+            pygame.draw.rect(surface, (214, 182, 132), box)
+            pygame.draw.rect(surface, (118, 88, 48), box, 1)
+            pygame.draw.line(surface, (118, 88, 48), (box.x, box.y + 5), (box.right, box.y + 5), 1)
+            pygame.draw.line(
+                surface,
+                (118, 88, 48),
+                (box.centerx, box.y),
+                (box.centerx, box.bottom),
+                1,
+            )
+
+        unit_label = {
+            "km": "kilometres",
+            "NM": "nautical miles",
+        }.get(str(scenario.distance_unit), str(scenario.distance_unit))
+        note = self._small_font.render(f"All measurements in {unit_label}", True, (42, 42, 42))
+        surface.blit(note, (canvas.x + 12, canvas.bottom - note.get_height() - 10))
+
+    def _draw_airborne_edge_distance(
+        self,
+        surface: pygame.Surface,
+        a: tuple[int, int],
+        b: tuple[int, int],
+        *,
+        value: str,
+    ) -> None:
+        midx = (a[0] + b[0]) / 2.0
+        midy = (a[1] + b[1]) / 2.0
+        dx = b[0] - a[0]
+        dy = b[1] - a[1]
+        length = max(1.0, math.hypot(dx, dy))
+        ox = int(round((-dy / length) * 14))
+        oy = int(round((dx / length) * 14))
+        text = self._small_font.render(value, True, (42, 42, 42))
+        surface.blit(text, text.get_rect(center=(int(midx) + ox, int(midy) + oy)))
+
+    def _draw_airborne_overlay_panel(
+        self,
+        surface: pygame.Surface,
+        rect: pygame.Rect,
+        *,
+        scenario: AirborneScenario,
+        active_page: str,
+        green_panel: tuple[int, int, int],
+        green_panel_dark: tuple[int, int, int],
+        dark_panel: tuple[int, int, int],
+        text_main: tuple[int, int, int],
+    ) -> None:
+        pygame.draw.rect(surface, green_panel, rect)
+        pygame.draw.rect(surface, (232, 240, 255), rect, 1)
+
+        title_map = {
+            "fuel": "Speed and Fuel Consumption",
+            "parcel": "Speed and Parcel Weight",
+        }
+        title = self._app.font.render(title_map.get(active_page, "Reference"), True, text_main)
+        surface.blit(title, title.get_rect(midtop=(rect.centerx, rect.y + 18)))
+
+        subtitle = self._small_font.render(
+            "Reference page open. Release the key to return to the introduction view.",
+            True,
+            text_main,
+        )
+        surface.blit(subtitle, subtitle.get_rect(midtop=(rect.centerx, rect.y + 58)))
+
+        content = rect.inflate(-24, -92)
+        if active_page == "fuel":
+            rows = [
+                (str(speed), f"{burn} {scenario.fuel_unit}")
+                for speed, burn in scenario.speed_fuel_table
+            ]
+            headers = (f"Speed ({scenario.speed_unit})", f"Fuel Burn ({scenario.fuel_unit})")
+            reference_format = scenario.fuel_reference_format
+            chart_x_labels = [str(speed) for speed, _ in scenario.speed_fuel_table]
+            chart_values = [burn for _, burn in scenario.speed_fuel_table]
+            chart_x_axis = f"Speed ({scenario.speed_unit})"
+            chart_y_axis = f"Fuel Burn ({scenario.fuel_unit})"
+            chart_step = scenario.fuel_chart_step
+        else:
+            rows = [
+                (f"{weight} kg", f"{speed} {scenario.speed_unit}")
+                for weight, speed in scenario.weight_speed_table
+            ]
+            headers = ("Parcel Weight", "Speed")
+            reference_format = scenario.parcel_reference_format
+            chart_x_labels = [str(weight) for weight, _ in scenario.weight_speed_table]
+            chart_values = [speed for _, speed in scenario.weight_speed_table]
+            chart_x_axis = "Parcel Weight (kg)"
+            chart_y_axis = f"Speed ({scenario.speed_unit})"
+            chart_step = scenario.parcel_chart_step
+
+        table_rect = pygame.Rect(
+            content.x,
+            content.y,
+            content.w,
+            max(180, content.h - 64),
+        )
+        if reference_format == "chart":
+            self._draw_airborne_overlay_chart(
+                surface,
+                table_rect,
+                x_labels=chart_x_labels,
+                values=chart_values,
+                x_axis_label=chart_x_axis,
+                y_axis_label=chart_y_axis,
+                tick_step=chart_step,
+                green_panel_dark=green_panel_dark,
+                text_main=text_main,
+            )
+        else:
+            self._draw_airborne_overlay_table(
+                surface,
+                table_rect,
+                headers=headers,
+                rows=rows,
+                green_panel_dark=green_panel_dark,
+                text_main=text_main,
+            )
+
+        note_rect = pygame.Rect(
+            content.x,
+            table_rect.bottom + 12,
+            content.w,
+            content.bottom - table_rect.bottom - 12,
+        )
+        pygame.draw.rect(surface, dark_panel, note_rect)
+        pygame.draw.rect(surface, (232, 240, 255), note_rect, 1)
+        note_lines = (
+            [
+                f"Current route starts at {scenario.node_names[scenario.route[0]]}.",
+                "Map, mission box, and journey table are hidden while this page is open.",
+                (
+                    "Estimate between grid lines where exact bar values are not printed."
+                    if reference_format == "chart"
+                    else "This page lists exact reference values."
+                ),
+                "Release the held tab key and answer from memory.",
+            ]
+            if active_page == "fuel"
+            else [
+                f"Parcel on board: {scenario.parcel_weight_kg} kg.",
+                "Map, mission box, and journey table are hidden while this page is open.",
+                (
+                    "Estimate between grid lines where exact bar values are not printed."
+                    if reference_format == "chart"
+                    else "This page lists exact reference values."
+                ),
+                "Release the held tab key and answer from memory.",
+            ]
+        )
+        self._draw_wrapped_text(
+            surface,
+            "\n".join(note_lines),
+            note_rect.inflate(-12, -10),
+            color=text_main,
+            font=self._small_font,
+            max_lines=5,
+        )
+
+    def _draw_airborne_overlay_table(
+        self,
+        surface: pygame.Surface,
+        rect: pygame.Rect,
+        *,
+        headers: tuple[str, str],
+        rows: list[tuple[str, str]],
+        green_panel_dark: tuple[int, int, int],
+        text_main: tuple[int, int, int],
+    ) -> None:
+        pygame.draw.rect(surface, green_panel_dark, rect)
+        pygame.draw.rect(surface, (232, 240, 255), rect, 1)
+
+        header_h = 34
+        left_rect = pygame.Rect(rect.x + 1, rect.y + 1, rect.w // 2 - 1, header_h)
+        right_rect = pygame.Rect(left_rect.right, rect.y + 1, rect.w - (left_rect.w + 1), header_h)
+        for cell_rect, label in ((left_rect, headers[0]), (right_rect, headers[1])):
+            pygame.draw.rect(surface, (0, 110, 18), cell_rect)
+            pygame.draw.rect(surface, (232, 240, 255), cell_rect, 1)
+            label_surf = self._small_font.render(label, True, text_main)
+            surface.blit(label_surf, label_surf.get_rect(center=cell_rect.center))
+
+        row_h = max(28, min(42, (rect.h - header_h - 8) // max(1, len(rows))))
+        y = rect.y + header_h + 4
+        for left_text, right_text in rows:
+            row_left = pygame.Rect(rect.x + 1, y, rect.w // 2 - 1, row_h)
+            row_right = pygame.Rect(row_left.right, y, rect.w - (row_left.w + 1), row_h)
+            for cell_rect, label in ((row_left, left_text), (row_right, right_text)):
+                pygame.draw.rect(surface, green_panel_dark, cell_rect)
+                pygame.draw.rect(surface, (208, 236, 208), cell_rect, 1)
+                txt = self._small_font.render(label, True, text_main)
+                surface.blit(txt, txt.get_rect(center=cell_rect.center))
+            y += row_h
+            if y + row_h > rect.bottom:
+                break
+
+    def _draw_airborne_overlay_chart(
+        self,
+        surface: pygame.Surface,
+        rect: pygame.Rect,
+        *,
+        x_labels: list[str],
+        values: list[int],
+        x_axis_label: str,
+        y_axis_label: str,
+        tick_step: int,
+        green_panel_dark: tuple[int, int, int],
+        text_main: tuple[int, int, int],
+    ) -> None:
+        pygame.draw.rect(surface, green_panel_dark, rect)
+        pygame.draw.rect(surface, (232, 240, 255), rect, 1)
+
+        if not values:
+            return
+
+        plot_bg = pygame.Rect(rect.x + 54, rect.y + 18, rect.w - 74, rect.h - 68)
+        pygame.draw.rect(surface, (242, 246, 245), plot_bg)
+        pygame.draw.rect(surface, (208, 236, 208), plot_bg, 1)
+
+        tick_step = max(1, tick_step)
+        top_value = max(tick_step, int(math.ceil(max(values) / float(tick_step))) * tick_step)
+        tick_count = max(1, top_value // tick_step)
+        for tick in range(tick_count + 1):
+            value = tick * tick_step
+            y = plot_bg.bottom - int(round((value / float(top_value)) * plot_bg.h))
+            pygame.draw.line(surface, (196, 206, 200), (plot_bg.x, y), (plot_bg.right, y), 1)
+            tick_label = self._tiny_font.render(str(value), True, (26, 40, 34))
+            surface.blit(tick_label, tick_label.get_rect(midright=(plot_bg.x - 8, y)))
+
+        pygame.draw.line(
+            surface,
+            (26, 40, 34),
+            (plot_bg.x, plot_bg.bottom),
+            (plot_bg.right, plot_bg.bottom),
+            2,
+        )
+        pygame.draw.line(
+            surface,
+            (26, 40, 34),
+            (plot_bg.x, plot_bg.y),
+            (plot_bg.x, plot_bg.bottom),
+            2,
+        )
+
+        bar_gap = max(10, min(18, plot_bg.w // max(8, len(values) * 3)))
+        bar_w = max(18, (plot_bg.w - bar_gap * (len(values) + 1)) // max(1, len(values)))
+        x = plot_bg.x + bar_gap
+        for label_text, value in zip(x_labels, values, strict=False):
+            bar_h = int(round((value / float(top_value)) * (plot_bg.h - 6)))
+            bar = pygame.Rect(x, plot_bg.bottom - bar_h, bar_w, bar_h)
+            pygame.draw.rect(surface, (30, 112, 74), bar)
+            pygame.draw.rect(surface, (20, 72, 48), bar, 1)
+            label = self._tiny_font.render(label_text, True, text_main)
+            surface.blit(label, label.get_rect(midtop=(bar.centerx, plot_bg.bottom + 6)))
+            x += bar_w + bar_gap
+
+        x_axis = self._tiny_font.render(x_axis_label, True, text_main)
+        y_axis = self._tiny_font.render(y_axis_label, True, text_main)
+        surface.blit(x_axis, x_axis.get_rect(midbottom=(rect.centerx, rect.bottom - 6)))
+        surface.blit(y_axis, (rect.x + 10, rect.y + 6))
+
+    def _draw_airborne_mission_panel(
+        self,
+        surface: pygame.Surface,
+        rect: pygame.Rect,
+        *,
+        scenario: AirborneScenario,
+        dark_panel: tuple[int, int, int],
+        text_main: tuple[int, int, int],
+    ) -> None:
+        pygame.draw.rect(surface, dark_panel, rect)
+        pygame.draw.rect(surface, (232, 240, 255), rect, 1)
+        if scenario.question_kind == "arrival_time":
+            mission = f"Mission: Deliver parcel to {scenario.target_label}."
+            task = "Task: Calculate arrival time."
+        elif scenario.question_kind == "takeoff_time":
+            mission = (
+                f"Mission: Deliver parcel to {scenario.target_label} "
+                "by the stated arrival time."
+            )
+            task = "Task: Calculate take off time."
+        elif scenario.question_kind == "empty_time":
+            mission = "Mission: Remain airborne until fuel is exhausted."
+            task = "Task: Calculate empty time."
+        elif scenario.question_kind == "fuel_burned":
+            mission = f"Mission: Deliver parcel to {scenario.target_label}."
+            task = f"Task: Calculate fuel used ({scenario.answer_unit_label})."
+        elif scenario.question_kind == "parcel_weight":
+            mission = (
+                f"Mission: Depart at {scenario.start_time_hhmm} and deliver parcel "
+                f"to {scenario.target_label}."
+            )
+            task = f"Task: Calculate parcel weight ({scenario.answer_unit_label})."
+        else:
+            mission = f"Mission: Deliver parcel to {scenario.target_label}."
+            task = f"Task: Calculate distance travelled ({scenario.answer_unit_label})."
+        mission_text = self._small_font.render(mission, True, text_main)
+        task_text = self._small_font.render(task, True, text_main)
+        surface.blit(mission_text, (rect.x + 20, rect.y + 14))
+        surface.blit(task_text, (rect.x + 20, rect.y + 42))
+
+    def _draw_airborne_summary_panel(
+        self,
+        surface: pygame.Surface,
+        rect: pygame.Rect,
+        *,
+        scenario: AirborneScenario,
+        green_panel: tuple[int, int, int],
+        green_panel_dark: tuple[int, int, int],
+        text_main: tuple[int, int, int],
+    ) -> None:
+        pygame.draw.rect(surface, green_panel, rect)
+        pygame.draw.rect(surface, (208, 236, 208), rect, 1)
+
+        via_label = "-"
+        if len(scenario.route) > 2:
+            via_label = "/".join(scenario.node_names[idx] for idx in scenario.route[1:-1])
+        given_heading = getattr(scenario, "given_time_label", "Time Now")
+        if scenario.answer_format == "hhmm":
+            answer_heading = scenario.answer_label
+        else:
+            answer_heading = f"{scenario.answer_label}\n({scenario.answer_unit_label})"
+
+        cols = (
+            ("Start point", 0.18),
+            ("Destination", 0.21),
+            ("Via", 0.16),
+            (given_heading, 0.17),
+            (answer_heading, 0.15),
+            ("Yes/No", 0.07),
+            ("Weight\n(kg)", 0.06),
+        )
+        x = rect.x + 2
+        col_rects: list[pygame.Rect] = []
+        remaining = rect.w - 4
+        for idx, (_, frac) in enumerate(cols):
+            if idx == len(cols) - 1:
+                width = remaining
+            else:
+                width = int(round((rect.w - 4) * frac))
+                remaining -= width
+            col_rects.append(pygame.Rect(x, rect.y + 28, width, rect.h - 30))
+            x += width
+
+        groups = (
+            ("Journey", (0, 3)),
+            ("Timings", (3, 5)),
+            ("Parcel", (5, 7)),
+        )
+        for label, (start, end) in groups:
+            group_rect = pygame.Rect(
+                col_rects[start].x,
+                rect.y + 2,
+                col_rects[end - 1].right - col_rects[start].x,
+                24,
+            )
+            pygame.draw.rect(surface, green_panel_dark, group_rect)
+            pygame.draw.rect(surface, (208, 236, 208), group_rect, 1)
+            group_text = self._small_font.render(label, True, text_main)
+            surface.blit(group_text, group_text.get_rect(center=group_rect.center))
+
+        headers = [label for label, _ in cols]
+        values = [
+            scenario.node_names[scenario.route[0]] if scenario.route else "-",
+            scenario.node_names[scenario.route[-1]] if scenario.route else "-",
+            via_label,
+            scenario.given_time_hhmm,
+            "",
+            "Y",
+            "" if scenario.question_kind == "parcel_weight" else str(scenario.parcel_weight_kg),
         ]
-        y = right.y + 98
-        for line in info_lines:
-            surface.blit(self._tiny_font.render(line, True, text_muted), (right.x + 10, y))
-            y += 20
+        for rect_cell, head, value in zip(col_rects, headers, values, strict=True):
+            pygame.draw.rect(surface, green_panel, rect_cell)
+            pygame.draw.rect(surface, (208, 236, 208), rect_cell, 1)
+            header_rect = pygame.Rect(rect_cell.x, rect_cell.y, rect_cell.w, 28)
+            pygame.draw.rect(surface, green_panel_dark, header_rect)
+            pygame.draw.rect(surface, (208, 236, 208), header_rect, 1)
+            head_font = self._tiny_font
+            head_lines = str(head).split("\n")
+            if len(head_lines) == 1:
+                surf = head_font.render(head_lines[0], True, text_main)
+                surface.blit(surf, surf.get_rect(center=header_rect.center))
+            else:
+                y = header_rect.y + 2
+                for line in head_lines:
+                    surf = head_font.render(line, True, text_main)
+                    surface.blit(surf, surf.get_rect(centerx=header_rect.centerx, y=y))
+                    y += surf.get_height() - 1
+            value_text = self._small_font.render(value, True, text_main)
+            value_y = rect_cell.bottom - value_text.get_height() - 6
+            surface.blit(value_text, value_text.get_rect(centerx=rect_cell.centerx, y=value_y))
 
-        timer_rect = pygame.Rect(right.x + 10, y + 4, right.w - 20, 34)
-        pygame.draw.rect(surface, (52, 55, 61), timer_rect)
-        pygame.draw.rect(surface, card_border, timer_rect, 1)
+    def _draw_airborne_footer(
+        self,
+        surface: pygame.Surface,
+        rect: pygame.Rect,
+        *,
+        snap: TestSnapshot,
+        scenario: AirborneScenario,
+        dark_panel: tuple[int, int, int],
+        text_main: tuple[int, int, int],
+    ) -> None:
+        pygame.draw.rect(surface, dark_panel, rect)
+
         if snap.time_remaining_s is not None:
             rem = int(round(snap.time_remaining_s))
-            mm = rem // 60
-            ss = rem % 60
-            timer_label = f"TIME {mm:02d}:{ss:02d}"
+            rem_txt = f"{rem // 60:02d}:{rem % 60:02d}"
         else:
-            timer_label = "TIME --:--"
-        timer_surf = self._small_font.render(timer_label, True, text_main)
-        surface.blit(timer_surf, timer_surf.get_rect(center=timer_rect.center))
+            rem_txt = "--:--"
 
-        answer_rect = pygame.Rect(right.x + 10, timer_rect.bottom + 8, right.w - 20, 52)
-        pygame.draw.rect(surface, (52, 55, 61), answer_rect)
-        pygame.draw.rect(surface, card_border, answer_rect, 1)
-        surface.blit(
-            self._tiny_font.render("ANSWER", True, text_dim),
-            (answer_rect.x + 8, answer_rect.y + 5),
-        )
+        practice_total = int(getattr(self._engine, "_practice_questions", 0))
+        practice_answered = int(getattr(self._engine, "_practice_answered", 0))
+        if snap.phase is Phase.PRACTICE and practice_total > 0:
+            practice_idx = min(practice_total, practice_answered + 1)
+            left_text = f"Practice: {practice_idx} of {practice_total}"
+        elif snap.phase is Phase.SCORED:
+            left_text = f"Scored: {snap.correct_scored}/{snap.attempted_scored}"
+        else:
+            left_text = {
+                Phase.INSTRUCTIONS: "Instructions",
+                Phase.PRACTICE_DONE: "Practice Complete",
+                Phase.RESULTS: "Results",
+            }.get(snap.phase, "Airborne Numerical")
 
-        slots_x = answer_rect.x + 8
-        slots_y = answer_rect.y + 20
-        slot_w = max(24, min(34, (answer_rect.w - 22) // 4))
-        gap = max(4, min(8, (answer_rect.w - (slot_w * 4) - 16) // 3))
-        for i in range(4):
-            slot = pygame.Rect(slots_x + i * (slot_w + gap), slots_y, slot_w, 24)
-            pygame.draw.rect(surface, (14, 18, 38), slot)
-            pygame.draw.rect(surface, (134, 150, 188), slot, 1)
-            ch = self._input[i] if i < len(self._input) else ""
-            if ch:
-                txt = self._small_font.render(ch, True, text_main)
-                surface.blit(txt, txt.get_rect(center=slot.center))
+        left = self._tiny_font.render(left_text, True, text_main)
+        surface.blit(left, (rect.x + 8, rect.y + 7))
 
-        control_text = "Hold A: Distances  |  Hold S/D/F: References"
-        surface.blit(
-            self._tiny_font.render(control_text, True, text_dim),
-            (right.x + 10, answer_rect.bottom + 10),
-        )
+        if getattr(scenario, "answer_format", "hhmm") == "hhmm":
+            answer_label = "Answer (HHMM)"
+        else:
+            unit = str(getattr(scenario, "answer_unit_label", "")).strip()
+            answer_label = f"Answer ({unit}, 4 digits)" if unit else "Answer (4 digits)"
+        label = self._tiny_font.render(answer_label, True, text_main)
+        surface.blit(label, label.get_rect(midtop=(rect.centerx, rect.y + 2)))
 
-        if self._air_overlay is not None:
-            overlay_rect = pygame.Rect(
-                left.x + 16,
-                left.y + 16,
-                max(220, left.w - 32),
-                max(160, left.h - 32),
-            )
-            pygame.draw.rect(surface, (42, 46, 54), overlay_rect)
-            pygame.draw.rect(surface, (210, 218, 236), overlay_rect, 1)
+        slot_count = max(4, int(getattr(scenario, "answer_digits", 4)))
+        slot_w = max(18, min(24, rect.w // 30))
+        gap = max(3, min(6, rect.w // 180))
+        total_w = slot_w * slot_count + gap * (slot_count - 1)
+        start_x = rect.centerx - total_w // 2
+        box_y = rect.y + 16
+        show_input = snap.phase in (Phase.PRACTICE, Phase.SCORED)
+        caret_on = (pygame.time.get_ticks() // 500) % 2 == 0
+        for idx in range(slot_count):
+            box = pygame.Rect(start_x + idx * (slot_w + gap), box_y, slot_w, 14)
+            pygame.draw.rect(surface, (0, 0, 0), box)
+            pygame.draw.rect(surface, (216, 224, 236), box, 1)
+            ch = self._input[idx] if idx < len(self._input) else ""
+            if show_input and ch:
+                txt = self._tiny_font.render(ch, True, text_main)
+                surface.blit(txt, txt.get_rect(center=box.center))
+            elif (
+                show_input
+                and idx == len(self._input)
+                and caret_on
+                and len(self._input) < slot_count
+            ):
+                pygame.draw.line(
+                    surface,
+                    text_main,
+                    (box.centerx, box.y + 2),
+                    (box.centerx, box.bottom - 2),
+                    1,
+                )
 
-            title = {
-                "intro": "Introduction",
-                "fuel": "Speed & Fuel",
-                "parcel": "Speed & Parcel",
-            }[self._air_overlay]
-            surface.blit(
-                self._small_font.render(title, True, text_main),
-                (overlay_rect.x + 12, overlay_rect.y + 10),
-            )
-
-            lines: list[str]
-            if self._air_overlay == "intro":
-                route_names = " -> ".join(scenario.node_names[i] for i in scenario.route)
-                lines = [
-                    f"Route: {route_names}",
-                    "Use map + journey table to compute requested time.",
-                    "Distances are visible only while A is held.",
-                ]
-            elif self._air_overlay == "fuel":
-                lines = [
-                    f"Reference speed: {scenario.speed_value} {scenario.speed_unit}",
-                    f"Fuel burn: {scenario.fuel_burn_per_hr} L/hr",
-                    f"Start fuel: {scenario.start_fuel_liters} L",
-                ]
-            else:
-                lines = [
-                    f"Parcel weight: {scenario.parcel_weight_kg} kg",
-                    f"Speed at parcel weight: {scenario.speed_value} {scenario.speed_unit}",
-                    "Use parcel reference table for related prompts.",
-                ]
-            self._draw_wrapped_text(
-                surface,
-                "\n".join(lines),
-                pygame.Rect(
-                    overlay_rect.x + 12,
-                    overlay_rect.y + 46,
-                    overlay_rect.w - 24,
-                    overlay_rect.h - 56,
-                ),
-                color=text_muted,
-                font=self._tiny_font,
-                max_lines=8,
-            )
+        right = self._tiny_font.render(f"Time Left: {rem_txt}", True, text_main)
+        surface.blit(right, right.get_rect(topright=(rect.right - 8, rect.y + 7)))
 
     def _render_colours_letters_numbers_screen(
         self,
@@ -12448,10 +13413,10 @@ class CognitiveTestScreen:
             "BLUE": (60, 114, 242),
         }
         key_for_color = {
-            "RED": "R",
-            "YELLOW": "E",
-            "GREEN": "W",
-            "BLUE": "Q",
+            "RED": "Q",
+            "YELLOW": "W",
+            "GREEN": "E",
+            "BLUE": "R",
         }
 
         if snap.phase is Phase.INSTRUCTIONS:
@@ -12475,11 +13440,13 @@ class CognitiveTestScreen:
             help_text = "\n".join(
                 [
                     "1) Memorize the letter sequence at the top.",
-                    "2) Click the matching corner option (A-D).",
-                    "3) Type the math answer and press Enter (no math timer).",
-                    "4) Clear diamonds inside the color lanes.",
-                    "5) Memory, math, and colours run independently.",
-                    "6) Missed diamonds reduce your score.",
+                    "2) Hold it in memory during a random blank gap.",
+                    "3) Pick the matching corner with A/S/D/F or mouse click.",
+                    "4) Type the math answer and press Enter (no math timer).",
+                    "5) Clear diamonds inside the color lanes with Q/W/E/R.",
+                    "6) Blank gaps vary between 5 and 60 seconds.",
+                    "7) Memory, math, and colours run independently.",
+                    "8) Missed diamonds reduce your score.",
                 ]
             )
             self._draw_wrapped_text(
@@ -12495,11 +13462,11 @@ class CognitiveTestScreen:
             pygame.draw.rect(surface, (16, 18, 30), legend)
             pygame.draw.rect(surface, frame_edge, legend, 1)
             legend_title = self._tiny_font.render(
-                "Color keys (right -> left): Q / W / E / R", True, text_light
+                "Color keys (left -> right): Q / W / E / R", True, text_light
             )
             surface.blit(legend_title, (legend.x + 8, legend.y + 6))
 
-            chips = [("RED", "R"), ("YELLOW", "E"), ("GREEN", "W"), ("BLUE", "Q")]
+            chips = [("RED", "Q"), ("YELLOW", "W"), ("GREEN", "E"), ("BLUE", "R")]
             chip_w = max(56, min(90, (legend.w - 18) // 4))
             chip_h = 22
             gap = max(4, (legend.w - (chip_w * 4)) // 5)
@@ -12537,7 +13504,7 @@ class CognitiveTestScreen:
             )
 
             option_rects = [top_left, top_right, bottom_left, bottom_right]
-            labels = ["A", "B", "C", "D"]
+            labels = ["A", "S", "D", "F"]
             options = payload.options if payload is not None else tuple()
             options_visible = bool(payload is not None and payload.options_active)
 
@@ -12655,8 +13622,10 @@ class CognitiveTestScreen:
                 seq = self._mid_font.render(payload.target_sequence, True, text_light)
                 surface.blit(seq, seq.get_rect(center=top_mid.center))
                 hint_text = "Memorize sequence"
+            elif payload is not None and not payload.options_active and not payload.memory_answered:
+                hint_text = "Hold sequence in memory"
             elif payload is not None and not payload.memory_answered:
-                hint_text = "Click matching corner option"
+                hint_text = "Pick with A/S/D/F or mouse"
             elif payload is not None and payload.memory_answered:
                 hint_text = "Sequence selected"
             else:
@@ -12676,7 +13645,7 @@ class CognitiveTestScreen:
             caret = "|" if (pygame.time.get_ticks() // 500) % 2 == 0 else ""
             answer_value = self._input + caret
             control_text = (
-                "Mouse: A-D sequence  |  Keys: Q/W/E/R clear lanes right->left  |  Enter: math"
+                "Memory: A/S/D/F or mouse  |  Colour lanes: Q/W/E/R  |  Enter: math"
             )
         elif snap.phase in (Phase.INSTRUCTIONS, Phase.PRACTICE_DONE, Phase.RESULTS):
             answer_value = "--"
@@ -12753,25 +13722,54 @@ class CognitiveTestScreen:
                 font=self._small_font,
                 max_lines=12,
             )
-        elif payload is not None and payload.display_digits is not None:
-            digits = self._big_font.render(payload.display_digits, True, text_main)
-            if digits.get_width() > int(body.w * 0.9):
-                digits = self._mid_font.render(payload.display_digits, True, text_main)
-            surface.blit(digits, digits.get_rect(center=body.center))
+        elif payload is not None and (
+            payload.display_digits is not None
+            or getattr(payload, "display_lines", None) is not None
+        ):
+            display_lines = tuple(getattr(payload, "display_lines", ()) or ())
+            if not display_lines and payload.display_digits is not None:
+                display_lines = (payload.display_digits,)
+
+            if len(display_lines) == 1:
+                digits = self._big_font.render(display_lines[0], True, text_main)
+                if digits.get_width() > int(body.w * 0.9):
+                    digits = self._mid_font.render(display_lines[0], True, text_main)
+                surface.blit(digits, digits.get_rect(center=body.center))
+            else:
+                line_surfaces: list[pygame.Surface] = []
+                max_width = int(body.w * 0.9)
+                for line in display_lines:
+                    surf = self._mid_font.render(line, True, text_main)
+                    if surf.get_width() > max_width:
+                        surf = self._small_font.render(line, True, text_main)
+                    line_surfaces.append(surf)
+
+                total_h = sum(surf.get_height() for surf in line_surfaces) + (
+                    (len(line_surfaces) - 1) * 16
+                )
+                y = body.centery - total_h // 2
+                for surf in line_surfaces:
+                    surface.blit(surf, surf.get_rect(centerx=body.centerx, y=y))
+                    y += surf.get_height() + 16
         elif payload is not None and not payload.accepting_input:
             mask = self._mid_font.render("X X X X X X X X", True, text_muted)
             surface.blit(mask, mask.get_rect(center=body.center))
         else:
-            prompt_box = pygame.Rect(body.x + 20, body.y + 26, body.w - 40, 72)
-            pygame.draw.rect(surface, (8, 18, 120), prompt_box)
-            pygame.draw.rect(surface, edge, prompt_box, 1)
-            self._draw_wrapped_text(
+            prompt_box = pygame.Rect(
+                body.x + max(24, body.w // 10),
+                body.y + max(34, body.h // 6),
+                body.w - max(48, body.w // 5),
+                max(116, min(180, body.h // 3)),
+            )
+            self._render_centered_prompt_panel(
                 surface,
+                prompt_box,
                 str(snap.prompt),
-                prompt_box.inflate(-12, -10),
-                color=text_main,
-                font=self._small_font,
-                max_lines=2,
+                fill=(8, 18, 120),
+                border=edge,
+                text_color=text_main,
+                preferred_size=max(30, min(50, h // 14)),
+                min_size=max(20, min(32, h // 22)),
             )
 
         info = self._tiny_font.render(
@@ -12791,18 +13789,27 @@ class CognitiveTestScreen:
             return
 
         w, h = surface.get_size()
-        box_w = max(240, min(460, int(w * 0.52)))
-        box_h = 48
-        box = pygame.Rect((w - box_w) // 2, h - 88, box_w, box_h)
-        pygame.draw.rect(surface, (6, 15, 92), box)
-        pygame.draw.rect(surface, (180, 196, 230), box, 2)
-
-        caret = "|" if (pygame.time.get_ticks() // 500) % 2 == 0 else ""
-        entry = self._small_font.render(self._input + caret, True, (236, 244, 255))
-        surface.blit(entry, (box.x + 12, box.y + 11))
-
-        hint = self._tiny_font.render(snap.input_hint, True, (168, 184, 214))
-        surface.blit(hint, hint.get_rect(midtop=(w // 2, box.bottom + 6)))
+        box = pygame.Rect(
+            (w - max(320, min(560, int(w * 0.56)))) // 2,
+            int(h * 0.70),
+            max(320, min(560, int(w * 0.56))),
+            max(58, min(74, int(h * 0.11))),
+        )
+        self._render_centered_input_box(
+            surface,
+            box,
+            label="Your Answer",
+            hint=snap.input_hint,
+            entry_text=self._input,
+            fill=(6, 15, 92),
+            border=(180, 196, 230),
+            label_color=(236, 244, 255),
+            input_color=(236, 244, 255),
+            hint_color=(168, 184, 214),
+            label_font=self._small_font,
+            input_font=self._mid_font,
+            hint_font=self._tiny_font,
+        )
 
     def _airborne_graph_seed(self, scenario: AirborneScenario) -> int:
         # Stable per-scenario seed (no Python hash()).

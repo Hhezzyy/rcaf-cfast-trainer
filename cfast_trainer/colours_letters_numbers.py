@@ -12,11 +12,15 @@ class ColoursLettersNumbersConfig:
     # Guide indicates ~20 minutes including instructions.
     scored_duration_s: float = 18.0 * 60.0
     practice_rounds: int = 3
-    # Memory channel cycle duration (show sequence + answer window).
+    # Memory channel answer window after the recall pause opens.
     round_duration_s: float = 9.0
     sequence_show_s: float = 2.0
-    diamond_spawn_interval_s: float = 1.10
-    diamond_speed_norm_per_s: float = 0.24
+    memory_recall_delay_s: float = 5.0
+    memory_recall_delay_max_s: float = 60.0
+    diamond_spawn_interval_s: float = 1.45
+    diamond_spawn_interval_max_s: float = 2.10
+    diamond_speed_norm_per_s: float = 0.18
+    diamond_speed_max_norm_per_s: float = 0.30
     max_live_diamonds: int = 4
 
 
@@ -81,6 +85,7 @@ class _LiveDiamond:
     color: str
     row: int
     x_norm: float
+    speed_norm_per_s: float
 
 
 class ColoursLettersNumbersGenerator:
@@ -170,10 +175,18 @@ class ColoursLettersNumbersTest:
             raise ValueError("round_duration_s must be > 0")
         if cfg.sequence_show_s <= 0.0:
             raise ValueError("sequence_show_s must be > 0")
+        if cfg.memory_recall_delay_s < 0.0:
+            raise ValueError("memory_recall_delay_s must be >= 0")
+        if cfg.memory_recall_delay_max_s < cfg.memory_recall_delay_s:
+            raise ValueError("memory_recall_delay_max_s must be >= memory_recall_delay_s")
         if cfg.diamond_spawn_interval_s <= 0.0:
             raise ValueError("diamond_spawn_interval_s must be > 0")
+        if cfg.diamond_spawn_interval_max_s < cfg.diamond_spawn_interval_s:
+            raise ValueError("diamond_spawn_interval_max_s must be >= diamond_spawn_interval_s")
         if cfg.diamond_speed_norm_per_s <= 0.0:
             raise ValueError("diamond_speed_norm_per_s must be > 0")
+        if cfg.diamond_speed_max_norm_per_s < cfg.diamond_speed_norm_per_s:
+            raise ValueError("diamond_speed_max_norm_per_s must be >= diamond_speed_norm_per_s")
         if cfg.max_live_diamonds <= 0:
             raise ValueError("max_live_diamonds must be > 0")
 
@@ -191,8 +204,9 @@ class ColoursLettersNumbersTest:
         self._math_current: ColoursLettersNumbersTrial | None = None
 
         self._memory_cycle_started_at_s: float | None = None
+        self._memory_recall_delay_s_current: float = cfg.memory_recall_delay_s
         self._last_update_s: float | None = None
-        self._spawn_cooldown_s: float = cfg.diamond_spawn_interval_s
+        self._spawn_cooldown_s: float = self._next_spawn_interval_s()
         self._memory_answered = False
 
         self._memory_prompted_at_s: float | None = None
@@ -314,7 +328,14 @@ class ColoursLettersNumbersTest:
     def _options_active(self) -> bool:
         if self._memory_cycle_started_at_s is None:
             return False
-        return (self._clock.now() - self._memory_cycle_started_at_s) >= self._cfg.sequence_show_s
+        elapsed = self._clock.now() - self._memory_cycle_started_at_s
+        return elapsed >= (self._cfg.sequence_show_s + self._memory_recall_delay_s_current)
+
+    def _sequence_visible(self) -> bool:
+        if self._memory_cycle_started_at_s is None:
+            return False
+        elapsed = self._clock.now() - self._memory_cycle_started_at_s
+        return elapsed < self._cfg.sequence_show_s
 
     def _payload(self) -> ColoursLettersNumbersPayload | None:
         if self._phase not in (Phase.PRACTICE, Phase.SCORED):
@@ -323,7 +344,7 @@ class ColoursLettersNumbersTest:
             return None
 
         options_active = self._options_active()
-        target_sequence = self._memory_current.target_sequence if not options_active else None
+        target_sequence = self._memory_current.target_sequence if self._sequence_visible() else None
 
         diamonds = tuple(
             ColoursLettersNumbersDiamond(
@@ -357,10 +378,12 @@ class ColoursLettersNumbersTest:
                     "Colours, Letters and Numbers",
                     "",
                     "1) Memorize the sequence shown at the top.",
-                    "2) After it disappears, click the matching corner option (mouse).",
-                    "3) Solve math by typing a number then Enter (no math timer).",
-                    "4) Clear moving diamonds with color keys while over matching zones:",
-                    "   Q=Blue, W=Green, E=Yellow, R=Red (right to left).",
+                    "2) Hold it in memory during the blank gap, then pick the match.",
+                    "3) Choose the matching corner with A/S/D/F or mouse click.",
+                    "4) Solve math by typing a number then Enter (no math timer).",
+                    "5) Clear moving diamonds with color keys while over matching zones:",
+                    "   Q=Red, W=Yellow, E=Green, R=Blue.",
+                    "   Blank gap varies between 5 and 60 seconds.",
                     "Memory, math, and colours run on separate loops.",
                     "Letting diamonds pass reduces score.",
                     "",
@@ -400,7 +423,7 @@ class ColoursLettersNumbersTest:
     def _start_channels(self) -> None:
         now = self._clock.now()
         self._last_update_s = now
-        self._spawn_cooldown_s = self._cfg.diamond_spawn_interval_s
+        self._spawn_cooldown_s = self._next_spawn_interval_s()
         self._diamonds.clear()
         self._start_memory_cycle(now)
         self._start_math_cycle(now)
@@ -409,7 +432,13 @@ class ColoursLettersNumbersTest:
         trial = self._gen.next_trial(difficulty=self._difficulty)
         self._memory_current = trial
         self._memory_cycle_started_at_s = now
-        self._memory_prompted_at_s = now + self._cfg.sequence_show_s
+        self._memory_recall_delay_s_current = self._rng.uniform(
+            self._cfg.memory_recall_delay_s,
+            self._cfg.memory_recall_delay_max_s,
+        )
+        self._memory_prompted_at_s = (
+            now + self._cfg.sequence_show_s + self._memory_recall_delay_s_current
+        )
         self._memory_answered = False
 
     def _start_math_cycle(self, now: float) -> None:
@@ -422,7 +451,12 @@ class ColoursLettersNumbersTest:
             return
 
         elapsed = now - self._memory_cycle_started_at_s
-        if elapsed < self._cfg.round_duration_s:
+        total_cycle_s = (
+            self._cfg.sequence_show_s
+            + self._memory_recall_delay_s_current
+            + self._cfg.round_duration_s
+        )
+        if elapsed < total_cycle_s:
             return
 
         if not self._memory_answered:
@@ -460,19 +494,17 @@ class ColoursLettersNumbersTest:
             return
 
         self._spawn_cooldown_s -= dt
-        if self._spawn_cooldown_s <= 0.0:
-            interval = self._cfg.diamond_spawn_interval_s
+        while self._spawn_cooldown_s <= 0.0:
             overdue = -self._spawn_cooldown_s
-            spawn_steps = 1 + int(overdue // interval)
-            self._spawn_cooldown_s += float(spawn_steps) * interval
+            self._spawn_cooldown_s = self._next_spawn_interval_s() - overdue
 
             spawn_slots = max(0, self._cfg.max_live_diamonds - len(self._diamonds))
-            for _ in range(min(spawn_steps, spawn_slots)):
+            if spawn_slots > 0:
                 self._spawn_diamond()
 
         survivors: list[_LiveDiamond] = []
         for d in self._diamonds:
-            d.x_norm += self._cfg.diamond_speed_norm_per_s * dt
+            d.x_norm += d.speed_norm_per_s * dt
             if d.x_norm >= 1.02:
                 if self._phase is Phase.SCORED:
                     self._scored_missed += 1
@@ -489,9 +521,19 @@ class ColoursLettersNumbersTest:
             color=color,
             row=row,
             x_norm=0.02,
+            speed_norm_per_s=self._rng.uniform(
+                self._cfg.diamond_speed_norm_per_s,
+                self._cfg.diamond_speed_max_norm_per_s,
+            ),
         )
         self._next_diamond_id += 1
         self._diamonds.append(d)
+
+    def _next_spawn_interval_s(self) -> float:
+        return self._rng.uniform(
+            self._cfg.diamond_spawn_interval_s,
+            self._cfg.diamond_spawn_interval_max_s,
+        )
 
     def _record_memory_result(self, *, now: float, response: str, is_correct: bool) -> None:
         if self._memory_current is None:
@@ -581,12 +623,15 @@ class ColoursLettersNumbersTest:
     def _submit_color(self, raw_key: str) -> bool:
         key = str(raw_key).strip().upper()
         key_map = {
-            # Gameplay mapping is right-to-left: Q, W, E, R.
-            "Q": "BLUE",
-            "W": "GREEN",
-            "E": "YELLOW",
-            "R": "RED",
+            "Q": "RED",
+            "W": "YELLOW",
+            "E": "GREEN",
+            "R": "BLUE",
             # Backward-compatible aliases.
+            "RED": "RED",
+            "YELLOW": "YELLOW",
+            "GREEN": "GREEN",
+            "BLUE": "BLUE",
             "Y": "YELLOW",
             "G": "GREEN",
             "B": "BLUE",
@@ -641,8 +686,12 @@ def build_colours_letters_numbers_test(
             practice_rounds=0,
             round_duration_s=cfg.round_duration_s,
             sequence_show_s=cfg.sequence_show_s,
+            memory_recall_delay_s=cfg.memory_recall_delay_s,
+            memory_recall_delay_max_s=cfg.memory_recall_delay_max_s,
             diamond_spawn_interval_s=cfg.diamond_spawn_interval_s,
+            diamond_spawn_interval_max_s=cfg.diamond_spawn_interval_max_s,
             diamond_speed_norm_per_s=cfg.diamond_speed_norm_per_s,
+            diamond_speed_max_norm_per_s=cfg.diamond_speed_max_norm_per_s,
             max_live_diamonds=cfg.max_live_diamonds,
         )
     if scored_duration_s is not None:
@@ -651,8 +700,12 @@ def build_colours_letters_numbers_test(
             practice_rounds=cfg.practice_rounds,
             round_duration_s=cfg.round_duration_s,
             sequence_show_s=cfg.sequence_show_s,
+            memory_recall_delay_s=cfg.memory_recall_delay_s,
+            memory_recall_delay_max_s=cfg.memory_recall_delay_max_s,
             diamond_spawn_interval_s=cfg.diamond_spawn_interval_s,
+            diamond_spawn_interval_max_s=cfg.diamond_spawn_interval_max_s,
             diamond_speed_norm_per_s=cfg.diamond_speed_norm_per_s,
+            diamond_speed_max_norm_per_s=cfg.diamond_speed_max_norm_per_s,
             max_live_diamonds=cfg.max_live_diamonds,
         )
     return ColoursLettersNumbersTest(
