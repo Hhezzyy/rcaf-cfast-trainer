@@ -7,15 +7,19 @@ This task adds cognitive tests under a "Tests" submenu:
 - Cognitive Updating (multitask menu-driven system updates)
 - Table Reading (cross-reference lookup tables)
 - Sensory Motor Apparatus (joystick/pedal coordination tracking)
+- Rapid Tracking (moving/stationary/obscured target tracking)
+- Spatial Integration (multi-view 2-D to 3-D reconstruction)
 - Auditory Capacity (multichannel auditory + psychomotor load)
+- Situational Awareness (mixed verbal/numerical/pictorial updates)
+- Trace Test 1 (3-D orientation change discrimination)
 
 Deterministic timing/scoring/RNG/state lives in cfast_trainer/* (core modules).
 """
 
 from __future__ import annotations
 
-import json
 import importlib.util
+import json
 import math
 import os
 import random
@@ -28,36 +32,35 @@ from array import array
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
-from typing import cast
-from typing import Protocol
+from typing import Any, Protocol, cast
 
 import pygame
 
-from .airborne_numerical import AirborneScenario, TEMPLATES_BY_NAME, build_airborne_numerical_test
-from .auditory_capacity import (
-    AuditoryCapacityGate,
-    AuditoryCapacityEngine,
-    AuditoryCapacityPayload,
-    build_auditory_capacity_test,
-)
+from .airborne_numerical import TEMPLATES_BY_NAME, AirborneScenario, build_airborne_numerical_test
 from .angles_bearings_degrees import (
     AnglesBearingsDegreesPayload,
     AnglesBearingsQuestionKind,
     build_angles_bearings_degrees_test,
 )
-from .clock import RealClock
-from .colours_letters_numbers import (
-    ColoursLettersNumbersPayload,
-    build_colours_letters_numbers_test,
+from .auditory_capacity import (
+    AuditoryCapacityEngine,
+    AuditoryCapacityGate,
+    AuditoryCapacityPayload,
+    build_auditory_capacity_test,
 )
+from .clock import RealClock
+from .cognitive_core import Phase, TestSnapshot
 from .cognitive_updating import (
     CognitiveUpdatingPayload,
     CognitiveUpdatingRuntime,
     CognitiveUpdatingRuntimeSnapshot,
     build_cognitive_updating_test,
+    decode_cognitive_updating_submission_raw,
 )
-from .cognitive_core import Phase, TestSnapshot
+from .colours_letters_numbers import (
+    ColoursLettersNumbersPayload,
+    build_colours_letters_numbers_test,
+)
 from .digit_recognition import DigitRecognitionPayload, build_digit_recognition_test
 from .instrument_comprehension import (
     InstrumentComprehensionPayload,
@@ -67,10 +70,24 @@ from .instrument_comprehension import (
 )
 from .math_reasoning import MathReasoningPayload, build_math_reasoning_test
 from .numerical_operations import build_numerical_operations_test
+from .rapid_tracking import RapidTrackingEngine, RapidTrackingPayload, build_rapid_tracking_test
 from .sensory_motor_apparatus import (
     SensoryMotorApparatusEngine,
     SensoryMotorApparatusPayload,
     build_sensory_motor_apparatus_test,
+)
+from .situational_awareness import (
+    SituationalAwarenessPayload,
+    SituationalAwarenessQuestionKind,
+    build_situational_awareness_test,
+    cell_label_from_xy,
+)
+from .spatial_integration import (
+    SpatialIntegrationPayload,
+    SpatialIntegrationSceneView,
+    SpatialIntegrationSection,
+    SpatialIntegrationTrialStage,
+    build_spatial_integration_test,
 )
 from .system_logic import (
     SystemLogicDocument,
@@ -83,6 +100,12 @@ from .target_recognition import (
     TargetRecognitionPayload,
     TargetRecognitionSceneEntity,
     build_target_recognition_test,
+)
+from .trace_test_1 import (
+    TraceTest1Attitude,
+    TraceTest1Payload,
+    build_trace_test_1_test,
+    trace_test_1_aircraft_marker_offsets,
 )
 from .visual_search import VisualSearchPayload, VisualSearchTaskKind, build_visual_search_test
 
@@ -421,16 +444,19 @@ class _AuditoryCapacityAudioAdapter:
         self._story_index = -1
         self._story_segments: tuple[str, ...] = (
             "Chapter one. The rain started before sunrise, and the streetlights stayed on.",
-            "At the station, two conductors argued over a missing timetable and a locked office door.",
+            "At the station, two conductors argued over a missing timetable "
+            "and a locked office door.",
             "The clerk counted envelopes twice, then wrote a note to no one in particular.",
             "By noon the market was full, plates clattered, and voices bounced off the ceiling.",
             "A child asked for directions while someone nearby read a page from an old novel.",
-            "He crossed the hall, paused at the stairs, and listened for footsteps that never came.",
+            "He crossed the hall, paused at the stairs, "
+            "and listened for footsteps that never came.",
             "At table seven, two strangers compared watch times and disagreed by three minutes.",
             "The server dropped a spoon; chairs scraped; a phone rang and went unanswered.",
             "A narrator read steadily, describing a ship that left port under low clouds.",
             "In the next paragraph, the captain checked a compass, then folded the map.",
-            "Back at the terminal, an announcement repeated with static in the middle of each sentence.",
+            "Back at the terminal, an announcement repeated with static "
+            "in the middle of each sentence.",
             "Someone laughed too loudly, then apologized, then started the same story again.",
             "The reader turned another page and continued without looking up from the text.",
             "Outside, traffic paused at the light and moved again before the rain eased.",
@@ -441,16 +467,19 @@ class _AuditoryCapacityAudioAdapter:
             "He set the cup beside the radio and turned the dial until the static thinned out.",
             "The bulletin listed delays, route changes, and one cancellation with no explanation.",
             "A courier arrived late, signed the logbook, and left before anyone asked a question.",
-            "Near the window, someone traced circles on the glass while counting under their breath.",
+            "Near the window, someone traced circles on the glass "
+            "while counting under their breath.",
             "Three pages were missing from the binder, but the index still showed their numbers.",
             "On platform four, a whistle blew twice and then stopped halfway through a third note.",
             "The supervisor checked the wall clock, then checked a wristwatch, then frowned.",
             "A cart rolled by with empty crates that rattled louder than expected in the corridor.",
             "At the far desk, a light blinked in a pattern no one bothered to explain.",
             "The intercom clicked on, repeated a sentence, and cut off before the last word.",
-            "By evening, the rain had slowed, but the sidewalks still reflected every passing sign.",
+            "By evening, the rain had slowed, "
+            "but the sidewalks still reflected every passing sign.",
             "A driver unfolded a map on the hood and marked two streets with a blue pen.",
-            "Inside the waiting room, a heater hummed while a newspaper page turned every few seconds.",
+            "Inside the waiting room, a heater hummed "
+            "while a newspaper page turned every few seconds.",
             "Someone asked for gate numbers twice, then nodded as if the answer was different.",
             "The recorder kept running after the interview ended, capturing chairs and footsteps.",
             "A technician replaced a battery, tightened a screw, and wrote the time on tape.",
@@ -462,7 +491,8 @@ class _AuditoryCapacityAudioAdapter:
             "A thin voice from the next room read names from a list and waited for replies.",
             "Two mechanics compared torque values and then checked the same wrench twice.",
             "By the loading bay, wind pushed a loose sign until it tapped against the wall.",
-            "A student repeated the instructions quietly, then repeated them again without looking up.",
+            "A student repeated the instructions quietly, "
+            "then repeated them again without looking up.",
             "At the end of the chapter, the narrator said to continue and turned the page.",
         )
 
@@ -570,9 +600,15 @@ class _AuditoryCapacityAudioAdapter:
         alert_busy = False
         try:
             bg_busy = bool(self._bg_channel.get_busy()) if self._bg_channel is not None else False
-            dist_busy = bool(self._dist_channel.get_busy()) if self._dist_channel is not None else False
-            cue_busy = bool(self._cue_channel.get_busy()) if self._cue_channel is not None else False
-            alert_busy = bool(self._alert_channel.get_busy()) if self._alert_channel is not None else False
+            dist_busy = (
+                bool(self._dist_channel.get_busy()) if self._dist_channel is not None else False
+            )
+            cue_busy = (
+                bool(self._cue_channel.get_busy()) if self._cue_channel is not None else False
+            )
+            alert_busy = (
+                bool(self._alert_channel.get_busy()) if self._alert_channel is not None else False
+            )
         except Exception:
             bg_busy = False
             dist_busy = False
@@ -653,7 +689,9 @@ class _AuditoryCapacityAudioAdapter:
                         channel.stop()
                     continue
 
-                snippet_sound = self._build_ambient_snippet_sound(next_key, elapsed_ratio=elapsed_ratio)
+                snippet_sound = self._build_ambient_snippet_sound(
+                    next_key, elapsed_ratio=elapsed_ratio
+                )
                 if snippet_sound is None:
                     self._ambient_slots[idx] = None
                     self._ambient_active_sounds[idx] = None
@@ -982,7 +1020,9 @@ class _AuditoryCapacityAudioAdapter:
         if track.path is None or track.frame_count <= 1:
             return None
 
-        desired_frames = max(32, int((target_samples / float(self._sample_rate)) * track.sample_rate))
+        desired_frames = max(
+            32, int((target_samples / float(self._sample_rate)) * track.sample_rate)
+        )
         desired_frames = min(desired_frames, track.frame_count)
         if desired_frames <= 0:
             return None
@@ -1002,7 +1042,9 @@ class _AuditoryCapacityAudioAdapter:
             return None
 
         if track.sample_rate != self._sample_rate:
-            pcm = self._resample_pcm(samples=pcm, src_rate=track.sample_rate, dst_rate=self._sample_rate)
+            pcm = self._resample_pcm(
+                samples=pcm, src_rate=track.sample_rate, dst_rate=self._sample_rate
+            )
         if len(pcm) <= 0:
             return None
         if len(pcm) > target_samples:
@@ -1066,7 +1108,9 @@ class _AuditoryCapacityAudioAdapter:
             samples[tail_idx] = max(-32768, min(32767, tail))
 
     @staticmethod
-    def _normalize_segment_level(samples: array[int], *, target_rms: float, peak_ceiling: float) -> None:
+    def _normalize_segment_level(
+        samples: array[int], *, target_rms: float, peak_ceiling: float
+    ) -> None:
         if len(samples) <= 0:
             return
         peak = 0
@@ -1255,11 +1299,15 @@ class _AuditoryCapacityAudioAdapter:
             out.append(sample)
         return out
 
-    def _build_tone_sound(self, frequency_hz: float, duration_s: float, *, gain: float) -> pygame.mixer.Sound:
+    def _build_tone_sound(
+        self, frequency_hz: float, duration_s: float, *, gain: float
+    ) -> pygame.mixer.Sound:
         pcm = self._render_tone_pcm(frequency_hz, duration_s, gain=gain)
         return self._sound_from_pcm(pcm)
 
-    def _render_tone_pcm(self, frequency_hz: float, duration_s: float, *, gain: float) -> array[int]:
+    def _render_tone_pcm(
+        self, frequency_hz: float, duration_s: float, *, gain: float
+    ) -> array[int]:
         sample_count = max(1, int(self._sample_rate * duration_s))
         fade_n = max(1, int(self._sample_rate * 0.008))
         out = array("h")
@@ -1396,7 +1444,7 @@ class _OpenGLAuditoryRenderer:
                 swirl = (
                     math.sin((r * 23.0) - (a * 5.6))
                     + math.cos((r * 31.0) + (a * 7.3))
-                    + math.sin(((nx * 17.0) - (ny * 13.0)))
+                    + math.sin((nx * 17.0) - (ny * 13.0))
                 )
                 swirl_n = (swirl + 3.0) / 6.0
                 falloff = max(0.0, min(1.0, 1.25 - (r * 0.95)))
@@ -1513,9 +1561,9 @@ class _OpenGLAuditoryRenderer:
         ring_count = 24
         ring_spacing = (z_far - z_near) / float(max(1, ring_count - 1))
         flow_speed_units_per_s = 1.45
-        flow_offset = (
-            (float(pygame.time.get_ticks()) / 1000.0) * flow_speed_units_per_s
-        ) % max(0.001, ring_spacing)
+        flow_offset = ((float(pygame.time.get_ticks()) / 1000.0) * flow_speed_units_per_s) % max(
+            0.001, ring_spacing
+        )
 
         ring_centers: list[tuple[float, float, float, float]] = []
         for idx in range(ring_count):
@@ -1634,7 +1682,10 @@ class _OpenGLAuditoryRenderer:
             cross_y = by
             cross_z = ball_z + 0.002
 
-            if abs(payload.ball_x) > payload.tube_half_width or abs(payload.ball_y) > payload.tube_half_height:
+            if (
+                abs(payload.ball_x) > payload.tube_half_width
+                or abs(payload.ball_y) > payload.tube_half_height
+            ):
                 ball_edge = (0.95, 0.35, 0.38, 0.98)
             else:
                 ball_edge = (0.92, 0.95, 1.0, 0.98)
@@ -1714,7 +1765,12 @@ class _OpenGLAuditoryRenderer:
             lvl = min(
                 1.0,
                 math.hypot(float(payload.control_x), float(payload.control_y))
-                + (0.35 * min(1.0, math.hypot(float(payload.disturbance_x), float(payload.disturbance_y)))),
+                + (
+                    0.35
+                    * min(
+                        1.0, math.hypot(float(payload.disturbance_x), float(payload.disturbance_y))
+                    )
+                ),
             )
         fill_w = max(2.0, inner_w * (0.12 + (0.88 * lvl)))
         gl.glColor4f(0.76, 0.80, 0.86, 0.90)
@@ -1814,7 +1870,9 @@ class _OpenGLAuditoryRenderer:
         gl.glMatrixMode(gl.GL_MODELVIEW)
         gl.glLoadIdentity()
 
-    def _set_perspective(self, *, fovy_deg: float, aspect: float, z_near: float, z_far: float) -> None:
+    def _set_perspective(
+        self, *, fovy_deg: float, aspect: float, z_near: float, z_far: float
+    ) -> None:
         gl = self._gl
         fovy = float(fovy_deg)
         near = max(0.01, float(z_near))
@@ -1857,7 +1915,9 @@ class _OpenGLAuditoryRenderer:
         }
         return palette.get(str(name).upper(), (0.86, 0.88, 0.92))
 
-    def _draw_gate_shape_wire_3d(self, *, shape: str, x: float, y: float, z: float, radius: float) -> None:
+    def _draw_gate_shape_wire_3d(
+        self, *, shape: str, x: float, y: float, z: float, radius: float
+    ) -> None:
         gl = self._gl
         token = str(shape).upper()
         if token == "TRIANGLE":
@@ -1878,7 +1938,9 @@ class _OpenGLAuditoryRenderer:
 
         self._draw_disc_outline_3d(x=x, y=y, z=z, radius=radius)
 
-    def _draw_gate_shape_filled_3d(self, *, shape: str, x: float, y: float, z: float, radius: float) -> None:
+    def _draw_gate_shape_filled_3d(
+        self, *, shape: str, x: float, y: float, z: float, radius: float
+    ) -> None:
         gl = self._gl
         token = str(shape).upper()
         if token == "TRIANGLE":
@@ -1965,6 +2027,10 @@ class App:
         if len(self._screens) > 1:
             self._screens.pop()
 
+    def pop_to_root(self) -> None:
+        while len(self._screens) > 1:
+            self._screens.pop()
+
     def quit(self) -> None:
         self._running = False
 
@@ -2041,7 +2107,7 @@ class AxisCalibrationSettings:
         }
 
     @classmethod
-    def from_dict(cls, data: object) -> "AxisCalibrationSettings":
+    def from_dict(cls, data: object) -> AxisCalibrationSettings:
         if not isinstance(data, dict):
             return cls()
         min_raw = _clamp(_as_float(data.get("min_raw"), -1.0), -1.0, 0.0)
@@ -2231,7 +2297,9 @@ class InputProfilesStore:
     ) -> None:
         for profile in self._profiles:
             if profile.profile_id == profile_id:
-                profile.axis_calibrations[axis_key] = AxisCalibrationSettings.from_dict(settings.to_dict())
+                profile.axis_calibrations[axis_key] = AxisCalibrationSettings.from_dict(
+                    settings.to_dict()
+                )
                 self.save()
                 return
 
@@ -2407,7 +2475,9 @@ class AxisCalibrationScreen:
 
         axis_key = _axis_key(joystick, self._axis_index)
         profile = self._profiles.active_profile()
-        settings = self._profiles.get_axis_calibration(profile_id=profile.profile_id, axis_key=axis_key)
+        settings = self._profiles.get_axis_calibration(
+            profile_id=profile.profile_id, axis_key=axis_key
+        )
 
         if key == pygame.K_SPACE:
             if not self._capturing:
@@ -2415,7 +2485,9 @@ class AxisCalibrationScreen:
                 settings.min_raw = min(-0.001, current)
                 settings.max_raw = max(0.001, current)
                 self._capturing = True
-                self._message = "Capture started. Move axis through full range, then press Space again."
+                self._message = (
+                    "Capture started. Move axis through full range, then press Space again."
+                )
             else:
                 self._capturing = False
                 self._profiles.set_axis_calibration(
@@ -2494,7 +2566,11 @@ class AxisCalibrationScreen:
 
         joysticks = _iter_connected_joysticks()
         if not joysticks:
-            msg = self._small_font.render("No joystick detected. Connect device and reopen this screen.", True, (238, 245, 255))
+            msg = self._small_font.render(
+                "No joystick detected. Connect device and reopen this screen.",
+                True,
+                (238, 245, 255),
+            )
             surface.blit(msg, (32, 120))
             footer = self._tiny_font.render("Esc/Backspace: Back", True, (188, 204, 228))
             surface.blit(footer, (32, frame.bottom - 30))
@@ -2505,7 +2581,9 @@ class AxisCalibrationScreen:
         axis_count = max(1, int(joystick.get_numaxes()))
         self._axis_index %= axis_count
         axis_key = _axis_key(joystick, self._axis_index)
-        settings = self._profiles.get_axis_calibration(profile_id=profile.profile_id, axis_key=axis_key)
+        settings = self._profiles.get_axis_calibration(
+            profile_id=profile.profile_id, axis_key=axis_key
+        )
         raw = _axis_raw_value(joystick, self._axis_index)
         calibrated = _apply_axis_calibration(raw, settings)
 
@@ -2567,7 +2645,8 @@ class AxisCalibrationScreen:
             surface.blit(note, (32, min(frame.bottom - 54, y + 8)))
 
         footer = self._tiny_font.render(
-            "Left/Right: Device  Up/Down: Axis  Space: Capture  I: Invert  +/-: Deadzone  [/]: Curve  R: Reset  Esc: Back",
+            "Left/Right: Device  Up/Down: Axis  Space: Capture  I: Invert  "
+            "+/-: Deadzone  [/]: Curve  R: Reset  Esc: Back",
             True,
             (188, 204, 228),
         )
@@ -2617,13 +2696,10 @@ class AxisVisualizerScreen:
                 break
             axis_count = max(0, int(joystick.get_numaxes()))
             button_count = max(0, int(joystick.get_numbuttons()))
-            pressed_buttons = sum(
-                1
-                for i in range(button_count)
-                if bool(getattr(joystick, "get_button")(i))
-            )
+            pressed_buttons = sum(1 for i in range(button_count) if bool(joystick.get_button(i)))
             header = self._small_font.render(
-                f"[{joystick_index}] {joystick.get_name()}  axes:{axis_count}  buttons:{pressed_buttons}/{button_count}",
+                f"[{joystick_index}] {joystick.get_name()}  axes:{axis_count}  "
+                f"buttons:{pressed_buttons}/{button_count}",
                 True,
                 (238, 245, 255),
             )
@@ -2663,13 +2739,19 @@ class AxisVisualizerScreen:
                 )
                 raw_text = self._tiny_font.render(f"{raw:+.2f}", True, (188, 204, 228))
                 cal_text = self._tiny_font.render(f"{calibrated:+.2f}", True, (188, 204, 228))
-                surface.blit(raw_text, raw_text.get_rect(midtop=(raw_rect.centerx, raw_rect.bottom + 2)))
-                surface.blit(cal_text, cal_text.get_rect(midtop=(cal_rect.centerx, cal_rect.bottom + 2)))
+                surface.blit(
+                    raw_text, raw_text.get_rect(midtop=(raw_rect.centerx, raw_rect.bottom + 2))
+                )
+                surface.blit(
+                    cal_text, cal_text.get_rect(midtop=(cal_rect.centerx, cal_rect.bottom + 2))
+                )
 
                 y += 28
                 drawn_rows += 1
 
-        footer = self._tiny_font.render("Live raw + calibrated axis values. Esc/Backspace: Back", True, (188, 204, 228))
+        footer = self._tiny_font.render(
+            "Live raw + calibrated axis values. Esc/Backspace: Back", True, (188, 204, 228)
+        )
         surface.blit(footer, (32, frame.bottom - 28))
 
 
@@ -2729,10 +2811,14 @@ class InputProfilesScreen:
             return
         if key == pygame.K_n:
             name = f"Profile {len(profiles) + 1}"
-            created = self._profiles.create_profile(name=name, copy_from=self._profiles.active_profile())
+            created = self._profiles.create_profile(
+                name=name, copy_from=self._profiles.active_profile()
+            )
             new_profiles = self._profiles.profiles()
             self._selected_index = next(
-                i for i, profile in enumerate(new_profiles) if profile.profile_id == created.profile_id
+                i
+                for i, profile in enumerate(new_profiles)
+                if profile.profile_id == created.profile_id
             )
             self._message = f"Created {created.name}."
             return
@@ -2743,7 +2829,9 @@ class InputProfilesScreen:
             )
             new_profiles = self._profiles.profiles()
             self._selected_index = next(
-                i for i, profile in enumerate(new_profiles) if profile.profile_id == created.profile_id
+                i
+                for i, profile in enumerate(new_profiles)
+                if profile.profile_id == created.profile_id
             )
             self._message = f"Copied {selected.name}."
             return
@@ -2814,7 +2902,8 @@ class InputProfilesScreen:
             help_text = "Renaming: type name, Enter to save, Esc to cancel"
         else:
             help_text = (
-                "Enter: Set Active  N: New  C: Copy  R: Rename  D: Delete  Up/Down: Select  Esc: Back"
+                "Enter: Set Active  N: New  C: Copy  R: Rename  "
+                "D: Delete  Up/Down: Select  Esc: Back"
             )
 
         hint = self._tiny_font.render(help_text, True, (188, 204, 228))
@@ -2825,7 +2914,9 @@ class InputProfilesScreen:
 
 
 class MenuScreen:
-    def __init__(self, app: App, title: str, items: list[MenuItem], *, is_root: bool = False) -> None:
+    def __init__(
+        self, app: App, title: str, items: list[MenuItem], *, is_root: bool = False
+    ) -> None:
         self._app = app
         self._title = title
         self._items = items
@@ -3006,6 +3097,16 @@ class CognitiveTestScreen:
         # CLN mouse-selection hitboxes (code -> rect), refreshed during render.
         self._cln_option_hitboxes: dict[int, pygame.Rect] = {}
 
+        # Situational Awareness interaction + optional TTS callouts.
+        self._sa_option_hitboxes: dict[int, pygame.Rect] = {}
+        self._sa_grid_hitboxes: dict[str, pygame.Rect] = {}
+        self._sa_last_announced_token: tuple[object, ...] | None = None
+        self._sa_tts = _OfflineTtsSpeaker(
+            rate_wpm=192,
+            volume=0.58,
+            backend_preference=("pyttsx3-subprocess", "say", "espeak", "powershell"),
+        )
+
         # Target-recognition panel interaction + animation state.
         self._tr_selection_payload_id: int | None = None
         self._tr_selected_panels: set[str] = set()
@@ -3072,7 +3173,7 @@ class CognitiveTestScreen:
         self._system_logic_doc_index = 0
         self._cognitive_updating_payload_id: int | None = None
         self._cognitive_updating_runtime: CognitiveUpdatingRuntime | None = None
-        self._cognitive_updating_upper_tab_index = 0
+        self._cognitive_updating_upper_tab_index = 2
         self._cognitive_updating_lower_tab_index = 1
         self._cognitive_updating_hitboxes: dict[str, pygame.Rect] = {}
         self._cognitive_updating_phase_start_ms = 0
@@ -3089,12 +3190,16 @@ class CognitiveTestScreen:
         self._cognitive_updating_dispenser_lit: int | None = None
         self._auditory_audio: _AuditoryCapacityAudioAdapter | None = None
         self._auditory_audio_debug: dict[str, object] = {}
-        self._auditory_testing_menu = os.environ.get("CFAST_AUDITORY_TESTING_MENU", "1").strip().lower() not in {
+        self._auditory_testing_menu = os.environ.get(
+            "CFAST_AUDITORY_TESTING_MENU", "1"
+        ).strip().lower() not in {
             "0",
             "false",
             "off",
             "no",
         }
+        self._pause_menu_active = False
+        self._pause_menu_selected = 0
 
         self._target_recognition_reset_practice_breakdown()
         self._target_recognition_reset_scene_subtask()
@@ -3106,11 +3211,27 @@ class CognitiveTestScreen:
         snap = self._engine.snapshot()
         p = snap.payload
         scenario = p if isinstance(p, AirborneScenario) else None
-        math_payload: MathReasoningPayload | None = p if isinstance(p, MathReasoningPayload) else None
+        math_payload: MathReasoningPayload | None = (
+            p if isinstance(p, MathReasoningPayload) else None
+        )
         sensory_payload: SensoryMotorApparatusPayload | None = (
             p if isinstance(p, SensoryMotorApparatusPayload) else None
         )
-        table_payload: TableReadingPayload | None = p if isinstance(p, TableReadingPayload) else None
+        rapid_tracking_payload: RapidTrackingPayload | None = (
+            p if isinstance(p, RapidTrackingPayload) else None
+        )
+        spatial_payload: SpatialIntegrationPayload | None = (
+            p if isinstance(p, SpatialIntegrationPayload) else None
+        )
+        trace_test_1_payload: TraceTest1Payload | None = (
+            p if isinstance(p, TraceTest1Payload) else None
+        )
+        table_payload: TableReadingPayload | None = (
+            p if isinstance(p, TableReadingPayload) else None
+        )
+        situational_awareness_payload: SituationalAwarenessPayload | None = (
+            p if isinstance(p, SituationalAwarenessPayload) else None
+        )
         angles_payload: AnglesBearingsDegreesPayload | None = (
             p if isinstance(p, AnglesBearingsDegreesPayload) else None
         )
@@ -3134,15 +3255,47 @@ class CognitiveTestScreen:
         if event.type == pygame.KEYDOWN:
             if event.key == pygame.K_F12:
                 self._stop_auditory_audio()
+                self._stop_situational_awareness_audio()
                 self._app.pop()
                 return
             if event.key == pygame.K_ESCAPE and (event.mod & pygame.KMOD_SHIFT):
                 self._stop_auditory_audio()
+                self._stop_situational_awareness_audio()
                 self._app.pop()
                 return
             if snap.title == "Auditory Capacity" and event.key == pygame.K_F9:
                 self._auditory_testing_menu = not self._auditory_testing_menu
                 return
+            if snap.title == "Spatial Integration":
+                if event.key == pygame.K_F10:
+                    accepted = self._engine.submit_answer("__skip_practice__")
+                    if accepted:
+                        self._input = ""
+                        self._math_choice = 1
+                    return
+                if event.key == pygame.K_F11:
+                    accepted = self._engine.submit_answer("__skip_section__")
+                    if accepted:
+                        self._input = ""
+                        self._math_choice = 1
+                    return
+                if event.key == pygame.K_F8:
+                    accepted = self._engine.submit_answer("__skip_all__")
+                    if accepted:
+                        self._input = ""
+                        self._math_choice = 1
+                    return
+            if event.key == pygame.K_ESCAPE and snap.phase in (Phase.PRACTICE, Phase.SCORED):
+                self._pause_menu_active = not self._pause_menu_active
+                if self._pause_menu_active:
+                    self._pause_menu_selected = 0
+                    self._stop_auditory_audio()
+                    self._stop_situational_awareness_audio()
+                return
+
+        if self._pause_menu_active:
+            self._handle_pause_menu_event(event)
+            return
 
         dr: DigitRecognitionPayload | None = None
         if p is not None and hasattr(p, "display_digits") and hasattr(p, "accepting_input"):
@@ -3315,6 +3468,50 @@ class CognitiveTestScreen:
         if (
             event.type == pygame.MOUSEBUTTONDOWN
             and getattr(event, "button", 0) == 1
+            and situational_awareness_payload is not None
+            and snap.phase in (Phase.PRACTICE, Phase.SCORED)
+        ):
+            pos = getattr(event, "pos", None)
+            if pos is not None:
+                if (
+                    situational_awareness_payload.kind
+                    is SituationalAwarenessQuestionKind.POSITION_PROJECTION
+                ):
+                    for cell_label, rect in self._sa_grid_hitboxes.items():
+                        if not rect.collidepoint(pos):
+                            continue
+                        selected = next(
+                            (
+                                option
+                                for option in situational_awareness_payload.options
+                                if option.cell_label == cell_label
+                            ),
+                            None,
+                        )
+                        if selected is None:
+                            return
+                        self._math_choice = int(selected.code)
+                        self._input = str(selected.code)
+                        accepted = self._engine.submit_answer(self._input)
+                        if accepted:
+                            self._input = ""
+                            self._math_choice = 1
+                        return
+
+                for code, rect in self._sa_option_hitboxes.items():
+                    if not rect.collidepoint(pos):
+                        continue
+                    self._math_choice = int(code)
+                    self._input = str(code)
+                    accepted = self._engine.submit_answer(self._input)
+                    if accepted:
+                        self._input = ""
+                        self._math_choice = 1
+                    return
+
+        if (
+            event.type == pygame.MOUSEBUTTONDOWN
+            and getattr(event, "button", 0) == 1
             and cognitive_updating_payload is not None
             and snap.phase in (Phase.PRACTICE, Phase.SCORED)
         ):
@@ -3326,55 +3523,58 @@ class CognitiveTestScreen:
                     if not rect.collidepoint(pos):
                         continue
 
-                    if code == "upper_prev":
-                        self._cognitive_updating_shift_upper_tab(-1)
+                    scope = ""
+                    action = code
+                    if "|" in code:
+                        scope, action = code.split("|", 1)
+
+                    if action.startswith("tab:"):
+                        try:
+                            idx = int(action.split(":", 1)[1])
+                        except ValueError:
+                            return
+                        if scope == "upper":
+                            self._cognitive_updating_upper_tab_index = idx % 6
+                        elif scope == "lower":
+                            self._cognitive_updating_lower_tab_index = idx % 6
                         return
-                    if code == "upper_next":
-                        self._cognitive_updating_shift_upper_tab(1)
-                        return
-                    if code == "lower_prev":
-                        self._cognitive_updating_shift_lower_tab(-1)
-                        return
-                    if code == "lower_next":
-                        self._cognitive_updating_shift_lower_tab(1)
-                        return
-                    if code == "camera_alpha":
+                    if action == "camera_alpha":
                         runtime.toggle_camera("alpha")
                         self._cognitive_updating_refresh_runtime_state()
                         return
-                    if code == "camera_bravo":
+                    if action == "camera_bravo":
                         runtime.toggle_camera("bravo")
                         self._cognitive_updating_refresh_runtime_state()
                         return
-                    if code == "sensor_air":
+                    if action == "sensor_air":
                         runtime.toggle_sensor("air")
                         self._cognitive_updating_refresh_runtime_state()
                         return
-                    if code == "sensor_ground":
+                    if action == "sensor_ground":
                         runtime.toggle_sensor("ground")
                         self._cognitive_updating_refresh_runtime_state()
                         return
-                    if code == "knots_dec":
+                    if action == "knots_dec":
                         runtime.adjust_knots(-1)
                         self._cognitive_updating_refresh_runtime_state()
                         return
-                    if code == "knots_inc":
+                    if action == "knots_inc":
                         runtime.adjust_knots(1)
                         self._cognitive_updating_refresh_runtime_state()
                         return
-                    if code == "pump_on":
+                    if action == "pump_on":
                         runtime.set_pump(True)
                         self._cognitive_updating_refresh_runtime_state()
                         return
-                    if code == "pump_off":
+                    if action == "pump_off":
                         runtime.set_pump(False)
                         self._cognitive_updating_refresh_runtime_state()
                         return
-                    if code == "objective_activate":
+                    if action == "objective_activate":
                         runtime.activate_dispenser()
                         self._cognitive_updating_refresh_runtime_state()
                         return
-                    if code == "comms_submit":
+                    if action == "comms_submit":
                         raw_submission = runtime.build_submission_raw()
                         if raw_submission == "":
                             return
@@ -3384,27 +3584,27 @@ class CognitiveTestScreen:
                             self._cognitive_updating_refresh_runtime_state()
                             self._input = ""
                         return
-                    if code.startswith("tank:"):
+                    if action.startswith("tank:"):
                         try:
-                            runtime.set_active_tank(int(code.split(":", 1)[1]))
+                            runtime.set_active_tank(int(action.split(":", 1)[1]))
                             self._cognitive_updating_refresh_runtime_state()
                         except ValueError:
                             pass
                         return
-                    if code.startswith("parcel_field:"):
+                    if action.startswith("parcel_field:"):
                         try:
-                            runtime.set_parcel_field(int(code.split(":", 1)[1]))
+                            runtime.set_parcel_field(int(action.split(":", 1)[1]))
                             self._cognitive_updating_refresh_runtime_state()
                         except ValueError:
                             pass
                         return
-                    if code.startswith("objective_digit:"):
-                        digit = code.split(":", 1)[1]
+                    if action.startswith("objective_digit:"):
+                        digit = action.split(":", 1)[1]
                         runtime.append_parcel_digit(digit)
                         self._cognitive_updating_refresh_runtime_state()
                         return
-                    if code.startswith("comms_digit:"):
-                        digit = code.split(":", 1)[1]
+                    if action.startswith("comms_digit:"):
+                        digit = action.split(":", 1)[1]
                         runtime.append_comms_digit(digit)
                         self._cognitive_updating_refresh_runtime_state()
                         return
@@ -3416,6 +3616,7 @@ class CognitiveTestScreen:
 
         if key in (pygame.K_ESCAPE, pygame.K_BACKSPACE) and self._engine.can_exit():
             self._stop_auditory_audio()
+            self._stop_situational_awareness_audio()
             self._app.pop()
             return
 
@@ -3438,6 +3639,7 @@ class CognitiveTestScreen:
                 return
             if snap.phase is Phase.RESULTS:
                 self._stop_auditory_audio()
+                self._stop_situational_awareness_audio()
                 self._app.pop()
                 return
             if tr_payload is not None:
@@ -3465,11 +3667,22 @@ class CognitiveTestScreen:
                 return
             if dr is not None and not dr.accepting_input:
                 return
+            if (
+                spatial_payload is not None
+                and spatial_payload.trial_stage is not SpatialIntegrationTrialStage.QUESTION
+            ):
+                return
             if math_payload is not None and self._input == "":
                 self._input = str(self._math_choice)
             if table_payload is not None and self._input == "":
                 self._input = str(self._math_choice)
+            if situational_awareness_payload is not None and self._input == "":
+                self._input = str(self._math_choice)
             if angles_payload is not None and self._input == "":
+                self._input = str(self._math_choice)
+            if spatial_payload is not None and self._input == "":
+                self._input = str(self._math_choice)
+            if trace_test_1_payload is not None and self._input == "":
                 self._input = str(self._math_choice)
 
             accepted = self._engine.submit_answer(self._input)
@@ -3552,18 +3765,25 @@ class CognitiveTestScreen:
             if runtime is None:
                 return
 
-            if key in (pygame.K_MINUS, pygame.K_KP_MINUS) and self._cognitive_updating_lower_tab_index == 0:
+            nav_active = (self._cognitive_updating_upper_tab_index == 3) or (
+                self._cognitive_updating_lower_tab_index == 3
+            )
+            controls_active = (self._cognitive_updating_upper_tab_index == 2) or (
+                self._cognitive_updating_lower_tab_index == 2
+            )
+
+            if key in (pygame.K_MINUS, pygame.K_KP_MINUS) and nav_active:
                 runtime.adjust_knots(-1)
                 self._cognitive_updating_refresh_runtime_state()
                 return
-            if key in (pygame.K_EQUALS, pygame.K_KP_PLUS) and self._cognitive_updating_lower_tab_index == 0:
+            if key in (pygame.K_EQUALS, pygame.K_KP_PLUS) and nav_active:
                 runtime.adjust_knots(1)
                 self._cognitive_updating_refresh_runtime_state()
                 return
 
             ch = event.unicode
             if ch and ch.isdigit():
-                if self._cognitive_updating_upper_tab_index == 2:
+                if controls_active:
                     runtime.append_comms_digit(ch)
                     self._cognitive_updating_refresh_runtime_state()
                     return
@@ -3596,11 +3816,15 @@ class CognitiveTestScreen:
         if math_payload is not None:
             option_count = max(1, len(math_payload.options))
             if key in (pygame.K_UP, pygame.K_w):
-                self._math_choice = option_count if self._math_choice <= 1 else self._math_choice - 1
+                self._math_choice = (
+                    option_count if self._math_choice <= 1 else self._math_choice - 1
+                )
                 self._input = str(self._math_choice)
                 return
             if key in (pygame.K_DOWN, pygame.K_s):
-                self._math_choice = 1 if self._math_choice >= option_count else self._math_choice + 1
+                self._math_choice = (
+                    1 if self._math_choice >= option_count else self._math_choice + 1
+                )
                 self._input = str(self._math_choice)
                 return
 
@@ -3613,11 +3837,36 @@ class CognitiveTestScreen:
         if table_payload is not None:
             option_count = max(1, len(table_payload.options))
             if key in (pygame.K_UP, pygame.K_w):
-                self._math_choice = option_count if self._math_choice <= 1 else self._math_choice - 1
+                self._math_choice = (
+                    option_count if self._math_choice <= 1 else self._math_choice - 1
+                )
                 self._input = str(self._math_choice)
                 return
             if key in (pygame.K_DOWN, pygame.K_s):
-                self._math_choice = 1 if self._math_choice >= option_count else self._math_choice + 1
+                self._math_choice = (
+                    1 if self._math_choice >= option_count else self._math_choice + 1
+                )
+                self._input = str(self._math_choice)
+                return
+
+            choice = self._choice_from_key(key)
+            if choice is not None and 1 <= choice <= option_count:
+                self._math_choice = choice
+                self._input = str(choice)
+            return
+
+        if situational_awareness_payload is not None:
+            option_count = max(1, len(situational_awareness_payload.options))
+            if key in (pygame.K_UP, pygame.K_w):
+                self._math_choice = (
+                    option_count if self._math_choice <= 1 else self._math_choice - 1
+                )
+                self._input = str(self._math_choice)
+                return
+            if key in (pygame.K_DOWN, pygame.K_s):
+                self._math_choice = (
+                    1 if self._math_choice >= option_count else self._math_choice + 1
+                )
                 self._input = str(self._math_choice)
                 return
 
@@ -3630,11 +3879,59 @@ class CognitiveTestScreen:
         if angles_payload is not None:
             option_count = max(1, len(angles_payload.options))
             if key in (pygame.K_UP, pygame.K_w):
-                self._math_choice = option_count if self._math_choice <= 1 else self._math_choice - 1
+                self._math_choice = (
+                    option_count if self._math_choice <= 1 else self._math_choice - 1
+                )
                 self._input = str(self._math_choice)
                 return
             if key in (pygame.K_DOWN, pygame.K_s):
-                self._math_choice = 1 if self._math_choice >= option_count else self._math_choice + 1
+                self._math_choice = (
+                    1 if self._math_choice >= option_count else self._math_choice + 1
+                )
+                self._input = str(self._math_choice)
+                return
+
+            choice = self._choice_from_key(key)
+            if choice is not None and 1 <= choice <= option_count:
+                self._math_choice = choice
+                self._input = str(choice)
+            return
+
+        if spatial_payload is not None:
+            if spatial_payload.trial_stage is not SpatialIntegrationTrialStage.QUESTION:
+                return
+            option_count = max(1, len(spatial_payload.options))
+            if key in (pygame.K_UP, pygame.K_w):
+                self._math_choice = (
+                    option_count if self._math_choice <= 1 else self._math_choice - 1
+                )
+                self._input = str(self._math_choice)
+                return
+            if key in (pygame.K_DOWN, pygame.K_s):
+                self._math_choice = (
+                    1 if self._math_choice >= option_count else self._math_choice + 1
+                )
+                self._input = str(self._math_choice)
+                return
+
+            choice = self._choice_from_key(key)
+            if choice is not None and 1 <= choice <= option_count:
+                self._math_choice = choice
+                self._input = str(choice)
+            return
+
+        if trace_test_1_payload is not None:
+            option_count = max(1, len(trace_test_1_payload.options))
+            if key in (pygame.K_UP, pygame.K_w):
+                self._math_choice = (
+                    option_count if self._math_choice <= 1 else self._math_choice - 1
+                )
+                self._input = str(self._math_choice)
+                return
+            if key in (pygame.K_DOWN, pygame.K_s):
+                self._math_choice = (
+                    1 if self._math_choice >= option_count else self._math_choice + 1
+                )
                 self._input = str(self._math_choice)
                 return
 
@@ -3645,6 +3942,9 @@ class CognitiveTestScreen:
             return
 
         if sensory_payload is not None:
+            return
+
+        if rapid_tracking_payload is not None:
             return
 
         if tr_payload is not None:
@@ -3665,37 +3965,125 @@ class CognitiveTestScreen:
         if ch and (ch.isdigit() or (ch == "-" and self._input == "")):
             self._input += ch
 
-    def render(self, surface: pygame.Surface) -> None:
-        if isinstance(self._engine, SensoryMotorApparatusEngine):
-            control_x, control_y = self._read_sensory_motor_control()
-            self._engine.set_control(horizontal=control_x, vertical=control_y)
-        elif isinstance(self._engine, AuditoryCapacityEngine):
-            control_x, control_y = self._read_sensory_motor_control()
-            self._engine.set_control(horizontal=control_x, vertical=control_y)
+    def _handle_pause_menu_event(self, event: pygame.event.Event) -> None:
+        if event.type != pygame.KEYDOWN:
+            return
+        key = event.key
+        if key in (pygame.K_ESCAPE, pygame.K_BACKSPACE):
+            self._pause_menu_active = False
+            return
+        if key in (pygame.K_UP, pygame.K_w):
+            self._pause_menu_selected = (self._pause_menu_selected - 1) % 3
+            return
+        if key in (pygame.K_DOWN, pygame.K_s):
+            self._pause_menu_selected = (self._pause_menu_selected + 1) % 3
+            return
+        if key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE):
+            self._activate_pause_menu_selection()
 
-        # Update engine and take a fresh snapshot.
-        self._engine.update()
+    def _activate_pause_menu_selection(self) -> None:
+        selected = self._pause_menu_selected % 3
+        self._pause_menu_active = False
+        if selected == 0:
+            return
+        if selected == 1:
+            self._debug_skip_forward()
+            return
+        self._stop_auditory_audio()
+        self._stop_situational_awareness_audio()
+        self._app.pop_to_root()
+
+    def _debug_skip_forward(self) -> None:
+        self._input = ""
+        self._math_choice = 1
         snap = self._engine.snapshot()
+        phase = snap.phase
+        if phase is Phase.INSTRUCTIONS:
+            self._engine.start_practice()
+            return
+        if phase is Phase.PRACTICE_DONE:
+            self._engine.start_scored()
+            self._engine.update()
+            if self._engine.snapshot().phase is not Phase.SCORED:
+                self._force_engine_phase(Phase.RESULTS)
+            return
+        if phase is Phase.RESULTS:
+            return
 
-        # If the timer expires mid-entry, auto-submit what was typed so far.
-        if (
-            snap.phase is Phase.SCORED
-            and snap.time_remaining_s is not None
-            and snap.time_remaining_s <= 0.0
-            and self._input.strip() != ""
-            and not isinstance(snap.payload, TargetRecognitionPayload)
+        for token in (
+            "__skip_section__",
+            "__skip_practice__",
+            "__skip_all__",
+            "skip_section",
+            "skip_practice",
+            "skip_all",
         ):
-            if isinstance(snap.payload, CognitiveUpdatingPayload):
-                self._cognitive_updating_sync_payload(snap.payload)
-                runtime = self._cognitive_updating_runtime
-                raw_submission = runtime.build_submission_raw() if runtime is not None else ""
-                if raw_submission != "":
-                    self._engine.submit_answer(raw_submission)
-            else:
-                self._engine.submit_answer(self._input)
-            self._input = ""
+            if self._engine.submit_answer(token):
+                return
+
+        if phase is Phase.PRACTICE:
+            self._engine.start_scored()
+            self._engine.update()
+            if self._engine.snapshot().phase is Phase.SCORED:
+                return
+            self._force_engine_phase(Phase.PRACTICE_DONE)
+            self._engine.start_scored()
+            self._engine.update()
+            if self._engine.snapshot().phase is Phase.SCORED:
+                return
+
+        self._force_engine_phase(Phase.RESULTS)
+
+    def _force_engine_phase(self, phase: Phase) -> None:
+        if not hasattr(self._engine, "_phase"):
+            return
+        self._engine._phase = phase
+        for attr in ("_current", "_presented_at_s"):
+            if hasattr(self._engine, attr):
+                setattr(self._engine, attr, None)
+        if hasattr(self._engine, "_pending_done_action"):
+            if phase is Phase.PRACTICE_DONE:
+                self._engine._pending_done_action = "start_scored"
+            elif phase is Phase.RESULTS:
+                self._engine._pending_done_action = None
+
+    def render(self, surface: pygame.Surface) -> None:
+        if self._pause_menu_active:
+            snap = self._engine.snapshot()
+        else:
+            if isinstance(self._engine, (SensoryMotorApparatusEngine, RapidTrackingEngine)):
+                control_x, control_y = self._read_sensory_motor_control()
+                self._engine.set_control(horizontal=control_x, vertical=control_y)
+            elif isinstance(self._engine, AuditoryCapacityEngine):
+                control_x, control_y = self._read_sensory_motor_control()
+                self._engine.set_control(horizontal=control_x, vertical=control_y)
+
+            # Update engine and take a fresh snapshot.
             self._engine.update()
             snap = self._engine.snapshot()
+
+            # If the timer expires mid-entry, auto-submit what was typed so far.
+            if (
+                snap.phase is Phase.SCORED
+                and snap.time_remaining_s is not None
+                and snap.time_remaining_s <= 0.0
+                and self._input.strip() != ""
+                and not isinstance(snap.payload, TargetRecognitionPayload)
+            ):
+                if isinstance(snap.payload, CognitiveUpdatingPayload):
+                    self._cognitive_updating_sync_payload(snap.payload)
+                    runtime = self._cognitive_updating_runtime
+                    raw_submission = runtime.build_submission_raw() if runtime is not None else ""
+                    if raw_submission != "":
+                        self._engine.submit_answer(raw_submission)
+                else:
+                    self._engine.submit_answer(self._input)
+                self._input = ""
+                self._engine.update()
+                snap = self._engine.snapshot()
+
+        if self._pause_menu_active and snap.phase not in (Phase.PRACTICE, Phase.SCORED):
+            self._pause_menu_active = False
 
         # Identify payloads.
         p = snap.payload
@@ -3712,14 +4100,33 @@ class CognitiveTestScreen:
         sensory_payload: SensoryMotorApparatusPayload | None = (
             p if isinstance(p, SensoryMotorApparatusPayload) else None
         )
-        table_payload: TableReadingPayload | None = p if isinstance(p, TableReadingPayload) else None
+        rapid_tracking_payload: RapidTrackingPayload | None = (
+            p if isinstance(p, RapidTrackingPayload) else None
+        )
+        table_payload: TableReadingPayload | None = (
+            p if isinstance(p, TableReadingPayload) else None
+        )
+        spatial_payload: SpatialIntegrationPayload | None = (
+            p if isinstance(p, SpatialIntegrationPayload) else None
+        )
+        trace_test_1_payload: TraceTest1Payload | None = (
+            p if isinstance(p, TraceTest1Payload) else None
+        )
+        sa_payload: SituationalAwarenessPayload | None = (
+            p if isinstance(p, SituationalAwarenessPayload) else None
+        )
         sl: SystemLogicPayload | None = p if isinstance(p, SystemLogicPayload) else None
         cu: CognitiveUpdatingPayload | None = p if isinstance(p, CognitiveUpdatingPayload) else None
         cln: ColoursLettersNumbersPayload | None = (
             p if isinstance(p, ColoursLettersNumbersPayload) else None
         )
         ac: AuditoryCapacityPayload | None = p if isinstance(p, AuditoryCapacityPayload) else None
-        self._sync_auditory_audio(phase=snap.phase, payload=ac)
+        if self._pause_menu_active:
+            self._stop_auditory_audio()
+            self._stop_situational_awareness_audio()
+        else:
+            self._sync_auditory_audio(phase=snap.phase, payload=ac)
+            self._sync_situational_awareness_audio(phase=snap.phase, payload=sa_payload)
         dr: DigitRecognitionPayload | None = None
         if p is not None:
             if isinstance(p, DigitRecognitionPayload):
@@ -3737,16 +4144,28 @@ class CognitiveTestScreen:
         is_system_logic = snap.title == "System Logic"
         is_cognitive_updating = snap.title == "Cognitive Updating"
         is_sensory_motor_apparatus = snap.title == "Sensory Motor Apparatus"
+        is_rapid_tracking = snap.title == "Rapid Tracking"
+        is_spatial_integration = snap.title == "Spatial Integration"
+        is_trace_test_1 = snap.title == "Trace Test 1"
         is_table_reading = snap.title == "Table Reading"
         is_auditory_capacity = snap.title == "Auditory Capacity"
+        is_situational_awareness = snap.title == "Situational Awareness"
         if is_numerical_ops and snap.phase in (Phase.PRACTICE, Phase.SCORED):
             self._render_numerical_operations_question(surface, snap)
         elif is_math_reasoning:
             self._render_math_reasoning(surface, snap, mr)
         elif is_sensory_motor_apparatus:
             self._render_sensory_motor_apparatus_screen(surface, snap, sensory_payload)
+        elif is_rapid_tracking:
+            self._render_rapid_tracking_screen(surface, snap, rapid_tracking_payload)
+        elif is_spatial_integration:
+            self._render_spatial_integration_screen(surface, snap, spatial_payload)
+        elif is_trace_test_1:
+            self._render_trace_test_1_screen(surface, snap, trace_test_1_payload)
         elif is_auditory_capacity:
             self._render_auditory_capacity_screen(surface, snap, ac)
+        elif is_situational_awareness:
+            self._render_situational_awareness_screen(surface, snap, sa_payload)
         elif is_table_reading:
             self._render_table_reading_screen(surface, snap, table_payload)
         elif is_system_logic:
@@ -3776,7 +4195,9 @@ class CognitiveTestScreen:
                 rem = int(round(snap.time_remaining_s))
                 mm = rem // 60
                 ss = rem % 60
-                timer = self._small_font.render(f"Time remaining: {mm:02d}:{ss:02d}", True, (200, 200, 210))
+                timer = self._small_font.render(
+                    f"Time remaining: {mm:02d}:{ss:02d}", True, (200, 200, 210)
+                )
                 surface.blit(timer, (40, y_info))
                 y_info += 28
 
@@ -3802,8 +4223,16 @@ class CognitiveTestScreen:
                 pass
             elif is_sensory_motor_apparatus:
                 pass
+            elif is_rapid_tracking:
+                pass
+            elif is_spatial_integration:
+                pass
+            elif is_trace_test_1:
+                pass
             elif is_auditory_capacity:
                 self._render_auditory_capacity_answer_box(surface, snap, ac)
+            elif is_situational_awareness:
+                pass
             elif is_table_reading:
                 pass
             elif is_system_logic:
@@ -3837,6 +4266,59 @@ class CognitiveTestScreen:
         if not self._engine.can_exit() and snap.phase is Phase.SCORED:
             lock = self._small_font.render("Test in progress: cannot exit.", True, (140, 140, 150))
             surface.blit(lock, (460, surface.get_height() - 60))
+
+        if self._pause_menu_active:
+            self._render_pause_overlay(surface)
+
+    def _render_pause_overlay(self, surface: pygame.Surface) -> None:
+        dim = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
+        dim.fill((4, 8, 18, 182))
+        surface.blit(dim, (0, 0))
+
+        panel_w = min(480, max(320, surface.get_width() - 64))
+        panel_h = 290
+        panel = pygame.Rect(
+            (surface.get_width() - panel_w) // 2,
+            (surface.get_height() - panel_h) // 2,
+            panel_w,
+            panel_h,
+        )
+
+        pygame.draw.rect(surface, (8, 18, 104), panel, border_radius=10)
+        pygame.draw.rect(surface, (226, 236, 255), panel, 2, border_radius=10)
+
+        title = self._app.font.render("Paused", True, (238, 245, 255))
+        surface.blit(title, title.get_rect(midtop=(panel.centerx, panel.y + 16)))
+
+        subtitle = self._tiny_font.render("Back / Skip / Main Menu", True, (188, 204, 228))
+        surface.blit(subtitle, subtitle.get_rect(midtop=(panel.centerx, panel.y + 56)))
+
+        options = ("Back", "Skip", "Main Menu")
+        row_h = 42
+        gap = 12
+        total_h = (row_h * len(options)) + (gap * (len(options) - 1))
+        y = panel.y + 88 + max(0, (panel.h - 156 - total_h) // 2)
+        for idx, label in enumerate(options):
+            row = pygame.Rect(panel.x + 28, y, panel.w - 56, row_h)
+            selected = idx == (self._pause_menu_selected % len(options))
+            if selected:
+                pygame.draw.rect(surface, (244, 248, 255), row, border_radius=6)
+                pygame.draw.rect(surface, (120, 142, 196), row, 2, border_radius=6)
+                color = (14, 26, 74)
+            else:
+                pygame.draw.rect(surface, (9, 20, 106), row, border_radius=6)
+                pygame.draw.rect(surface, (62, 84, 152), row, 1, border_radius=6)
+                color = (238, 245, 255)
+            text = self._small_font.render(label, True, color)
+            surface.blit(text, text.get_rect(center=row.center))
+            y += row_h + gap
+
+        help_text = self._tiny_font.render(
+            "Up/Down: Select  Enter: Confirm  Esc/Backspace: Back",
+            True,
+            (188, 204, 228),
+        )
+        surface.blit(help_text, help_text.get_rect(midbottom=(panel.centerx, panel.bottom - 14)))
 
     @staticmethod
     def _choice_from_key(key: int) -> int | None:
@@ -3887,16 +4369,117 @@ class CognitiveTestScreen:
         self._auditory_audio = None
         self._auditory_audio_debug = {}
 
+    def _sync_situational_awareness_audio(
+        self,
+        *,
+        phase: Phase,
+        payload: SituationalAwarenessPayload | None,
+    ) -> None:
+        self._sa_tts.update()
+        if payload is None or phase not in (Phase.PRACTICE, Phase.SCORED):
+            if phase in (Phase.INSTRUCTIONS, Phase.PRACTICE_DONE, Phase.RESULTS):
+                self._sa_tts.stop()
+            self._sa_last_announced_token = None
+            return
+
+        token = self._situational_awareness_audio_token(payload)
+        if token != self._sa_last_announced_token:
+            self._queue_situational_awareness_announcements(payload)
+            self._sa_last_announced_token = token
+
+    def _stop_situational_awareness_audio(self) -> None:
+        self._sa_tts.stop()
+        self._sa_last_announced_token = None
+
+    def _queue_situational_awareness_announcements(
+        self, payload: SituationalAwarenessPayload
+    ) -> None:
+        lines = self._situational_awareness_announcements(payload)
+        if not lines:
+            return
+        pending = int(self._sa_tts.pending_count)
+        if pending > 6:
+            return
+        if pending > 2:
+            self._sa_tts.speak(lines[0])
+            return
+        for line in lines:
+            self._sa_tts.speak(line)
+
+    @staticmethod
+    def _situational_awareness_audio_token(
+        payload: SituationalAwarenessPayload,
+    ) -> tuple[object, ...]:
+        contacts = tuple(
+            (
+                contact.callsign,
+                int(contact.x),
+                int(contact.y),
+                contact.heading,
+                int(contact.speed_cells_per_min),
+                contact.fuel_state,
+            )
+            for contact in payload.contacts
+        )
+        return (
+            payload.kind,
+            payload.stem,
+            int(payload.horizon_min),
+            int(payload.correct_code),
+            contacts,
+        )
+
+    @staticmethod
+    def _situational_awareness_announcements(
+        payload: SituationalAwarenessPayload,
+    ) -> tuple[str, ...]:
+        concise = ", ".join(
+            f"{contact.callsign} {contact.heading}{contact.speed_cells_per_min}"
+            for contact in payload.contacts[:3]
+        )
+        verbose = ", ".join(
+            f"{contact.callsign} at {chr(ord('A') + int(contact.y))}{int(contact.x)} "
+            f"heading {contact.heading} speed {contact.speed_cells_per_min}"
+            for contact in payload.contacts[:3]
+        )
+        horizon = int(payload.horizon_min)
+
+        if payload.kind is SituationalAwarenessQuestionKind.POSITION_PROJECTION:
+            query = payload.query_callsign or "lead contact"
+            return (
+                f"Tactical. {concise}. Predict {query} plus {horizon}.",
+                (
+                    f"Situation update. {verbose}. "
+                    f"Determine expected grid position of {query} in {horizon} minutes."
+                ),
+                "Immediate response. Commit answer now.",
+            )
+        if payload.kind is SituationalAwarenessQuestionKind.CONFLICT_PREDICTION:
+            return (
+                f"Traffic alert. {concise}. Find conflict pair plus {horizon}.",
+                (
+                    f"Situation update. {verbose}. "
+                    f"Determine which two contacts share the same block in {horizon} minutes."
+                ),
+                "High tempo. Identify and answer now.",
+            )
+        return (
+            "Priority fuel advisory. Select immediate deconfliction.",
+            (
+                f"Situation update. {verbose}. "
+                "A minimum-fuel aircraft has priority. Select the best immediate action."
+            ),
+            "Urgent decision. Execute now.",
+        )
+
     def _read_sensory_motor_control(self) -> tuple[float, float]:
         keys = pygame.key.get_pressed()
 
-        key_horizontal = (
-            (1.0 if keys[pygame.K_RIGHT] or keys[pygame.K_d] else 0.0)
-            - (1.0 if keys[pygame.K_LEFT] or keys[pygame.K_a] else 0.0)
+        key_horizontal = (1.0 if keys[pygame.K_RIGHT] or keys[pygame.K_d] else 0.0) - (
+            1.0 if keys[pygame.K_LEFT] or keys[pygame.K_a] else 0.0
         )
-        key_vertical = (
-            (1.0 if keys[pygame.K_DOWN] or keys[pygame.K_s] else 0.0)
-            - (1.0 if keys[pygame.K_UP] or keys[pygame.K_w] else 0.0)
+        key_vertical = (1.0 if keys[pygame.K_DOWN] or keys[pygame.K_s] else 0.0) - (
+            1.0 if keys[pygame.K_UP] or keys[pygame.K_w] else 0.0
         )
 
         horizontal = 0.0
@@ -3969,7 +4552,9 @@ class CognitiveTestScreen:
 
         header = pygame.Rect(frame.x + 2, frame.y + 2, frame.w - 4, 42)
         pygame.draw.rect(surface, (16, 28, 118), header)
-        pygame.draw.line(surface, border, (header.x, header.bottom), (header.right, header.bottom), 1)
+        pygame.draw.line(
+            surface, border, (header.x, header.bottom), (header.right, header.bottom), 1
+        )
 
         phase_label = {
             Phase.INSTRUCTIONS: "Instructions",
@@ -4026,13 +4611,16 @@ class CognitiveTestScreen:
             metrics_bg = pygame.Rect(track.x + 8, track.y + 8, track.w - 16, 24)
             pygame.draw.rect(surface, (8, 18, 104), metrics_bg)
             pygame.draw.rect(surface, (78, 102, 170), metrics_bg, 1)
+            on_target_pct = payload.on_target_ratio * 100.0
             left_text = self._tiny_font.render(
-                f"Err {payload.mean_error:.3f}  RMS {payload.rms_error:.3f}  On {payload.on_target_ratio*100.0:.1f}%",
+                f"Err {payload.mean_error:.3f}  RMS {payload.rms_error:.3f}  "
+                f"On {on_target_pct:.1f}%",
                 True,
                 text_main,
             )
             right_text = self._tiny_font.render(
-                f"Ctrl {payload.control_x:+.2f},{payload.control_y:+.2f}  Drift {payload.disturbance_x:+.2f},{payload.disturbance_y:+.2f}",
+                f"Ctrl {payload.control_x:+.2f},{payload.control_y:+.2f}  "
+                f"Drift {payload.disturbance_x:+.2f},{payload.disturbance_y:+.2f}",
                 True,
                 text_muted,
             )
@@ -4061,6 +4649,524 @@ class CognitiveTestScreen:
             footer = (
                 "Rudder axis controls left/right; Joystick axis 1 controls up/down "
                 "(WASD/arrows fallback)."
+            )
+        else:
+            footer = "Enter: Return to Tests"
+        foot = self._tiny_font.render(footer, True, text_muted)
+        surface.blit(foot, foot.get_rect(midbottom=(frame.centerx, frame.bottom - 10)))
+
+    def _render_rapid_tracking_screen(
+        self,
+        surface: pygame.Surface,
+        snap: TestSnapshot,
+        payload: RapidTrackingPayload | None,
+    ) -> None:
+        w, h = surface.get_size()
+        bg = (6, 24, 20)
+        panel_bg = (12, 44, 34)
+        border = (180, 228, 204)
+        text_main = (229, 248, 237)
+        text_muted = (168, 210, 190)
+
+        surface.fill(bg)
+        frame = pygame.Rect(10, 10, w - 20, h - 20)
+        pygame.draw.rect(surface, panel_bg, frame)
+        pygame.draw.rect(surface, border, frame, 2)
+
+        header = pygame.Rect(frame.x + 2, frame.y + 2, frame.w - 4, 42)
+        pygame.draw.rect(surface, (16, 66, 52), header)
+        pygame.draw.line(
+            surface, border, (header.x, header.bottom), (header.right, header.bottom), 1
+        )
+
+        phase_label = {
+            Phase.INSTRUCTIONS: "Instructions",
+            Phase.PRACTICE: "Practice",
+            Phase.PRACTICE_DONE: "Practice Complete",
+            Phase.SCORED: "Timed Test",
+            Phase.RESULTS: "Results",
+        }.get(snap.phase, "Task")
+
+        title = self._small_font.render(f"Rapid Tracking - {phase_label}", True, text_main)
+        surface.blit(title, (header.x + 12, header.y + 8))
+
+        stats = self._tiny_font.render(
+            f"Windows {snap.correct_scored}/{snap.attempted_scored}",
+            True,
+            text_muted,
+        )
+        surface.blit(stats, stats.get_rect(midright=(header.right - 12, header.centery)))
+
+        if snap.time_remaining_s is not None:
+            rem = int(round(snap.time_remaining_s))
+            mm = rem // 60
+            ss = rem % 60
+            timer = self._small_font.render(f"{mm:02d}:{ss:02d}", True, text_main)
+            surface.blit(timer, timer.get_rect(topright=(frame.right - 12, header.bottom + 6)))
+
+        body = pygame.Rect(
+            frame.x + 8,
+            header.bottom + 8,
+            frame.w - 16,
+            frame.bottom - header.bottom - 44,
+        )
+        track_margin = max(4, min(10, min(body.w, body.h) // 60))
+        track = body.inflate(-track_margin * 2, -track_margin * 2)
+
+        pygame.draw.rect(surface, (4, 10, 8), track)
+        pygame.draw.rect(surface, (84, 122, 109), track, 1)
+
+        cam_x = float(payload.camera_x) if payload is not None else 0.0
+        cam_y = float(payload.camera_y) if payload is not None else 0.0
+
+        horizon_y = track.centery - int(round(cam_y * track.h * 0.10))
+        horizon_y = max(track.y + 24, min(track.bottom - 28, horizon_y))
+        vanish_x = track.centerx - int(round(cam_x * track.w * 0.16))
+        vanish_x = max(track.x + 34, min(track.right - 34, vanish_x))
+        anim_s = pygame.time.get_ticks() / 1000.0
+
+        old_clip = surface.get_clip()
+        surface.set_clip(track)
+        try:
+            sky_h = max(1, horizon_y - track.y)
+            for row in range(track.y, horizon_y):
+                t = (row - track.y) / float(sky_h)
+                r = int(8 + (22 * t))
+                g = int(30 + (58 * t))
+                b = int(56 + (46 * t))
+                pygame.draw.line(surface, (r, g, b), (track.x, row), (track.right, row))
+
+            # Layered mountain silhouettes for stronger depth cues.
+            width = track.w
+            for layer in range(3):
+                base_y = horizon_y + 2 + (layer * 14)
+                amp = 24 + (layer * 12)
+                color = (
+                    9 + (layer * 9),
+                    34 + (layer * 15),
+                    34 + (layer * 12),
+                )
+                freq = 0.010 + (layer * 0.0028)
+                drift = (cam_x * (20 - (layer * 4))) + (anim_s * (3.0 - (layer * 0.8)))
+                pts: list[tuple[int, int]] = [(track.x, base_y)]
+                step = max(20, width // 14)
+                for gx in range(track.x - step, track.right + step * 2, step):
+                    nx = gx + drift
+                    ridge = math.sin(nx * freq) + (0.65 * math.sin(nx * freq * 1.9 + (layer * 0.7)))
+                    py = base_y - int(round(((ridge + 1.5) * 0.5) * amp))
+                    pts.append((gx, py))
+                pts.append((track.right, base_y))
+                pygame.draw.polygon(surface, color, pts)
+
+            # Horizon tree spikes as fine visual clutter.
+            for idx in range(28):
+                x_ratio = idx / 27.0
+                tx = track.x + int(round(x_ratio * width))
+                tx -= int(round((cam_x * 10.0) + (anim_s * 2.0)))
+                if tx < track.x - 6 or tx > track.right + 6:
+                    continue
+                hgt = 5 + (idx % 5) * 2
+                top = horizon_y + 2 - hgt
+                pygame.draw.line(surface, (18, 68, 52), (tx, horizon_y + 2), (tx, top), 1)
+                pygame.draw.line(surface, (24, 88, 66), (tx - 2, top + 3), (tx, top), 1)
+                pygame.draw.line(surface, (24, 88, 66), (tx + 2, top + 3), (tx, top), 1)
+
+            # Cloud bands to increase sky motion distraction.
+            for idx in range(9):
+                phase = (anim_s * (6.0 + (idx % 3))) + (idx * 31.0) - (cam_x * 42.0)
+                cloud_x = track.x + int(round(phase % (width + 160))) - 80
+                cloud_y = track.y + 18 + (idx % 4) * 16 + int(round(math.sin(anim_s + idx) * 3.0))
+                if cloud_y >= horizon_y - 10:
+                    continue
+                shade = 84 + ((idx * 13) % 44)
+                for blob in range(3):
+                    ox = (blob - 1) * 16
+                    oy = -abs(blob - 1) * 3
+                    rect = pygame.Rect(cloud_x + ox - 15, cloud_y + oy - 8, 30, 16)
+                    pygame.draw.ellipse(surface, (shade, shade + 10, shade + 16), rect)
+
+            # Urban/built-up band near foothills.
+            for idx in range(22):
+                scroll = (cam_x * 44.0) + (anim_s * 7.8) + (idx * 41.0)
+                bx = track.x + int(round(scroll % (width + 220))) - 110
+                b_w = 14 + (idx % 5) * 7
+                b_h = 22 + (idx % 7) * 8
+                base_y = horizon_y + 18 + (idx % 3) * 4
+                rect = pygame.Rect(bx, base_y - b_h, b_w, b_h)
+                tone = 26 + (idx % 4) * 8
+                col = (tone, 50 + (idx % 5) * 6, 46 + (idx % 4) * 6)
+                pygame.draw.rect(surface, col, rect)
+                pygame.draw.rect(surface, (14, 28, 26), rect, 1)
+                if b_w >= 18 and b_h >= 26:
+                    win_col = (118, 146, 126) if idx % 2 == 0 else (162, 130, 82)
+                    for wy in range(rect.y + 4, rect.bottom - 4, 6):
+                        for wx in range(rect.x + 4, rect.right - 3, 6):
+                            if ((wx + wy + idx) % 3) == 0:
+                                continue
+                            pygame.draw.rect(surface, win_col, pygame.Rect(wx, wy, 2, 3))
+
+            # Airborne distractions: glints and crossing traffic markers.
+            for idx in range(11):
+                speed = 0.65 + (idx % 5) * 0.22
+                phase = (anim_s * speed * 36.0) + (idx * 57.0) + (cam_x * 28.0)
+                px = track.x + int(round(phase % (width + 220))) - 110
+                py = track.y + 26 + ((idx * 19) % max(30, horizon_y - track.y - 10))
+                blink = 0.45 + 0.55 * math.sin(anim_s * (3.3 + (idx * 0.17)) + idx)
+                alpha = int(round(60 + (130 * max(0.0, blink))))
+                core = (alpha, min(255, alpha + 40), min(255, alpha + 70))
+                if idx % 3 == 0:
+                    pygame.draw.circle(surface, core, (px, py), 2)
+                    pygame.draw.circle(surface, (24, 92, 76), (px, py), 5, 1)
+                else:
+                    pygame.draw.line(surface, core, (px - 3, py), (px + 3, py), 1)
+                    pygame.draw.line(surface, core, (px, py - 3), (px, py + 3), 1)
+
+            ground_h = max(1, track.bottom - horizon_y)
+            for row in range(horizon_y, track.bottom):
+                t = (row - horizon_y) / float(ground_h)
+                r = int(18 - (10 * t))
+                g = int(58 - (28 * t))
+                b = int(46 - (20 * t))
+                pygame.draw.line(surface, (r, g, b), (track.x, row), (track.right, row))
+
+            # Closer low-rise buildings in foreground for stronger motion parallax.
+            for idx in range(14):
+                scroll = (cam_x * 86.0) + (anim_s * 13.0) + (idx * 73.0)
+                bx = track.x + int(round(scroll % (width + 260))) - 130
+                b_w = 26 + (idx % 4) * 14
+                b_h = 30 + (idx % 5) * 11
+                ground_y = track.bottom - 26 - ((idx % 2) * 6)
+                rect = pygame.Rect(bx, ground_y - b_h, b_w, b_h)
+                col = (22 + (idx % 3) * 7, 44 + (idx % 4) * 8, 38 + (idx % 3) * 6)
+                pygame.draw.rect(surface, col, rect)
+                pygame.draw.rect(surface, (12, 22, 20), rect, 1)
+                door = pygame.Rect(rect.centerx - 3, rect.bottom - 10, 6, 10)
+                pygame.draw.rect(surface, (16, 22, 20), door)
+                win_col = (132, 166, 146) if idx % 3 == 0 else (172, 138, 92)
+                for wy in range(rect.y + 5, rect.bottom - 12, 7):
+                    for wx in range(rect.x + 5, rect.right - 4, 8):
+                        if ((idx + wx + wy) % 4) == 0:
+                            continue
+                        pygame.draw.rect(surface, win_col, pygame.Rect(wx, wy, 3, 3))
+
+            # Ground distractions: lateral moving lights along lower field.
+            for idx in range(14):
+                sweep = (anim_s * (18.0 + (idx % 4) * 3.2)) + (idx * 41.0) + (cam_x * 52.0)
+                lx = track.x + int(round(sweep % (width + 90))) - 45
+                ly = track.bottom - 12 - ((idx % 4) * 5)
+                color_a = (150, 210, 168) if idx % 2 == 0 else (188, 150, 90)
+                pygame.draw.line(surface, color_a, (lx - 2, ly), (lx + 2, ly), 1)
+
+            depth_lines = 12
+            for idx in range(depth_lines):
+                t = (idx + 1) / float(depth_lines + 1)
+                y = horizon_y + int(round((t**1.55) * (track.bottom - horizon_y)))
+                shade = int(58 + (82 * (1.0 - t)))
+                pygame.draw.line(surface, (22, shade, 64), (track.x, y), (track.right, y), 1)
+
+            for lane in range(-5, 6):
+                lane_t = lane / 5.0
+                lane_shift = int(round(cam_x * 22.0))
+                bottom_x = track.centerx + int(round(lane_t * track.w * 0.62)) - lane_shift
+                top_x = vanish_x + int(round(lane_t * 24.0))
+                lane_color = (18, 72 + int(24 * (1.0 - abs(lane_t))), 62)
+                pygame.draw.line(
+                    surface, lane_color, (bottom_x, track.bottom), (top_x, horizon_y), 1
+                )
+
+            pygame.draw.line(
+                surface,
+                (172, 214, 196),
+                (track.x, horizon_y),
+                (track.right, horizon_y),
+                1,
+            )
+
+            # Peripheral flashing bands to simulate cockpit distraction load.
+            if snap.phase in (Phase.PRACTICE, Phase.SCORED):
+                pulse = 0.5 + (0.5 * math.sin(anim_s * 7.4))
+                band_alpha = int(round(20 + (42 * pulse)))
+                left_band = pygame.Surface((18, track.h), pygame.SRCALPHA)
+                left_band.fill((60, 190, 150, band_alpha))
+                right_band = pygame.Surface((18, track.h), pygame.SRCALPHA)
+                right_band.fill((190, 120, 72, band_alpha))
+                surface.blit(left_band, (track.x, track.y))
+                surface.blit(right_band, (track.right - 18, track.y))
+        finally:
+            surface.set_clip(old_clip)
+
+        cx = track.centerx
+        cy = track.centery
+        x_scale = (track.w // 2) - 12
+        y_scale = int(((track.h // 2) - 12) * 0.90)
+
+        def draw_target_sprite(
+            *,
+            kind: str,
+            center: tuple[int, int],
+            size: int,
+            base_color: tuple[int, int, int],
+        ) -> None:
+            tx, ty = center
+            k = str(kind).strip().lower()
+            if k == "tank":
+                body_w = max(12, size * 3)
+                body_h = max(7, size * 2)
+                body = pygame.Rect(tx - (body_w // 2), ty - (body_h // 2), body_w, body_h)
+                turret_w = max(6, int(round(body_w * 0.34)))
+                turret_h = max(4, int(round(body_h * 0.6)))
+                turret = pygame.Rect(tx - (turret_w // 2), ty - body_h, turret_w, turret_h)
+                pygame.draw.rect(surface, base_color, body, border_radius=2)
+                pygame.draw.rect(surface, base_color, turret, border_radius=2)
+                pygame.draw.line(
+                    surface, base_color, (tx, turret.y), (tx, turret.y - max(6, size + 4)), 2
+                )
+                pygame.draw.rect(surface, (18, 28, 22), body, 1, border_radius=2)
+                return
+
+            # Plane silhouette
+            wing = max(9, size * 3)
+            fus = max(10, size * 3)
+            tail = max(5, int(round(size * 1.4)))
+            nose = (tx, ty - fus)
+            left_wing = (tx - wing, ty)
+            right_wing = (tx + wing, ty)
+            tail_l = (tx - tail, ty + tail)
+            tail_r = (tx + tail, ty + tail)
+            pygame.draw.polygon(surface, base_color, (nose, right_wing, tail_r, tail_l, left_wing))
+            pygame.draw.line(surface, (14, 20, 22), (tx, ty - fus), (tx, ty + tail), 1)
+
+        def terrain_ridge_for(rel_x: float) -> float:
+            major = 0.14 * math.sin((rel_x * 2.5) + (cam_x * 0.62) + 0.35)
+            mid = 0.09 * math.sin((rel_x * 4.7) - (cam_x * 0.44) + 1.15)
+            fine = 0.05 * math.sin((rel_x * 8.4) + (cam_x * 0.18) - 0.55)
+            return 0.12 + major + mid + fine
+
+        if payload is not None:
+            target_rel_x = max(-1.3, min(1.3, payload.target_rel_x))
+            target_rel_y = max(-1.3, min(1.3, payload.target_rel_y))
+            target_x = int(round(cx + (target_rel_x * x_scale)))
+            target_y = int(round(cy + (target_rel_y * y_scale)))
+            depth = max(0.0, min(1.0, (target_rel_y + 1.3) / 2.6))
+            kind = str(payload.target_kind).upper()
+
+            # False targets/decoys: high-count distractor contacts.
+            for idx in range(24):
+                decoy_kind = "TANK" if idx % 2 == 0 else "PLANE"
+                speed = 0.18 + (idx % 6) * 0.045
+                phase = (anim_s * speed * 2.6) + (idx * 0.82)
+                world_x = ((phase + (idx * 0.36)) % 8.6) - 4.3
+                if idx % 3 == 1:
+                    world_x = -world_x
+                world_x += math.sin((anim_s * 0.41) + idx) * 0.14
+
+                if decoy_kind == "TANK":
+                    world_y = 0.44 + ((idx % 5) * 0.08)
+                    world_y += math.sin((anim_s * 0.9) + (idx * 0.6)) * 0.012
+                else:
+                    world_y = -0.78 + ((idx % 6) * 0.12)
+                    world_y += math.sin((anim_s * 1.4) + (idx * 0.9)) * 0.04
+
+                rel_x = world_x - (cam_x * (0.86 if decoy_kind == "TANK" else 1.0))
+                rel_y = world_y - (cam_y * (0.58 if decoy_kind == "TANK" else 0.72))
+
+                if rel_x < -1.55 or rel_x > 1.55 or rel_y < -1.45 or rel_y > 1.45:
+                    continue
+
+                ridge_y = terrain_ridge_for(rel_x)
+                if decoy_kind == "TANK":
+                    decoy_occluded = rel_y >= (ridge_y - 0.01)
+                else:
+                    decoy_occluded = rel_y >= (ridge_y + 0.11)
+
+                decoy_x = int(round(cx + (rel_x * x_scale)))
+                decoy_y = int(round(cy + (rel_y * y_scale)))
+                decoy_depth = max(0.0, min(1.0, (rel_y + 1.3) / 2.6))
+                decoy_size = max(3, int(round(3 + (decoy_depth * 4))))
+                decoy_color = (176, 150, 84) if decoy_kind == "TANK" else (112, 170, 206)
+
+                if not decoy_occluded:
+                    draw_target_sprite(
+                        kind=decoy_kind,
+                        center=(decoy_x, decoy_y),
+                        size=decoy_size,
+                        base_color=decoy_color,
+                    )
+                    if idx % 2 == 0:
+                        box_w = max(14, int(round(15 + (decoy_depth * 14))))
+                        box_h = max(10, int(round(11 + (decoy_depth * 10))))
+                        box = pygame.Rect(
+                            decoy_x - (box_w // 2), decoy_y - (box_h // 2), box_w, box_h
+                        )
+                        box_col = (210, 120, 86) if idx % 4 == 0 else (124, 160, 214)
+                        pygame.draw.rect(surface, box_col, box, 1)
+                else:
+                    if idx % 3 == 0:
+                        occ_r = max(6, int(round(6 + (decoy_depth * 7))))
+                        pygame.draw.circle(surface, (10, 18, 16), (decoy_x, decoy_y), occ_r)
+                        pygame.draw.circle(surface, (74, 94, 88), (decoy_x, decoy_y), occ_r, 1)
+
+            if payload.target_visible:
+                if kind == "TANK":
+                    target_color = (226, 200, 96)
+                else:
+                    target_color = (120, 202, 255)
+                target_radius = max(5, int(round(5 + (depth * 8))))
+                glow_radius = target_radius + max(2, int(round(target_radius * 0.9)))
+                pygame.draw.circle(
+                    surface,
+                    (target_color[0] // 3, target_color[1] // 3, target_color[2] // 3),
+                    (target_x, target_y),
+                    glow_radius,
+                )
+                draw_target_sprite(
+                    kind=kind,
+                    center=(target_x, target_y),
+                    size=target_radius,
+                    base_color=target_color,
+                )
+                if kind != "TANK":
+                    pygame.draw.circle(
+                        surface,
+                        (255, 255, 255),
+                        (target_x, target_y - max(2, target_radius // 2)),
+                        max(1, target_radius // 3),
+                    )
+                if payload.target_is_moving:
+                    trail_len = max(
+                        8, int(round((0.45 + (depth * 0.75)) * min(x_scale, y_scale) * 0.22))
+                    )
+                    vel_end = (
+                        int(round(target_x + (payload.target_vx * trail_len * 4.0))),
+                        int(round(target_y + (payload.target_vy * trail_len * 4.0))),
+                    )
+                    pygame.draw.line(surface, target_color, (target_x, target_y), vel_end, 2)
+            else:
+                mask_radius = max(20, int(round((track.w * 0.065) + (depth * 14))))
+                pygame.draw.circle(surface, (10, 16, 14), (target_x, target_y), mask_radius)
+                pygame.draw.circle(surface, (128, 148, 138), (target_x, target_y), mask_radius, 1)
+                obscured_txt = self._tiny_font.render("OBSCURED", True, (198, 216, 206))
+                surface.blit(
+                    obscured_txt, obscured_txt.get_rect(midbottom=(target_x, target_y - 4))
+                )
+
+            if payload.hud_visible:
+                cross_color = (236, 248, 240)
+                line_len = max(16, min(track.w, track.h) // 18)
+                pygame.draw.line(surface, cross_color, (cx - line_len, cy), (cx + line_len, cy), 2)
+                pygame.draw.line(surface, cross_color, (cx, cy - line_len), (cx, cy + line_len), 2)
+                pygame.draw.circle(surface, cross_color, (cx, cy), max(8, line_len // 2), 2)
+
+                box_w = max(28, int(round(30 + (depth * 26))))
+                box_h = max(18, int(round(22 + (depth * 20))))
+                track_box = pygame.Rect(
+                    target_x - (box_w // 2), target_y - (box_h // 2), box_w, box_h
+                )
+                box_color = (150, 248, 188) if payload.target_visible else (148, 174, 162)
+                pygame.draw.rect(surface, box_color, track_box, 2)
+                # Corner ticks for a classic tracking-box look.
+                tick = max(4, min(8, box_w // 8))
+                pygame.draw.line(
+                    surface,
+                    box_color,
+                    (track_box.left, track_box.top),
+                    (track_box.left + tick, track_box.top),
+                    2,
+                )
+                pygame.draw.line(
+                    surface,
+                    box_color,
+                    (track_box.right - tick, track_box.top),
+                    (track_box.right, track_box.top),
+                    2,
+                )
+                pygame.draw.line(
+                    surface,
+                    box_color,
+                    (track_box.left, track_box.bottom),
+                    (track_box.left + tick, track_box.bottom),
+                    2,
+                )
+                pygame.draw.line(
+                    surface,
+                    box_color,
+                    (track_box.right - tick, track_box.bottom),
+                    (track_box.right, track_box.bottom),
+                    2,
+                )
+
+            if payload.target_switch_preview_s > 0.0:
+                preview = pygame.Rect(track.right - 162, track.y + 46, 154, 88)
+                pygame.draw.rect(surface, (12, 44, 36), preview)
+                pygame.draw.rect(surface, (126, 186, 164), preview, 1)
+                tag = self._tiny_font.render("TARGET SWITCH", True, (198, 224, 212))
+                surface.blit(tag, (preview.x + 8, preview.y + 6))
+                timer = self._tiny_font.render(
+                    f"{payload.target_switch_preview_s:.1f}s",
+                    True,
+                    (152, 202, 184),
+                )
+                surface.blit(timer, timer.get_rect(topright=(preview.right - 8, preview.y + 6)))
+                icon_center = (preview.x + 32, preview.y + 52)
+                icon_col = (222, 196, 92) if kind == "TANK" else (120, 202, 255)
+                draw_target_sprite(
+                    kind=kind,
+                    center=icon_center,
+                    size=7,
+                    base_color=icon_col,
+                )
+                label = self._small_font.render(kind, True, (232, 246, 238))
+                surface.blit(label, (preview.x + 56, preview.y + 38))
+                desc = "GROUND ARMOR" if kind == "TANK" else "AIR TRACK"
+                detail = self._tiny_font.render(desc, True, (168, 208, 192))
+                surface.blit(detail, (preview.x + 56, preview.y + 62))
+
+            metrics_bg = pygame.Rect(track.x + 8, track.y + 8, track.w - 16, 30)
+            pygame.draw.rect(surface, (14, 52, 42), metrics_bg)
+            pygame.draw.rect(surface, (86, 130, 114), metrics_bg, 1)
+
+            status = "MOVING" if payload.target_is_moving else "STEADY"
+            vis = "VISIBLE" if payload.target_visible else "OBSCURED"
+            left = self._tiny_font.render(
+                (
+                    f"Err {payload.mean_error:.3f}  RMS {payload.rms_error:.3f}  "
+                    f"On {payload.on_target_ratio * 100.0:.1f}%"
+                ),
+                True,
+                text_main,
+            )
+            right = self._tiny_font.render(
+                (
+                    f"{kind} {status} | {vis} | Lock {payload.lock_progress * 100.0:.0f}% | "
+                    f"Hidden {payload.obscured_tracking_ratio * 100.0:.1f}%"
+                ),
+                True,
+                text_muted,
+            )
+            surface.blit(left, (metrics_bg.x + 8, metrics_bg.y + 4))
+            surface.blit(
+                right, right.get_rect(midright=(metrics_bg.right - 8, metrics_bg.centery + 7))
+            )
+
+        if snap.phase in (Phase.INSTRUCTIONS, Phase.PRACTICE_DONE, Phase.RESULTS):
+            prompt_bg = pygame.Rect(track.x + 10, track.bottom - 96, track.w - 20, 86)
+            pygame.draw.rect(surface, (14, 52, 42), prompt_bg)
+            pygame.draw.rect(surface, (86, 130, 114), prompt_bg, 1)
+            self._draw_wrapped_text(
+                surface,
+                str(snap.prompt),
+                prompt_bg.inflate(-10, -8),
+                color=text_muted,
+                font=self._tiny_font,
+                max_lines=6,
+            )
+
+        if snap.phase in (Phase.INSTRUCTIONS, Phase.PRACTICE_DONE):
+            footer = "Enter: Continue  |  Esc/Backspace: Back"
+        elif snap.phase in (Phase.PRACTICE, Phase.SCORED):
+            footer = (
+                "Rudder axis controls left/right; Joystick axis 1 controls up/down. "
+                "Keep tracking during obscured periods."
             )
         else:
             footer = "Enter: Return to Tests"
@@ -4115,7 +5221,9 @@ class CognitiveTestScreen:
             border_radius=6,
             gloss_alpha=52,
         )
-        pygame.draw.line(surface, border, (header.x, header.bottom), (header.right, header.bottom), 1)
+        pygame.draw.line(
+            surface, border, (header.x, header.bottom), (header.right, header.bottom), 1
+        )
 
         phase_label = {
             Phase.INSTRUCTIONS: "Instructions",
@@ -4149,7 +5257,9 @@ class CognitiveTestScreen:
             gap = max(8, min(14, body.w // 52))
             tube_panel_w = int(body.w * 0.74)
             tube_panel = pygame.Rect(body.x, body.y, tube_panel_w, body.h)
-            info_panel = pygame.Rect(tube_panel.right + gap, body.y, body.w - tube_panel_w - gap, body.h)
+            info_panel = pygame.Rect(
+                tube_panel.right + gap, body.y, body.w - tube_panel_w - gap, body.h
+            )
 
         self._draw_auditory_glass_panel(
             surface,
@@ -4257,7 +5367,9 @@ class CognitiveTestScreen:
             if payload is None:
                 info_lines.extend(str(snap.prompt).split("\n"))
             else:
-                assigned = ", ".join(payload.assigned_callsigns) if payload.assigned_callsigns else "—"
+                assigned = (
+                    ", ".join(payload.assigned_callsigns) if payload.assigned_callsigns else "—"
+                )
                 info_lines.append(f"Assigned call signs: {assigned}")
                 if payload.callsign_cue is None:
                     info_lines.append("Radio cue: —")
@@ -4286,18 +5398,22 @@ class CognitiveTestScreen:
                     info_lines.append("Sequence: —")
 
                 info_lines.append("")
+                noise_pct = int(round(payload.background_noise_level * 100))
                 info_lines.append(
-                    f"Gates hit/miss: {payload.gate_hits}/{payload.gate_misses}  Collisions: {payload.collisions}"
+                    f"Gates hit/miss: {payload.gate_hits}/{payload.gate_misses}  "
+                    f"Collisions: {payload.collisions}"
                 )
                 info_lines.append(
-                    f"False alarms: {payload.false_alarms}  Noise: {int(round(payload.background_noise_level*100))}%"
+                    f"False alarms: {payload.false_alarms}  Noise: {noise_pct}%"
                 )
-                info_lines.append(f"Distortion: {int(round(payload.distortion_level*100))}%")
+                info_lines.append(f"Distortion: {int(round(payload.distortion_level * 100))}%")
 
             info_rect = info_panel.inflate(-10, -10)
             y = info_rect.y
             for line in info_lines:
-                rendered = self._tiny_font.render(line, True, text_main if line != "" else text_muted)
+                rendered = self._tiny_font.render(
+                    line, True, text_main if line != "" else text_muted
+                )
                 surface.blit(rendered, (info_rect.x, y))
                 y += 18
                 if y > info_rect.bottom - 18:
@@ -4338,7 +5454,8 @@ class CognitiveTestScreen:
             )
 
         footer_text = (
-            "C: callsign  Space: beep  Q/W/E/R: color  Digits+Enter: sequence  |  WASD/arrows or HOTAS to fly"
+            "C: callsign  Space: beep  Q/W/E/R: color  Digits+Enter: sequence  |  "
+            "WASD/arrows or HOTAS to fly"
         )
         if snap.phase is Phase.RESULTS:
             footer_text = "Enter: Return to Tests"
@@ -4426,13 +5543,17 @@ class CognitiveTestScreen:
 
         token = str(shape).upper()
         if token == "CIRCLE":
-            pygame.draw.circle(surface, shadow, (cx + shadow_offset, cy + shadow_offset), half, stroke + 1)
+            pygame.draw.circle(
+                surface, shadow, (cx + shadow_offset, cy + shadow_offset), half, stroke + 1
+            )
             pygame.draw.circle(surface, rim, (cx, cy), half, stroke + 1)
             pygame.draw.circle(surface, highlight, (cx - 1, cy - 1), max(2, half - 1), stroke)
             return
         if token == "TRIANGLE":
             pts = [(cx, cy - half), (cx - half, cy + half), (cx + half, cy + half)]
-            pygame.draw.polygon(surface, shadow, _offset(pts, shadow_offset, shadow_offset), stroke + 1)
+            pygame.draw.polygon(
+                surface, shadow, _offset(pts, shadow_offset, shadow_offset), stroke + 1
+            )
             pygame.draw.polygon(surface, rim, pts, stroke + 1)
             pygame.draw.polygon(surface, highlight, _offset(pts, -1, -1), stroke)
             return
@@ -4591,7 +5712,9 @@ class CognitiveTestScreen:
                 sy = cy + int(round(gy * ((world.h * 0.08) + (world.h * 0.19 * approach))))
                 size = max(4, int(round(min(world.w, world.h) * (0.014 + (0.064 * approach)))))
                 gate_color = self._auditory_color_rgb(gate.color, 1.0)
-                draw_color = self._auditory_mix_rgb((24, 34, 64), gate_color, mix=0.30 + (0.70 * approach))
+                draw_color = self._auditory_mix_rgb(
+                    (24, 34, 64), gate_color, mix=0.30 + (0.70 * approach)
+                )
                 self._draw_auditory_gate_shape(
                     surface,
                     shape=gate.shape,
@@ -4610,7 +5733,10 @@ class CognitiveTestScreen:
             cross_x = ball_x
             cross_y = ball_y
             ball_radius = max(5, min(13, world.h // 23))
-            danger = abs(payload.ball_x) > payload.tube_half_width or abs(payload.ball_y) > payload.tube_half_height
+            danger = (
+                abs(payload.ball_x) > payload.tube_half_width
+                or abs(payload.ball_y) > payload.tube_half_height
+            )
             self._draw_auditory_ball_3d(
                 surface,
                 center=(ball_x, ball_y),
@@ -4631,7 +5757,12 @@ class CognitiveTestScreen:
             lvl = min(
                 1.0,
                 math.hypot(float(payload.control_x), float(payload.control_y))
-                + (0.35 * min(1.0, math.hypot(float(payload.disturbance_x), float(payload.disturbance_y)))),
+                + (
+                    0.35
+                    * min(
+                        1.0, math.hypot(float(payload.disturbance_x), float(payload.disturbance_y))
+                    )
+                ),
             )
             fill = pygame.Rect(
                 bar.x + 5,
@@ -4700,7 +5831,9 @@ class CognitiveTestScreen:
 
         if border_radius > 0:
             mask = pygame.Surface(rect.size, pygame.SRCALPHA)
-            pygame.draw.rect(mask, (255, 255, 255, 255), mask.get_rect(), border_radius=border_radius)
+            pygame.draw.rect(
+                mask, (255, 255, 255, 255), mask.get_rect(), border_radius=border_radius
+            )
             panel.blit(mask, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
 
         if gloss_alpha > 0:
@@ -4819,10 +5952,18 @@ class CognitiveTestScreen:
 
             callsign_cue = payload.callsign_cue or "—"
             assigned = ", ".join(payload.assigned_callsigns) if payload.assigned_callsigns else "—"
-            should_press_call = payload.callsign_cue is not None and payload.callsign_cue in payload.assigned_callsigns
+            should_press_call = (
+                payload.callsign_cue is not None
+                and payload.callsign_cue in payload.assigned_callsigns
+            )
             lines.append(f"Assigned callsigns: {assigned}")
-            lines.append(f"Call cue: {callsign_cue}    Press C now: {'YES' if should_press_call else 'NO'}")
-            lines.append(f"Beep active: {'YES' if payload.beep_active else 'NO'}    Press trigger now: {'YES' if payload.beep_active else 'NO'}")
+            lines.append(
+                f"Call cue: {callsign_cue}    Press C now: {'YES' if should_press_call else 'NO'}"
+            )
+            beep_now = "YES" if payload.beep_active else "NO"
+            lines.append(
+                f"Beep active: {beep_now}    Press trigger now: {beep_now}"
+            )
             lines.append(f"Color cue: {payload.color_command or '—'}")
 
             if payload.sequence_display is not None:
@@ -4843,20 +5984,25 @@ class CognitiveTestScreen:
                     nearest_gate = gate
 
             if nearest_gate is None and payload.gates:
-                nearest_gate = min(payload.gates, key=lambda g: abs(float(g.x_norm - payload.ball_x)))
+                nearest_gate = min(
+                    payload.gates, key=lambda g: abs(float(g.x_norm - payload.ball_x))
+                )
                 nearest_delta = abs(float(nearest_gate.x_norm - payload.ball_x))
 
             if nearest_gate is not None:
                 gate_color = str(nearest_gate.color).upper()
                 gate_shape = str(nearest_gate.shape).upper()
                 should_pass_gate = (
-                    gate_shape == target_shape if target_shape is not None else gate_color == ball_color
+                    gate_shape == target_shape
+                    if target_shape is not None
+                    else gate_color == ball_color
                 )
                 if payload.callsign_blocks_gate and gate_color == ball_color:
                     should_pass_gate = False
                 action = "PASS" if should_pass_gate else "AVOID"
                 lines.append(
-                    f"Next gate: {gate_color}/{gate_shape}  dx={nearest_delta:.2f}  Action: {action}"
+                    f"Next gate: {gate_color}/{gate_shape}  "
+                    f"dx={nearest_delta:.2f}  Action: {action}"
                 )
             else:
                 lines.append("Next gate: —")
@@ -4885,7 +6031,10 @@ class CognitiveTestScreen:
             if audio:
                 available = bool(audio.get("audio_available", False))
                 layers = int(audio.get("ambient_layers_target", 0))
-                lines.append(f"Audio available: {'YES' if available else 'NO'}  Ambient layers target: {layers}")
+                lines.append(
+                    f"Audio available: {'YES' if available else 'NO'}  "
+                    f"Ambient layers target: {layers}"
+                )
 
                 slots_raw = audio.get("ambient_slots")
                 if isinstance(slots_raw, tuple | list):
@@ -4917,7 +6066,9 @@ class CognitiveTestScreen:
 
                 noise_level = audio.get("noise_level")
                 distortion_level = audio.get("distortion_level")
-                if isinstance(noise_level, int | float) and isinstance(distortion_level, int | float):
+                if isinstance(noise_level, int | float) and isinstance(
+                    distortion_level, int | float
+                ):
                     lines.append(
                         f"Mix levels: noise={int(round(float(noise_level) * 100))}%"
                         f" distortion={int(round(float(distortion_level) * 100))}%"
@@ -4976,7 +6127,9 @@ class CognitiveTestScreen:
         header_h = max(40, min(56, h // 7))
         header = pygame.Rect(frame.x + 2, frame.y + 2, frame.w - 4, header_h)
         pygame.draw.rect(surface, header_bg, header)
-        pygame.draw.line(surface, border, (header.x, header.bottom), (header.right, header.bottom), 1)
+        pygame.draw.line(
+            surface, border, (header.x, header.bottom), (header.right, header.bottom), 1
+        )
 
         phase_label = {
             Phase.INSTRUCTIONS: "Instructions",
@@ -4998,7 +6151,9 @@ class CognitiveTestScreen:
         stats_rect = stats.get_rect(midright=(header.right - 12, header.centery))
         surface.blit(stats, stats_rect)
         stats_label = self._tiny_font.render("Scored", True, text_muted)
-        surface.blit(stats_label, stats_label.get_rect(midright=(stats_rect.left - 6, header.centery)))
+        surface.blit(
+            stats_label, stats_label.get_rect(midright=(stats_rect.left - 6, header.centery))
+        )
 
         if snap.time_remaining_s is not None:
             rem = int(round(snap.time_remaining_s))
@@ -5020,7 +6175,9 @@ class CognitiveTestScreen:
             domain_tag = self._tiny_font.render(payload.domain.upper(), True, text_muted)
             surface.blit(domain_tag, (content.x + 12, content.y + 10))
 
-            stem_rect = pygame.Rect(content.x + 12, content.y + 30, content.w - 24, max(72, content.h // 3))
+            stem_rect = pygame.Rect(
+                content.x + 12, content.y + 30, content.w - 24, max(72, content.h // 3)
+            )
             self._draw_wrapped_text(
                 surface,
                 payload.stem,
@@ -5071,7 +6228,9 @@ class CognitiveTestScreen:
         else:
             footer = "Enter: Return to Tests"
         footer_text = self._tiny_font.render(footer, True, text_muted)
-        surface.blit(footer_text, footer_text.get_rect(midbottom=(frame.centerx, frame.bottom - 12)))
+        surface.blit(
+            footer_text, footer_text.get_rect(midbottom=(frame.centerx, frame.bottom - 12))
+        )
 
     def _render_table_reading_screen(
         self,
@@ -5100,7 +6259,9 @@ class CognitiveTestScreen:
         header_h = max(40, min(56, h // 7))
         header = pygame.Rect(frame.x + 2, frame.y + 2, frame.w - 4, header_h)
         pygame.draw.rect(surface, header_bg, header)
-        pygame.draw.line(surface, border, (header.x, header.bottom), (header.right, header.bottom), 1)
+        pygame.draw.line(
+            surface, border, (header.x, header.bottom), (header.right, header.bottom), 1
+        )
 
         phase_label = {
             Phase.INSTRUCTIONS: "Instructions",
@@ -5152,8 +6313,12 @@ class CognitiveTestScreen:
             )
         else:
             left_w = max(280, int(content.w * 0.56))
-            left = pygame.Rect(content.x + 10, content.y + 10, min(left_w, content.w - 220), content.h - 20)
-            right = pygame.Rect(left.right + 10, content.y + 10, content.right - left.right - 20, content.h - 20)
+            left = pygame.Rect(
+                content.x + 10, content.y + 10, min(left_w, content.w - 220), content.h - 20
+            )
+            right = pygame.Rect(
+                left.right + 10, content.y + 10, content.right - left.right - 20, content.h - 20
+            )
 
             if payload.secondary_table is None:
                 self._draw_table_reading_table(
@@ -5204,7 +6369,9 @@ class CognitiveTestScreen:
             options_top = stem_rect.bottom + 8
             row_count = max(1, len(payload.options))
             row_gap = 6
-            row_h = max(32, min(44, (right.bottom - options_top - row_gap * (row_count + 1)) // row_count))
+            row_h = max(
+                32, min(44, (right.bottom - options_top - row_gap * (row_count + 1)) // row_count)
+            )
             y = options_top + row_gap
 
             for option in payload.options:
@@ -5225,7 +6392,9 @@ class CognitiveTestScreen:
         else:
             footer = "Enter: Return to Tests"
         footer_text = self._tiny_font.render(footer, True, text_muted)
-        surface.blit(footer_text, footer_text.get_rect(midbottom=(frame.centerx, frame.bottom - 12)))
+        surface.blit(
+            footer_text, footer_text.get_rect(midbottom=(frame.centerx, frame.bottom - 12))
+        )
 
     def _draw_table_reading_table(
         self,
@@ -5304,9 +6473,9 @@ class CognitiveTestScreen:
     def _system_logic_shift_folder(self, payload: SystemLogicPayload, delta: int) -> None:
         if not payload.folders:
             return
-        self._system_logic_folder_index = (
-            self._system_logic_folder_index + delta
-        ) % len(payload.folders)
+        self._system_logic_folder_index = (self._system_logic_folder_index + delta) % len(
+            payload.folders
+        )
         self._system_logic_doc_index = 0
 
     def _system_logic_shift_document(self, payload: SystemLogicPayload, delta: int) -> None:
@@ -5316,9 +6485,9 @@ class CognitiveTestScreen:
         if not folder.documents:
             self._system_logic_doc_index = 0
             return
-        self._system_logic_doc_index = (
-            self._system_logic_doc_index + delta
-        ) % len(folder.documents)
+        self._system_logic_doc_index = (self._system_logic_doc_index + delta) % len(
+            folder.documents
+        )
 
     def _system_logic_active_folder(self, payload: SystemLogicPayload) -> SystemLogicFolder | None:
         if not payload.folders:
@@ -5326,7 +6495,9 @@ class CognitiveTestScreen:
         self._system_logic_folder_index %= len(payload.folders)
         return payload.folders[self._system_logic_folder_index]
 
-    def _system_logic_active_document(self, payload: SystemLogicPayload) -> SystemLogicDocument | None:
+    def _system_logic_active_document(
+        self, payload: SystemLogicPayload
+    ) -> SystemLogicDocument | None:
         active_folder = self._system_logic_active_folder(payload)
         if active_folder is None:
             return None
@@ -5342,7 +6513,7 @@ class CognitiveTestScreen:
             self._cognitive_updating_refresh_runtime_state()
             return
         self._cognitive_updating_payload_id = payload_id
-        self._cognitive_updating_upper_tab_index = 0
+        self._cognitive_updating_upper_tab_index = 2
         self._cognitive_updating_lower_tab_index = 1
         clock = getattr(self._engine, "clock", None)
         if not hasattr(clock, "now"):
@@ -5352,10 +6523,14 @@ class CognitiveTestScreen:
         self._cognitive_updating_hitboxes.clear()
 
     def _cognitive_updating_shift_upper_tab(self, delta: int) -> None:
-        self._cognitive_updating_upper_tab_index = (self._cognitive_updating_upper_tab_index + delta) % 3
+        self._cognitive_updating_upper_tab_index = (
+            self._cognitive_updating_upper_tab_index + delta
+        ) % 6
 
     def _cognitive_updating_shift_lower_tab(self, delta: int) -> None:
-        self._cognitive_updating_lower_tab_index = (self._cognitive_updating_lower_tab_index + delta) % 3
+        self._cognitive_updating_lower_tab_index = (
+            self._cognitive_updating_lower_tab_index + delta
+        ) % 6
 
     def _cognitive_updating_refresh_runtime_state(self) -> CognitiveUpdatingRuntimeSnapshot | None:
         runtime = self._cognitive_updating_runtime
@@ -5376,6 +6551,45 @@ class CognitiveTestScreen:
         self._cognitive_updating_dispenser_lit = snap.dispenser_lit
         self._input = snap.comms_input
         return snap
+
+    def _cognitive_updating_results_lines(self) -> tuple[str, ...]:
+        events_fn = getattr(self._engine, "events", None)
+        if not callable(events_fn):
+            return ()
+        try:
+            events = list(events_fn())
+        except Exception:
+            return ()
+
+        decoded = []
+        for event in events:
+            if getattr(event, "phase", None) is not Phase.SCORED:
+                continue
+            parsed = decode_cognitive_updating_submission_raw(getattr(event, "raw", ""))
+            if parsed is not None:
+                decoded.append(parsed)
+
+        if not decoded:
+            return ()
+
+        count = len(decoded)
+        controls = int(round(sum(item.controls_score for item in decoded) / count))
+        navigation = int(round(sum(item.navigation_score for item in decoded) / count))
+        engine = int(round(sum(item.engine_score for item in decoded) / count))
+        sensors = int(round(sum(item.sensors_score for item in decoded) / count))
+        objectives = int(round(sum(item.objectives_score for item in decoded) / count))
+        warning_penalty = int(round(sum(item.warnings_penalty_points for item in decoded) / count))
+        overall = int(round(sum(item.overall_score for item in decoded) / count))
+
+        return (
+            f"Controls: {controls}",
+            f"Navigation: {navigation}",
+            f"Engine: {engine}",
+            f"Sensors: {sensors}",
+            f"Objectives: {objectives}",
+            f"Warning Penalty: -{warning_penalty}",
+            f"Overall: {overall}",
+        )
 
     def _render_system_logic_screen(
         self,
@@ -5406,7 +6620,9 @@ class CognitiveTestScreen:
         header_h = max(40, min(56, h // 7))
         header = pygame.Rect(frame.x + 2, frame.y + 2, frame.w - 4, header_h)
         pygame.draw.rect(surface, header_bg, header)
-        pygame.draw.line(surface, border, (header.x, header.bottom), (header.right, header.bottom), 1)
+        pygame.draw.line(
+            surface, border, (header.x, header.bottom), (header.right, header.bottom), 1
+        )
 
         phase_label = {
             Phase.INSTRUCTIONS: "Instructions",
@@ -5416,7 +6632,9 @@ class CognitiveTestScreen:
             Phase.RESULTS: "Results",
         }.get(snap.phase, "Task")
         phase_text = self._tiny_font.render(phase_label, True, text_muted)
-        surface.blit(phase_text, (header.x + 12, header.y + (header.h - phase_text.get_height()) // 2))
+        surface.blit(
+            phase_text, (header.x + 12, header.y + (header.h - phase_text.get_height()) // 2)
+        )
 
         title = self._small_font.render(str(snap.title), True, text_main)
         surface.blit(title, title.get_rect(midleft=(header.x + 135, header.centery)))
@@ -5494,7 +6712,9 @@ class CognitiveTestScreen:
             docs_h = max(88, min(144, content.h // 4))
             docs_rect = pygame.Rect(right_x, content.y + 8, right_w, docs_h)
             question_h = max(112, min(152, content.h // 3))
-            question_rect = pygame.Rect(right_x, content.bottom - question_h - 8, right_w, question_h)
+            question_rect = pygame.Rect(
+                right_x, content.bottom - question_h - 8, right_w, question_h
+            )
             doc_body_top = docs_rect.bottom + 8
             doc_body_h = max(84, question_rect.y - doc_body_top - 8)
             doc_body_rect = pygame.Rect(right_x, doc_body_top, right_w, doc_body_h)
@@ -5527,7 +6747,9 @@ class CognitiveTestScreen:
                     label = f"{doc_idx + 1}. {doc.title}"
                     clipped = self._fit_label(self._tiny_font, label, row.w - 10)
                     doc_text = self._tiny_font.render(clipped, True, color)
-                    surface.blit(doc_text, (row.x + 6, row.y + (row.h - doc_text.get_height()) // 2))
+                    surface.blit(
+                        doc_text, (row.x + 6, row.y + (row.h - doc_text.get_height()) // 2)
+                    )
                     doc_y += doc_row_h + doc_gap
 
             active_doc = self._system_logic_active_document(payload)
@@ -5579,7 +6801,9 @@ class CognitiveTestScreen:
                 max_lines=3,
             )
 
-            input_box = pygame.Rect(question_rect.x + 10, question_rect.bottom - 38, min(260, right_w - 20), 30)
+            input_box = pygame.Rect(
+                question_rect.x + 10, question_rect.bottom - 38, min(260, right_w - 20), 30
+            )
             pygame.draw.rect(surface, (4, 11, 84), input_box)
             pygame.draw.rect(surface, row_border, input_box, 2)
 
@@ -5600,7 +6824,9 @@ class CognitiveTestScreen:
         else:
             footer = "Enter: Return to Tests"
         footer_text = self._tiny_font.render(footer, True, text_muted)
-        surface.blit(footer_text, footer_text.get_rect(midbottom=(frame.centerx, frame.bottom - 12)))
+        surface.blit(
+            footer_text, footer_text.get_rect(midbottom=(frame.centerx, frame.bottom - 12))
+        )
 
     def _render_cognitive_updating_screen(
         self,
@@ -5634,7 +6860,9 @@ class CognitiveTestScreen:
             txt = self._small_font.render(title, True, text_main)
             surface.blit(txt, txt.get_rect(center=top.center))
 
-        def _draw_tabbar(rect: pygame.Rect, names: tuple[str, str, str], active: int, prefix: str) -> None:
+        def _draw_tabbar(
+            rect: pygame.Rect, names: tuple[str, str, str], active: int, prefix: str
+        ) -> None:
             pygame.draw.rect(surface, header_blue, rect)
             pygame.draw.rect(surface, border, rect, 2)
             side_w = max(84, min(150, (rect.w - 12) // 3))
@@ -5669,11 +6897,15 @@ class CognitiveTestScreen:
         title_h = max(52, min(72, frame.h // 10))
         title_rect = pygame.Rect(frame.x + 8, frame.y + 8, frame.w - 16, title_h)
         arrow = self._big_font.render("←", True, text_main)
-        surface.blit(arrow, (title_rect.x + 4, title_rect.y + (title_rect.h - arrow.get_height()) // 2))
+        surface.blit(
+            arrow, (title_rect.x + 4, title_rect.y + (title_rect.h - arrow.get_height()) // 2)
+        )
         title = self._app.font.render("Multitasking", True, text_main)
         surface.blit(title, title.get_rect(center=title_rect.center))
 
-        content = pygame.Rect(frame.x + 6, title_rect.bottom + 6, frame.w - 12, frame.bottom - title_rect.bottom - 14)
+        content = pygame.Rect(
+            frame.x + 6, title_rect.bottom + 6, frame.w - 12, frame.bottom - title_rect.bottom - 14
+        )
         if payload is None or snap.phase not in (Phase.PRACTICE, Phase.SCORED):
             pygame.draw.rect(surface, panel_bg, content)
             pygame.draw.rect(surface, border, content, 2)
@@ -5685,9 +6917,22 @@ class CognitiveTestScreen:
                 font=self._app.font,
                 max_lines=16,
             )
-            footer = "Enter: Continue" if snap.phase in (Phase.INSTRUCTIONS, Phase.PRACTICE_DONE) else "Enter: Return to Tests"
+            if snap.phase is Phase.RESULTS:
+                breakdown = self._cognitive_updating_results_lines()
+                y = content.y + max(220, content.h // 2)
+                for line in breakdown:
+                    txt = self._small_font.render(line, True, text_main)
+                    surface.blit(txt, (content.x + 20, y))
+                    y += txt.get_height() + 6
+            footer = (
+                "Enter: Continue"
+                if snap.phase in (Phase.INSTRUCTIONS, Phase.PRACTICE_DONE)
+                else "Enter: Return to Tests"
+            )
             footer_text = self._small_font.render(footer, True, text_muted)
-            surface.blit(footer_text, footer_text.get_rect(midbottom=(frame.centerx, frame.bottom - 8)))
+            surface.blit(
+                footer_text, footer_text.get_rect(midbottom=(frame.centerx, frame.bottom - 8))
+            )
             return
 
         self._cognitive_updating_sync_payload(payload)
@@ -5695,6 +6940,7 @@ class CognitiveTestScreen:
         if runtime_snap is None:
             runtime_snap = CognitiveUpdatingRuntimeSnapshot(
                 elapsed_s=0,
+                clock_hms=payload.clock_hms,
                 current_knots=payload.current_knots,
                 pump_on=payload.pump_on,
                 active_tank=payload.active_tank,
@@ -5709,9 +6955,23 @@ class CognitiveTestScreen:
                 air_time_left_s=payload.air_sensor_due_s,
                 ground_time_left_s=payload.ground_sensor_due_s,
                 comms_time_left_s=payload.comms_time_limit_s,
+                objective_deadline_left_s=payload.objective_deadline_s,
                 state_code=payload.comms_code,
                 operation_score_hint=0.0,
                 event_count=0,
+                pressure_value=payload.pressure_value,
+                tank_levels_l=payload.tank_levels_l,
+                warning_lines=payload.warning_lines,
+                message_lines=payload.message_lines,
+                controls_score=100,
+                navigation_score=100,
+                engine_score=100,
+                sensors_score=0,
+                objectives_score=0,
+                warnings_penalty_points=0,
+                overall_score=0,
+                objective_drop_ready=False,
+                objective_drop_complete=False,
             )
 
         air_left = runtime_snap.air_time_left_s
@@ -5733,282 +6993,490 @@ class CognitiveTestScreen:
         _draw_card(warning, "Warning")
         _draw_card(clock, "Clock")
 
-        warning_y = warning.y + 42
-        for line in payload.warning_lines[:2]:
-            line_txt = self._app.font.render(self._fit_label(self._app.font, line, warning.w - 24), True, text_main)
-            surface.blit(line_txt, (warning.x + 12, warning_y))
-            warning_y += 38
+        warning_rows = runtime_snap.warning_lines[:4]
+        warn_col_w = max(90, (warning.w - 28) // 2)
+        for idx, line in enumerate(warning_rows):
+            row = idx // 2
+            col = idx % 2
+            warn_x = warning.x + 10 + (col * warn_col_w)
+            warn_y = warning.y + 42 + (row * 30)
+            line_txt = self._small_font.render(
+                self._fit_label(self._small_font, line, warn_col_w - 10), True, text_main
+            )
+            surface.blit(line_txt, (warn_x, warn_y))
 
-        clock_txt = self._big_font.render(payload.clock_hms, True, text_main)
+        clock_txt = self._big_font.render(runtime_snap.clock_hms, True, text_main)
         if clock_txt.get_width() > clock.w - 16:
-            clock_txt = self._mid_font.render(payload.clock_hms, True, text_main)
+            clock_txt = self._mid_font.render(runtime_snap.clock_hms, True, text_main)
         surface.blit(clock_txt, clock_txt.get_rect(center=(clock.centerx, clock.centery + 8)))
         if snap.time_remaining_s is not None:
             rem = int(max(0, round(snap.time_remaining_s)))
             rem_txt = self._tiny_font.render(f"{rem // 60:02d}:{rem % 60:02d}", True, text_muted)
             surface.blit(rem_txt, rem_txt.get_rect(midbottom=(clock.centerx, clock.bottom - 4)))
 
-        panel_gap = 10
-        panel_top = warning.bottom + 8
-        panel_h = content.bottom - panel_top - 8
-        panel_w = max(160, (content.w - panel_gap - 4) // 2)
-        upper_tabs = pygame.Rect(content.x + 2, panel_top, panel_w, 32)
-        upper_rect = pygame.Rect(
-            upper_tabs.x,
-            upper_tabs.bottom + 4,
-            upper_tabs.w,
-            max(180, panel_h - upper_tabs.h - 4),
-        )
-        lower_tabs = pygame.Rect(upper_tabs.right + panel_gap, panel_top, panel_w, 32)
-        lower_rect = pygame.Rect(
-            lower_tabs.x,
-            lower_tabs.bottom + 4,
-            lower_tabs.w,
-            max(180, panel_h - lower_tabs.h - 4),
-        )
+        tab_names = ("Messages", "Objectives", "Controls", "Navigation", "Sensors", "Engine")
 
-        _draw_tabbar(
-            upper_tabs,
-            ("Messages", "Objectives", "Controls"),
-            self._cognitive_updating_upper_tab_index,
-            "upper",
-        )
-        _draw_tabbar(
-            lower_tabs,
-            ("Navigation", "Sensors", "Engine"),
-            self._cognitive_updating_lower_tab_index,
-            "lower",
-        )
+        def _set_hitbox(scope: str, code: str, rect: pygame.Rect) -> None:
+            self._cognitive_updating_hitboxes[f"{scope}|{code}"] = rect
 
-        pygame.draw.rect(surface, panel_bg, upper_rect)
-        pygame.draw.rect(surface, border, upper_rect, 2)
-        pygame.draw.rect(surface, panel_bg, lower_rect)
-        pygame.draw.rect(surface, border, lower_rect, 2)
+        def _draw_page(panel_rect: pygame.Rect, page_idx: int, scope: str) -> None:
+            if page_idx == 0:
+                lines_rect = panel_rect.inflate(-22, -20)
+                line_y = lines_rect.y
+                for line in runtime_snap.message_lines:
+                    rendered = self._app.font.render(
+                        self._fit_label(self._app.font, line, lines_rect.w), True, text_main
+                    )
+                    surface.blit(rendered, (lines_rect.x, line_y))
+                    line_y += max(34, self._app.font.get_linesize() + 8)
+                    if line_y > lines_rect.bottom - 24:
+                        break
+                return
 
-        upper_idx = self._cognitive_updating_upper_tab_index % 3
-        lower_idx = self._cognitive_updating_lower_tab_index % 3
+            if page_idx == 1:
+                pad = 10
+                parcel_h = max(138, int(panel_rect.h * 0.53))
+                parcel_rect = pygame.Rect(
+                    panel_rect.x + pad, panel_rect.y + pad, panel_rect.w - pad * 2, parcel_h
+                )
+                _draw_card(parcel_rect, "Parcel Drop")
 
-        if upper_idx == 0:
-            lines_rect = upper_rect.inflate(-22, -20)
-            line_y = lines_rect.y
-            for line in payload.message_lines:
-                rendered = self._app.font.render(self._fit_label(self._app.font, line, lines_rect.w), True, text_main)
-                surface.blit(rendered, (lines_rect.x, line_y))
-                line_y += max(34, self._app.font.get_linesize() + 8)
-                if line_y > lines_rect.bottom - 24:
-                    break
+                labels = ("Latitude", "Longitude", "Time")
+                row_h = max(28, min(46, (parcel_rect.h - 54) // 3))
+                for idx, label in enumerate(labels):
+                    row_y = parcel_rect.y + 40 + idx * row_h
+                    label_txt = self._app.font.render(label, True, text_main)
+                    surface.blit(label_txt, (parcel_rect.x + 16, row_y + 2))
+                    box_w = max(110, min(260, parcel_rect.w // 2))
+                    box = pygame.Rect(parcel_rect.right - box_w - 24, row_y - 2, box_w, row_h - 4)
+                    is_active = idx == self._cognitive_updating_active_parcel_field
+                    pygame.draw.rect(
+                        surface,
+                        (239, 163, 33) if is_active else (226, 150, 30),
+                        box,
+                        border_radius=4,
+                    )
+                    value = self._cognitive_updating_parcel_values[idx]
+                    if value != "":
+                        value_txt = self._small_font.render(value, True, (22, 22, 24))
+                        surface.blit(
+                            value_txt, (box.x + 8, box.y + (box.h - value_txt.get_height()) // 2)
+                        )
+                    _set_hitbox(scope, f"parcel_field:{idx}", box)
 
-        elif upper_idx == 1:
-            pad = 10
-            parcel_h = max(138, int(upper_rect.h * 0.53))
-            parcel_rect = pygame.Rect(upper_rect.x + pad, upper_rect.y + pad, upper_rect.w - pad * 2, parcel_h)
-            _draw_card(parcel_rect, "Parcel Drop")
+                disp_y = parcel_rect.bottom + 8
+                disp_h = panel_rect.bottom - disp_y - 50
+                dispenser_rect = pygame.Rect(
+                    panel_rect.x + pad, disp_y, panel_rect.w - pad * 2, disp_h
+                )
+                _draw_card(dispenser_rect, "Parcel Drop Dispenser")
+                row_mid_y = dispenser_rect.y + dispenser_rect.h // 2 + 4
+                act_txt = self._app.font.render("Drop", True, text_main)
+                surface.blit(
+                    act_txt, (dispenser_rect.x + 16, row_mid_y - act_txt.get_height() // 2)
+                )
 
-            labels = ("Latitude", "Longitude", "Time")
-            row_h = max(28, min(46, (parcel_rect.h - 54) // 3))
-            for idx, label in enumerate(labels):
-                row_y = parcel_rect.y + 40 + idx * row_h
-                label_txt = self._app.font.render(label, True, text_main)
-                surface.blit(label_txt, (parcel_rect.x + 16, row_y + 2))
-                box_w = max(110, min(260, parcel_rect.w // 2))
-                box = pygame.Rect(parcel_rect.right - box_w - 24, row_y - 2, box_w, row_h - 4)
-                is_active = idx == self._cognitive_updating_active_parcel_field
-                pygame.draw.rect(surface, (239, 163, 33) if is_active else (226, 150, 30), box, border_radius=4)
-                value = self._cognitive_updating_parcel_values[idx]
-                if value != "":
-                    value_txt = self._small_font.render(value, True, (22, 22, 24))
-                    surface.blit(value_txt, (box.x + 8, box.y + (box.h - value_txt.get_height()) // 2))
-                self._cognitive_updating_hitboxes[f"parcel_field:{idx}"] = box
+                circle_r = max(12, min(30, dispenser_rect.w // 28))
+                activate_btn = pygame.Rect(dispenser_rect.right - 84, dispenser_rect.y + 44, 64, 64)
+                cx = max(dispenser_rect.x + 130, dispenser_rect.x + (dispenser_rect.w // 3))
+                max_cx = activate_btn.x - (circle_r * 2 + 12) * 5
+                cx = min(cx, max_cx)
+                for idx in range(5):
+                    col = (0, 220, 0) if idx < dispenser_lit else (220, 220, 220)
+                    pygame.draw.circle(
+                        surface, col, (cx + idx * (circle_r * 2 + 14), row_mid_y), circle_r
+                    )
+                    pygame.draw.circle(
+                        surface,
+                        (180, 180, 180),
+                        (cx + idx * (circle_r * 2 + 14), row_mid_y),
+                        circle_r,
+                        1,
+                    )
 
-            disp_y = parcel_rect.bottom + 8
-            disp_h = upper_rect.bottom - disp_y - 50
-            dispenser_rect = pygame.Rect(upper_rect.x + pad, disp_y, upper_rect.w - pad * 2, disp_h)
-            _draw_card(dispenser_rect, "Parcel Drop Dispenser")
-            row_mid_y = dispenser_rect.y + dispenser_rect.h // 2 + 4
-            act_txt = self._app.font.render("Activate", True, text_main)
-            surface.blit(act_txt, (dispenser_rect.x + 16, row_mid_y - act_txt.get_height() // 2))
+                activate_color = (0, 176, 0) if runtime_snap.objective_drop_ready else header_blue
+                if runtime_snap.objective_drop_complete:
+                    activate_color = (90, 90, 90)
+                pygame.draw.rect(surface, activate_color, activate_btn, border_radius=4)
+                _set_hitbox(scope, "objective_activate", activate_btn)
 
-            circle_r = max(12, min(30, dispenser_rect.w // 28))
-            activate_btn = pygame.Rect(dispenser_rect.right - 84, dispenser_rect.y + 44, 64, 64)
-            cx = max(dispenser_rect.x + 130, dispenser_rect.x + (dispenser_rect.w // 3))
-            max_cx = activate_btn.x - (circle_r * 2 + 12) * 5
-            cx = min(cx, max_cx)
-            for idx in range(5):
-                col = (0, 220, 0) if idx < dispenser_lit else (220, 220, 220)
-                pygame.draw.circle(surface, col, (cx + idx * (circle_r * 2 + 14), row_mid_y), circle_r)
-                pygame.draw.circle(surface, (180, 180, 180), (cx + idx * (circle_r * 2 + 14), row_mid_y), circle_r, 1)
+                deadline_text = self._tiny_font.render(
+                    f"Drop deadline: {runtime_snap.objective_deadline_left_s}s",
+                    True,
+                    text_muted,
+                )
+                surface.blit(deadline_text, (dispenser_rect.x + 12, dispenser_rect.y + 10))
 
-            pygame.draw.rect(surface, header_blue, activate_btn, border_radius=4)
-            self._cognitive_updating_hitboxes["objective_activate"] = activate_btn
+                keypad_y = panel_rect.bottom - 42
+                key_w = (panel_rect.w - 4) // 10
+                for digit in range(10):
+                    key = pygame.Rect(panel_rect.x + 2 + digit * key_w, keypad_y, key_w - 2, 40)
+                    pygame.draw.rect(surface, (70, 70, 72), key)
+                    pygame.draw.rect(surface, (40, 40, 42), key, 1)
+                    txt = self._app.font.render(str(digit), True, text_main)
+                    surface.blit(txt, txt.get_rect(center=key.center))
+                    _set_hitbox(scope, f"objective_digit:{digit}", key)
+                return
 
-            keypad_y = upper_rect.bottom - 42
-            key_w = (upper_rect.w - 4) // 10
-            for digit in range(10):
-                key = pygame.Rect(upper_rect.x + 2 + digit * key_w, keypad_y, key_w - 2, 40)
-                pygame.draw.rect(surface, (70, 70, 72), key)
-                pygame.draw.rect(surface, (40, 40, 42), key, 1)
-                txt = self._app.font.render(str(digit), True, text_main)
-                surface.blit(txt, txt.get_rect(center=key.center))
-                self._cognitive_updating_hitboxes[f"objective_digit:{digit}"] = key
+            if page_idx == 2:
+                pad = 8
+                min_right_w = 130
+                max_left_w = max(140, panel_rect.w - (pad * 3) - min_right_w)
+                left_w = max(140, min(int(panel_rect.w * 0.56), max_left_w))
+                hyd_rect = pygame.Rect(
+                    panel_rect.x + pad, panel_rect.y + pad, left_w, panel_rect.h - pad * 2
+                )
+                right_x = hyd_rect.right + 8
+                right_w = panel_rect.right - right_x - pad
+                pump_rect = pygame.Rect(
+                    right_x, panel_rect.y + pad, right_w, max(112, int(panel_rect.h * 0.44))
+                )
+                comms_rect = pygame.Rect(
+                    right_x,
+                    pump_rect.bottom + 8,
+                    right_w,
+                    panel_rect.bottom - pump_rect.bottom - pad,
+                )
 
-        else:
-            pad = 8
-            min_right_w = 130
-            max_left_w = max(140, upper_rect.w - (pad * 3) - min_right_w)
-            left_w = max(140, min(int(upper_rect.w * 0.56), max_left_w))
-            hyd_rect = pygame.Rect(upper_rect.x + pad, upper_rect.y + pad, left_w, upper_rect.h - pad * 2)
-            right_x = hyd_rect.right + 8
-            right_w = upper_rect.right - right_x - pad
-            pump_rect = pygame.Rect(right_x, upper_rect.y + pad, right_w, max(112, int(upper_rect.h * 0.44)))
-            comms_rect = pygame.Rect(right_x, pump_rect.bottom + 8, right_w, upper_rect.bottom - pump_rect.bottom - pad)
+                _draw_card(hyd_rect, "Hydraulics")
+                _draw_card(pump_rect, "Hydraulic Pump")
+                _draw_card(comms_rect, "Comms Code")
 
-            _draw_card(hyd_rect, "Hydraulics")
-            _draw_card(pump_rect, "Hydraulic Pump")
-            _draw_card(comms_rect, "Comms Code")
+                scale_margin = max(14, min(52, hyd_rect.w // 6))
+                scale = pygame.Rect(
+                    hyd_rect.x + scale_margin,
+                    hyd_rect.y + 42,
+                    max(80, hyd_rect.w - (scale_margin * 2)),
+                    max(80, hyd_rect.h - 78),
+                )
+                pygame.draw.rect(surface, card_bg, scale)
+                section_h = scale.h // 3
+                label_w = max(76, int(scale.w * 0.58))
+                tick_w = max(18, min(30, int(scale.w * 0.16)))
+                axis_w = max(22, scale.w - label_w - tick_w)
+                label_col = pygame.Rect(scale.x, scale.y, label_w, scale.h)
+                tick_col = pygame.Rect(label_col.right, scale.y, tick_w, scale.h)
+                axis_col = pygame.Rect(tick_col.right, scale.y, axis_w, scale.h)
 
-            scale_margin = max(14, min(52, hyd_rect.w // 6))
-            scale = pygame.Rect(
-                hyd_rect.x + scale_margin,
-                hyd_rect.y + 42,
-                max(80, hyd_rect.w - (scale_margin * 2)),
-                max(80, hyd_rect.h - 58),
-            )
-            pygame.draw.rect(surface, card_bg, scale)
-            section_h = scale.h // 3
-            high_zone = pygame.Rect(scale.x, scale.y, scale.w, section_h)
-            mid_zone = pygame.Rect(scale.x, scale.y + section_h, scale.w, section_h)
-            low_zone = pygame.Rect(scale.x, scale.y + section_h * 2, scale.w, scale.h - section_h * 2)
-            pygame.draw.rect(surface, (242, 68, 33) if payload.pressure_value > payload.pressure_high else (226, 226, 226), high_zone)
-            pygame.draw.rect(
-                surface,
-                (0, 196, 0) if payload.pressure_low <= payload.pressure_value <= payload.pressure_high else (226, 226, 226),
-                mid_zone,
-            )
-            pygame.draw.rect(surface, (242, 68, 33) if payload.pressure_value < payload.pressure_low else (226, 226, 226), low_zone)
-            pygame.draw.rect(surface, (80, 80, 82), scale, 1)
-            high_txt = self._app.font.render("High Pressure", True, (10, 10, 10))
-            mid_txt = self._app.font.render("Correct Pressure", True, (10, 10, 10))
-            low_txt = self._app.font.render("Low Pressure", True, (10, 10, 10))
-            surface.blit(high_txt, (high_zone.x + 8, high_zone.y + 8))
-            surface.blit(mid_txt, (mid_zone.x + 8, mid_zone.y + 8))
-            surface.blit(low_txt, (low_zone.x + 8, low_zone.y + 8))
+                high_zone = pygame.Rect(label_col.x, label_col.y, label_col.w, section_h)
+                mid_zone = pygame.Rect(label_col.x, label_col.y + section_h, label_col.w, section_h)
+                low_zone = pygame.Rect(
+                    label_col.x,
+                    label_col.y + section_h * 2,
+                    label_col.w,
+                    label_col.h - section_h * 2,
+                )
+                pygame.draw.rect(
+                    surface,
+                    (242, 68, 33)
+                    if runtime_snap.pressure_value > payload.pressure_high
+                    else (226, 226, 226),
+                    high_zone,
+                )
+                pygame.draw.rect(
+                    surface,
+                    (0, 196, 0)
+                    if payload.pressure_low <= runtime_snap.pressure_value <= payload.pressure_high
+                    else (226, 226, 226),
+                    mid_zone,
+                )
+                pygame.draw.rect(
+                    surface,
+                    (242, 68, 33)
+                    if runtime_snap.pressure_value < payload.pressure_low
+                    else (226, 226, 226),
+                    low_zone,
+                )
+                pygame.draw.rect(surface, (232, 232, 232), tick_col)
+                pygame.draw.rect(surface, (80, 80, 82), scale, 1)
+                pygame.draw.line(
+                    surface,
+                    (126, 126, 126),
+                    (label_col.right, label_col.y),
+                    (label_col.right, label_col.bottom),
+                    1,
+                )
+                pygame.draw.line(
+                    surface,
+                    (126, 126, 126),
+                    (tick_col.right, tick_col.y),
+                    (tick_col.right, tick_col.bottom),
+                    1,
+                )
+                pygame.draw.line(
+                    surface,
+                    (126, 126, 126),
+                    (label_col.x, label_col.y + section_h),
+                    (tick_col.right, label_col.y + section_h),
+                    1,
+                )
+                pygame.draw.line(
+                    surface,
+                    (126, 126, 126),
+                    (label_col.x, label_col.y + section_h * 2),
+                    (tick_col.right, label_col.y + section_h * 2),
+                    1,
+                )
 
-            btn_w = max(42, pump_rect.w // 2 - 28)
-            on_btn = pygame.Rect(pump_rect.x + 14, pump_rect.y + 58, btn_w, 56)
-            off_btn = pygame.Rect(on_btn.right + 8, pump_rect.y + 58, btn_w, 56)
-            pygame.draw.rect(surface, (0, 196, 0) if pump_on else (80, 80, 80), on_btn, border_radius=4)
-            pygame.draw.rect(surface, (136, 70, 56) if not pump_on else (80, 80, 80), off_btn, border_radius=4)
-            on_txt = self._app.font.render("On", True, text_main)
-            off_txt = self._app.font.render("Off", True, text_main)
-            surface.blit(on_txt, on_txt.get_rect(center=on_btn.center))
-            surface.blit(off_txt, off_txt.get_rect(center=off_btn.center))
-            self._cognitive_updating_hitboxes["pump_on"] = on_btn
-            self._cognitive_updating_hitboxes["pump_off"] = off_btn
+                scale_min = float(payload.pressure_low - 20)
+                scale_max = float(payload.pressure_high + 20)
+                if scale_max <= scale_min:
+                    scale_max = scale_min + 1.0
+                pressure_ratio = (float(runtime_snap.pressure_value) - scale_min) / (
+                    scale_max - scale_min
+                )
+                pressure_ratio = max(0.0, min(1.0, pressure_ratio))
+                pressure_fill_y = tick_col.bottom - int(round(pressure_ratio * tick_col.h))
+                pressure_fill_y = max(tick_col.y, min(tick_col.bottom, pressure_fill_y))
 
-            submit_w = max(52, min(66, comms_rect.w // 3))
-            box_w = max(70, comms_rect.w - submit_w - 36)
-            box = pygame.Rect(comms_rect.x + 12, comms_rect.y + 52, box_w, 52)
-            pygame.draw.rect(surface, (230, 157, 38), box, border_radius=4)
-            comms_txt = self._app.font.render(self._cognitive_updating_comms_input, True, (20, 20, 22))
-            surface.blit(comms_txt, (box.x + 8, box.y + (box.h - comms_txt.get_height()) // 2))
-            submit = pygame.Rect(box.right + 8, box.y, submit_w, 52)
-            pygame.draw.rect(surface, header_blue, submit, border_radius=4)
-            self._cognitive_updating_hitboxes["comms_submit"] = submit
-            time_txt = self._small_font.render(f"Time remaining: {comms_left}", True, text_main)
-            surface.blit(time_txt, (box.x, box.bottom + 8))
+                if pressure_fill_y < tick_col.bottom:
+                    fill_rect = pygame.Rect(
+                        tick_col.x, pressure_fill_y, tick_col.w, tick_col.bottom - pressure_fill_y
+                    )
+                    pygame.draw.rect(surface, (49, 143, 220), fill_rect)
 
-            key_y = comms_rect.bottom - 44
-            key_w = max(26, min(72, (comms_rect.w - 28) // 4))
-            for idx, digit in enumerate(("1", "2", "3", "4")):
-                key = pygame.Rect(comms_rect.x + 8 + idx * (key_w + 2), key_y, key_w, 38)
-                pygame.draw.rect(surface, (70, 70, 72), key)
-                pygame.draw.rect(surface, (40, 40, 42), key, 1)
-                key_txt = self._app.font.render(digit, True, text_main)
-                surface.blit(key_txt, key_txt.get_rect(center=key.center))
-                self._cognitive_updating_hitboxes[f"comms_digit:{digit}"] = key
+                total_ticks = 30
+                for tick in range(total_ticks + 1):
+                    y = tick_col.bottom - int(round((tick / total_ticks) * tick_col.h))
+                    is_filled = y >= pressure_fill_y
+                    tick_color = (29, 102, 170) if is_filled else (148, 148, 148)
+                    pygame.draw.line(
+                        surface, tick_color, (tick_col.x + 1, y), (tick_col.right - 1, y), 1
+                    )
 
-        if lower_idx == 0:
-            table_w = max(280, min(520, int(lower_rect.w * 0.58)))
-            table_h = max(170, min(250, int(lower_rect.h * 0.56)))
-            table = pygame.Rect(lower_rect.centerx - table_w // 2, lower_rect.y + 52, table_w, table_h)
-            pygame.draw.rect(surface, bg, table)
-            pygame.draw.rect(surface, border, table, 2)
-            pygame.draw.line(surface, border, (table.centerx, table.y), (table.centerx, table.bottom), 2)
-            header_split = table.y + 64
-            pygame.draw.line(surface, border, (table.x, header_split), (table.right, header_split), 2)
-            left_header = self._small_font.render("Required Knots", True, text_main)
-            right_header = self._small_font.render("Current Knots", True, text_main)
-            surface.blit(left_header, left_header.get_rect(center=(table.x + table.w // 4, table.y + 30)))
-            surface.blit(right_header, right_header.get_rect(center=(table.x + table.w * 3 // 4, table.y + 30)))
-            left_value = self._app.font.render(str(payload.required_knots), True, text_main)
-            right_value = self._app.font.render(str(speed_knots), True, text_main)
-            surface.blit(left_value, left_value.get_rect(center=(table.x + table.w // 4, table.y + table.h * 3 // 4)))
-            surface.blit(right_value, right_value.get_rect(center=(table.x + table.w * 3 // 4, table.y + table.h * 3 // 4)))
+                high_txt_1 = self._app.font.render("High", True, (10, 10, 10))
+                high_txt_2 = self._app.font.render("Pressure", True, (10, 10, 10))
+                mid_txt_1 = self._app.font.render("Correct", True, (10, 10, 10))
+                mid_txt_2 = self._app.font.render("Pressure", True, (10, 10, 10))
+                low_txt_1 = self._app.font.render("Low", True, (10, 10, 10))
+                low_txt_2 = self._app.font.render("Pressure", True, (10, 10, 10))
+                surface.blit(high_txt_1, (high_zone.x + 8, high_zone.y + 8))
+                surface.blit(
+                    high_txt_2, (high_zone.x + 8, high_zone.y + 8 + high_txt_1.get_height() + 2)
+                )
+                surface.blit(mid_txt_1, (mid_zone.x + 8, mid_zone.y + 8))
+                surface.blit(
+                    mid_txt_2, (mid_zone.x + 8, mid_zone.y + 8 + mid_txt_1.get_height() + 2)
+                )
+                surface.blit(low_txt_1, (low_zone.x + 8, low_zone.y + 8))
+                surface.blit(
+                    low_txt_2, (low_zone.x + 8, low_zone.y + 8 + low_txt_1.get_height() + 2)
+                )
 
-            dec = pygame.Rect(lower_rect.centerx - 90, lower_rect.bottom - 70, 58, 58)
-            inc = pygame.Rect(lower_rect.centerx + 32, lower_rect.bottom - 70, 58, 58)
-            pygame.draw.circle(surface, text_main, dec.center, 29, 2)
-            pygame.draw.circle(surface, text_main, inc.center, 29, 2)
-            dec_txt = self._app.font.render("−", True, text_main)
-            inc_txt = self._app.font.render("+", True, text_main)
-            surface.blit(dec_txt, dec_txt.get_rect(center=dec.center))
-            surface.blit(inc_txt, inc_txt.get_rect(center=inc.center))
-            self._cognitive_updating_hitboxes["knots_dec"] = dec
-            self._cognitive_updating_hitboxes["knots_inc"] = inc
+                axis_vals = (
+                    int(payload.pressure_high + 20),
+                    int(payload.pressure_high),
+                    int(payload.pressure_low),
+                    int(payload.pressure_low - 20),
+                )
+                axis_positions = (
+                    tick_col.y + 2,
+                    tick_col.y + section_h - 8,
+                    tick_col.y + section_h * 2 - 8,
+                    tick_col.bottom - 16,
+                )
+                for value, y in zip(axis_vals, axis_positions, strict=True):
+                    axis_txt = self._small_font.render(str(value), True, text_main)
+                    surface.blit(axis_txt, (axis_col.x + 6, y))
 
-        elif lower_idx == 1:
-            pad = 10
-            video_h = max(120, int(lower_rect.h * 0.46))
-            video = pygame.Rect(lower_rect.x + pad, lower_rect.y + pad, lower_rect.w - pad * 2, video_h)
-            sensors = pygame.Rect(video.x, video.bottom + 10, video.w, lower_rect.bottom - video.bottom - 12)
-            _draw_card(video, "Video Recording")
-            _draw_card(sensors, "Sensors")
+                btn_w = max(42, pump_rect.w // 2 - 28)
+                on_btn = pygame.Rect(pump_rect.x + 14, pump_rect.y + 58, btn_w, 56)
+                off_btn = pygame.Rect(on_btn.right + 8, pump_rect.y + 58, btn_w, 56)
+                pygame.draw.rect(
+                    surface, (0, 196, 0) if pump_on else (80, 80, 80), on_btn, border_radius=4
+                )
+                pygame.draw.rect(
+                    surface,
+                    (136, 70, 56) if not pump_on else (80, 80, 80),
+                    off_btn,
+                    border_radius=4,
+                )
+                on_txt = self._app.font.render("On", True, text_main)
+                off_txt = self._app.font.render("Off", True, text_main)
+                surface.blit(on_txt, on_txt.get_rect(center=on_btn.center))
+                surface.blit(off_txt, off_txt.get_rect(center=off_btn.center))
+                _set_hitbox(scope, "pump_on", on_btn)
+                _set_hitbox(scope, "pump_off", off_btn)
 
-            row1_y = video.y + 50
-            row2_y = row1_y + 64
-            alpha_txt = self._app.font.render("Alpha Camera Activation", True, text_main)
-            bravo_txt = self._app.font.render("Bravo Camera Activation", True, text_main)
-            surface.blit(alpha_txt, (video.x + 18, row1_y))
-            surface.blit(bravo_txt, (video.x + 18, row2_y))
-            cam_btn_w = max(96, min(140, video.w // 3))
-            alpha_btn = pygame.Rect(video.right - cam_btn_w - 16, row1_y - 6, cam_btn_w, 48)
-            bravo_btn = pygame.Rect(video.right - cam_btn_w - 16, row2_y - 6, cam_btn_w, 48)
-            pygame.draw.rect(surface, (0, 176, 0) if self._cognitive_updating_alpha_armed else header_blue, alpha_btn, border_radius=4)
-            pygame.draw.rect(surface, (0, 176, 0) if self._cognitive_updating_bravo_armed else header_blue, bravo_btn, border_radius=4)
-            alpha_btn_txt = self._small_font.render("Active" if self._cognitive_updating_alpha_armed else "Activate", True, text_main)
-            bravo_btn_txt = self._small_font.render("Active" if self._cognitive_updating_bravo_armed else "Activate", True, text_main)
-            surface.blit(alpha_btn_txt, alpha_btn_txt.get_rect(center=alpha_btn.center))
-            surface.blit(bravo_btn_txt, bravo_btn_txt.get_rect(center=bravo_btn.center))
-            self._cognitive_updating_hitboxes["camera_alpha"] = alpha_btn
-            self._cognitive_updating_hitboxes["camera_bravo"] = bravo_btn
+                submit_w = max(52, min(66, comms_rect.w // 3))
+                box_w = max(70, comms_rect.w - submit_w - 36)
+                box = pygame.Rect(comms_rect.x + 12, comms_rect.y + 52, box_w, 52)
+                pygame.draw.rect(surface, (230, 157, 38), box, border_radius=4)
+                comms_txt = self._app.font.render(
+                    self._cognitive_updating_comms_input, True, (20, 20, 22)
+                )
+                surface.blit(comms_txt, (box.x + 8, box.y + (box.h - comms_txt.get_height()) // 2))
+                submit = pygame.Rect(box.right + 8, box.y, submit_w, 52)
+                submit_color = (
+                    (0, 176, 0) if len(self._cognitive_updating_comms_input) == 4 else header_blue
+                )
+                pygame.draw.rect(surface, submit_color, submit, border_radius=4)
+                _set_hitbox(scope, "comms_submit", submit)
+                time_txt = self._small_font.render(f"Time remaining: {comms_left}", True, text_main)
+                surface.blit(time_txt, (box.x, box.bottom + 8))
 
-            air_row = sensors.y + 52
-            ground_row = air_row + 70
-            air_txt = self._app.font.render("Air Sensor", True, text_main)
-            ground_txt = self._app.font.render("Ground Sensor", True, text_main)
-            surface.blit(air_txt, (sensors.x + 18, air_row))
-            surface.blit(ground_txt, (sensors.x + 18, ground_row))
-            sensor_btn_w = max(92, min(130, sensors.w // 3))
-            air_btn = pygame.Rect(sensors.right - sensor_btn_w - 150, air_row - 8, sensor_btn_w, 52)
-            ground_btn = pygame.Rect(sensors.right - sensor_btn_w - 150, ground_row - 8, sensor_btn_w, 52)
-            pygame.draw.rect(surface, (0, 176, 0) if self._cognitive_updating_air_sensor_armed else header_blue, air_btn, border_radius=4)
-            pygame.draw.rect(surface, (0, 176, 0) if self._cognitive_updating_ground_sensor_armed else header_blue, ground_btn, border_radius=4)
-            air_btn_txt = self._small_font.render("Active" if self._cognitive_updating_air_sensor_armed else "Activate", True, text_main)
-            ground_btn_txt = self._small_font.render("Active" if self._cognitive_updating_ground_sensor_armed else "Activate", True, text_main)
-            surface.blit(air_btn_txt, air_btn_txt.get_rect(center=air_btn.center))
-            surface.blit(ground_btn_txt, ground_btn_txt.get_rect(center=ground_btn.center))
-            air_time_txt = self._app.font.render(f"Time Left: {_mmss(air_left)}", True, text_muted)
-            ground_time_txt = self._app.font.render(f"Time Left: {_mmss(ground_left)}", True, text_muted)
-            surface.blit(air_time_txt, (air_btn.right + 12, air_row + 2))
-            surface.blit(ground_time_txt, (ground_btn.right + 12, ground_row + 2))
-            self._cognitive_updating_hitboxes["sensor_air"] = air_btn
-            self._cognitive_updating_hitboxes["sensor_ground"] = ground_btn
+                key_y = comms_rect.bottom - 44
+                key_w = max(26, min(72, (comms_rect.w - 28) // 4))
+                for idx, digit in enumerate(("1", "2", "3", "4")):
+                    key = pygame.Rect(comms_rect.x + 8 + idx * (key_w + 2), key_y, key_w, 38)
+                    pygame.draw.rect(surface, (70, 70, 72), key)
+                    pygame.draw.rect(surface, (40, 40, 42), key, 1)
+                    key_txt = self._app.font.render(digit, True, text_main)
+                    surface.blit(key_txt, key_txt.get_rect(center=key.center))
+                    _set_hitbox(scope, f"comms_digit:{digit}", key)
+                return
 
-        else:
-            col_w = max(92, (lower_rect.w - 24) // 3)
-            col_y = lower_rect.y + 32
+            if page_idx == 3:
+                table_w = max(280, min(520, int(panel_rect.w * 0.58)))
+                table_h = max(170, min(250, int(panel_rect.h * 0.56)))
+                table = pygame.Rect(
+                    panel_rect.centerx - table_w // 2, panel_rect.y + 52, table_w, table_h
+                )
+                pygame.draw.rect(surface, bg, table)
+                pygame.draw.rect(surface, border, table, 2)
+                pygame.draw.line(
+                    surface, border, (table.centerx, table.y), (table.centerx, table.bottom), 2
+                )
+                header_split = table.y + 64
+                pygame.draw.line(
+                    surface, border, (table.x, header_split), (table.right, header_split), 2
+                )
+                left_header = self._small_font.render("Required Knots", True, text_main)
+                right_header = self._small_font.render("Current Knots", True, text_main)
+                surface.blit(
+                    left_header, left_header.get_rect(center=(table.x + table.w // 4, table.y + 30))
+                )
+                surface.blit(
+                    right_header,
+                    right_header.get_rect(center=(table.x + table.w * 3 // 4, table.y + 30)),
+                )
+                left_value = self._app.font.render(str(payload.required_knots), True, text_main)
+                right_value = self._app.font.render(str(speed_knots), True, text_main)
+                surface.blit(
+                    left_value,
+                    left_value.get_rect(
+                        center=(table.x + table.w // 4, table.y + table.h * 3 // 4)
+                    ),
+                )
+                surface.blit(
+                    right_value,
+                    right_value.get_rect(
+                        center=(table.x + table.w * 3 // 4, table.y + table.h * 3 // 4)
+                    ),
+                )
+
+                dec = pygame.Rect(panel_rect.centerx - 90, panel_rect.bottom - 70, 58, 58)
+                inc = pygame.Rect(panel_rect.centerx + 32, panel_rect.bottom - 70, 58, 58)
+                pygame.draw.circle(surface, text_main, dec.center, 29, 2)
+                pygame.draw.circle(surface, text_main, inc.center, 29, 2)
+                dec_txt = self._app.font.render("−", True, text_main)
+                inc_txt = self._app.font.render("+", True, text_main)
+                surface.blit(dec_txt, dec_txt.get_rect(center=dec.center))
+                surface.blit(inc_txt, inc_txt.get_rect(center=inc.center))
+                _set_hitbox(scope, "knots_dec", dec)
+                _set_hitbox(scope, "knots_inc", inc)
+                return
+
+            if page_idx == 4:
+                pad = 10
+                video_h = max(120, int(panel_rect.h * 0.46))
+                video = pygame.Rect(
+                    panel_rect.x + pad, panel_rect.y + pad, panel_rect.w - pad * 2, video_h
+                )
+                sensors = pygame.Rect(
+                    video.x, video.bottom + 10, video.w, panel_rect.bottom - video.bottom - 12
+                )
+                _draw_card(video, "Video Recording")
+                _draw_card(sensors, "Sensors")
+
+                row1_y = video.y + 50
+                row2_y = row1_y + 64
+                alpha_txt = self._app.font.render("Alpha Camera Activation", True, text_main)
+                bravo_txt = self._app.font.render("Bravo Camera Activation", True, text_main)
+                surface.blit(alpha_txt, (video.x + 18, row1_y))
+                surface.blit(bravo_txt, (video.x + 18, row2_y))
+                cam_btn_w = max(96, min(140, video.w // 3))
+                alpha_btn = pygame.Rect(video.right - cam_btn_w - 16, row1_y - 6, cam_btn_w, 48)
+                bravo_btn = pygame.Rect(video.right - cam_btn_w - 16, row2_y - 6, cam_btn_w, 48)
+                pygame.draw.rect(
+                    surface,
+                    (0, 176, 0) if self._cognitive_updating_alpha_armed else header_blue,
+                    alpha_btn,
+                    border_radius=4,
+                )
+                pygame.draw.rect(
+                    surface,
+                    (0, 176, 0) if self._cognitive_updating_bravo_armed else header_blue,
+                    bravo_btn,
+                    border_radius=4,
+                )
+                alpha_btn_txt = self._small_font.render("Activate", True, text_main)
+                bravo_btn_txt = self._small_font.render("Activate", True, text_main)
+                surface.blit(alpha_btn_txt, alpha_btn_txt.get_rect(center=alpha_btn.center))
+                surface.blit(bravo_btn_txt, bravo_btn_txt.get_rect(center=bravo_btn.center))
+                _set_hitbox(scope, "camera_alpha", alpha_btn)
+                _set_hitbox(scope, "camera_bravo", bravo_btn)
+
+                air_row = sensors.y + 52
+                ground_row = air_row + 70
+                air_txt = self._app.font.render("Air Sensor", True, text_main)
+                ground_txt = self._app.font.render("Ground Sensor", True, text_main)
+                surface.blit(air_txt, (sensors.x + 18, air_row))
+                surface.blit(ground_txt, (sensors.x + 18, ground_row))
+
+                air_time_label = f"Time Left: {_mmss(air_left)}"
+                ground_time_label = f"Time Left: {_mmss(ground_left)}"
+                air_time_txt = self._app.font.render(air_time_label, True, text_muted)
+                ground_time_txt = self._app.font.render(ground_time_label, True, text_muted)
+                if air_time_txt.get_width() > sensors.w // 3:
+                    air_time_txt = self._small_font.render(air_time_label, True, text_muted)
+                if ground_time_txt.get_width() > sensors.w // 3:
+                    ground_time_txt = self._small_font.render(ground_time_label, True, text_muted)
+
+                time_right = sensors.right - 14
+                air_time_x = time_right - air_time_txt.get_width()
+                ground_time_x = time_right - ground_time_txt.get_width()
+
+                base_btn_w = max(88, min(126, sensors.w // 5))
+                min_btn_x = sensors.x + 18 + max(air_txt.get_width(), ground_txt.get_width()) + 24
+                air_btn_x = max(min_btn_x, air_time_x - 12 - base_btn_w)
+                ground_btn_x = max(min_btn_x, ground_time_x - 12 - base_btn_w)
+                sensor_btn_w = max(
+                    72,
+                    min(
+                        base_btn_w,
+                        min(air_time_x - air_btn_x - 12, ground_time_x - ground_btn_x - 12),
+                    ),
+                )
+                air_btn = pygame.Rect(air_btn_x, air_row - 8, sensor_btn_w, 52)
+                ground_btn = pygame.Rect(ground_btn_x, ground_row - 8, sensor_btn_w, 52)
+
+                pygame.draw.rect(
+                    surface,
+                    (0, 176, 0) if self._cognitive_updating_air_sensor_armed else header_blue,
+                    air_btn,
+                    border_radius=4,
+                )
+                pygame.draw.rect(
+                    surface,
+                    (0, 176, 0) if self._cognitive_updating_ground_sensor_armed else header_blue,
+                    ground_btn,
+                    border_radius=4,
+                )
+                air_btn_txt = self._small_font.render("Activate", True, text_main)
+                ground_btn_txt = self._small_font.render("Activate", True, text_main)
+                surface.blit(air_btn_txt, air_btn_txt.get_rect(center=air_btn.center))
+                surface.blit(ground_btn_txt, ground_btn_txt.get_rect(center=ground_btn.center))
+                surface.blit(air_time_txt, (air_time_x, air_row + 2))
+                surface.blit(ground_time_txt, (ground_time_x, ground_row + 2))
+                _set_hitbox(scope, "sensor_air", air_btn)
+                _set_hitbox(scope, "sensor_ground", ground_btn)
+                return
+
+            col_w = max(92, (panel_rect.w - 24) // 3)
+            col_y = panel_rect.y + 32
             for idx in range(3):
-                col_x = lower_rect.x + 8 + idx * col_w
+                col_x = panel_rect.x + 8 + idx * col_w
                 top = col_y + 24
                 tank_top_x = col_x + 36
                 pygame.draw.lines(
@@ -6025,17 +7493,83 @@ class CognitiveTestScreen:
                 )
                 tank_label = self._app.font.render(f"Tank {idx + 1} (L)", True, text_main)
                 surface.blit(tank_label, (col_x + 44, top + 118))
-                val = payload.tank_levels_l[idx]
+                val = runtime_snap.tank_levels_l[idx]
                 val_txt = self._app.font.render(str(val), True, text_main)
                 surface.blit(val_txt, val_txt.get_rect(center=(col_x + col_w // 2, top + 210)))
                 btn = pygame.Rect(col_x + 22, top + 260, col_w - 40, 58)
                 is_active = active_tank == idx + 1
-                pygame.draw.rect(surface, (0, 96, 24) if is_active else (233, 70, 33), btn, border_radius=4)
+                pygame.draw.rect(
+                    surface, (0, 96, 24) if is_active else (233, 70, 33), btn, border_radius=4
+                )
                 btn_txt = self._app.font.render("On" if is_active else "Off", True, text_main)
                 surface.blit(btn_txt, btn_txt.get_rect(center=btn.center))
-                self._cognitive_updating_hitboxes[f"tank:{idx + 1}"] = btn
+                _set_hitbox(scope, f"tank:{idx + 1}", btn)
 
-        footer = "Q/E upper menu  |  A/D lower menu  |  Enter submit comms code"
+        def _draw_mfd(mfd_rect: pygame.Rect, active_idx: int, scope: str) -> None:
+            pygame.draw.rect(surface, card_bg, mfd_rect)
+            pygame.draw.rect(surface, border, mfd_rect, 2)
+
+            title_rect = pygame.Rect(mfd_rect.x + 2, mfd_rect.y + 2, mfd_rect.w - 4, 22)
+            pygame.draw.rect(surface, header_blue, title_rect)
+            pygame.draw.rect(surface, border, title_rect, 1)
+            title_txt = self._small_font.render("Multifunction Display", True, text_main)
+            surface.blit(title_txt, title_txt.get_rect(center=title_rect.center))
+
+            tabs_rect = pygame.Rect(mfd_rect.x + 6, title_rect.bottom + 4, mfd_rect.w - 12, 66)
+            pygame.draw.rect(surface, panel_bg, tabs_rect)
+            pygame.draw.rect(surface, border, tabs_rect, 1)
+            row_gap = 6
+            col_gap = 6
+            row_h = (tabs_rect.h - row_gap) // 2
+            btn_w = (tabs_rect.w - (col_gap * 2)) // 3
+            for idx, name in enumerate(tab_names):
+                row = idx // 3
+                col = idx % 3
+                btn = pygame.Rect(
+                    tabs_rect.x + col * (btn_w + col_gap),
+                    tabs_rect.y + row * (row_h + row_gap),
+                    btn_w,
+                    row_h,
+                )
+                active = idx == active_idx
+                pygame.draw.rect(
+                    surface, accent_orange if active else header_blue, btn, border_radius=6
+                )
+                pygame.draw.rect(surface, border, btn, 1, border_radius=6)
+                text = self._small_font.render(_label(name, center=False), True, text_main)
+                surface.blit(text, text.get_rect(center=btn.center))
+                _set_hitbox(scope, f"tab:{idx}", btn)
+
+            page_rect = pygame.Rect(
+                mfd_rect.x + 4,
+                tabs_rect.bottom + 6,
+                mfd_rect.w - 8,
+                mfd_rect.bottom - tabs_rect.bottom - 10,
+            )
+            pygame.draw.rect(surface, panel_bg, page_rect)
+            pygame.draw.rect(surface, border, page_rect, 2)
+            _draw_page(page_rect, active_idx % 6, scope)
+
+        panel_gap = 10
+        panel_top = warning.bottom + 8
+        panel_h = content.bottom - panel_top - 8
+        panel_w = max(260, (content.w - panel_gap - 4) // 2)
+        upper_rect = pygame.Rect(content.x + 2, panel_top, panel_w, panel_h)
+        lower_rect = pygame.Rect(
+            upper_rect.right + panel_gap,
+            panel_top,
+            content.right - upper_rect.right - panel_gap - 2,
+            panel_h,
+        )
+        _draw_mfd(upper_rect, self._cognitive_updating_upper_tab_index % 6, "upper")
+        _draw_mfd(lower_rect, self._cognitive_updating_lower_tab_index % 6, "lower")
+
+        footer = (
+            f"C:{runtime_snap.controls_score}  N:{runtime_snap.navigation_score}  "
+            f"E:{runtime_snap.engine_score}  S:{runtime_snap.sensors_score}  "
+            f"O:{runtime_snap.objectives_score}  W:-{runtime_snap.warnings_penalty_points}  "
+            f"Total:{runtime_snap.overall_score}"
+        )
         footer_text = self._tiny_font.render(footer, True, text_muted)
         surface.blit(footer_text, footer_text.get_rect(midbottom=(frame.centerx, frame.bottom - 8)))
 
@@ -6148,7 +7682,9 @@ class CognitiveTestScreen:
         header_h = max(40, min(56, h // 7))
         header = pygame.Rect(frame.x + 2, frame.y + 2, frame.w - 4, header_h)
         pygame.draw.rect(surface, header_bg, header)
-        pygame.draw.line(surface, border, (header.x, header.bottom), (header.right, header.bottom), 1)
+        pygame.draw.line(
+            surface, border, (header.x, header.bottom), (header.right, header.bottom), 1
+        )
 
         phase_label = {
             Phase.INSTRUCTIONS: "Instructions",
@@ -6170,7 +7706,9 @@ class CognitiveTestScreen:
         stats_rect = stats.get_rect(midright=(header.right - 12, header.centery))
         surface.blit(stats, stats_rect)
         stats_label = self._tiny_font.render("Scored", True, text_muted)
-        surface.blit(stats_label, stats_label.get_rect(midright=(stats_rect.left - 6, header.centery)))
+        surface.blit(
+            stats_label, stats_label.get_rect(midright=(stats_rect.left - 6, header.centery))
+        )
 
         if snap.time_remaining_s is not None:
             rem = int(round(snap.time_remaining_s))
@@ -6189,7 +7727,9 @@ class CognitiveTestScreen:
         pygame.draw.rect(surface, (78, 102, 170), content, 1)
 
         if payload is not None and snap.phase in (Phase.PRACTICE, Phase.SCORED):
-            stem_rect = pygame.Rect(content.x + 12, content.y + 10, content.w - 24, max(44, content.h // 6))
+            stem_rect = pygame.Rect(
+                content.x + 12, content.y + 10, content.w - 24, max(44, content.h // 6)
+            )
             self._draw_wrapped_text(
                 surface,
                 payload.stem,
@@ -6207,7 +7747,9 @@ class CognitiveTestScreen:
             )
             left_w = max(240, min(int(work.w * 0.60), work.w - 180))
             diagram_rect = pygame.Rect(work.x, work.y, left_w, work.h)
-            options_rect = pygame.Rect(diagram_rect.right + 10, work.y, work.w - left_w - 10, work.h)
+            options_rect = pygame.Rect(
+                diagram_rect.right + 10, work.y, work.w - left_w - 10, work.h
+            )
 
             self._render_angles_bearings_question(surface, diagram_rect, payload)
 
@@ -6253,7 +7795,9 @@ class CognitiveTestScreen:
         else:
             footer = "Enter: Return to Tests"
         footer_text = self._tiny_font.render(footer, True, text_muted)
-        surface.blit(footer_text, footer_text.get_rect(midbottom=(frame.centerx, frame.bottom - 12)))
+        surface.blit(
+            footer_text, footer_text.get_rect(midbottom=(frame.centerx, frame.bottom - 12))
+        )
 
     def _render_angles_bearings_question(
         self,
@@ -6333,7 +7877,6 @@ class CognitiveTestScreen:
         border = (228, 238, 255)
         text_main = (236, 244, 255)
         text_muted = (182, 198, 226)
-        text_dim = (132, 148, 178)
 
         surface.fill(bg)
 
@@ -6345,7 +7888,9 @@ class CognitiveTestScreen:
         header_h = max(28, min(36, h // 15))
         header = pygame.Rect(frame.x + 1, frame.y + 1, frame.w - 2, header_h)
         pygame.draw.rect(surface, bg, header)
-        pygame.draw.line(surface, border, (header.x, header.bottom), (header.right, header.bottom), 1)
+        pygame.draw.line(
+            surface, border, (header.x, header.bottom), (header.right, header.bottom), 1
+        )
 
         phase_label = {
             Phase.INSTRUCTIONS: "Instructions",
@@ -6369,7 +7914,9 @@ class CognitiveTestScreen:
             timer = self._small_font.render(f"{rem // 60:02d}:{rem % 60:02d}", True, text_main)
             surface.blit(timer, timer.get_rect(topright=(frame.right - 12, header.bottom + 6)))
 
-        content = pygame.Rect(frame.x + 8, header.bottom + 8, frame.w - 16, frame.bottom - header.bottom - 16)
+        content = pygame.Rect(
+            frame.x + 8, header.bottom + 8, frame.w - 16, frame.bottom - header.bottom - 16
+        )
         if payload is None or snap.phase not in (Phase.PRACTICE, Phase.SCORED):
             self._tr_selector_hitboxes = {}
             self._tr_light_button_hitbox = None
@@ -6413,7 +7960,9 @@ class CognitiveTestScreen:
                 else "Enter: Return to Tests"
             )
             footer_surf = self._tiny_font.render(footer, True, text_muted)
-            surface.blit(footer_surf, footer_surf.get_rect(midbottom=(frame.centerx, frame.bottom - 10)))
+            surface.blit(
+                footer_surf, footer_surf.get_rect(midbottom=(frame.centerx, frame.bottom - 10))
+            )
             return
 
         self._target_recognition_sync_selection(payload)
@@ -6431,8 +7980,8 @@ class CognitiveTestScreen:
         live_scan_pattern = self._tr_scan_current_pattern
         live_scan_target = self._tr_scan_target_pattern_live
 
-        active_system_target, system_columns, system_row_frac = self._target_recognition_system_view(
-            payload
+        active_system_target, system_columns, system_row_frac = (
+            self._target_recognition_system_view(payload)
         )
 
         target_strip_h = max(92, min(130, h // 4))
@@ -6446,13 +7995,17 @@ class CognitiveTestScreen:
 
         top_h = max(76, min(106, int(left_rect.h * 0.26)))
         top_row = pygame.Rect(left_rect.x, left_rect.y, left_rect.w, top_h)
-        scene_rect = pygame.Rect(left_rect.x, top_row.bottom + 8, left_rect.w, left_rect.h - top_h - 8)
+        scene_rect = pygame.Rect(
+            left_rect.x, top_row.bottom + 8, left_rect.w, left_rect.h - top_h - 8
+        )
 
         gap = 8
         col_w = max(80, (top_row.w - gap * 2) // 3)
         info_rect = pygame.Rect(top_row.x, top_row.y, col_w, top_row.h)
         light_rect = pygame.Rect(info_rect.right + gap, top_row.y, col_w, top_row.h)
-        scan_rect = pygame.Rect(light_rect.right + gap, top_row.y, top_row.right - (light_rect.right + gap), top_row.h)
+        scan_rect = pygame.Rect(
+            light_rect.right + gap, top_row.y, top_row.right - (light_rect.right + gap), top_row.h
+        )
 
         def draw_panel(rect: pygame.Rect, title: str) -> pygame.Rect:
             pygame.draw.rect(surface, panel_bg, rect)
@@ -6486,7 +8039,12 @@ class CognitiveTestScreen:
 
         light_btn_w = max(56, min(72, light_bg.w // 3))
         light_btn_h = max(24, min(32, light_bg.h - 8))
-        light_btn = pygame.Rect(light_bg.right - light_btn_w - 4, light_bg.centery - (light_btn_h // 2), light_btn_w, light_btn_h)
+        light_btn = pygame.Rect(
+            light_bg.right - light_btn_w - 4,
+            light_bg.centery - (light_btn_h // 2),
+            light_btn_w,
+            light_btn_h,
+        )
         pygame.draw.rect(surface, (220, 174, 34), light_btn)
         pygame.draw.rect(surface, (248, 234, 184), light_btn, 1)
         light_btn_txt = self._tiny_font.render("PRESS", True, (28, 20, 6))
@@ -6502,7 +8060,9 @@ class CognitiveTestScreen:
         scan_x0 = scan_bg.x + 4
         scan_y = scan_bg.centery - (scan_token_h // 2)
         for idx in range(4):
-            tok_rect = pygame.Rect(scan_x0 + idx * (scan_token_w + scan_gap), scan_y, scan_token_w, scan_token_h)
+            tok_rect = pygame.Rect(
+                scan_x0 + idx * (scan_token_w + scan_gap), scan_y, scan_token_w, scan_token_h
+            )
             pygame.draw.rect(surface, (14, 20, 34), tok_rect)
             pygame.draw.rect(surface, (72, 92, 126), tok_rect, 1)
         reveal_idx = max(0, min(3, int(self._tr_scan_reveal_index)))
@@ -6519,7 +8079,12 @@ class CognitiveTestScreen:
 
         scan_btn_w = max(56, min(72, scan_bg.w // 3))
         scan_btn_h = max(24, min(32, scan_bg.h - 8))
-        scan_btn = pygame.Rect(scan_bg.right - scan_btn_w - 4, scan_bg.centery - (scan_btn_h // 2), scan_btn_w, scan_btn_h)
+        scan_btn = pygame.Rect(
+            scan_bg.right - scan_btn_w - 4,
+            scan_bg.centery - (scan_btn_h // 2),
+            scan_btn_w,
+            scan_btn_h,
+        )
         pygame.draw.rect(surface, (220, 174, 34), scan_btn)
         pygame.draw.rect(surface, (248, 234, 184), scan_btn, 1)
         scan_btn_txt = self._tiny_font.render("PRESS", True, (28, 20, 6))
@@ -6556,7 +8121,9 @@ class CognitiveTestScreen:
                 y = clip.y + int((slot + system_row_frac) * row_h)
                 row_surf = self._tiny_font.render(str(row), True, text_main)
                 surface.blit(row_surf, (clip.x + 3, y))
-                hit = pygame.Rect(clip.x + 3, y, max(8, min(clip.w - 5, row_surf.get_width())), row_h)
+                hit = pygame.Rect(
+                    clip.x + 3, y, max(8, min(clip.w - 5, row_surf.get_width())), row_h
+                )
                 hit = hit.clip(clip)
                 if hit.w > 0 and hit.h > 0:
                     self._tr_system_string_hitboxes.append((hit, str(row)))
@@ -6566,7 +8133,9 @@ class CognitiveTestScreen:
         pygame.draw.rect(surface, border, targets, 1)
 
         controls_h = 26
-        boxes_area = pygame.Rect(targets.x + 2, targets.y + 2, targets.w - 4, max(24, targets.h - controls_h - 4))
+        boxes_area = pygame.Rect(
+            targets.x + 2, targets.y + 2, targets.w - 4, max(24, targets.h - controls_h - 4)
+        )
         controls = pygame.Rect(targets.x + 2, boxes_area.bottom + 2, targets.w - 4, controls_h)
 
         target_gap = 6
@@ -6590,7 +8159,9 @@ class CognitiveTestScreen:
             pygame.draw.rect(surface, strip_header, bar)
             label_surf = self._tiny_font.render(label, True, text_main)
             surface.blit(label_surf, label_surf.get_rect(center=bar.center))
-            value_rect = pygame.Rect(box.x + 6, bar.bottom + 4, box.w - 12, box.bottom - bar.bottom - 8)
+            value_rect = pygame.Rect(
+                box.x + 6, bar.bottom + 4, box.w - 12, box.bottom - bar.bottom - 8
+            )
             if panel_key == "scene":
                 lines = list(self._tr_scene_active_targets)
                 y = value_rect.y
@@ -6604,7 +8175,9 @@ class CognitiveTestScreen:
             elif panel_key == "light":
                 dot_r = max(6, min(10, value_rect.h // 3))
                 dot_step = max(dot_r * 2 + 8, value_rect.w // 3)
-                dots_x0 = value_rect.x + max(dot_r + 2, (value_rect.w - (dot_step * 2 + dot_r * 2)) // 2)
+                dots_x0 = value_rect.x + max(
+                    dot_r + 2, (value_rect.w - (dot_step * 2 + dot_r * 2)) // 2
+                )
                 cy = value_rect.centery
                 for dot_idx, code in enumerate(live_light_target):
                     dcx = dots_x0 + dot_idx * dot_step
@@ -6660,7 +8233,9 @@ class CognitiveTestScreen:
             return (234, 72, 72)
         return (186, 190, 204)
 
-    def _draw_target_recognition_info_legend(self, surface: pygame.Surface, rect: pygame.Rect) -> None:
+    def _draw_target_recognition_info_legend(
+        self, surface: pygame.Surface, rect: pygame.Rect
+    ) -> None:
         text = (220, 230, 246)
         muted = (156, 176, 206)
         row_h = max(14, rect.h // 4)
@@ -6709,10 +8284,14 @@ class CognitiveTestScreen:
 
         # Standalone filler symbols.
         bot_y = y0 + (3 * row_h) + 6
-        self._draw_target_recognition_beacon(surface, cx=x_l + 5, cy=bot_y + 5, size=5, color=(226, 90, 92, 255))
+        self._draw_target_recognition_beacon(
+            surface, cx=x_l + 5, cy=bot_y + 5, size=5, color=(226, 90, 92, 255)
+        )
         beacon = self._tiny_font.render("Beacon", True, muted)
         surface.blit(beacon, (x_l + 14, bot_y - 1))
-        self._draw_target_recognition_unknown(surface, cx=x_r - 2, cy=bot_y + 5, size=5, color=(214, 206, 88, 255))
+        self._draw_target_recognition_unknown(
+            surface, cx=x_r - 2, cy=bot_y + 5, size=5, color=(214, 206, 88, 255)
+        )
         unknown = self._tiny_font.render("Unknown", True, muted)
         surface.blit(unknown, (x_r + 8, bot_y - 1))
 
@@ -6731,7 +8310,9 @@ class CognitiveTestScreen:
             or self._tr_scene_base_cache_size != (rect.w, rect.h)
             or self._tr_scene_base_cache_seed != seed
         ):
-            self._tr_scene_base_cache = self._target_recognition_build_scene_base(rect.w, rect.h, seed)
+            self._tr_scene_base_cache = self._target_recognition_build_scene_base(
+                rect.w, rect.h, seed
+            )
             self._tr_scene_base_cache_size = (rect.w, rect.h)
             self._tr_scene_base_cache_seed = seed
 
@@ -6789,7 +8370,9 @@ class CognitiveTestScreen:
         surface.blit(scene, rect.topleft)
         pygame.draw.rect(surface, (78, 98, 138), rect, 1)
 
-    def _target_recognition_build_scene_base(self, width: int, height: int, seed: int) -> pygame.Surface:
+    def _target_recognition_build_scene_base(
+        self, width: int, height: int, seed: int
+    ) -> pygame.Surface:
         base = pygame.Surface((width, height), pygame.SRCALPHA)
         rng = random.Random(seed ^ 0x7F4A7C15)
         base.fill((18, 34, 30, 255))
@@ -6852,7 +8435,7 @@ class CognitiveTestScreen:
 
         def mix(v: int) -> None:
             nonlocal seed
-            seed ^= (v & 0xFFFFFFFF)
+            seed ^= v & 0xFFFFFFFF
             seed = (seed * 16777619) & 0xFFFFFFFF
 
         mix(int(payload.scene_rows))
@@ -7044,7 +8627,12 @@ class CognitiveTestScreen:
             cx = bx + math.sin((t * speed) + phase) * drift
             cy = by + math.cos((t * speed * 0.9) + phase * 0.9) * drift
             pygame.draw.circle(haze, (16, 22, 20, 94), (int(cx), int(cy)), int(radius))
-            pygame.draw.circle(haze, (10, 14, 12, 78), (int(cx + radius * 0.2), int(cy - radius * 0.1)), int(radius * 0.68))
+            pygame.draw.circle(
+                haze,
+                (10, 14, 12, 78),
+                (int(cx + radius * 0.2), int(cy - radius * 0.1)),
+                int(radius * 0.68),
+            )
 
         haze.fill((170, 174, 170, 12), special_flags=pygame.BLEND_RGBA_ADD)
 
@@ -7077,12 +8665,16 @@ class CognitiveTestScreen:
         pid = id(payload)
         if self._tr_scene_payload_id != pid:
             self._tr_scene_payload_id = pid
-            self._tr_scene_rng = random.Random(self._target_recognition_scene_seed(payload) ^ 0xC0FFEE17)
+            self._tr_scene_rng = random.Random(
+                self._target_recognition_scene_seed(payload) ^ 0xC0FFEE17
+            )
             self._tr_scene_glyphs = {}
             self._tr_scene_glyph_order = []
             self._tr_scene_next_glyph_id = 1
             self._tr_scene_symbol_hitboxes = []
-            self._tr_scene_target_queue = list(payload.scene_target_options) if payload.scene_has_target else []
+            self._tr_scene_target_queue = (
+                list(payload.scene_target_options) if payload.scene_has_target else []
+            )
             self._tr_scene_active_targets = []
             self._tr_scene_next_target_add_ms = now_ms + 1200
             self._tr_scene_anim_frame = 0
@@ -7150,7 +8742,10 @@ class CognitiveTestScreen:
 
         if payload.scene_has_target:
             while now_ms >= self._tr_scene_next_target_add_ms:
-                if self._tr_scene_target_queue and len(self._tr_scene_active_targets) < self._tr_scene_target_cap:
+                if (
+                    self._tr_scene_target_queue
+                    and len(self._tr_scene_active_targets) < self._tr_scene_target_cap
+                ):
                     attempts = 0
                     queue_len = max(1, len(self._tr_scene_target_queue))
                     added = False
@@ -7168,7 +8763,9 @@ class CognitiveTestScreen:
                         only = self._tr_scene_target_queue[0]
                         self._tr_scene_active_targets.append(only)
                         self._target_recognition_scene_ensure_label_present(payload, only)
-                self._tr_scene_next_target_add_ms += self._target_recognition_scene_spawn_interval_ms()
+                self._tr_scene_next_target_add_ms += (
+                    self._target_recognition_scene_spawn_interval_ms()
+                )
 
             self._target_recognition_scene_prune_completed_targets()
 
@@ -7198,12 +8795,16 @@ class CognitiveTestScreen:
         if glyph.kind == "beacon":
             self._tr_scene_points += 1
             self._tr_scene_beacon_hits += 1
-            self._target_recognition_scene_reseed_glyph(payload, glyph, kind="beacon", force_non_target=True)
+            self._target_recognition_scene_reseed_glyph(
+                payload, glyph, kind="beacon", force_non_target=True
+            )
             return True
         if glyph.kind == "unknown":
             self._tr_scene_points += 1
             self._tr_scene_unknown_hits += 1
-            self._target_recognition_scene_reseed_glyph(payload, glyph, kind="unknown", force_non_target=True)
+            self._target_recognition_scene_reseed_glyph(
+                payload, glyph, kind="unknown", force_non_target=True
+            )
             return True
 
         active = set(self._tr_scene_active_targets)
@@ -7211,7 +8812,9 @@ class CognitiveTestScreen:
         if hit_target:
             self._tr_scene_points += 1
             self._tr_scene_hits += 1
-            self._target_recognition_scene_reseed_glyph(payload, glyph, kind="entity", force_non_target=True)
+            self._target_recognition_scene_reseed_glyph(
+                payload, glyph, kind="entity", force_non_target=True
+            )
             self._target_recognition_scene_prune_completed_targets()
             return True
 
@@ -7227,7 +8830,9 @@ class CognitiveTestScreen:
         force_non_target: bool,
     ) -> None:
         if self._tr_scene_rng is None:
-            self._tr_scene_rng = random.Random(self._target_recognition_scene_seed(payload) ^ 0xC0FFEE17)
+            self._tr_scene_rng = random.Random(
+                self._target_recognition_scene_seed(payload) ^ 0xC0FFEE17
+            )
 
         glyph.kind = kind
         glyph.nx, glyph.ny = self._target_recognition_scene_random_position()
@@ -7348,10 +8953,14 @@ class CognitiveTestScreen:
         entity: TargetRecognitionSceneEntity,
         labels: tuple[str, ...],
     ) -> tuple[str, ...]:
-        return tuple(label for label in labels if self._target_recognition_scene_label_matches(entity, label))
+        return tuple(
+            label for label in labels if self._target_recognition_scene_label_matches(entity, label)
+        )
 
     @staticmethod
-    def _target_recognition_scene_label_matches(entity: TargetRecognitionSceneEntity, label: str) -> bool:
+    def _target_recognition_scene_label_matches(
+        entity: TargetRecognitionSceneEntity, label: str
+    ) -> bool:
         txt = str(label).upper()
         if "UNKNOWN" in txt or "BEACON" in txt:
             return False
@@ -7462,8 +9071,12 @@ class CognitiveTestScreen:
         if self._tr_light_payload_id != pid:
             self._tr_light_payload_id = pid
             self._tr_light_rng = random.Random(self._target_recognition_light_seed(payload))
-            self._tr_light_current_pattern = self._target_recognition_light_triplet(payload.light_pattern)
-            self._tr_light_target_pattern_live = self._target_recognition_light_triplet(payload.light_target_pattern)
+            self._tr_light_current_pattern = self._target_recognition_light_triplet(
+                payload.light_pattern
+            )
+            self._tr_light_target_pattern_live = self._target_recognition_light_triplet(
+                payload.light_target_pattern
+            )
             self._tr_light_next_change_ms = now_ms + self._target_recognition_light_interval_ms()
 
         while now_ms >= self._tr_light_next_change_ms:
@@ -7502,7 +9115,9 @@ class CognitiveTestScreen:
             if len(pool) < 4:
                 pool = ("<>", "<|", "|>", "[]", "{}", "()", "/\\", "\\/", "==", "=~")
             self._tr_scan_token_pool = tuple(pool)
-            self._tr_scan_target_pattern_live = self._target_recognition_next_scan_pattern(exclude=None)
+            self._tr_scan_target_pattern_live = self._target_recognition_next_scan_pattern(
+                exclude=None
+            )
             self._tr_scan_current_pattern = self._target_recognition_next_scan_pattern(
                 exclude=self._tr_scan_target_pattern_live
             )
@@ -7607,7 +9222,7 @@ class CognitiveTestScreen:
 
         def mix(v: int) -> None:
             nonlocal seed
-            seed ^= (v & 0xFFFFFFFF)
+            seed ^= v & 0xFFFFFFFF
             seed = (seed * 16777619) & 0xFFFFFFFF
 
         for token in (
@@ -7660,7 +9275,7 @@ class CognitiveTestScreen:
 
         def mix(v: int) -> None:
             nonlocal seed
-            seed ^= (v & 0xFFFFFFFF)
+            seed ^= v & 0xFFFFFFFF
             seed = (seed * 16777619) & 0xFFFFFFFF
 
         mix(int(payload.scene_rows))
@@ -7701,8 +9316,12 @@ class CognitiveTestScreen:
             self._tr_system_row_frac = 0.0
             self._tr_system_last_step_ms = now_ms
             assert self._tr_system_rng is not None
-            self._tr_system_step_interval_ms = int(round(self._tr_system_rng.uniform(1450.0, 2300.0)))
-            self._tr_system_target_code = self._target_recognition_pick_initial_system_target(payload)
+            self._tr_system_step_interval_ms = int(
+                round(self._tr_system_rng.uniform(1450.0, 2300.0))
+            )
+            self._tr_system_target_code = self._target_recognition_pick_initial_system_target(
+                payload
+            )
             if row_count <= 0:
                 return
 
@@ -7733,7 +9352,9 @@ class CognitiveTestScreen:
                 cols.append(list(base))
 
         while len(cols) < 3:
-            cols.append(list(cols[-1] if cols else ["A1B2", "C3D4", "E5F6", "G7H8", "J9K1", "L2M3"]))
+            cols.append(
+                list(cols[-1] if cols else ["A1B2", "C3D4", "E5F6", "G7H8", "J9K1", "L2M3"])
+            )
 
         max_len = max(6, max((len(c) for c in cols), default=6))
         for idx, col in enumerate(cols):
@@ -7744,7 +9365,9 @@ class CognitiveTestScreen:
             cols[idx] = col[:max_len]
         return cols[:3]
 
-    def _target_recognition_pick_initial_system_target(self, payload: TargetRecognitionPayload) -> str:
+    def _target_recognition_pick_initial_system_target(
+        self, payload: TargetRecognitionPayload
+    ) -> str:
         pool = [code for col in self._tr_system_columns for code in col]
         if payload.system_target and str(payload.system_target) in pool:
             return str(payload.system_target)
@@ -7769,7 +9392,12 @@ class CognitiveTestScreen:
         return True
 
     def _target_recognition_pick_next_system_target(self) -> str:
-        pool = [code for col in self._tr_system_columns for code in col if code != self._tr_system_target_code]
+        pool = [
+            code
+            for col in self._tr_system_columns
+            for code in col
+            if code != self._tr_system_target_code
+        ]
         if not pool:
             return self._tr_system_target_code
         assert self._tr_system_rng is not None
@@ -7781,7 +9409,7 @@ class CognitiveTestScreen:
 
         def mix(v: int) -> None:
             nonlocal seed
-            seed ^= (v & 0xFFFFFFFF)
+            seed ^= v & 0xFFFFFFFF
             seed = (seed * 16777619) & 0xFFFFFFFF
 
         for token in (
@@ -7856,9 +9484,7 @@ class CognitiveTestScreen:
             hits = int(self._tr_practice_panel_hits.get(key, 0))
             acc = (correct / float(trials)) * 100.0
             if present > 0:
-                lines.append(
-                    f"{label}: {correct}/{trials} ({acc:.0f}%)  Hits {hits}/{present}"
-                )
+                lines.append(f"{label}: {correct}/{trials} ({acc:.0f}%)  Hits {hits}/{present}")
             else:
                 lines.append(f"{label}: {correct}/{trials} ({acc:.0f}%)  Hits n/a")
         return tuple(lines)
@@ -7897,6 +9523,243 @@ class CognitiveTestScreen:
             rotated_cols.append(rotated)
         return self._tr_system_target_code, tuple(rotated_cols), step_frac
 
+    def _render_situational_awareness_screen(
+        self,
+        surface: pygame.Surface,
+        snap: TestSnapshot,
+        payload: SituationalAwarenessPayload | None,
+    ) -> None:
+        self._sa_option_hitboxes = {}
+        self._sa_grid_hitboxes = {}
+
+        bg = (6, 16, 86)
+        panel_bg = (12, 28, 116)
+        panel_dark = (10, 22, 96)
+        border = (224, 236, 255)
+        text_main = (238, 246, 255)
+        text_muted = (182, 202, 230)
+        text_dark = (12, 20, 36)
+
+        w, h = surface.get_size()
+        surface.fill(bg)
+
+        margin = max(8, min(18, w // 48))
+        frame = pygame.Rect(margin, margin, w - margin * 2, h - margin * 2)
+        pygame.draw.rect(surface, panel_bg, frame)
+        pygame.draw.rect(surface, border, frame, 1)
+
+        header_h = max(30, min(40, h // 16))
+        header = pygame.Rect(frame.x + 1, frame.y + 1, frame.w - 2, header_h)
+        pygame.draw.rect(surface, panel_dark, header)
+        pygame.draw.line(
+            surface, border, (header.x, header.bottom), (header.right, header.bottom), 1
+        )
+
+        title = self._tiny_font.render("Situational Awareness Test", True, text_main)
+        surface.blit(title, title.get_rect(midleft=(header.x + 10, header.centery)))
+        if snap.time_remaining_s is not None:
+            rem = int(round(snap.time_remaining_s))
+            timer = self._tiny_font.render(f"{rem // 60:02d}:{rem % 60:02d}", True, text_main)
+            surface.blit(timer, timer.get_rect(midright=(header.right - 10, header.centery)))
+
+        scored = self._tiny_font.render(
+            f"Scored {snap.correct_scored}/{snap.attempted_scored}",
+            True,
+            text_muted,
+        )
+        surface.blit(scored, (frame.x + 12, header.bottom + 6))
+
+        if payload is None:
+            self._draw_wrapped_text(
+                surface,
+                str(snap.prompt),
+                pygame.Rect(
+                    frame.x + 12, header.bottom + 30, frame.w - 24, frame.h - header_h - 42
+                ),
+                color=text_main,
+                font=self._small_font,
+                max_lines=12,
+            )
+            return
+
+        left_w = int(frame.w * 0.62)
+        left_panel = pygame.Rect(
+            frame.x + 10, header.bottom + 28, left_w - 16, frame.bottom - header.bottom - 38
+        )
+        right_panel = pygame.Rect(
+            left_panel.right + 10,
+            left_panel.y,
+            frame.right - (left_panel.right + 20),
+            left_panel.h,
+        )
+        pygame.draw.rect(surface, panel_dark, left_panel)
+        pygame.draw.rect(surface, border, left_panel, 1)
+        pygame.draw.rect(surface, panel_dark, right_panel)
+        pygame.draw.rect(surface, border, right_panel, 1)
+
+        # Grid view with live contact markers.
+        grid_box = left_panel.inflate(-14, -14)
+        grid_box_top = grid_box.y + 4
+        label_pad = 20
+        grid_size_px = min(grid_box.w - label_pad - 4, grid_box.h - label_pad - 4)
+        cell_size = max(14, min(44, grid_size_px // 10))
+        grid_w = cell_size * 10
+        grid_h = cell_size * 10
+        start_x = grid_box.x + label_pad + max(0, (grid_box.w - label_pad - grid_w) // 2)
+        start_y = grid_box_top + label_pad + max(0, (grid_box.h - label_pad - grid_h) // 2)
+        grid_rect = pygame.Rect(start_x, start_y, grid_w, grid_h)
+        pygame.draw.rect(surface, (242, 248, 255), grid_rect)
+        pygame.draw.rect(surface, (164, 182, 216), grid_rect, 1)
+
+        selected_code: int | None = None
+        if self._input.isdigit():
+            try:
+                selected_code = int(self._input)
+            except ValueError:
+                selected_code = None
+        if selected_code is None:
+            selected_code = int(self._math_choice)
+
+        option_cell_by_label = {
+            str(option.cell_label): int(option.code)
+            for option in payload.options
+            if option.cell_label is not None
+        }
+        contact_color = (
+            (30, 81, 209),
+            (22, 131, 77),
+            (189, 83, 23),
+            (142, 36, 170),
+            (196, 56, 114),
+        )
+        heading_vectors = {
+            "N": (0, -1),
+            "NE": (1, -1),
+            "E": (1, 0),
+            "SE": (1, 1),
+            "S": (0, 1),
+            "SW": (-1, 1),
+            "W": (-1, 0),
+            "NW": (-1, -1),
+        }
+
+        for x in range(10):
+            col_text = self._tiny_font.render(str(x), True, text_muted)
+            cx = grid_rect.x + (x * cell_size) + (cell_size // 2)
+            surface.blit(col_text, col_text.get_rect(center=(cx, start_y - 10)))
+        for y in range(10):
+            row_text = self._tiny_font.render(chr(ord("A") + y), True, text_muted)
+            cy = grid_rect.y + (y * cell_size) + (cell_size // 2)
+            surface.blit(row_text, row_text.get_rect(center=(start_x - 10, cy)))
+
+        for y in range(10):
+            for x in range(10):
+                cell = pygame.Rect(
+                    grid_rect.x + x * cell_size, grid_rect.y + y * cell_size, cell_size, cell_size
+                )
+                cell_label = cell_label_from_xy(x, y)
+                shade = (247, 251, 255) if ((x + y) % 2 == 0) else (237, 244, 255)
+                pygame.draw.rect(surface, shade, cell)
+                pygame.draw.rect(surface, (176, 194, 224), cell, 1)
+
+                if payload.kind is SituationalAwarenessQuestionKind.POSITION_PROJECTION:
+                    option_code = option_cell_by_label.get(cell_label)
+                    if option_code is not None:
+                        glow = (255, 207, 92) if option_code == selected_code else (255, 228, 138)
+                        pygame.draw.rect(surface, glow, cell, 3)
+                        code_txt = self._tiny_font.render(str(option_code), True, (114, 68, 8))
+                        surface.blit(code_txt, code_txt.get_rect(midtop=(cell.centerx, cell.y + 1)))
+                        self._sa_grid_hitboxes[cell_label] = cell.copy()
+
+        for idx, contact in enumerate(payload.contacts):
+            cx = grid_rect.x + int(contact.x) * cell_size + (cell_size // 2)
+            cy = grid_rect.y + int(contact.y) * cell_size + (cell_size // 2)
+            color = contact_color[idx % len(contact_color)]
+            radius = max(4, min(10, cell_size // 4))
+            pygame.draw.circle(surface, color, (cx, cy), radius)
+            pygame.draw.circle(surface, (0, 0, 0), (cx, cy), radius, 1)
+
+            hd_dx, hd_dy = heading_vectors.get(str(contact.heading).upper(), (0, 0))
+            if hd_dx != 0 or hd_dy != 0:
+                line_len = max(5, cell_size // 3)
+                end = (cx + int(hd_dx * line_len), cy + int(hd_dy * line_len))
+                pygame.draw.line(surface, color, (cx, cy), end, 2)
+
+            label = self._tiny_font.render(contact.callsign, True, text_dark)
+            surface.blit(label, label.get_rect(midbottom=(cx, cy - radius - 1)))
+
+        # Right panel: feed + options.
+        info_box = pygame.Rect(right_panel.x + 8, right_panel.y + 8, right_panel.w - 16, 126)
+        pygame.draw.rect(surface, (18, 36, 126), info_box)
+        pygame.draw.rect(surface, border, info_box, 1)
+
+        contacts_short = "  ".join(
+            (
+                f"{contact.callsign}@{chr(ord('A') + int(contact.y))}{int(contact.x)} "
+                f"{contact.heading}{contact.speed_cells_per_min}"
+            )
+            for contact in payload.contacts[:4]
+        )
+        self._draw_wrapped_text(
+            surface,
+            f"Query: {payload.stem}",
+            pygame.Rect(info_box.x + 8, info_box.y + 8, info_box.w - 16, 30),
+            color=text_main,
+            font=self._tiny_font,
+            max_lines=2,
+        )
+        self._draw_wrapped_text(
+            surface,
+            f"Contacts: {contacts_short}",
+            pygame.Rect(info_box.x + 8, info_box.y + 42, info_box.w - 16, 40),
+            color=text_muted,
+            font=self._tiny_font,
+            max_lines=2,
+        )
+        self._draw_wrapped_text(
+            surface,
+            f"Horizon: +{payload.horizon_min} min",
+            pygame.Rect(info_box.x + 8, info_box.bottom - 26, info_box.w - 16, 20),
+            color=text_muted,
+            font=self._tiny_font,
+            max_lines=1,
+        )
+
+        option_box = pygame.Rect(
+            right_panel.x + 8,
+            info_box.bottom + 8,
+            right_panel.w - 16,
+            right_panel.h - 60 - info_box.h,
+        )
+        pygame.draw.rect(surface, (18, 36, 126), option_box)
+        pygame.draw.rect(surface, border, option_box, 1)
+
+        row_h = 34
+        y = option_box.y + 8
+        for option in payload.options:
+            row = pygame.Rect(option_box.x + 8, y, option_box.w - 16, row_h)
+            is_selected = int(option.code) == selected_code
+            row_fill = (255, 236, 166) if is_selected else (238, 246, 255)
+            row_border = (160, 128, 34) if is_selected else (176, 194, 224)
+            pygame.draw.rect(surface, row_fill, row)
+            pygame.draw.rect(surface, row_border, row, 1)
+            self._sa_option_hitboxes[int(option.code)] = row.copy()
+
+            label = self._fit_label(self._tiny_font, f"{option.code}) {option.text}", row.w - 10)
+            color = (70, 50, 0) if is_selected else text_dark
+            row_text = self._tiny_font.render(label, True, color)
+            surface.blit(row_text, (row.x + 6, row.y + 9))
+            y += row_h + 6
+            if y > option_box.bottom - row_h:
+                break
+
+        footer = pygame.Rect(frame.x + 10, frame.bottom - 28, frame.w - 20, 18)
+        hint = "Click highlighted grid cells or options. 1-4 + Enter also works."
+        if payload.kind is not SituationalAwarenessQuestionKind.POSITION_PROJECTION:
+            hint = "Click an option or press 1-4, then Enter."
+        footer_text = self._tiny_font.render(hint, True, text_muted)
+        surface.blit(footer_text, footer_text.get_rect(midleft=(footer.x + 2, footer.centery)))
+
     def _render_visual_search_question(
         self,
         surface: pygame.Surface,
@@ -7919,7 +9782,9 @@ class CognitiveTestScreen:
         header_h = max(28, min(36, h // 16))
         header = pygame.Rect(frame.x + 1, frame.y + 1, frame.w - 2, header_h)
         pygame.draw.rect(surface, bg, header)
-        pygame.draw.line(surface, frame_border, (header.x, header.bottom), (header.right, header.bottom), 1)
+        pygame.draw.line(
+            surface, frame_border, (header.x, header.bottom), (header.right, header.bottom), 1
+        )
 
         title = self._tiny_font.render("Visual Search Test", True, text_main)
         surface.blit(title, title.get_rect(midleft=(header.x + 10, header.centery)))
@@ -7947,7 +9812,9 @@ class CognitiveTestScreen:
             (info.x + 10, info.y + 20),
         )
 
-        grid_panel = pygame.Rect(frame.x + 12, info.bottom + 8, frame.w - 24, frame.h - header_h - 116)
+        grid_panel = pygame.Rect(
+            frame.x + 12, info.bottom + 8, frame.w - 24, frame.h - header_h - 116
+        )
         pygame.draw.rect(surface, panel_bg, grid_panel)
         pygame.draw.rect(surface, frame_border, grid_panel, 1)
 
@@ -7971,7 +9838,9 @@ class CognitiveTestScreen:
                 idx = r * cols + c
                 token = payload.cells[idx] if idx < len(payload.cells) else ""
                 code = payload.cell_codes[idx] if idx < len(payload.cell_codes) else 0
-                cell = pygame.Rect(start_x + c * cell_size, start_y + r * cell_size, cell_size, cell_size)
+                cell = pygame.Rect(
+                    start_x + c * cell_size, start_y + r * cell_size, cell_size, cell_size
+                )
                 pygame.draw.rect(surface, (244, 247, 255), cell)
                 pygame.draw.rect(surface, (162, 176, 208), cell, 1)
 
@@ -7995,6 +9864,1439 @@ class CognitiveTestScreen:
 
         hint = self._tiny_font.render("Enter target block number and press Enter", True, text_muted)
         surface.blit(hint, (answer_box.right + 10, footer.y + 10))
+
+    def _render_trace_test_1_screen(
+        self,
+        surface: pygame.Surface,
+        snap: TestSnapshot,
+        payload: TraceTest1Payload | None,
+    ) -> None:
+        w, h = surface.get_size()
+        bg = (2, 10, 140)
+        frame_bg = (8, 18, 124)
+        panel_bg = (12, 20, 92)
+        border = (226, 236, 255)
+        text_main = (236, 244, 255)
+        text_muted = (176, 196, 226)
+        input_bg = (4, 10, 36)
+
+        surface.fill(bg)
+
+        margin = max(10, min(18, w // 46))
+        frame = pygame.Rect(margin, margin, w - margin * 2, h - margin * 2)
+        pygame.draw.rect(surface, frame_bg, frame)
+        pygame.draw.rect(surface, border, frame, 1)
+
+        header_h = max(28, min(36, h // 17))
+        header = pygame.Rect(frame.x + 2, frame.y + 2, frame.w - 4, header_h)
+        pygame.draw.rect(surface, bg, header)
+        pygame.draw.line(
+            surface, border, (header.x, header.bottom), (header.right, header.bottom), 1
+        )
+
+        phase_label = {
+            Phase.INSTRUCTIONS: "Instructions",
+            Phase.PRACTICE: "Practice",
+            Phase.PRACTICE_DONE: "Practice Complete",
+            Phase.SCORED: "Scored",
+            Phase.RESULTS: "Results",
+        }.get(snap.phase, "Task")
+        title = self._tiny_font.render(f"Trace Test 1 - {phase_label}", True, text_main)
+        surface.blit(title, (header.x + 10, header.y + 7))
+
+        stats = self._tiny_font.render(
+            f"Scored {snap.correct_scored}/{snap.attempted_scored}",
+            True,
+            text_muted,
+        )
+        surface.blit(stats, stats.get_rect(midright=(header.right - 10, header.centery)))
+
+        if snap.time_remaining_s is not None:
+            rem = int(round(snap.time_remaining_s))
+            timer = self._small_font.render(f"{rem // 60:02d}:{rem % 60:02d}", True, text_main)
+            surface.blit(timer, timer.get_rect(topright=(frame.right - 12, header.bottom + 8)))
+
+        work = pygame.Rect(
+            frame.x + 8, header.bottom + 8, frame.w - 16, frame.bottom - header.bottom - 16
+        )
+        pygame.draw.rect(surface, panel_bg, work)
+        pygame.draw.rect(surface, border, work, 1)
+
+        if snap.phase not in (Phase.PRACTICE, Phase.SCORED) or payload is None:
+            info = work.inflate(-20, -20)
+            pygame.draw.rect(surface, (18, 28, 108), info)
+            pygame.draw.rect(surface, border, info, 1)
+
+            scene = pygame.Rect(info.x + 12, info.y + 12, info.w - 24, max(160, int(info.h * 0.56)))
+            self._draw_trace_test_1_scene(
+                surface,
+                scene,
+                reference=TraceTest1Attitude(roll_deg=10.0, pitch_deg=-2.0, yaw_deg=15.0),
+                candidate=TraceTest1Attitude(roll_deg=-26.0, pitch_deg=-2.0, yaw_deg=356.0),
+                viewpoint_bearing_deg=180,
+            )
+
+            text_rect = pygame.Rect(
+                info.x + 12, scene.bottom + 10, info.w - 24, info.bottom - scene.bottom - 22
+            )
+            self._draw_wrapped_text(
+                surface,
+                str(snap.prompt),
+                text_rect,
+                color=text_main,
+                font=self._small_font,
+                max_lines=12,
+            )
+            return
+
+        left_w = int(work.w * 0.70)
+        left = pygame.Rect(work.x + 8, work.y + 8, left_w - 12, work.h - 16)
+        right = pygame.Rect(left.right + 8, work.y + 8, work.right - left.right - 16, work.h - 16)
+
+        self._draw_trace_test_1_scene(
+            surface,
+            left,
+            reference=payload.reference,
+            candidate=payload.candidate,
+            viewpoint_bearing_deg=int(payload.viewpoint_bearing_deg),
+            animate=False,
+        )
+
+        pygame.draw.rect(surface, (18, 28, 108), right)
+        pygame.draw.rect(surface, border, right, 1)
+
+        prompt_box = pygame.Rect(right.x + 8, right.y + 8, right.w - 16, 72)
+        pygame.draw.rect(surface, (14, 20, 88), prompt_box)
+        pygame.draw.rect(surface, border, prompt_box, 1)
+        self._draw_wrapped_text(
+            surface,
+            "Which command matches the red aircraft change?",
+            prompt_box.inflate(-8, -8),
+            color=text_main,
+            font=self._tiny_font,
+            max_lines=3,
+        )
+
+        selected_code = int(self._math_choice)
+        raw = self._input.strip()
+        if raw.isdigit():
+            selected_code = int(raw)
+
+        options_rect = pygame.Rect(right.x + 8, prompt_box.bottom + 8, right.w - 16, right.h - 132)
+        pygame.draw.rect(surface, (14, 20, 88), options_rect)
+        pygame.draw.rect(surface, border, options_rect, 1)
+
+        row_h = max(34, (options_rect.h - 20) // max(1, len(payload.options)))
+        y = options_rect.y + 6
+        for option in payload.options:
+            row = pygame.Rect(options_rect.x + 6, y, options_rect.w - 12, row_h - 4)
+            selected = int(option.code) == selected_code
+            row_fill = (58, 84, 154) if selected else (20, 30, 106)
+            pygame.draw.rect(surface, row_fill, row)
+            pygame.draw.rect(surface, border, row, 1)
+
+            label = self._small_font.render(option.label, True, text_main)
+            surface.blit(label, label.get_rect(midleft=(row.x + 14, row.centery)))
+
+            code_tag = pygame.Rect(row.right - 34, row.y + 6, 24, row.h - 12)
+            pygame.draw.rect(surface, input_bg, code_tag)
+            pygame.draw.rect(surface, border, code_tag, 1)
+            code_txt = self._tiny_font.render(str(option.code), True, text_main)
+            surface.blit(code_txt, code_txt.get_rect(center=code_tag.center))
+            y += row_h
+
+        entry_card = pygame.Rect(right.x + 8, right.bottom - 42, right.w - 16, 34)
+        pygame.draw.rect(surface, (14, 20, 88), entry_card)
+        pygame.draw.rect(surface, border, entry_card, 1)
+        hint = self._tiny_font.render("1-4, Up/Down, Enter", True, text_muted)
+        surface.blit(hint, (entry_card.x + 8, entry_card.y + 10))
+
+    def _draw_trace_test_1_scene(
+        self,
+        surface: pygame.Surface,
+        rect: pygame.Rect,
+        *,
+        reference: TraceTest1Attitude,
+        candidate: TraceTest1Attitude,
+        viewpoint_bearing_deg: int,
+        animate: bool = True,
+    ) -> None:
+        sky_top = (82, 124, 196)
+        sky_bottom = (238, 170, 142)
+        ground_top = (136, 152, 176)
+        ground_bottom = (112, 126, 146)
+        border = (208, 222, 248)
+
+        inner = rect.inflate(-8, -8)
+        pygame.draw.rect(surface, (8, 14, 62), rect)
+        pygame.draw.rect(surface, border, rect, 1)
+        if inner.w <= 0 or inner.h <= 0:
+            return
+
+        anim_s = float(pygame.time.get_ticks()) / 1000.0 if animate else 0.0
+        horizon = inner.y + int(inner.h * 0.58)
+        sky_h = max(1, horizon - inner.y)
+        for i in range(sky_h):
+            t = i / max(1, sky_h - 1)
+            color = (
+                int(round(sky_top[0] + (sky_bottom[0] - sky_top[0]) * t)),
+                int(round(sky_top[1] + (sky_bottom[1] - sky_top[1]) * t)),
+                int(round(sky_top[2] + (sky_bottom[2] - sky_top[2]) * t)),
+            )
+            pygame.draw.line(surface, color, (inner.x, inner.y + i), (inner.right, inner.y + i))
+
+        ground_h = max(1, inner.bottom - horizon)
+        for i in range(ground_h):
+            t = i / max(1, ground_h - 1)
+            color = (
+                int(round(ground_top[0] + (ground_bottom[0] - ground_top[0]) * t)),
+                int(round(ground_top[1] + (ground_bottom[1] - ground_top[1]) * t)),
+                int(round(ground_top[2] + (ground_bottom[2] - ground_top[2]) * t)),
+            )
+            pygame.draw.line(surface, color, (inner.x, horizon + i), (inner.right, horizon + i))
+
+        # Gentle cloud drift and perspective guide lines keep the scene alive.
+        for idx in range(4):
+            cloud_w = max(26, int(inner.w * (0.12 + (idx * 0.02))))
+            cloud_h = max(10, int(cloud_w * 0.34))
+            drift = int(round((anim_s * (18.0 + (idx * 2.4))) + (idx * 120)))
+            cx = inner.x + ((drift % (inner.w + cloud_w + 80)) - cloud_w)
+            cy = inner.y + int(inner.h * (0.09 + (idx * 0.08)))
+            wobble = int(round(4.0 * math.sin((anim_s * 0.75) + (idx * 1.4))))
+            cloud_rect = pygame.Rect(cx, cy + wobble, cloud_w, cloud_h)
+            pygame.draw.ellipse(surface, (252, 246, 238), cloud_rect)
+            pygame.draw.ellipse(surface, (218, 226, 242), cloud_rect, 1)
+
+        for lane in range(-3, 4):
+            x0 = inner.centerx + int(lane * inner.w * 0.08)
+            x1 = inner.centerx + int(lane * inner.w * 0.18)
+            pygame.draw.line(
+                surface,
+                (182, 194, 214),
+                (x0, horizon),
+                (x1, inner.bottom),
+                1,
+            )
+
+        shared_roll = math.sin(anim_s * 1.6) * 2.0 if animate else 0.0
+        shared_pitch = math.cos((anim_s * 1.2) + 0.45) * 1.4 if animate else 0.0
+        reference_live = TraceTest1Attitude(
+            roll_deg=reference.roll_deg + shared_roll,
+            pitch_deg=reference.pitch_deg + shared_pitch,
+            yaw_deg=reference.yaw_deg,
+        )
+        candidate_live = TraceTest1Attitude(
+            roll_deg=candidate.roll_deg + shared_roll,
+            pitch_deg=candidate.pitch_deg + shared_pitch,
+            yaw_deg=candidate.yaw_deg,
+        )
+
+        if animate:
+            ref_center = (
+                inner.centerx + int(round(math.sin(anim_s * 0.85) * max(4.0, inner.w * 0.02))),
+                inner.y + int(inner.h * 0.23) + int(round(math.sin(anim_s * 1.3) * 4.0)),
+            )
+            cand_center = (
+                inner.centerx
+                + int(round(math.sin((anim_s * 0.72) + 1.4) * max(6.0, inner.w * 0.028))),
+                inner.y + int(inner.h * 0.68) + int(round(math.cos((anim_s * 1.08) + 0.7) * 5.0)),
+            )
+        else:
+            ref_center = (inner.centerx, inner.y + int(inner.h * 0.23))
+            cand_center = (inner.centerx, inner.y + int(inner.h * 0.68))
+        self._draw_trace_test_1_aircraft(
+            surface,
+            center=ref_center,
+            attitude=reference_live,
+            viewpoint_bearing_deg=viewpoint_bearing_deg,
+            color=(76, 136, 244),
+            outline=(210, 228, 255),
+            scale=max(0.50, min(1.0, inner.w / 420.0)),
+            anim_s=anim_s,
+        )
+        self._draw_trace_test_1_aircraft(
+            surface,
+            center=cand_center,
+            attitude=candidate_live,
+            viewpoint_bearing_deg=viewpoint_bearing_deg,
+            color=(228, 54, 56),
+            outline=(255, 210, 206),
+            scale=max(0.64, min(1.2, inner.w / 340.0)),
+            anim_s=anim_s,
+        )
+
+    def _draw_trace_test_1_aircraft(
+        self,
+        surface: pygame.Surface,
+        *,
+        center: tuple[int, int],
+        attitude: TraceTest1Attitude,
+        viewpoint_bearing_deg: int,
+        color: tuple[int, int, int],
+        outline: tuple[int, int, int],
+        scale: float,
+        anim_s: float,
+    ) -> None:
+        offsets = trace_test_1_aircraft_marker_offsets(
+            attitude=attitude,
+            viewpoint_bearing_deg=viewpoint_bearing_deg,
+            scale=scale,
+        )
+        cx, cy = center
+        nose = (int(round(cx + offsets[0][0])), int(round(cy + offsets[0][1])))
+        left = (int(round(cx + offsets[1][0])), int(round(cy + offsets[1][1])))
+        right = (int(round(cx + offsets[2][0])), int(round(cy + offsets[2][1])))
+        tail = (int(round(cx + offsets[3][0])), int(round(cy + offsets[3][1])))
+
+        body_mid = ((nose[0] + tail[0]) // 2, (nose[1] + tail[1]) // 2)
+        wing_root = (
+            int(round((nose[0] * 0.40) + (tail[0] * 0.60))),
+            int(round((nose[1] * 0.40) + (tail[1] * 0.60))),
+        )
+        tail_root = (
+            int(round((nose[0] * 0.14) + (tail[0] * 0.86))),
+            int(round((nose[1] * 0.14) + (tail[1] * 0.86))),
+        )
+        tail_left = (
+            int(round((tail[0] * 0.76) + (left[0] * 0.24))),
+            int(round((tail[1] * 0.76) + (left[1] * 0.24))),
+        )
+        tail_right = (
+            int(round((tail[0] * 0.76) + (right[0] * 0.24))),
+            int(round((tail[1] * 0.76) + (right[1] * 0.24))),
+        )
+
+        shadow_offset = (2, 3)
+        fuselage = (
+            (nose[0], nose[1]),
+            (wing_root[0], wing_root[1]),
+            (tail[0], tail[1]),
+            (wing_root[0], wing_root[1]),
+        )
+        wing = (left, wing_root, right)
+        tail_plane = (tail_left, tail_root, tail_right)
+
+        shadow_color = (16, 18, 28)
+        fuselage_shadow = tuple((x + shadow_offset[0], y + shadow_offset[1]) for x, y in fuselage)
+        wing_shadow = tuple((x + shadow_offset[0], y + shadow_offset[1]) for x, y in wing)
+        tail_shadow = tuple((x + shadow_offset[0], y + shadow_offset[1]) for x, y in tail_plane)
+        pygame.draw.polygon(surface, shadow_color, wing_shadow)
+        pygame.draw.polygon(surface, shadow_color, tail_shadow)
+        pygame.draw.lines(surface, shadow_color, False, fuselage_shadow, 4)
+
+        pygame.draw.polygon(surface, color, wing)
+        pygame.draw.polygon(surface, color, tail_plane)
+        pygame.draw.lines(surface, color, False, fuselage, 4)
+        pygame.draw.polygon(surface, outline, wing, 1)
+        pygame.draw.polygon(surface, outline, tail_plane, 1)
+        pygame.draw.lines(surface, outline, False, fuselage, 1)
+        pygame.draw.circle(surface, outline, body_mid, 2)
+
+        prop_r = max(4, int(round(scale * 4.6)))
+        prop_phase = anim_s * 18.0
+        prop_dx = int(round(math.cos(prop_phase) * prop_r))
+        prop_dy = int(round(math.sin(prop_phase) * prop_r))
+        pygame.draw.line(
+            surface,
+            (255, 245, 186),
+            (nose[0] - prop_dx, nose[1] - prop_dy),
+            (nose[0] + prop_dx, nose[1] + prop_dy),
+            1,
+        )
+        pygame.draw.circle(surface, (255, 245, 186), nose, 2)
+
+    def _render_spatial_integration_screen(
+        self,
+        surface: pygame.Surface,
+        snap: TestSnapshot,
+        payload: SpatialIntegrationPayload | None,
+    ) -> None:
+        w, h = surface.get_size()
+        bg = (2, 10, 90)
+        frame_bg = (8, 20, 112)
+        header_bg = (18, 34, 132)
+        work_bg = (68, 72, 84)
+        card_bg = (42, 47, 58)
+        border = (228, 238, 255)
+        text_main = (236, 244, 255)
+        text_muted = (180, 198, 226)
+        input_bg = (6, 12, 30)
+
+        surface.fill(bg)
+
+        margin = max(10, min(18, w // 42))
+        frame = pygame.Rect(margin, margin, w - margin * 2, h - margin * 2)
+        pygame.draw.rect(surface, frame_bg, frame)
+        pygame.draw.rect(surface, border, frame, 1)
+
+        header_h = max(30, min(38, h // 15))
+        header = pygame.Rect(frame.x + 2, frame.y + 2, frame.w - 4, header_h)
+        pygame.draw.rect(surface, header_bg, header)
+        pygame.draw.line(
+            surface, border, (header.x, header.bottom), (header.right, header.bottom), 1
+        )
+
+        phase_label = {
+            Phase.INSTRUCTIONS: "Instructions",
+            Phase.PRACTICE: "Practice",
+            Phase.PRACTICE_DONE: "Practice Complete",
+            Phase.SCORED: "Scored",
+            Phase.RESULTS: "Results",
+        }.get(snap.phase, "Task")
+
+        title = self._tiny_font.render(f"Spatial Integration - {phase_label}", True, text_main)
+        surface.blit(title, (header.x + 10, header.y + 7))
+
+        stats = self._tiny_font.render(
+            f"Scored {snap.correct_scored}/{snap.attempted_scored}",
+            True,
+            text_muted,
+        )
+        surface.blit(stats, stats.get_rect(midright=(header.right - 10, header.centery)))
+
+        if snap.time_remaining_s is not None:
+            rem = int(round(snap.time_remaining_s))
+            timer = self._small_font.render(f"{rem // 60:02d}:{rem % 60:02d}", True, text_main)
+            surface.blit(timer, timer.get_rect(topright=(frame.right - 12, header.bottom + 8)))
+
+        work = pygame.Rect(
+            frame.x + 8, header.bottom + 8, frame.w - 16, frame.bottom - header.bottom - 16
+        )
+        pygame.draw.rect(surface, work_bg, work)
+        pygame.draw.rect(surface, border, work, 1)
+
+        if snap.phase in (Phase.INSTRUCTIONS, Phase.PRACTICE_DONE):
+            panel = work.inflate(-18, -18)
+            scene = pygame.Rect(panel.x + 14, panel.y + 64, panel.w - 28, panel.h - 74)
+            self._draw_spatial_terrain_scene(surface, scene, payload=None)
+
+            msg = pygame.Rect(scene.x + 10, panel.y + 10, scene.w - 20, 46)
+            pygame.draw.rect(surface, (205, 203, 132), msg, border_radius=6)
+            pygame.draw.rect(surface, (18, 18, 22), msg, 1, border_radius=6)
+            if snap.phase is Phase.INSTRUCTIONS:
+                line1 = "Three sections: A (top-down), B (oblique), C (aircraft motion)."
+                line2 = "Each section has short practice before scored."
+            else:
+                line1 = "Section transition."
+                line2 = "Press Enter to continue."
+            surface.blit(self._tiny_font.render(line1, True, (20, 20, 22)), (msg.x + 8, msg.y + 8))
+            surface.blit(self._tiny_font.render(line2, True, (20, 20, 22)), (msg.x + 8, msg.y + 24))
+
+            help_rect = pygame.Rect(panel.x + 12, panel.y + 10, panel.w - 24, 44)
+            self._draw_wrapped_text(
+                surface,
+                str(snap.prompt),
+                help_rect,
+                color=(236, 244, 255),
+                font=self._tiny_font,
+                max_lines=2,
+            )
+            return
+
+        if snap.phase not in (Phase.PRACTICE, Phase.SCORED) or payload is None:
+            info = work.inflate(-20, -20)
+            pygame.draw.rect(surface, card_bg, info)
+            pygame.draw.rect(surface, border, info, 1)
+            text = str(snap.prompt)
+            self._draw_wrapped_text(
+                surface,
+                text,
+                info.inflate(-16, -16),
+                color=text_main,
+                font=self._small_font,
+                max_lines=12,
+            )
+            return
+
+        left_w = int(work.w * 0.58)
+        left = pygame.Rect(work.x + 8, work.y + 8, left_w - 12, work.h - 16)
+        right = pygame.Rect(left.right + 8, work.y + 8, work.right - left.right - 16, work.h - 16)
+        if payload.section is SpatialIntegrationSection.PART_A:
+            section_text = "Section A"
+            section_desc = "Top-down scene memory"
+        elif payload.section is SpatialIntegrationSection.PART_B:
+            section_text = "Section B"
+            section_desc = "Oblique scene memory"
+        else:
+            section_text = "Section C"
+            section_desc = "Oblique scene with moving aircraft"
+
+        if payload.trial_stage is SpatialIntegrationTrialStage.MEMORIZE:
+            scene_panel = left
+            self._draw_spatial_terrain_scene(surface, scene_panel, payload=payload)
+
+            rem = payload.stage_time_remaining_s
+            rem_text = "--"
+            if rem is not None:
+                rem_text = f"{max(0.0, rem):.1f}s"
+            note_rect = pygame.Rect(scene_panel.x + 10, scene_panel.y + 10, scene_panel.w - 20, 56)
+            pygame.draw.rect(surface, (205, 203, 132), note_rect, border_radius=6)
+            pygame.draw.rect(surface, (18, 18, 22), note_rect, 1, border_radius=6)
+            l1 = (
+                f"{section_text} {payload.block_kind.title()} "
+                f"({payload.trial_index_in_block}/{payload.trials_in_block})"
+            )
+            l2 = f"Memorize now. Question appears in {rem_text}"
+            surface.blit(
+                self._tiny_font.render(l1, True, (20, 20, 22)), (note_rect.x + 8, note_rect.y + 9)
+            )
+            surface.blit(
+                self._tiny_font.render(l2, True, (20, 20, 22)), (note_rect.x + 8, note_rect.y + 27)
+            )
+
+            pygame.draw.rect(surface, card_bg, right)
+            pygame.draw.rect(surface, border, right, 1)
+            self._draw_wrapped_text(
+                surface,
+                f"{section_text}: {section_desc}\n\n"
+                f"Target focus: {payload.query_label}\n"
+                "Remember positions and relative spacing.\n\n"
+                "Testing shortcuts:\nF10 skip practice  |  F11 skip section  |  F8 skip all",
+                right.inflate(-12, -12),
+                color=text_main,
+                font=self._small_font,
+                max_lines=12,
+            )
+            return
+
+        scene_panel = left
+        pygame.draw.rect(surface, (10, 16, 58), scene_panel)
+        pygame.draw.rect(surface, border, scene_panel, 1)
+        mem_title = self._small_font.render("Scene Hidden", True, (228, 238, 252))
+        surface.blit(
+            mem_title, mem_title.get_rect(center=(scene_panel.centerx, scene_panel.y + 32))
+        )
+        self._draw_wrapped_text(
+            surface,
+            f"{section_text} ({payload.block_kind.title()} "
+            f"{payload.trial_index_in_block}/{payload.trials_in_block})\n"
+            "Answer from memory only.",
+            pygame.Rect(scene_panel.x + 14, scene_panel.y + 58, scene_panel.w - 28, 64),
+            color=(214, 224, 248),
+            font=self._small_font,
+            max_lines=3,
+        )
+
+        pygame.draw.rect(surface, card_bg, right)
+        pygame.draw.rect(surface, border, right, 1)
+
+        prompt_rect = pygame.Rect(right.x + 10, right.y + 10, right.w - 20, 84)
+        pygame.draw.rect(surface, (34, 40, 52), prompt_rect)
+        pygame.draw.rect(surface, border, prompt_rect, 1)
+        self._draw_wrapped_text(
+            surface,
+            f"{section_text}: {payload.stem}",
+            prompt_rect.inflate(-8, -8),
+            color=text_main,
+            font=self._tiny_font,
+            max_lines=4,
+        )
+
+        selected_code = int(self._math_choice)
+        raw = self._input.strip()
+        if raw.isdigit():
+            selected_code = int(raw)
+
+        options_rect = pygame.Rect(
+            right.x + 10, prompt_rect.bottom + 8, right.w - 20, right.h - 172
+        )
+        pygame.draw.rect(surface, (34, 40, 52), options_rect)
+        pygame.draw.rect(surface, border, options_rect, 1)
+
+        row_h = max(34, (options_rect.h - 24) // max(1, len(payload.options)))
+        y = options_rect.y + 6
+        for option in payload.options:
+            row = pygame.Rect(options_rect.x + 6, y, options_rect.w - 12, row_h - 4)
+            selected = int(option.code) == selected_code
+            if selected:
+                pygame.draw.rect(surface, (66, 86, 136), row)
+            else:
+                pygame.draw.rect(surface, (25, 31, 42), row)
+            pygame.draw.rect(surface, border, row, 1)
+
+            badge = pygame.Rect(row.x + 6, row.y + 5, 24, row.h - 10)
+            pygame.draw.rect(surface, (16, 28, 112), badge)
+            pygame.draw.rect(surface, border, badge, 1)
+            num = self._tiny_font.render(str(option.code), True, text_main)
+            surface.blit(num, num.get_rect(center=badge.center))
+
+            label = self._small_font.render(option.label, True, text_main)
+            surface.blit(label, (badge.right + 10, row.y + 6))
+            y += row_h
+
+        entry_card = pygame.Rect(right.x + 10, right.bottom - 60, right.w - 20, 50)
+        pygame.draw.rect(surface, (34, 40, 52), entry_card)
+        pygame.draw.rect(surface, border, entry_card, 1)
+        surface.blit(
+            self._tiny_font.render("Answer (1-4):", True, text_muted),
+            (entry_card.x + 10, entry_card.y + 7),
+        )
+        entry_box = pygame.Rect(entry_card.x + 104, entry_card.y + 6, 92, 28)
+        pygame.draw.rect(surface, input_bg, entry_box)
+        pygame.draw.rect(surface, border, entry_box, 1)
+        caret = "|" if (pygame.time.get_ticks() // 500) % 2 == 0 else ""
+        entry = self._small_font.render(self._input + caret, True, text_main)
+        surface.blit(entry, (entry_box.x + 6, entry_box.y + 3))
+        hint = self._tiny_font.render(snap.input_hint, True, text_muted)
+        surface.blit(hint, (entry_card.x + 10, entry_card.y + 32))
+
+    def _draw_spatial_terrain_scene(
+        self,
+        surface: pygame.Surface,
+        rect: pygame.Rect,
+        *,
+        payload: SpatialIntegrationPayload | None,
+    ) -> None:
+        panel_bg = (8, 12, 36)
+        panel_border = (190, 204, 236)
+        surface.fill(panel_bg, rect)
+        pygame.draw.rect(surface, panel_border, rect, 1)
+
+        view = rect.inflate(-8, -8)
+        scene_view = (
+            payload.scene_view if payload is not None else SpatialIntegrationSceneView.OBLIQUE
+        )
+        horizon_ratio = 0.16 if scene_view is SpatialIntegrationSceneView.TOPDOWN else 0.42
+        horizon = view.y + int(view.h * horizon_ratio)
+
+        sky_top = (86, 132, 198)
+        sky_bottom = (238, 168, 142)
+        sky_h = max(1, horizon - view.y)
+        for i in range(sky_h):
+            t = i / max(1, sky_h - 1)
+            color = (
+                int(round(sky_top[0] + (sky_bottom[0] - sky_top[0]) * t)),
+                int(round(sky_top[1] + (sky_bottom[1] - sky_top[1]) * t)),
+                int(round(sky_top[2] + (sky_bottom[2] - sky_top[2]) * t)),
+            )
+            pygame.draw.line(surface, color, (view.x, view.y + i), (view.right, view.y + i))
+
+        seed = self._spatial_scene_seed(payload=payload)
+        rng = random.Random(seed)
+        anim_s = float(pygame.time.get_ticks()) / 1000.0
+
+        # Gentle cloud drift to make the scene continuously alive.
+        cloud_count = 6
+        cloud_lane = max(12, int((horizon - view.y) * 0.18))
+        for idx in range(cloud_count):
+            lane_y = view.y + 10 + ((idx % 3) * cloud_lane)
+            wobble = int(round(3.0 * math.sin((anim_s * 0.42) + (idx * 1.3))))
+            drift = int(round((anim_s * (12.0 + (idx * 1.7))) + (idx * 93)))
+            cx = view.x + ((drift + (idx * 71)) % (view.w + 120)) - 60
+            cy = lane_y + wobble
+            cw = 32 + (idx * 5)
+            ch = 10 + (idx % 3) * 3
+            alpha = max(58, min(110, 90 - (idx * 4)))
+            cloud_surf = pygame.Surface((cw + 18, ch + 10), pygame.SRCALPHA)
+            pygame.draw.ellipse(cloud_surf, (252, 244, 236, alpha), pygame.Rect(0, 2, cw, ch))
+            pygame.draw.ellipse(cloud_surf, (248, 240, 228, alpha), pygame.Rect(12, 0, cw // 2, ch))
+            pygame.draw.ellipse(
+                cloud_surf, (248, 240, 228, alpha), pygame.Rect(cw // 2, 3, cw // 2 + 6, ch)
+            )
+            surface.blit(cloud_surf, (cx, cy))
+
+        if scene_view is SpatialIntegrationSceneView.TOPDOWN:
+            ridge: list[tuple[int, int]] = [(view.x, horizon + 8)]
+            ridge_points = 10
+            for idx in range(ridge_points):
+                x = view.x + int((idx / max(1, ridge_points - 1)) * view.w)
+                y = horizon + rng.randint(-8, 6)
+                ridge.append((x, y))
+            ridge.append((view.right, horizon + 8))
+            mountains = [*ridge, (view.right, horizon + 36), (view.x, horizon + 36)]
+            pygame.draw.polygon(surface, (120, 136, 104), mountains)
+            pygame.draw.lines(surface, (142, 156, 128), False, ridge, 2)
+
+            ground_rect = pygame.Rect(view.x, horizon, view.w, view.bottom - horizon)
+            pygame.draw.rect(surface, (126, 150, 74), ground_rect)
+
+            for idx in range(8):
+                t = idx / 7.0
+                y = horizon + int((view.bottom - horizon) * t)
+                shade = int(round(154 - (idx * 6)))
+                pygame.draw.line(surface, (108, shade, 68), (view.x, y), (view.right, y), 1)
+
+            for idx in range(-6, 7):
+                x0 = view.centerx + int(idx * view.w * 0.075)
+                x1 = x0 + int(view.w * 0.12 * math.sin(idx * 0.85))
+                pygame.draw.line(surface, (118, 142, 70), (x0, horizon), (x1, view.bottom), 1)
+
+            contour_centers = (
+                (0.24, 0.42),
+                (0.64, 0.55),
+                (0.48, 0.72),
+            )
+            for idx, (cxn, cyn) in enumerate(contour_centers):
+                cx = view.x + int(view.w * cxn)
+                cy = horizon + int((view.bottom - horizon) * cyn)
+                rx = max(12, int(view.w * (0.12 + (idx * 0.03))))
+                ry = max(8, int(rx * 0.58))
+                pygame.draw.ellipse(
+                    surface, (136, 162, 82), pygame.Rect(cx - rx, cy - ry, rx * 2, ry * 2), 1
+                )
+        else:
+            ridge: list[tuple[int, int]] = [(view.x, horizon + 12)]
+            ridge_points = 10
+            for idx in range(ridge_points):
+                x = view.x + int((idx / max(1, ridge_points - 1)) * view.w)
+                y = horizon + rng.randint(-18, 10)
+                ridge.append((x, y))
+            ridge.append((view.right, horizon + 14))
+            mountains = [*ridge, (view.right, horizon + 56), (view.x, horizon + 56)]
+            pygame.draw.polygon(surface, (116, 130, 106), mountains)
+            pygame.draw.lines(surface, (142, 156, 134), False, ridge, 2)
+
+            ground_rect = pygame.Rect(view.x, horizon, view.w, view.bottom - horizon)
+            pygame.draw.rect(surface, (120, 144, 66), ground_rect)
+
+            path = [
+                (view.centerx - int(view.w * 0.16), view.bottom),
+                (view.centerx + int(view.w * 0.20), view.bottom),
+                (view.centerx + int(view.w * 0.05), horizon + 2),
+                (view.centerx - int(view.w * 0.03), horizon + 2),
+            ]
+            pygame.draw.polygon(surface, (146, 166, 82), path)
+
+            for idx in range(1, 8):
+                t = idx / 8.0
+                y = horizon + int((view.bottom - horizon) * (t**1.35))
+                x_off = int((1.0 - t) * view.w * 0.45)
+                pygame.draw.line(
+                    surface, (136, 158, 78), (view.centerx - x_off, y), (view.centerx + x_off, y), 1
+                )
+
+            for idx in range(-4, 5):
+                t = abs(idx) / 4.0
+                top_x = view.centerx + int(idx * view.w * 0.04)
+                bottom_x = view.centerx + int(idx * view.w * (0.13 + (0.18 * t)))
+                pygame.draw.line(
+                    surface, (126, 150, 70), (top_x, horizon), (bottom_x, view.bottom), 1
+                )
+
+        grid_cols = int(payload.grid_cols) if payload is not None else 5
+        grid_rows = int(payload.grid_rows) if payload is not None else 5
+        alt_levels = int(payload.alt_levels) if payload is not None else 4
+
+        if payload is None:
+            landmarks = (
+                ("HGR", 1, 0),
+                ("TWR", 3, 1),
+                ("WDM", 4, 2),
+            )
+            now_point = (2, 1, 1)
+            prev_point = (1, 0, 1)
+            velocity = (1, 1, 0)
+            show_motion = True
+        else:
+            landmarks = tuple(
+                (str(landmark.label), int(landmark.x), int(landmark.y))
+                for landmark in payload.landmarks
+            )
+            now_point = (
+                int(payload.aircraft_now.x),
+                int(payload.aircraft_now.y),
+                int(payload.aircraft_now.z),
+            )
+            prev_point = (
+                int(payload.aircraft_prev.x),
+                int(payload.aircraft_prev.y),
+                int(payload.aircraft_prev.z),
+            )
+            velocity = (
+                int(payload.velocity.dx),
+                int(payload.velocity.dy),
+                int(payload.velocity.dz),
+            )
+            show_motion = bool(payload.show_aircraft_motion) and prev_point != now_point
+
+        asset_specs: list[tuple[float, str, float, float, float, float, float, float]] = []
+
+        def add_asset(
+            kind: str, *, gx: int, gy: int, air: bool = False, scale_bias: float = 1.0
+        ) -> None:
+            wx, wy, _wz, terrain = self._spatial_grid_to_world(
+                x=gx,
+                y=gy,
+                z=0,
+                grid_cols=grid_cols,
+                grid_rows=grid_rows,
+                alt_levels=alt_levels,
+            )
+            wx += rng.uniform(-0.26, 0.26)
+            wy = max(0.72, min(7.8, wy + rng.uniform(-0.28, 0.34)))
+            wz = terrain + 0.02
+            if air:
+                wz = terrain + rng.uniform(0.30, 1.00)
+                wy = max(0.72, min(7.8, wy + rng.uniform(-0.22, 0.24)))
+            scale = rng.uniform(0.76, 1.22) * float(scale_bias)
+            heading = rng.uniform(0.0, 359.0)
+            anim_phase = rng.uniform(0.0, math.tau)
+            anim_rate = rng.uniform(0.65, 1.85)
+            asset_specs.append((wy, kind, wx, wz, scale, heading, anim_phase, anim_rate))
+
+        required_kinds = (
+            "building",
+            "forest",
+            "helicopter",
+            "fast_jet",
+            "foot_soldiers",
+            "truck",
+            "tent",
+        )
+        for kind in required_kinds:
+            add_asset(
+                kind,
+                gx=int(rng.randint(0, max(0, grid_cols - 1))),
+                gy=int(rng.randint(0, max(0, grid_rows - 1))),
+                air=kind in {"helicopter", "fast_jet"},
+                scale_bias=1.08 if kind in {"helicopter", "fast_jet"} else 1.0,
+            )
+
+        landmark_to_kind = {
+            "TWR": "tower",
+            "HGR": "building",
+            "WDM": "forest",
+            "VLG": "foot_soldiers",
+            "LKE": "tent",
+            "RDG": "truck",
+        }
+        for label, gx, gy in landmarks:
+            add_asset(
+                landmark_to_kind.get(label, "building"),
+                gx=int(gx),
+                gy=int(gy),
+                air=False,
+                scale_bias=1.15 if label in {"TWR", "HGR"} else 1.0,
+            )
+
+        extra_count = 6 + max(grid_cols, grid_rows)
+        ambient_kinds = ("building", "forest", "truck", "tent", "foot_soldiers", "radar")
+        for _ in range(extra_count):
+            kind = str(rng.choice(ambient_kinds))
+            add_asset(
+                kind,
+                gx=int(rng.randint(0, max(0, grid_cols - 1))),
+                gy=int(rng.randint(0, max(0, grid_rows - 1))),
+                air=False,
+                scale_bias=0.92,
+            )
+
+        for depth_y, kind, wx, wz, scale, heading, anim_phase, anim_rate in sorted(
+            asset_specs, key=lambda it: it[0]
+        ):
+            self._draw_spatial_scene_asset(
+                surface,
+                rect=view,
+                horizon_y=horizon,
+                scene_view=scene_view,
+                kind=kind,
+                wx=wx,
+                wy=depth_y,
+                wz=wz,
+                scale=scale,
+                heading_deg=heading,
+                anim_s=anim_s,
+                anim_phase=anim_phase,
+                anim_rate=anim_rate,
+            )
+
+        landmark_data: list[tuple[float, str, tuple[int, int], tuple[int, int]]] = []
+        for label, gx, gy in landmarks:
+            wx, wy, wz, terrain = self._spatial_grid_to_world(
+                x=gx,
+                y=gy,
+                z=0,
+                grid_cols=grid_cols,
+                grid_rows=grid_rows,
+                alt_levels=alt_levels,
+            )
+            base = self._spatial_project_point(
+                rect=view,
+                horizon_y=horizon,
+                scene_view=scene_view,
+                wx=wx,
+                wy=wy,
+                wz=terrain + 0.01,
+            )
+            top = self._spatial_project_point(
+                rect=view,
+                horizon_y=horizon,
+                scene_view=scene_view,
+                wx=wx,
+                wy=wy,
+                wz=terrain + 0.22,
+            )
+            landmark_data.append((wy, label, base, top))
+
+        for _, label, base, top in sorted(landmark_data, key=lambda it: it[0]):
+            bx, by = base
+            tx, ty = top
+            if (
+                bx < view.x - 20
+                or bx > view.right + 20
+                or by < view.y - 20
+                or by > view.bottom + 20
+            ):
+                continue
+            pygame.draw.line(surface, (232, 226, 118), (bx, by), (tx, ty), 2)
+            pygame.draw.circle(surface, (244, 236, 130), (tx, ty), 3)
+            surface.blit(self._tiny_font.render(label, True, (236, 236, 176)), (tx + 4, ty - 6))
+
+        now_wx, now_wy, now_wz, now_terrain = self._spatial_grid_to_world(
+            x=now_point[0],
+            y=now_point[1],
+            z=now_point[2],
+            grid_cols=grid_cols,
+            grid_rows=grid_rows,
+            alt_levels=alt_levels,
+        )
+        live_wx = now_wx
+        live_wy = now_wy
+        live_wz = now_wz
+        prev_wx = now_wx
+        prev_wy = now_wy
+        prev_wz = now_wz
+        if show_motion:
+            prev_wx, prev_wy, prev_wz, _ = self._spatial_grid_to_world(
+                x=prev_point[0],
+                y=prev_point[1],
+                z=prev_point[2],
+                grid_cols=grid_cols,
+                grid_rows=grid_rows,
+                alt_levels=alt_levels,
+            )
+            future_wx = now_wx + (now_wx - prev_wx)
+            future_wy = now_wy + (now_wy - prev_wy)
+            future_wz = now_wz + (now_wz - prev_wz)
+            motion_phase = (anim_s * 0.32 + ((seed % 997) / 997.0)) % 1.0
+            if motion_phase < 0.333:
+                t = motion_phase / 0.333
+                live_wx = prev_wx + ((now_wx - prev_wx) * t)
+                live_wy = prev_wy + ((now_wy - prev_wy) * t)
+                live_wz = prev_wz + ((now_wz - prev_wz) * t)
+            elif motion_phase < 0.666:
+                t = (motion_phase - 0.333) / 0.333
+                live_wx = now_wx + ((future_wx - now_wx) * t)
+                live_wy = now_wy + ((future_wy - now_wy) * t)
+                live_wz = now_wz + ((future_wz - now_wz) * t)
+            else:
+                t = (motion_phase - 0.666) / 0.334
+                live_wx = future_wx + ((now_wx - future_wx) * t)
+                live_wy = future_wy + ((now_wy - future_wy) * t)
+                live_wz = future_wz + ((now_wz - future_wz) * t)
+
+        live_terrain = self._spatial_terrain_height(wx=live_wx, wy=live_wy)
+        now_screen = self._spatial_project_point(
+            rect=view,
+            horizon_y=horizon,
+            scene_view=scene_view,
+            wx=live_wx,
+            wy=live_wy,
+            wz=live_wz,
+        )
+        now_ground = self._spatial_project_point(
+            rect=view,
+            horizon_y=horizon,
+            scene_view=scene_view,
+            wx=live_wx,
+            wy=live_wy,
+            wz=live_terrain + 0.02,
+        )
+        craft_bob = int(round(2.0 * math.sin((anim_s * 3.1) + (seed * 0.0007))))
+        now_screen_vis = (now_screen[0], now_screen[1] + craft_bob)
+
+        if show_motion:
+            prev_screen = self._spatial_project_point(
+                rect=view,
+                horizon_y=horizon,
+                scene_view=scene_view,
+                wx=prev_wx,
+                wy=prev_wy,
+                wz=prev_wz,
+            )
+            ref_now_screen = self._spatial_project_point(
+                rect=view,
+                horizon_y=horizon,
+                scene_view=scene_view,
+                wx=now_wx,
+                wy=now_wy,
+                wz=now_wz,
+            )
+            pygame.draw.circle(surface, (210, 216, 236), prev_screen, 5, 1)
+            pygame.draw.circle(surface, (194, 208, 232), ref_now_screen, 4, 1)
+            pygame.draw.line(surface, (210, 216, 236), prev_screen, ref_now_screen, 1)
+
+        pygame.draw.line(surface, (204, 222, 242), now_ground, now_screen_vis, 1)
+        size = 7
+        craft = [
+            (now_screen_vis[0], now_screen_vis[1] - size),
+            (now_screen_vis[0] + int(size * 0.65), now_screen_vis[1] + size),
+            (now_screen_vis[0] - int(size * 0.65), now_screen_vis[1] + size),
+        ]
+        pygame.draw.polygon(surface, (76, 212, 236), craft)
+        pygame.draw.polygon(surface, (224, 246, 254), craft, 1)
+        pygame.draw.circle(surface, (232, 248, 255), now_screen_vis, 2)
+
+        if show_motion and (velocity[0] != 0 or velocity[1] != 0 or velocity[2] != 0):
+            pred = self._spatial_project_point(
+                rect=view,
+                horizon_y=horizon,
+                scene_view=scene_view,
+                wx=now_wx + (0.35 * velocity[0]),
+                wy=max(0.6, now_wy + (0.35 * velocity[1])),
+                wz=now_wz + (0.20 * velocity[2]),
+            )
+            pygame.draw.line(surface, (140, 226, 246), now_screen_vis, pred, 2)
+
+        tag = self._tiny_font.render("3D air/ground picture", True, (224, 236, 252))
+        surface.blit(tag, (view.x + 6, view.y + 6))
+
+    def _draw_spatial_scene_asset(
+        self,
+        surface: pygame.Surface,
+        *,
+        rect: pygame.Rect,
+        horizon_y: int,
+        scene_view: SpatialIntegrationSceneView,
+        kind: str,
+        wx: float,
+        wy: float,
+        wz: float,
+        scale: float,
+        heading_deg: float,
+        anim_s: float,
+        anim_phase: float = 0.0,
+        anim_rate: float = 1.0,
+    ) -> None:
+        if wy <= 0.01:
+            return
+
+        phase = (float(anim_s) * max(0.10, float(anim_rate))) + float(anim_phase)
+        wx_anim = float(wx)
+        wy_anim = max(0.35, float(wy))
+        wz_anim = float(wz)
+        heading_anim = float(heading_deg)
+
+        if kind == "truck":
+            drift = 0.11 * math.sin(phase * 0.86)
+            hd = math.radians(float(heading_deg))
+            wx_anim += drift * math.cos(hd)
+            wy_anim = max(0.55, wy_anim + (drift * 0.30 * math.sin(hd)))
+        elif kind == "foot_soldiers":
+            wx_anim += 0.06 * math.sin(phase * 0.78)
+        elif kind == "helicopter":
+            wx_anim += 0.18 * math.cos(phase * 0.68)
+            wy_anim = max(0.55, wy_anim + 0.10 * math.sin(phase * 0.64))
+            wz_anim += 0.08 * math.sin(phase * 2.4)
+        elif kind == "fast_jet":
+            wx_anim += 0.42 * math.sin(phase * 1.20)
+            wy_anim = max(0.55, wy_anim + 0.22 * math.cos(phase * 0.94))
+            wz_anim += 0.12 * math.sin(phase * 1.86)
+            heading_anim += 24.0 * math.cos(phase * 0.52)
+
+        terrain = self._spatial_terrain_height(wx=wx_anim, wy=wy_anim)
+        ground = self._spatial_project_point(
+            rect=rect,
+            horizon_y=horizon_y,
+            scene_view=scene_view,
+            wx=wx_anim,
+            wy=wy_anim,
+            wz=terrain + 0.01,
+        )
+        pos = self._spatial_project_point(
+            rect=rect,
+            horizon_y=horizon_y,
+            scene_view=scene_view,
+            wx=wx_anim,
+            wy=wy_anim,
+            wz=wz_anim,
+        )
+
+        if (
+            pos[0] < rect.x - 30
+            or pos[0] > rect.right + 30
+            or pos[1] < rect.y - 30
+            or pos[1] > rect.bottom + 30
+        ):
+            return
+
+        if scene_view is SpatialIntegrationSceneView.TOPDOWN:
+            depth_for_size = max(0.90, 1.35 + (wy_anim * 0.22))
+            size_scale = 0.092
+        else:
+            depth_for_size = max(0.85, wy_anim)
+            size_scale = 0.080
+        base = max(
+            2,
+            int(
+                round((min(rect.w, rect.h) * size_scale * max(0.55, float(scale))) / depth_for_size)
+            ),
+        )
+        facing = 1 if math.cos(math.radians(heading_anim)) >= 0.0 else -1
+
+        shadow_w = max(3, int(base * 1.20))
+        shadow_h = max(2, int(base * 0.48))
+        shadow_rect = pygame.Rect(
+            ground[0] - (shadow_w // 2), ground[1] - (shadow_h // 2), shadow_w, shadow_h
+        )
+        pygame.draw.ellipse(surface, (64, 82, 46), shadow_rect)
+
+        if kind == "building":
+            bw = max(5, int(base * 1.15))
+            bh = max(6, int(base * 1.48))
+            body = pygame.Rect(ground[0] - (bw // 2), ground[1] - bh, bw, bh)
+            pygame.draw.rect(surface, (172, 180, 172), body)
+            pygame.draw.rect(surface, (88, 92, 86), body, 1)
+            roof = [
+                (body.x - 1, body.y),
+                (body.centerx, body.y - max(2, base // 2)),
+                (body.right + 1, body.y),
+            ]
+            pygame.draw.polygon(surface, (134, 110, 96), roof)
+            if bw >= 8 and bh >= 8:
+                window = pygame.Rect(body.x + 2, body.y + 2, 2, 2)
+                while window.y < body.bottom - 2:
+                    wx0 = body.x + 2
+                    while wx0 < body.right - 2:
+                        pygame.draw.rect(surface, (230, 232, 202), pygame.Rect(wx0, window.y, 2, 2))
+                        wx0 += 4
+                    window.y += 4
+            return
+
+        if kind == "tower":
+            tw = max(2, int(base * 0.40))
+            th = max(10, int(base * 2.35))
+            shaft = pygame.Rect(ground[0] - (tw // 2), ground[1] - th, tw, th)
+            pygame.draw.rect(surface, (204, 202, 172), shaft)
+            pygame.draw.rect(surface, (90, 88, 76), shaft, 1)
+            pygame.draw.line(
+                surface,
+                (238, 228, 132),
+                (shaft.centerx, shaft.y),
+                (shaft.centerx, shaft.y - max(3, base // 2)),
+                1,
+            )
+            if math.sin(phase * 6.0) >= 0.0:
+                pygame.draw.circle(
+                    surface, (250, 232, 132), (shaft.centerx, shaft.y - max(3, base // 2)), 2
+                )
+            return
+
+        if kind == "forest":
+            offsets = (-base, 0, base)
+            for idx, dx in enumerate(offsets):
+                tx = ground[0] + dx
+                ty = ground[1] + (idx % 2)
+                th = max(5, int(base * (1.30 + (idx * 0.20))))
+                pygame.draw.line(surface, (90, 70, 40), (tx, ty), (tx, ty - max(2, th // 4)), 1)
+                sway = int(round(math.sin((phase * 1.5) + idx) * max(1, th // 8)))
+                tree = [
+                    (tx + sway, ty - th),
+                    (tx - max(2, th // 3), ty - max(2, th // 4)),
+                    (tx + max(2, th // 3), ty - max(2, th // 4)),
+                ]
+                pygame.draw.polygon(surface, (68, 128, 66), tree)
+            return
+
+        if kind == "truck":
+            bw = max(7, int(base * 1.65))
+            bh = max(4, int(base * 0.62))
+            bob = int(round(0.6 * math.sin(phase * 6.2)))
+            body = pygame.Rect(ground[0] - (bw // 2), ground[1] - bh - 1 + bob, bw, bh)
+            pygame.draw.rect(surface, (112, 136, 92), body)
+            pygame.draw.rect(surface, (62, 78, 52), body, 1)
+            cab_w = max(3, bw // 3)
+            if facing > 0:
+                cab = pygame.Rect(body.right - cab_w, body.y - 1, cab_w, bh - 1)
+            else:
+                cab = pygame.Rect(body.x, body.y - 1, cab_w, bh - 1)
+            pygame.draw.rect(surface, (140, 158, 112), cab)
+            wheel_r = 1 if base < 4 else 2
+            pygame.draw.circle(surface, (26, 26, 28), (body.x + 2, body.bottom), wheel_r)
+            pygame.draw.circle(surface, (26, 26, 28), (body.right - 2, body.bottom), wheel_r)
+            return
+
+        if kind == "tent":
+            tw = max(5, int(base * 1.36))
+            th = max(4, int(base * 0.92))
+            p1 = (ground[0] - (tw // 2), ground[1])
+            p2 = (ground[0] + (tw // 2), ground[1])
+            flap_wobble = int(round(math.sin(phase * 1.9) * max(1, th // 6)))
+            p3 = (ground[0] + flap_wobble, ground[1] - th)
+            pygame.draw.polygon(surface, (198, 186, 112), [p1, p2, p3])
+            pygame.draw.polygon(surface, (110, 98, 62), [p1, p2, p3], 1)
+            flap = [
+                (ground[0], ground[1] - th),
+                (ground[0], ground[1]),
+                (ground[0] + (tw // 3), ground[1]),
+            ]
+            pygame.draw.polygon(surface, (168, 156, 88), flap)
+            return
+
+        if kind == "foot_soldiers":
+            offsets = (-base, 0, base)
+            for idx, dx in enumerate(offsets):
+                sx = ground[0] + dx
+                sy = ground[1]
+                body_h = max(3, int(base * 0.92))
+                head_r = 1 if base < 4 else 2
+                pygame.draw.circle(surface, (26, 30, 34), (sx, sy - body_h), head_r)
+                pygame.draw.line(surface, (26, 30, 34), (sx, sy - body_h + head_r), (sx, sy - 1), 1)
+                leg_phase = phase * 5.2 + idx
+                step = 1 if math.sin(leg_phase) >= 0.0 else -1
+                pygame.draw.line(surface, (26, 30, 34), (sx, sy - 1), (sx - step, sy + 1), 1)
+                pygame.draw.line(surface, (26, 30, 34), (sx, sy - 1), (sx + step, sy + 1), 1)
+            return
+
+        if kind == "radar":
+            mast_h = max(6, int(base * 1.45))
+            pygame.draw.line(
+                surface, (176, 190, 198), (ground[0], ground[1]), (ground[0], ground[1] - mast_h), 1
+            )
+            dish_rect = pygame.Rect(
+                ground[0] - max(2, base // 2),
+                ground[1] - mast_h - max(2, base // 3),
+                max(4, base),
+                max(3, base // 2),
+            )
+            pygame.draw.arc(surface, (198, 210, 220), dish_rect, math.pi * 1.05, math.pi * 1.95, 1)
+            sweep = phase * 2.2
+            sx = int(round(dish_rect.centerx + math.cos(sweep) * max(2, dish_rect.w * 0.45)))
+            sy = int(round(dish_rect.centery + math.sin(sweep) * max(1, dish_rect.h * 0.35)))
+            pygame.draw.line(surface, (228, 240, 248), dish_rect.center, (sx, sy), 1)
+            return
+
+        if kind == "helicopter":
+            rw = max(6, int(base * 1.45))
+            rh = max(3, int(base * 0.62))
+            body = pygame.Rect(pos[0] - (rw // 2), pos[1] - (rh // 2), rw, rh)
+            pygame.draw.ellipse(surface, (96, 150, 96), body)
+            pygame.draw.ellipse(surface, (42, 84, 42), body, 1)
+            tail = (body.left - max(3, base), body.centery)
+            pygame.draw.line(surface, (70, 112, 70), (body.left, body.centery), tail, 1)
+            rotor_len = rw + max(3, base // 2)
+            rotor_a = phase * 11.0
+            rx = int(round(math.cos(rotor_a) * rotor_len))
+            ry = int(round(math.sin(rotor_a) * max(1, rotor_len // 5)))
+            pygame.draw.line(
+                surface,
+                (224, 236, 248),
+                (pos[0] - rx, pos[1] - rh - ry),
+                (pos[0] + rx, pos[1] - rh + ry),
+                1,
+            )
+            pygame.draw.line(
+                surface,
+                (214, 226, 238),
+                (pos[0] - ry, pos[1] - rh + rx // 5),
+                (pos[0] + ry, pos[1] - rh - rx // 5),
+                1,
+            )
+            skid_y = body.bottom
+            pygame.draw.line(
+                surface, (54, 66, 60), (body.left + 1, skid_y), (body.right - 1, skid_y), 1
+            )
+            return
+
+        if kind == "fast_jet":
+            span = max(6, int(base * 1.55))
+            length = max(8, int(base * 1.88))
+            nose = (pos[0] + (facing * length), pos[1])
+            wing_l = (pos[0] - (facing * max(2, length // 4)), pos[1] - span // 2)
+            wing_r = (pos[0] - (facing * max(2, length // 4)), pos[1] + span // 2)
+            tail = (pos[0] - (facing * length // 2), pos[1])
+            pygame.draw.polygon(surface, (174, 182, 194), [nose, wing_l, tail, wing_r])
+            pygame.draw.polygon(surface, (86, 92, 104), [nose, wing_l, tail, wing_r], 1)
+            contrail = (
+                tail[0] - (facing * max(6, int(base * 2.4))),
+                tail[1] + int(round(math.sin(phase * 7.0) * 1.6)),
+            )
+            pygame.draw.line(surface, (224, 230, 236), tail, contrail, 1)
+            return
+
+        pygame.draw.circle(surface, (186, 198, 210), pos, max(1, base // 3))
+
+    def _spatial_scene_seed(self, *, payload: SpatialIntegrationPayload | None) -> int:
+        if payload is None:
+            return 7919
+
+        seed = 2166136261
+
+        def mix(value: int) -> None:
+            nonlocal seed
+            seed ^= int(value) & 0xFFFFFFFF
+            seed = (seed * 16777619) & 0xFFFFFFFF
+
+        mix(payload.grid_cols)
+        mix(payload.grid_rows)
+        mix(payload.alt_levels)
+        mix(payload.aircraft_now.x)
+        mix(payload.aircraft_now.y)
+        mix(payload.aircraft_now.z)
+        mix(payload.aircraft_prev.x)
+        mix(payload.aircraft_prev.y)
+        mix(payload.aircraft_prev.z)
+        for landmark in payload.landmarks:
+            for ch in landmark.label:
+                mix(ord(ch))
+            mix(landmark.x)
+            mix(landmark.y)
+        return int(seed)
+
+    def _spatial_grid_to_world(
+        self,
+        *,
+        x: int,
+        y: int,
+        z: int,
+        grid_cols: int,
+        grid_rows: int,
+        alt_levels: int,
+    ) -> tuple[float, float, float, float]:
+        cols = max(1, int(grid_cols))
+        rows = max(1, int(grid_rows))
+        levels = max(1, int(alt_levels))
+
+        x_norm = 0.5 if cols <= 1 else float(x) / float(cols - 1)
+        y_norm = 0.5 if rows <= 1 else float(y) / float(rows - 1)
+        z_norm = 0.0 if levels <= 1 else float(z) / float(levels - 1)
+
+        wx = (x_norm - 0.5) * 3.2
+        wy = 1.1 + (y_norm * 6.2)
+        terrain = self._spatial_terrain_height(wx=wx, wy=wy)
+        wz = terrain + 0.05 + (z_norm * 0.95)
+        return wx, wy, wz, terrain
+
+    def _spatial_project_point(
+        self,
+        *,
+        rect: pygame.Rect,
+        horizon_y: int,
+        scene_view: SpatialIntegrationSceneView = SpatialIntegrationSceneView.OBLIQUE,
+        wx: float,
+        wy: float,
+        wz: float,
+    ) -> tuple[int, int]:
+        if scene_view is SpatialIntegrationSceneView.TOPDOWN:
+            wy_norm = (float(wy) - 0.75) / 7.5
+            ny = max(0.0, min(1.0, wy_norm))
+            lateral = min(rect.w, rect.h) * 0.22 * (0.98 - (ny * 0.42))
+            sx = int(round(rect.centerx + (float(wx) * lateral)))
+            ground_top = max(rect.y + 2, int(horizon_y))
+            ground_span = max(1, rect.bottom - ground_top)
+            y_base = float(ground_top) + (ny * float(ground_span))
+            alt_lift = (float(wz) * min(rect.w, rect.h) * 0.11) / (1.0 + (ny * 0.8))
+            sy = int(round(y_base - alt_lift))
+            return sx, sy
+
+        depth = max(0.45, float(wy))
+        scale = min(rect.w, rect.h) * 1.12
+        cam_z = 0.58
+        sx = int(round(rect.centerx + (float(wx) / depth) * scale))
+        sy = int(round(float(horizon_y) + ((cam_z - float(wz)) / depth) * scale))
+        return sx, sy
+
+    def _spatial_terrain_height(self, *, wx: float, wy: float) -> float:
+        base = 0.02
+        ridge = 0.08 * math.sin((wx * 1.55) + 0.7) * math.exp(-((wy - 3.8) ** 2) * 0.16)
+        hill_a = 0.12 * math.exp(-(((wx + 0.8) ** 2) * 1.9) - (((wy - 2.9) ** 2) * 0.24))
+        hill_b = 0.10 * math.exp(-(((wx - 1.1) ** 2) * 1.5) - (((wy - 5.1) ** 2) * 0.30))
+        return float(base + ridge + hill_a + hill_b)
+
+    def _draw_spatial_projection_panel(
+        self,
+        surface: pygame.Surface,
+        rect: pygame.Rect,
+        *,
+        payload: SpatialIntegrationPayload,
+        view: str,
+    ) -> None:
+        panel_bg = (38, 44, 56)
+        panel_border = (170, 184, 212)
+        grid_bg = (18, 22, 32)
+        grid_line = (76, 90, 118)
+        text_main = (232, 240, 252)
+        text_muted = (160, 176, 206)
+
+        pygame.draw.rect(surface, panel_bg, rect)
+        pygame.draw.rect(surface, panel_border, rect, 1)
+
+        titles = {
+            "top": "Top View (X/Y)",
+            "side": "Side View (X/ALT)",
+            "front": "Front View (Y/ALT)",
+        }
+        title = self._tiny_font.render(titles.get(view, "View"), True, text_main)
+        surface.blit(title, (rect.x + 8, rect.y + 6))
+
+        inner = pygame.Rect(rect.x + 8, rect.y + 24, rect.w - 16, rect.h - 32)
+        pygame.draw.rect(surface, grid_bg, inner)
+        pygame.draw.rect(surface, panel_border, inner, 1)
+
+        if view == "top":
+            cols = max(1, int(payload.grid_cols))
+            rows = max(1, int(payload.grid_rows))
+        elif view == "side":
+            cols = max(1, int(payload.grid_cols))
+            rows = max(1, int(payload.alt_levels))
+        else:
+            cols = max(1, int(payload.grid_rows))
+            rows = max(1, int(payload.alt_levels))
+
+        cell = min(max(10, inner.w // cols), max(10, inner.h // rows))
+        grid_w = cols * cell
+        grid_h = rows * cell
+        gx = inner.x + max(0, (inner.w - grid_w) // 2)
+        gy = inner.y + max(0, (inner.h - grid_h) // 2)
+
+        for c in range(cols + 1):
+            x = gx + c * cell
+            pygame.draw.line(surface, grid_line, (x, gy), (x, gy + grid_h), 1)
+        for r in range(rows + 1):
+            y = gy + r * cell
+            pygame.draw.line(surface, grid_line, (gx, y), (gx + grid_w, y), 1)
+
+        def center_for(col: int, row: int) -> tuple[int, int]:
+            return (
+                gx + col * cell + (cell // 2),
+                gy + row * cell + (cell // 2),
+            )
+
+        def point_to_grid(point: object) -> tuple[int, int]:
+            px = int(getattr(point, "x", 0))
+            py = int(getattr(point, "y", 0))
+            pz = int(getattr(point, "z", 0))
+            if view == "top":
+                return px, (rows - 1) - py
+            if view == "side":
+                return px, (rows - 1) - pz
+            return py, (rows - 1) - pz
+
+        if view == "top":
+            for landmark in payload.landmarks:
+                col = int(landmark.x)
+                row = (rows - 1) - int(landmark.y)
+                cx, cy = center_for(col, row)
+                box = pygame.Rect(cx - 4, cy - 4, 8, 8)
+                pygame.draw.rect(surface, (252, 224, 82), box)
+                pygame.draw.rect(surface, (18, 18, 20), box, 1)
+                tag = self._tiny_font.render(landmark.label, True, text_muted)
+                surface.blit(tag, (box.right + 2, box.y - 1))
+
+        now_col, now_row = point_to_grid(payload.aircraft_now)
+        now_x, now_y = center_for(now_col, now_row)
+
+        if payload.show_aircraft_motion and payload.aircraft_prev != payload.aircraft_now:
+            prev_col, prev_row = point_to_grid(payload.aircraft_prev)
+            prev_x, prev_y = center_for(prev_col, prev_row)
+            pygame.draw.circle(surface, (210, 220, 236), (prev_x, prev_y), max(3, cell // 5), 1)
+            pygame.draw.line(surface, (210, 220, 236), (prev_x, prev_y), (now_x, now_y), 1)
+
+        pygame.draw.circle(surface, (248, 64, 80), (now_x, now_y), max(4, cell // 4))
+        pygame.draw.circle(surface, (255, 246, 246), (now_x, now_y), max(2, cell // 8))
+
+        dims = self._tiny_font.render(f"{cols} x {rows}", True, text_muted)
+        surface.blit(dims, dims.get_rect(bottomright=(inner.right - 4, inner.bottom - 2)))
 
     def _render_instrument_comprehension_screen(
         self,
@@ -8023,7 +11325,9 @@ class CognitiveTestScreen:
         header_h = max(28, min(36, h // 15))
         header = pygame.Rect(frame.x + 2, frame.y + 2, frame.w - 4, header_h)
         pygame.draw.rect(surface, header_bg, header)
-        pygame.draw.line(surface, border, (header.x, header.bottom), (header.right, header.bottom), 1)
+        pygame.draw.line(
+            surface, border, (header.x, header.bottom), (header.right, header.bottom), 1
+        )
 
         phase_label = {
             Phase.INSTRUCTIONS: "Instructions",
@@ -8043,14 +11347,18 @@ class CognitiveTestScreen:
         stats_rect = stats.get_rect(midright=(header.right - 10, header.centery))
         surface.blit(stats, stats_rect)
         scored_label = self._tiny_font.render("Scored", True, text_muted)
-        surface.blit(scored_label, scored_label.get_rect(midright=(stats_rect.left - 6, header.centery)))
+        surface.blit(
+            scored_label, scored_label.get_rect(midright=(stats_rect.left - 6, header.centery))
+        )
 
         if snap.time_remaining_s is not None:
             rem = int(round(snap.time_remaining_s))
             timer = self._small_font.render(f"{rem // 60:02d}:{rem % 60:02d}", True, text_main)
             surface.blit(timer, timer.get_rect(topright=(frame.right - 14, header.bottom + 8)))
 
-        work = pygame.Rect(frame.x + 8, header.bottom + 8, frame.w - 16, frame.bottom - header.bottom - 16)
+        work = pygame.Rect(
+            frame.x + 8, header.bottom + 8, frame.w - 16, frame.bottom - header.bottom - 16
+        )
         pygame.draw.rect(surface, content_bg, work)
         pygame.draw.rect(surface, border, work, 1)
 
@@ -8068,7 +11376,8 @@ class CognitiveTestScreen:
         if snap.phase is Phase.INSTRUCTIONS:
             prompt = (
                 "Instrument Comprehension\n\n"
-                "Part 1: Read attitude and heading instruments, then choose the matching aircraft orientation.\n"
+                "Part 1: Read attitude and heading instruments, "
+                "then choose the matching aircraft orientation.\n"
                 "Part 2: Match between instrument panel and written flight description.\n\n"
                 "Controls: Type 1-4, then press Enter.\n"
                 "You will complete a short practice before the scored timed block."
@@ -8141,7 +11450,9 @@ class CognitiveTestScreen:
             max_lines=2,
         )
 
-        body = pygame.Rect(panel.x + 10, prompt_box.bottom + 8, panel.w - 20, panel.bottom - prompt_box.bottom - 16)
+        body = pygame.Rect(
+            panel.x + 10, prompt_box.bottom + 8, panel.w - 20, panel.bottom - prompt_box.bottom - 16
+        )
         if payload.kind is InstrumentComprehensionTrialKind.DESCRIPTION_TO_INSTRUMENTS:
             stimulus_h = max(60, int(body.h * 0.28))
         elif payload.kind is InstrumentComprehensionTrialKind.INSTRUMENTS_TO_DESCRIPTION:
@@ -8150,7 +11461,9 @@ class CognitiveTestScreen:
             stimulus_h = max(74, int(body.h * 0.33))
 
         stimulus_rect = pygame.Rect(body.x, body.y, body.w, stimulus_h)
-        options_rect = pygame.Rect(body.x, stimulus_rect.bottom + 8, body.w, body.bottom - stimulus_rect.bottom - 8)
+        options_rect = pygame.Rect(
+            body.x, stimulus_rect.bottom + 8, body.w, body.bottom - stimulus_rect.bottom - 8
+        )
 
         if payload.kind is InstrumentComprehensionTrialKind.DESCRIPTION_TO_INSTRUMENTS:
             pygame.draw.rect(surface, prompt_bg, stimulus_rect)
@@ -8166,7 +11479,9 @@ class CognitiveTestScreen:
         elif payload.kind is InstrumentComprehensionTrialKind.INSTRUMENTS_TO_AIRCRAFT:
             self._draw_orientation_prompt_dials(surface, stimulus_rect, payload.prompt_state)
         else:
-            self._draw_instrument_cluster(surface, stimulus_rect, payload.prompt_state, compact=False)
+            self._draw_instrument_cluster(
+                surface, stimulus_rect, payload.prompt_state, compact=False
+            )
 
         options = payload.options[:4]
         gap = 8
@@ -8247,7 +11562,9 @@ class CognitiveTestScreen:
         att_rect = pygame.Rect(start_x, y, dial_size, dial_size)
         hdg_rect = pygame.Rect(att_rect.right + gap, y, dial_size, dial_size)
 
-        self._draw_attitude_dial(surface, att_rect, bank_deg=state.bank_deg, pitch_deg=state.pitch_deg)
+        self._draw_attitude_dial(
+            surface, att_rect, bank_deg=state.bank_deg, pitch_deg=state.pitch_deg
+        )
         self._draw_heading_dial(surface, hdg_rect, state.heading_deg)
 
         att_label = self._tiny_font.render("ATTITUDE", True, text_muted)
@@ -8319,7 +11636,9 @@ class CognitiveTestScreen:
                 cells.append(pygame.Rect(x, y, cell_w, cell_h))
 
         self._draw_speed_dial(surface, cells[0], state.speed_kts)
-        self._draw_attitude_dial(surface, cells[1], bank_deg=state.bank_deg, pitch_deg=state.pitch_deg)
+        self._draw_attitude_dial(
+            surface, cells[1], bank_deg=state.bank_deg, pitch_deg=state.pitch_deg
+        )
         self._draw_heading_dial(surface, cells[2], state.heading_deg)
         self._draw_altimeter_dial(surface, cells[3], state.altitude_ft)
         self._draw_vertical_dial(surface, cells[4], state.vertical_rate_fpm, state.slip)
@@ -8328,7 +11647,9 @@ class CognitiveTestScreen:
     def _draw_speed_dial(self, surface: pygame.Surface, rect: pygame.Rect, speed_kts: int) -> None:
         self._draw_scalar_dial(surface, rect, "KNOTS", int(speed_kts), vmin=80, vmax=360)
 
-    def _draw_altimeter_dial(self, surface: pygame.Surface, rect: pygame.Rect, altitude_ft: int) -> None:
+    def _draw_altimeter_dial(
+        self, surface: pygame.Surface, rect: pygame.Rect, altitude_ft: int
+    ) -> None:
         self._draw_scalar_dial(surface, rect, "ALT", int(altitude_ft), vmin=0, vmax=10000)
 
     def _draw_vertical_dial(
@@ -8409,7 +11730,6 @@ class CognitiveTestScreen:
         pygame.draw.circle(surface, (10, 10, 12), (cx, cy), max(2, size // 18))
         pygame.draw.circle(surface, (246, 248, 252), (cx, cy), max(1, size // 24))
 
-
     def _draw_attitude_dial(
         self,
         surface: pygame.Surface,
@@ -8470,7 +11790,9 @@ class CognitiveTestScreen:
             # Fixed airplane cue.
             wing_y = c + int(round(inner_ring * 0.10))
             wing_half = max(8, int(round(inner_ring * 0.35)))
-            pygame.draw.line(overlay, (248, 250, 255), (c - wing_half, wing_y), (c + wing_half, wing_y), 3)
+            pygame.draw.line(
+                overlay, (248, 250, 255), (c - wing_half, wing_y), (c + wing_half, wing_y), 3
+            )
             pygame.draw.line(overlay, (248, 250, 255), (c, wing_y - 6), (c, wing_y + 6), 2)
 
             cue = [
@@ -8488,7 +11810,9 @@ class CognitiveTestScreen:
         overlay_key = ("attitude_overlay", size)
         surface.blit(self._get_instrument_sprite(overlay_key, build_overlay), dial_rect.topleft)
 
-    def _draw_heading_dial(self, surface: pygame.Surface, rect: pygame.Rect, heading_deg: int) -> None:
+    def _draw_heading_dial(
+        self, surface: pygame.Surface, rect: pygame.Rect, heading_deg: int
+    ) -> None:
         dial_rect, cx, cy, _, face_r = self._dial_geometry(rect)
         size = dial_rect.w
 
@@ -8562,7 +11886,6 @@ class CognitiveTestScreen:
         rot_icon = pygame.transform.rotozoom(icon, rotation, 1.0)
         surface.blit(rot_icon, rot_icon.get_rect(center=(cx, cy)))
 
-
     def _draw_slip_indicator(
         self,
         surface: pygame.Surface,
@@ -8597,8 +11920,13 @@ class CognitiveTestScreen:
 
             left = self._tiny_font.render("L", True, (236, 244, 255))
             right = self._tiny_font.render("R", True, (236, 244, 255))
-            base.blit(left, left.get_rect(center=(c - int(inner_ring * 0.55), c - int(inner_ring * 0.22))))
-            base.blit(right, right.get_rect(center=(c + int(inner_ring * 0.55), c - int(inner_ring * 0.22))))
+            base.blit(
+                left, left.get_rect(center=(c - int(inner_ring * 0.55), c - int(inner_ring * 0.22)))
+            )
+            base.blit(
+                right,
+                right.get_rect(center=(c + int(inner_ring * 0.55), c - int(inner_ring * 0.22))),
+            )
             return base
 
         base_key = ("slip_base", size)
@@ -8621,7 +11949,9 @@ class CognitiveTestScreen:
         track.centery = cy + int(round(face_r * 0.62))
         pygame.draw.rect(surface, (8, 10, 16), track)
         pygame.draw.rect(surface, (130, 146, 176), track, 1)
-        pygame.draw.line(surface, (172, 184, 208), (track.centerx, track.y), (track.centerx, track.bottom), 1)
+        pygame.draw.line(
+            surface, (172, 184, 208), (track.centerx, track.y), (track.centerx, track.bottom), 1
+        )
 
         ball_r = max(2, min(4, tube_h // 2 - 1))
         max_offset = max(1, track.w // 2 - ball_r - 2)
@@ -8671,7 +12001,9 @@ class CognitiveTestScreen:
         face = pygame.Surface(dial_rect.size, pygame.SRCALPHA)
         face.blit(layer, layer.get_rect(center=(dial_rect.w // 2, dial_rect.h // 2)))
         mask = pygame.Surface(dial_rect.size, pygame.SRCALPHA)
-        pygame.draw.circle(mask, (255, 255, 255, 255), (dial_rect.w // 2, dial_rect.h // 2), max(1, radius))
+        pygame.draw.circle(
+            mask, (255, 255, 255, 255), (dial_rect.w // 2, dial_rect.h // 2), max(1, radius)
+        )
         face.blit(mask, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
         surface.blit(face, dial_rect.topleft)
 
@@ -8767,7 +12099,9 @@ class CognitiveTestScreen:
             projected_parts.append((avg_depth, pts_2d, fill_color, edge_color))
 
         # Draw far geometry first.
-        for _, pts_2d, fill_color, edge_color in sorted(projected_parts, key=lambda t: t[0], reverse=True):
+        for _, pts_2d, fill_color, edge_color in sorted(
+            projected_parts, key=lambda t: t[0], reverse=True
+        ):
             pygame.draw.polygon(surface, fill_color, pts_2d)
             pygame.draw.polygon(surface, edge_color, pts_2d, 1)
 
@@ -9043,7 +12377,12 @@ class CognitiveTestScreen:
             self._draw_wrapped_text(
                 surface,
                 "\n".join(lines),
-                pygame.Rect(overlay_rect.x + 12, overlay_rect.y + 46, overlay_rect.w - 24, overlay_rect.h - 56),
+                pygame.Rect(
+                    overlay_rect.x + 12,
+                    overlay_rect.y + 46,
+                    overlay_rect.w - 24,
+                    overlay_rect.h - 56,
+                ),
                 color=text_muted,
                 font=self._tiny_font,
                 max_lines=8,
@@ -9087,14 +12426,20 @@ class CognitiveTestScreen:
         header = pygame.Rect(frame.x + 1, frame.y + 1, frame.w - 2, max(26, min(34, h // 18)))
         footer = pygame.Rect(frame.x + 1, frame.bottom - 34, frame.w - 2, 33)
         pygame.draw.rect(surface, bg, header)
-        pygame.draw.line(surface, frame_edge, (header.x, header.bottom), (header.right, header.bottom), 1)
+        pygame.draw.line(
+            surface, frame_edge, (header.x, header.bottom), (header.right, header.bottom), 1
+        )
         pygame.draw.rect(surface, dark_panel, footer)
         pygame.draw.line(surface, frame_edge, (footer.x, footer.y), (footer.right, footer.y), 1)
 
-        title = self._tiny_font.render(f"Colours, Letters and Numbers - {phase_label}", True, text_light)
+        title = self._tiny_font.render(
+            f"Colours, Letters and Numbers - {phase_label}", True, text_light
+        )
         surface.blit(title, title.get_rect(center=header.center))
 
-        body = pygame.Rect(frame.x + 1, header.bottom + 1, frame.w - 2, footer.y - header.bottom - 2)
+        body = pygame.Rect(
+            frame.x + 1, header.bottom + 1, frame.w - 2, footer.y - header.bottom - 2
+        )
 
         bar_colors = {
             "RED": (255, 44, 48),
@@ -9149,7 +12494,9 @@ class CognitiveTestScreen:
             legend = pygame.Rect(panel.x + 14, panel.bottom - 70, panel.w - 28, 54)
             pygame.draw.rect(surface, (16, 18, 30), legend)
             pygame.draw.rect(surface, frame_edge, legend, 1)
-            legend_title = self._tiny_font.render("Color keys (right -> left): Q / W / E / R", True, text_light)
+            legend_title = self._tiny_font.render(
+                "Color keys (right -> left): Q / W / E / R", True, text_light
+            )
             surface.blit(legend_title, (legend.x + 8, legend.y + 6))
 
             chips = [("RED", "R"), ("YELLOW", "E"), ("GREEN", "W"), ("BLUE", "Q")]
@@ -9185,7 +12532,9 @@ class CognitiveTestScreen:
             top_left = pygame.Rect(body.x, body.y, corner_w, corner_h)
             top_right = pygame.Rect(body.right - corner_w, body.y, corner_w, corner_h)
             bottom_left = pygame.Rect(body.x, body.bottom - corner_h, corner_w, corner_h)
-            bottom_right = pygame.Rect(body.right - corner_w, body.bottom - corner_h, corner_w, corner_h)
+            bottom_right = pygame.Rect(
+                body.right - corner_w, body.bottom - corner_h, corner_w, corner_h
+            )
 
             option_rects = [top_left, top_right, bottom_left, bottom_right]
             labels = ["A", "B", "C", "D"]
@@ -9238,12 +12587,16 @@ class CognitiveTestScreen:
             center_top = top_mid.bottom + center_gap
             center_bottom = eq_rect.y - center_gap
             center_h = max(192, min(int(body.h * 0.63), center_bottom - center_top))
-            center_rect = pygame.Rect(body.centerx - (center_w // 2), center_top, center_w, center_h)
+            center_rect = pygame.Rect(
+                body.centerx - (center_w // 2), center_top, center_w, center_h
+            )
 
             pygame.draw.rect(surface, dark_panel, center_rect)
             pygame.draw.rect(surface, frame_edge, center_rect, 1)
 
-            lane_colors = payload.lane_colors if payload is not None else ("RED", "YELLOW", "GREEN", "BLUE")
+            lane_colors = (
+                payload.lane_colors if payload is not None else ("RED", "YELLOW", "GREEN", "BLUE")
+            )
             lane_start_norm = payload.lane_start_norm if payload is not None else 0.54
             lane_end_norm = payload.lane_end_norm if payload is not None else 0.98
             lane_start_norm = max(0.0, min(1.0, lane_start_norm))
@@ -9322,7 +12675,9 @@ class CognitiveTestScreen:
         if snap.phase in (Phase.PRACTICE, Phase.SCORED):
             caret = "|" if (pygame.time.get_ticks() // 500) % 2 == 0 else ""
             answer_value = self._input + caret
-            control_text = "Mouse: A-D sequence  |  Keys: Q/W/E/R clear lanes right->left  |  Enter: math"
+            control_text = (
+                "Mouse: A-D sequence  |  Keys: Q/W/E/R clear lanes right->left  |  Enter: math"
+            )
         elif snap.phase in (Phase.INSTRUCTIONS, Phase.PRACTICE_DONE, Phase.RESULTS):
             answer_value = "--"
             control_text = "Press Enter to continue"
@@ -9333,7 +12688,8 @@ class CognitiveTestScreen:
         left = self._tiny_font.render(control_text, True, text_light)
         center = self._small_font.render(f"Math Answer: {answer_value}", True, text_light)
         right = self._tiny_font.render(
-            f"Scored {correct}/{attempted} ({accuracy:.1f}%)  Clear {cleared}  Miss {misses}  Pts {points:.1f}  T {rem_txt}",
+            f"Scored {correct}/{attempted} ({accuracy:.1f}%)  "
+            f"Clear {cleared}  Miss {misses}  Pts {points:.1f}  T {rem_txt}",
             True,
             text_light,
         )
@@ -9363,7 +12719,9 @@ class CognitiveTestScreen:
         footer_h = max(30, min(38, h // 14))
         header = pygame.Rect(frame.x + 1, frame.y + 1, frame.w - 2, header_h)
         footer = pygame.Rect(frame.x + 1, frame.bottom - footer_h - 1, frame.w - 2, footer_h)
-        body = pygame.Rect(frame.x + 1, header.bottom + 1, frame.w - 2, footer.y - header.bottom - 2)
+        body = pygame.Rect(
+            frame.x + 1, header.bottom + 1, frame.w - 2, footer.y - header.bottom - 2
+        )
 
         pygame.draw.rect(surface, bg, header)
         pygame.draw.line(surface, edge, (header.x, header.bottom), (header.right, header.bottom), 1)
@@ -9452,7 +12810,7 @@ class CognitiveTestScreen:
 
         def mix(x: int) -> None:
             nonlocal seed
-            seed ^= (x & 0xFFFFFFFF)
+            seed ^= x & 0xFFFFFFFF
             seed = (seed * 16777619) & 0xFFFFFFFF
 
         mix(int(getattr(scenario, "speed_value", 0)))
@@ -9478,10 +12836,14 @@ class CognitiveTestScreen:
         pygame.draw.rect(surface, (18, 18, 26), rect)
         pygame.draw.rect(surface, (120, 120, 140), rect, 2)
 
-        surface.blit(self._small_font.render(title, True, (235, 235, 245)), (rect.x + 12, rect.y + 10))
+        surface.blit(
+            self._small_font.render(title, True, (235, 235, 245)), (rect.x + 12, rect.y + 10)
+        )
 
         chart = pygame.Rect(rect.x + 40, rect.y + 42, rect.w - 56, rect.h - 70)
-        pygame.draw.line(surface, (140, 140, 150), (chart.x, chart.bottom), (chart.right, chart.bottom), 1)
+        pygame.draw.line(
+            surface, (140, 140, 150), (chart.x, chart.bottom), (chart.right, chart.bottom), 1
+        )
         pygame.draw.line(surface, (140, 140, 150), (chart.x, chart.y), (chart.x, chart.bottom), 1)
 
         if not values:
@@ -9515,7 +12877,9 @@ class CognitiveTestScreen:
     ) -> None:
         pygame.draw.rect(surface, (18, 18, 26), rect)
         pygame.draw.rect(surface, (120, 120, 140), rect, 2)
-        surface.blit(self._small_font.render(title, True, (235, 235, 245)), (rect.x + 12, rect.y + 10))
+        surface.blit(
+            self._small_font.render(title, True, (235, 235, 245)), (rect.x + 12, rect.y + 10)
+        )
 
         x1 = rect.x + 14
         x2 = rect.x + rect.w // 2 + 10
@@ -9530,7 +12894,9 @@ class CognitiveTestScreen:
             surface.blit(self._tiny_font.render(b, True, (235, 235, 245)), (x2, y))
             y += 20
 
-    def _draw_airborne_fuel_panel(self, surface: pygame.Surface, rect: pygame.Rect, scenario: AirborneScenario) -> None:
+    def _draw_airborne_fuel_panel(
+        self, surface: pygame.Surface, rect: pygame.Rect, scenario: AirborneScenario
+    ) -> None:
         seed = self._airborne_graph_seed(scenario)
         base_speed = max(1, int(getattr(scenario, "speed_value", 1)))
         base_burn = int(getattr(scenario, "fuel_burn_per_hr", 0))
@@ -9541,13 +12907,25 @@ class CognitiveTestScreen:
 
         if (seed & 1) == 0:
             self._draw_airborne_bar_chart(
-                surface, rect, title="Fuel burn vs speed", x_labels=labels, values=burns, value_unit=""
+                surface,
+                rect,
+                title="Fuel burn vs speed",
+                x_labels=labels,
+                values=burns,
+                value_unit="",
             )
         else:
-            rows = [(f"{sp} {getattr(scenario, 'speed_unit', '')}", f"{bn} L/hr") for sp, bn in zip(speeds, burns, strict=False)]
-            self._draw_airborne_table_small(surface, rect, title="Fuel burn table", headers=("SPEED", "BURN"), rows=rows)
+            rows = [
+                (f"{sp} {getattr(scenario, 'speed_unit', '')}", f"{bn} L/hr")
+                for sp, bn in zip(speeds, burns, strict=False)
+            ]
+            self._draw_airborne_table_small(
+                surface, rect, title="Fuel burn table", headers=("SPEED", "BURN"), rows=rows
+            )
 
-    def _draw_airborne_parcel_panel(self, surface: pygame.Surface, rect: pygame.Rect, scenario: AirborneScenario) -> None:
+    def _draw_airborne_parcel_panel(
+        self, surface: pygame.Surface, rect: pygame.Rect, scenario: AirborneScenario
+    ) -> None:
         seed = self._airborne_graph_seed(scenario) ^ 0x9E3779B9
         base_speed = max(1, int(getattr(scenario, "speed_value", 1)))
         weights = [0, 200, 400, 600, 800, 1000]
@@ -9557,13 +12935,25 @@ class CognitiveTestScreen:
 
         if (seed & 1) == 0:
             self._draw_airborne_bar_chart(
-                surface, rect, title="Speed vs parcel weight", x_labels=wlabels, values=speeds, value_unit=""
+                surface,
+                rect,
+                title="Speed vs parcel weight",
+                x_labels=wlabels,
+                values=speeds,
+                value_unit="",
             )
         else:
-            rows = [(f"{w} kg", f"{sp} {getattr(scenario, 'speed_unit', '')}") for w, sp in zip(weights, speeds, strict=False)]
-            self._draw_airborne_table_small(surface, rect, title="Parcel weight table", headers=("WEIGHT", "SPEED"), rows=rows)
+            rows = [
+                (f"{w} kg", f"{sp} {getattr(scenario, 'speed_unit', '')}")
+                for w, sp in zip(weights, speeds, strict=False)
+            ]
+            self._draw_airborne_table_small(
+                surface, rect, title="Parcel weight table", headers=("WEIGHT", "SPEED"), rows=rows
+            )
 
-    def _draw_airborne_map(self, surface: pygame.Surface, rect: pygame.Rect, scenario: AirborneScenario) -> None:
+    def _draw_airborne_map(
+        self, surface: pygame.Surface, rect: pygame.Rect, scenario: AirborneScenario
+    ) -> None:
         template = TEMPLATES_BY_NAME.get(scenario.template_name)
         if template is None:
             return
@@ -9606,7 +12996,9 @@ class CognitiveTestScreen:
             pygame.draw.rect(surface, (235, 235, 245), bg)
             surface.blit(label, label.get_rect(midleft=bg.midleft))
 
-    def _draw_airborne_table(self, surface: pygame.Surface, rect: pygame.Rect, scenario: AirborneScenario) -> None:
+    def _draw_airborne_table(
+        self, surface: pygame.Surface, rect: pygame.Rect, scenario: AirborneScenario
+    ) -> None:
         text_main = (238, 245, 255)
         text_muted = (176, 192, 218)
 
@@ -9632,7 +13024,9 @@ class CognitiveTestScreen:
         y = inner.y + 6
         for label, x in cols:
             surface.blit(self._tiny_font.render(label, True, text_muted), (x, y))
-        pygame.draw.line(surface, (120, 132, 157), (inner.x + 4, y + 16), (inner.right - 4, y + 16), 1)
+        pygame.draw.line(
+            surface, (120, 132, 157), (inner.x + 4, y + 16), (inner.right - 4, y + 16), 1
+        )
         y += 20
 
         pw = getattr(scenario, "parcel_weight_kg", getattr(scenario, "parcel_weight", 0))
@@ -9644,8 +13038,8 @@ class CognitiveTestScreen:
                 dist = str(getattr(leg, "distance", "----")) if self._air_show_distances else "----"
                 row = [
                     str(i + 1),
-                    scenario.node_names[getattr(leg, "frm")],
-                    scenario.node_names[getattr(leg, "to")],
+                    scenario.node_names[leg.frm],
+                    scenario.node_names[leg.to],
                     dist,
                     "----",
                     "----",
@@ -9654,7 +13048,7 @@ class CognitiveTestScreen:
             else:
                 row = ["", "", "", "", "", "", ""]
 
-            for (text, (_, x)) in zip(row, cols, strict=True):
+            for text, (_, x) in zip(row, cols, strict=True):
                 surface.blit(self._tiny_font.render(text, True, text_main), (x, y))
             y += row_h
 
@@ -9678,7 +13072,9 @@ def _new_seed() -> int:
     return random.SystemRandom().randint(1, 2**31 - 1)
 
 
-def run(*, max_frames: int | None = None, event_injector: Callable[[int], None] | None = None) -> int:
+def run(
+    *, max_frames: int | None = None, event_injector: Callable[[int], None] | None = None
+) -> int:
     pygame.init()
     _init_joysticks()
 
@@ -9798,7 +13194,9 @@ def run(*, max_frames: int | None = None, event_injector: Callable[[int], None] 
         app.push(
             CognitiveTestScreen(
                 app,
-                engine_factory=lambda: build_numerical_operations_test(clock=real_clock, seed=seed, difficulty=0.5),
+                engine_factory=lambda: build_numerical_operations_test(
+                    clock=real_clock, seed=seed, difficulty=0.5
+                ),
             )
         )
 
@@ -9807,7 +13205,9 @@ def run(*, max_frames: int | None = None, event_injector: Callable[[int], None] 
         app.push(
             CognitiveTestScreen(
                 app,
-                engine_factory=lambda: build_airborne_numerical_test(clock=real_clock, seed=seed, difficulty=0.5),
+                engine_factory=lambda: build_airborne_numerical_test(
+                    clock=real_clock, seed=seed, difficulty=0.5
+                ),
             )
         )
 
@@ -9816,7 +13216,9 @@ def run(*, max_frames: int | None = None, event_injector: Callable[[int], None] 
         app.push(
             CognitiveTestScreen(
                 app,
-                engine_factory=lambda: build_math_reasoning_test(clock=real_clock, seed=seed, difficulty=0.5),
+                engine_factory=lambda: build_math_reasoning_test(
+                    clock=real_clock, seed=seed, difficulty=0.5
+                ),
             )
         )
 
@@ -9825,7 +13227,9 @@ def run(*, max_frames: int | None = None, event_injector: Callable[[int], None] 
         app.push(
             CognitiveTestScreen(
                 app,
-                engine_factory=lambda: build_digit_recognition_test(clock=real_clock, seed=seed, difficulty=0.5),
+                engine_factory=lambda: build_digit_recognition_test(
+                    clock=real_clock, seed=seed, difficulty=0.5
+                ),
             )
         )
 
@@ -9933,6 +13337,45 @@ def run(*, max_frames: int | None = None, event_injector: Callable[[int], None] 
             )
         )
 
+    def open_rapid_tracking() -> None:
+        seed = _new_seed()
+        app.push(
+            CognitiveTestScreen(
+                app,
+                engine_factory=lambda: build_rapid_tracking_test(
+                    clock=real_clock,
+                    seed=seed,
+                    difficulty=0.5,
+                ),
+            )
+        )
+
+    def open_spatial_integration() -> None:
+        seed = _new_seed()
+        app.push(
+            CognitiveTestScreen(
+                app,
+                engine_factory=lambda: build_spatial_integration_test(
+                    clock=real_clock,
+                    seed=seed,
+                    difficulty=0.5,
+                ),
+            )
+        )
+
+    def open_trace_test_1() -> None:
+        seed = _new_seed()
+        app.push(
+            CognitiveTestScreen(
+                app,
+                engine_factory=lambda: build_trace_test_1_test(
+                    clock=real_clock,
+                    seed=seed,
+                    difficulty=0.5,
+                ),
+            )
+        )
+
     def open_auditory_capacity() -> None:
         seed = _new_seed()
         app.push(
@@ -9959,6 +13402,19 @@ def run(*, max_frames: int | None = None, event_injector: Callable[[int], None] 
             )
         )
 
+    def open_situational_awareness() -> None:
+        seed = _new_seed()
+        app.push(
+            CognitiveTestScreen(
+                app,
+                engine_factory=lambda: build_situational_awareness_test(
+                    clock=real_clock,
+                    seed=seed,
+                    difficulty=0.5,
+                ),
+            )
+        )
+
     tests_menu = MenuScreen(
         app,
         "Tests",
@@ -9977,6 +13433,10 @@ def run(*, max_frames: int | None = None, event_injector: Callable[[int], None] 
             MenuItem("Sensory Motor Apparatus", open_sensory_motor_apparatus),
             MenuItem("Auditory Capacity", open_auditory_capacity),
             MenuItem("Cognitive Updating", open_cognitive_updating),
+            MenuItem("Situational Awareness", open_situational_awareness),
+            MenuItem("Rapid Tracking", open_rapid_tracking),
+            MenuItem("Spatial Integration", open_spatial_integration),
+            MenuItem("Trace Test 1", open_trace_test_1),
             MenuItem("Back", app.pop),
         ],
     )
@@ -10021,18 +13481,26 @@ def run(*, max_frames: int | None = None, event_injector: Callable[[int], None] 
                     if next_w > 0 and next_h > 0:
                         if gl_renderer is not None:
                             try:
-                                display_surface = pygame.display.set_mode((next_w, next_h), active_window_flags)
+                                display_surface = pygame.display.set_mode(
+                                    (next_w, next_h), active_window_flags
+                                )
                             except Exception:
-                                display_surface = pygame.display.set_mode((next_w, next_h), window_flags)
+                                display_surface = pygame.display.set_mode(
+                                    (next_w, next_h), window_flags
+                                )
                                 gl_renderer = None
                                 active_window_flags = window_flags
                                 app.set_opengl_enabled(False)
                                 app.set_surface(display_surface)
                         else:
                             try:
-                                display_surface = pygame.display.set_mode((next_w, next_h), active_window_flags)
+                                display_surface = pygame.display.set_mode(
+                                    (next_w, next_h), active_window_flags
+                                )
                             except Exception:
-                                display_surface = pygame.display.set_mode((next_w, next_h), window_flags)
+                                display_surface = pygame.display.set_mode(
+                                    (next_w, next_h), window_flags
+                                )
                                 active_window_flags = window_flags
                             app.set_surface(display_surface)
                 app.handle_event(event)

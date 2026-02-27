@@ -43,7 +43,9 @@ def test_scoring_recall_and_count_target() -> None:
     t1 = mirror.next_trial(difficulty=0.5)
     t2 = mirror.next_trial(difficulty=0.5)
 
-    engine = build_digit_recognition_test(clock=clock, seed=seed, practice=False, scored_duration_s=10.0)
+    engine = build_digit_recognition_test(
+        clock=clock, seed=seed, practice=False, scored_duration_s=10.0
+    )
     engine.start_practice()
     engine.start_scored()
 
@@ -61,7 +63,9 @@ def test_scoring_recall_and_count_target() -> None:
 
 def test_timer_boundary_transitions_to_results_and_rejects_late_submit() -> None:
     clock = FakeClock()
-    engine = build_digit_recognition_test(clock=clock, seed=7, practice=False, scored_duration_s=1.0)
+    engine = build_digit_recognition_test(
+        clock=clock, seed=7, practice=False, scored_duration_s=1.0
+    )
     engine.start_practice()
     engine.start_scored()
 

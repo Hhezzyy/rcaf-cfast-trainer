@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import cast
 
 import pytest
 
@@ -9,10 +10,8 @@ from cfast_trainer.angles_bearings_degrees import (
     AnglesBearingsDegreesGenerator,
     AnglesBearingsDegreesPayload,
     AnglesBearingsQuestionKind,
-    AnglesBearingsScorer,
     build_angles_bearings_degrees_test,
 )
-from cfast_trainer.cognitive_core import Problem
 
 
 @dataclass
@@ -39,47 +38,34 @@ def test_generator_determinism_same_seed_same_sequence() -> None:
     ]
 
 
-def test_scoring_exact_and_estimation_behavior() -> None:
-    scorer = AnglesBearingsScorer()
+def test_generated_problem_has_four_unique_options_and_correct_code() -> None:
+    gen = AnglesBearingsDegreesGenerator(seed=31)
+    problem = gen.next_problem(difficulty=0.6)
+    payload = cast(AnglesBearingsDegreesPayload, problem.payload)
 
-    angle_payload = AnglesBearingsDegreesPayload(
-        kind=AnglesBearingsQuestionKind.ANGLE_BETWEEN_LINES,
-        reference_bearing_deg=10,
-        target_bearing_deg=94,
-        object_label="",
-        full_credit_error_deg=2,
-        zero_credit_error_deg=20,
-    )
-    angle_problem = Problem(
-        prompt="Estimate angle",
-        answer=84,
-        payload=angle_payload,
-    )
+    assert isinstance(payload, AnglesBearingsDegreesPayload)
+    assert len(payload.options) == 4
+    assert [opt.code for opt in payload.options] == [1, 2, 3, 4]
 
-    assert scorer.score(problem=angle_problem, user_answer=84, raw="84") == 1.0
-    assert scorer.score(problem=angle_problem, user_answer=86, raw="86") == 1.0
-    assert scorer.score(problem=angle_problem, user_answer=130, raw="130") == 0.0
-
-    angle_mid = scorer.score(problem=angle_problem, user_answer=94, raw="94")
-    assert angle_mid == pytest.approx((20 - 10) / (20 - 2), abs=1e-9)
-
-    bearing_payload = AnglesBearingsDegreesPayload(
-        kind=AnglesBearingsQuestionKind.BEARING_FROM_REFERENCE,
-        reference_bearing_deg=0,
-        target_bearing_deg=355,
-        object_label="A",
-        full_credit_error_deg=2,
-        zero_credit_error_deg=20,
-    )
-    bearing_problem = Problem(
-        prompt="Estimate bearing",
-        answer=355,
-        payload=bearing_payload,
+    values = [opt.value_deg for opt in payload.options]
+    assert len(set(values)) == 4
+    assert problem.answer == payload.correct_code
+    assert any(
+        opt.code == payload.correct_code and opt.value_deg == payload.correct_value_deg
+        for opt in payload.options
     )
 
-    # Wrap-around check: 005 is 10 degrees away from 355.
-    bearing_mid = scorer.score(problem=bearing_problem, user_answer=5, raw="5")
-    assert bearing_mid == pytest.approx((20 - 10) / (20 - 2), abs=1e-9)
+
+def test_generator_emits_both_angle_and_bearing_trials() -> None:
+    gen = AnglesBearingsDegreesGenerator(seed=77)
+    kinds: set[AnglesBearingsQuestionKind] = set()
+    for _ in range(40):
+        payload = cast(AnglesBearingsDegreesPayload, gen.next_problem(difficulty=0.7).payload)
+        kinds.add(payload.kind)
+    assert kinds == {
+        AnglesBearingsQuestionKind.ANGLE_BETWEEN_LINES,
+        AnglesBearingsQuestionKind.BEARING_FROM_REFERENCE,
+    }
 
 
 def test_timer_boundary_transitions_to_results_and_rejects_late_submit() -> None:

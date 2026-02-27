@@ -54,7 +54,7 @@ class TargetRecognitionPayload:
     system_rows: tuple[str, ...]  # compatibility mirror (first cycle, first column)
     system_target: str
     system_has_target: bool
-    system_cycles: tuple["TargetRecognitionSystemCycle", ...]
+    system_cycles: tuple[TargetRecognitionSystemCycle, ...]
     system_step_interval_s: float
     full_credit_error: int
     zero_credit_error: int
@@ -146,8 +146,11 @@ class TargetRecognitionGenerator:
         system_rows = system_cycles[0].columns[0] if system_cycles else ()
         system_step_interval_s = self._system_step_interval_s(d)
 
-        expected_matches = int(scene_has_target) + int(light_has_target) + int(scan_has_target) + int(
-            system_has_target
+        expected_matches = (
+            int(scene_has_target)
+            + int(light_has_target)
+            + int(scan_has_target)
+            + int(system_has_target)
         )
 
         payload = TargetRecognitionPayload(
@@ -197,22 +200,23 @@ class TargetRecognitionGenerator:
         tuple[str, ...],
     ]:
         count = max(1, int(rows * cols))
-        damaged_prob = 0.20 + (difficulty * 0.28)
-        priority_prob = 0.14 + (difficulty * 0.24)
 
         entities: list[TargetRecognitionSceneEntity] = []
         for _ in range(count):
+            damaged, high_priority = self._roll_scene_modifiers(difficulty=difficulty)
             entities.append(
                 TargetRecognitionSceneEntity(
                     shape=str(self._rng.choice(self._SCENE_SHAPES)),
                     affiliation=str(self._rng.choice(self._SCENE_AFFILIATIONS)),
-                    damaged=self._rng.random() < damaged_prob,
-                    high_priority=self._rng.random() < priority_prob,
+                    damaged=damaged,
+                    high_priority=high_priority,
                 )
             )
         entities_tuple = tuple(entities)
         if has_target:
-            criteria = self._pick_present_scene_criteria(entities=entities_tuple, difficulty=difficulty)
+            criteria = self._pick_present_scene_criteria(
+                entities=entities_tuple, difficulty=difficulty
+            )
         else:
             criteria = self._pick_absent_scene_criteria(entities=entities_tuple)
         target_options = self._build_scene_target_options(
@@ -224,41 +228,38 @@ class TargetRecognitionGenerator:
         cells = tuple(self._scene_entity_code(e) for e in entities)
         return entities_tuple, criteria, target_options, cells
 
+    def _roll_scene_modifiers(self, *, difficulty: float) -> tuple[bool, bool]:
+        damaged_prob = 0.16 + (difficulty * 0.14)
+        priority_prob = 0.08 + (difficulty * 0.08)
+        damaged = self._rng.random() < damaged_prob
+        high_priority = self._rng.random() < priority_prob
+        if damaged and high_priority and self._rng.random() < 0.82:
+            if self._rng.random() < 0.66:
+                high_priority = False
+            else:
+                damaged = False
+        return damaged, high_priority
+
     def _pick_present_scene_criteria(
         self,
         *,
         entities: tuple[TargetRecognitionSceneEntity, ...],
         difficulty: float,
     ) -> TargetRecognitionSceneCriteria:
-        if not entities:
+        present = self._scene_present_candidates(entities=entities)
+        if not present:
             return TargetRecognitionSceneCriteria(
                 shape="truck",
                 affiliation="friendly",
                 require_damaged=None,
                 require_high_priority=None,
             )
-
-        priority_pool = [e for e in entities if e.damaged or e.high_priority]
-        if priority_pool and self._rng.random() < (0.45 + (difficulty * 0.45)):
-            anchor = priority_pool[int(self._rng.randint(0, len(priority_pool) - 1))]
-        else:
-            anchor = entities[int(self._rng.randint(0, len(entities) - 1))]
-
-        require_damaged = anchor.damaged if (anchor.damaged and self._rng.random() < 0.8) else None
-        require_hp = anchor.high_priority if (anchor.high_priority and self._rng.random() < 0.8) else None
-
-        if require_damaged is None and require_hp is None:
-            if anchor.high_priority:
-                require_hp = True
-            elif anchor.damaged:
-                require_damaged = True
-
-        return TargetRecognitionSceneCriteria(
-            shape=anchor.shape,
-            affiliation=anchor.affiliation,
-            require_damaged=require_damaged,
-            require_high_priority=require_hp,
-        )
+        weighted = [
+            c for c in present if c.require_damaged is True or c.require_high_priority is True
+        ]
+        if weighted and self._rng.random() < (0.45 + (difficulty * 0.45)):
+            return weighted[int(self._rng.randint(0, len(weighted) - 1))]
+        return present[int(self._rng.randint(0, len(present) - 1))]
 
     def _pick_absent_scene_criteria(
         self,
@@ -268,7 +269,8 @@ class TargetRecognitionGenerator:
         absent = self._scene_absent_candidates(entities=entities)
         if absent:
             return absent[int(self._rng.randint(0, len(absent) - 1))]
-        # Fallback: still deterministic and specific even if dense scene accidentally covers all candidates.
+        # Fallback: still deterministic and specific, even if a dense scene
+        # accidentally covers all candidates.
         return TargetRecognitionSceneCriteria(
             shape="truck",
             affiliation="hostile",
@@ -311,49 +313,19 @@ class TargetRecognitionGenerator:
     ) -> tuple[TargetRecognitionSceneCriteria, ...]:
         dedup: dict[tuple[str, str, bool | None, bool | None], TargetRecognitionSceneCriteria] = {}
         for entity in entities:
-            variants = [
-                TargetRecognitionSceneCriteria(
-                    shape=entity.shape,
-                    affiliation=entity.affiliation,
-                    require_damaged=None,
-                    require_high_priority=None,
-                )
-            ]
-            if entity.damaged:
-                variants.append(
-                    TargetRecognitionSceneCriteria(
-                        shape=entity.shape,
-                        affiliation=entity.affiliation,
-                        require_damaged=True,
-                        require_high_priority=None,
-                    )
-                )
-            if entity.high_priority:
-                variants.append(
-                    TargetRecognitionSceneCriteria(
-                        shape=entity.shape,
-                        affiliation=entity.affiliation,
-                        require_damaged=None,
-                        require_high_priority=True,
-                    )
-                )
-            if entity.damaged and entity.high_priority:
-                variants.append(
-                    TargetRecognitionSceneCriteria(
-                        shape=entity.shape,
-                        affiliation=entity.affiliation,
-                        require_damaged=True,
-                        require_high_priority=True,
-                    )
-                )
-            for candidate in variants:
-                key = (
-                    candidate.shape,
-                    candidate.affiliation,
-                    candidate.require_damaged,
-                    candidate.require_high_priority,
-                )
-                dedup[key] = candidate
+            candidate = TargetRecognitionSceneCriteria(
+                shape=entity.shape,
+                affiliation=entity.affiliation,
+                require_damaged=True if entity.damaged else None,
+                require_high_priority=True if entity.high_priority else None,
+            )
+            key = (
+                candidate.shape,
+                candidate.affiliation,
+                candidate.require_damaged,
+                candidate.require_high_priority,
+            )
+            dedup[key] = candidate
 
         candidates = list(dedup.values())
         # Deterministic shuffle of the candidate pool.
@@ -388,14 +360,20 @@ class TargetRecognitionGenerator:
         return tuple(absent)
 
     @staticmethod
-    def _scene_matches(entity: TargetRecognitionSceneEntity, criteria: TargetRecognitionSceneCriteria) -> bool:
+    def _scene_matches(
+        entity: TargetRecognitionSceneEntity, criteria: TargetRecognitionSceneCriteria
+    ) -> bool:
         if entity.shape != criteria.shape:
             return False
         if entity.affiliation != criteria.affiliation:
             return False
         if criteria.require_damaged is True and not entity.damaged:
             return False
+        if criteria.require_damaged is None and entity.damaged:
+            return False
         if criteria.require_high_priority is True and not entity.high_priority:
+            return False
+        if criteria.require_high_priority is None and entity.high_priority:
             return False
         return True
 

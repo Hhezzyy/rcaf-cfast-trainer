@@ -3,7 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from cfast_trainer.cognitive_core import Phase, SeededRng
-from cfast_trainer.digit_recognition import DigitRecognitionGenerator, DigitRecognitionQuestionKind, build_digit_recognition_test
+from cfast_trainer.digit_recognition import (
+    DigitRecognitionGenerator,
+    DigitRecognitionQuestionKind,
+    build_digit_recognition_test,
+)
 
 
 @dataclass
@@ -32,7 +36,9 @@ def test_headless_sim_practice_then_scored_mixed_correctness() -> None:
     practice = [mirror.next_trial(difficulty=0.5) for _ in range(3)]
     scored = [mirror.next_trial(difficulty=0.5) for _ in range(4)]
 
-    engine = build_digit_recognition_test(clock=clock, seed=seed, practice=True, scored_duration_s=8.0)
+    engine = build_digit_recognition_test(
+        clock=clock, seed=seed, practice=True, scored_duration_s=8.0
+    )
     assert engine.phase is Phase.INSTRUCTIONS
 
     engine.start_practice()
@@ -52,7 +58,11 @@ def test_headless_sim_practice_then_scored_mixed_correctness() -> None:
         ans = t.expected
         if i == 3:
             if t.kind is DigitRecognitionQuestionKind.RECALL:
-                ans = (t.expected[:-1] + ("0" if t.expected[-1] != "0" else "1")) if len(t.expected) > 0 else "0"
+                ans = (
+                    (t.expected[:-1] + ("0" if t.expected[-1] != "0" else "1"))
+                    if len(t.expected) > 0
+                    else "0"
+                )
             else:
                 ans = str(int(t.expected) + 1)
         assert engine.submit_answer(ans) is True

@@ -1,16 +1,28 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 from .clock import Clock
-from .cognitive_core import AttemptSummary, Phase, SeededRng, TestSnapshot, lerp_int
+from .cognitive_core import AttemptSummary, Phase, SeededRng, TestSnapshot, clamp01, lerp_int
 
 
-class ColoursLettersNumbersQuestionKind(str, Enum):
-    LETTER_MATCH = "letter_match"
-    EQUATION = "equation"
-    COLOR_COUNT = "color_count"
+@dataclass(frozen=True, slots=True)
+class ColoursLettersNumbersConfig:
+    # Guide indicates ~20 minutes including instructions.
+    scored_duration_s: float = 18.0 * 60.0
+    practice_rounds: int = 3
+    # Memory channel cycle duration (show sequence + answer window).
+    round_duration_s: float = 9.0
+    sequence_show_s: float = 2.0
+    diamond_spawn_interval_s: float = 1.10
+    diamond_speed_norm_per_s: float = 0.24
+    max_live_diamonds: int = 4
+
+
+class ColoursLettersNumbersQuestionKind(StrEnum):
+    MEMORY_SEQUENCE = "memory_sequence"
+    MATH = "math"
 
 
 @dataclass(frozen=True, slots=True)
@@ -20,24 +32,37 @@ class ColoursLettersNumbersOption:
 
 
 @dataclass(frozen=True, slots=True)
+class ColoursLettersNumbersDiamond:
+    id: int
+    color: str
+    row: int
+    x_norm: float
+
+
+@dataclass(frozen=True, slots=True)
 class ColoursLettersNumbersTrial:
-    kind: ColoursLettersNumbersQuestionKind
-    target: str
+    target_sequence: str
     options: tuple[ColoursLettersNumbersOption, ...]
-    equation_text: str
-    color_bars: tuple[str, ...]
-    prompt: str
-    expected: str
+    expected_option_code: int
+    math_prompt: str
+    math_answer: int
 
 
 @dataclass(frozen=True, slots=True)
 class ColoursLettersNumbersPayload:
-    kind: ColoursLettersNumbersQuestionKind
-    target: str
+    target_sequence: str | None
     options: tuple[ColoursLettersNumbersOption, ...]
-    equation_text: str
-    color_bars: tuple[str, ...]
-    prompt: str
+    options_active: bool
+    memory_answered: bool
+    math_answered: bool
+    math_prompt: str
+    lane_colors: tuple[str, ...]
+    lane_start_norm: float
+    lane_end_norm: float
+    diamonds: tuple[ColoursLettersNumbersDiamond, ...]
+    missed_diamonds: int
+    cleared_diamonds: int
+    points: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,138 +75,140 @@ class ColoursLettersNumbersEvent:
     response_time_s: float
 
 
+@dataclass(slots=True)
+class _LiveDiamond:
+    id: int
+    color: str
+    row: int
+    x_norm: float
+
+
 class ColoursLettersNumbersGenerator:
     def __init__(self, rng: SeededRng):
         self._rng = rng
-        self._index = 0
 
     def next_trial(self, *, difficulty: float) -> ColoursLettersNumbersTrial:
         difficulty = 0.0 if difficulty <= 0.0 else 1.0 if difficulty >= 1.0 else float(difficulty)
-        kind = (
-            ColoursLettersNumbersQuestionKind.LETTER_MATCH
-            if self._index % 3 == 0
-            else (
-                ColoursLettersNumbersQuestionKind.EQUATION
-                if self._index % 3 == 1
-                else ColoursLettersNumbersQuestionKind.COLOR_COUNT
-            )
-        )
-
-        target = self._build_word(length=5)
-        options = self._build_options(target)
-
-        equation_text, equation_answer = self._build_equation(difficulty)
-        color_bars = self._build_color_bars(difficulty)
-
-        if kind is ColoursLettersNumbersQuestionKind.LETTER_MATCH:
-            expected_code = next((str(o.code) for o in options if o.label == target), "1")
-            prompt = "WHICH OPTION MATCHES THE TARGET STRING? (1-4)"
-            expected = expected_code
-        elif kind is ColoursLettersNumbersQuestionKind.EQUATION:
-            prompt = f"SOLVE: {equation_text}"
-            expected = str(equation_answer)
-        else:
-            target_color = color_bars[self._rng.randint(0, len(color_bars) - 1)]
-            prompt = f"HOW MANY {target_color} BARS ARE SHOWN?"
-            expected = str(sum(1 for c in color_bars if c == target_color))
-
-        self._index += 1
+        sequence = self._build_sequence(difficulty=difficulty)
+        options = self._build_options(sequence)
+        expected_option_code = next((o.code for o in options if o.label == sequence), 1)
+        math_prompt, math_answer = self._build_math(difficulty=difficulty)
         return ColoursLettersNumbersTrial(
-            kind=kind,
-            target=target,
+            target_sequence=sequence,
             options=options,
-            equation_text=equation_text,
-            color_bars=color_bars,
-            prompt=prompt,
-            expected=expected,
+            expected_option_code=expected_option_code,
+            math_prompt=math_prompt,
+            math_answer=math_answer,
         )
 
-    def _build_word(self, *, length: int) -> str:
+    def _build_sequence(self, *, difficulty: float) -> str:
         alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ"
-        chars = [alphabet[self._rng.randint(0, len(alphabet) - 1)] for _ in range(length)]
+        n = lerp_int(5, 6, difficulty)
+        chars = [alphabet[self._rng.randint(0, len(alphabet) - 1)] for _ in range(n)]
         return "".join(chars)
 
-    def _build_mutation(self, word: str) -> str:
-        alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ"
-        idx = int(self._rng.randint(0, len(word) - 1))
-        old = word[idx]
-        replacement = old
-        while replacement == old:
-            replacement = alphabet[self._rng.randint(0, len(alphabet) - 1)]
-        return f"{word[:idx]}{replacement}{word[idx + 1:]}"
-
-    def _build_options(self, target: str) -> tuple[ColoursLettersNumbersOption, ...]:
-        values = [target]
-        seen = {target}
-        while len(values) < 4:
-            candidate = self._build_mutation(target)
+    def _build_options(self, sequence: str) -> tuple[ColoursLettersNumbersOption, ...]:
+        variants = [sequence]
+        seen = {sequence}
+        while len(variants) < 4:
+            idx = int(self._rng.randint(0, len(sequence) - 1))
+            alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ"
+            replacement = sequence[idx]
+            while replacement == sequence[idx]:
+                replacement = alphabet[self._rng.randint(0, len(alphabet) - 1)]
+            candidate = f"{sequence[:idx]}{replacement}{sequence[idx + 1 :]}"
             if candidate in seen:
                 continue
-            values.append(candidate)
+            variants.append(candidate)
             seen.add(candidate)
 
-        # Deterministic in-place Fisher-Yates shuffle.
-        for i in range(len(values) - 1, 0, -1):
+        for i in range(len(variants) - 1, 0, -1):
             j = int(self._rng.randint(0, i))
-            values[i], values[j] = values[j], values[i]
+            variants[i], variants[j] = variants[j], variants[i]
 
-        return tuple(ColoursLettersNumbersOption(code=i + 1, label=v) for i, v in enumerate(values))
+        return tuple(
+            ColoursLettersNumbersOption(code=i + 1, label=s) for i, s in enumerate(variants)
+        )
 
-    def _build_equation(self, difficulty: float) -> tuple[str, int]:
+    def _build_math(self, *, difficulty: float) -> tuple[str, int]:
         lo = lerp_int(2, 4, difficulty)
-        hi = lerp_int(9, 14, difficulty)
+        hi = lerp_int(9, 16, difficulty)
         a = int(self._rng.randint(lo, hi))
         b = int(self._rng.randint(lo, hi))
-
-        op_pick = int(self._rng.randint(0, 2))
-        if op_pick == 0:
+        op = int(self._rng.randint(0, 2))
+        if op == 0:
             return f"{a} + {b} =", a + b
-        if op_pick == 1:
+        if op == 1:
             if a < b:
                 a, b = b, a
             return f"{a} - {b} =", a - b
         return f"{a} x {b} =", a * b
 
-    def _build_color_bars(self, difficulty: float) -> tuple[str, ...]:
-        palette = ("RED", "YELLOW", "GREEN", "BLUE")
-        n = lerp_int(4, 7, difficulty)
-        return tuple(palette[self._rng.randint(0, len(palette) - 1)] for _ in range(n))
-
 
 class ColoursLettersNumbersTest:
+    _LANE_COLORS = ("RED", "YELLOW", "GREEN", "BLUE")
+    _HIT_ZONE_START = 0.54
+    _HIT_ZONE_END = 0.98
+    _MAX_UPDATE_DT_S = 0.25
+
     def __init__(
         self,
         *,
         clock: Clock,
         seed: int,
         difficulty: float = 0.5,
-        practice_questions: int = 4,
-        scored_duration_s: float = 240.0,
+        config: ColoursLettersNumbersConfig | None = None,
     ) -> None:
+        cfg = config or ColoursLettersNumbersConfig()
         if not (0.0 <= difficulty <= 1.0):
             raise ValueError("difficulty must be in [0.0, 1.0]")
-        if practice_questions < 0:
-            raise ValueError("practice_questions must be >= 0")
-        if scored_duration_s <= 0.0:
+        if cfg.practice_rounds < 0:
+            raise ValueError("practice_rounds must be >= 0")
+        if cfg.scored_duration_s <= 0.0:
             raise ValueError("scored_duration_s must be > 0")
+        if cfg.round_duration_s <= 0.0:
+            raise ValueError("round_duration_s must be > 0")
+        if cfg.sequence_show_s <= 0.0:
+            raise ValueError("sequence_show_s must be > 0")
+        if cfg.diamond_spawn_interval_s <= 0.0:
+            raise ValueError("diamond_spawn_interval_s must be > 0")
+        if cfg.diamond_speed_norm_per_s <= 0.0:
+            raise ValueError("diamond_speed_norm_per_s must be > 0")
+        if cfg.max_live_diamonds <= 0:
+            raise ValueError("max_live_diamonds must be > 0")
 
         self._title = "Colours, Letters and Numbers"
         self._clock = clock
         self._difficulty = float(difficulty)
-        self._practice_questions = int(practice_questions)
-        self._scored_duration_s = float(scored_duration_s)
+        self._cfg = cfg
 
         self._gen = ColoursLettersNumbersGenerator(SeededRng(int(seed)))
+        self._rng = SeededRng(int(seed) ^ 0xA53F_91B7)
 
         self._phase = Phase.INSTRUCTIONS
-        self._current: ColoursLettersNumbersTrial | None = None
-        self._question_presented_at_s: float | None = None
 
-        self._practice_answered = 0
+        self._memory_current: ColoursLettersNumbersTrial | None = None
+        self._math_current: ColoursLettersNumbersTrial | None = None
+
+        self._memory_cycle_started_at_s: float | None = None
+        self._last_update_s: float | None = None
+        self._spawn_cooldown_s: float = cfg.diamond_spawn_interval_s
+        self._memory_answered = False
+
+        self._memory_prompted_at_s: float | None = None
+        self._math_prompted_at_s: float | None = None
+
+        self._practice_memory_cycles_completed = 0
         self._scored_started_at_s: float | None = None
         self._scored_attempted = 0
         self._scored_correct = 0
+        self._scored_points = 0.0
+        self._scored_cleared = 0
+        self._scored_missed = 0
+
         self._events: list[ColoursLettersNumbersEvent] = []
+        self._diamonds: list[_LiveDiamond] = []
+        self._next_diamond_id = 1
 
     def can_exit(self) -> bool:
         return self._phase is not Phase.SCORED
@@ -193,98 +220,73 @@ class ColoursLettersNumbersTest:
     def start_practice(self) -> None:
         if self._phase is not Phase.INSTRUCTIONS:
             return
-        if self._practice_questions == 0:
+        if self._cfg.practice_rounds == 0:
             self._phase = Phase.PRACTICE_DONE
             return
         self._phase = Phase.PRACTICE
-        self._deal_new_trial()
+        self._start_channels()
 
     def start_scored(self) -> None:
         if self._phase is not Phase.PRACTICE_DONE:
             return
         self._phase = Phase.SCORED
         self._scored_started_at_s = self._clock.now()
-        self._deal_new_trial()
+        self._start_channels()
 
     def time_remaining_s(self) -> float | None:
         if self._phase is not Phase.SCORED:
             return None
         assert self._scored_started_at_s is not None
         elapsed = self._clock.now() - self._scored_started_at_s
-        return max(0.0, self._scored_duration_s - elapsed)
+        return max(0.0, self._cfg.scored_duration_s - elapsed)
 
     def update(self) -> None:
         if self._phase is Phase.SCORED and self.time_remaining_s() == 0.0:
             self._finish_to_results()
+            return
+        if self._phase not in (Phase.PRACTICE, Phase.SCORED):
+            return
+        if self._memory_cycle_started_at_s is None:
+            return
+
+        now = self._clock.now()
+        if self._last_update_s is None:
+            self._last_update_s = now
+        dt = max(0.0, now - self._last_update_s)
+        self._last_update_s = now
+        dt = min(dt, self._MAX_UPDATE_DT_S)
+
+        self._update_diamonds(dt)
+        self._update_memory_cycle(now)
 
     def submit_answer(self, raw: str) -> bool:
         if self._phase not in (Phase.PRACTICE, Phase.SCORED):
             return False
-
-        expired = self._phase is Phase.SCORED and self.time_remaining_s() == 0.0
-
-        assert self._current is not None
-        assert self._question_presented_at_s is not None
-
-        raw_text = str(raw).strip()
-        if raw_text.startswith("-"):
-            rest = "".join(ch for ch in raw_text[1:] if ch.isdigit())
-            user = f"-{rest}" if rest else ""
-        else:
-            user = "".join(ch for ch in raw_text if ch.isdigit())
-        if user == "":
-            if expired:
-                self._finish_to_results()
+        if self._memory_current is None or self._math_current is None:
             return False
 
-        answered_at_s = self._clock.now()
-        rt = max(0.0, answered_at_s - self._question_presented_at_s)
-        expected = self._current.expected
+        command = str(raw).strip()
+        if command == "":
+            return False
 
-        try:
-            is_correct = int(user) == int(expected)
-        except ValueError:
-            is_correct = user == expected
-
-        self._events.append(
-            ColoursLettersNumbersEvent(
-                phase=self._phase,
-                kind=self._current.kind,
-                expected=expected,
-                response=user,
-                is_correct=is_correct,
-                response_time_s=rt,
-            )
-        )
-
-        if self._phase is Phase.SCORED:
-            self._scored_attempted += 1
-            if is_correct:
-                self._scored_correct += 1
-        else:
-            self._practice_answered += 1
-
-        if expired and self._phase is Phase.SCORED:
-            self._finish_to_results()
-            return True
-
-        if self._phase is Phase.PRACTICE and self._practice_answered >= self._practice_questions:
-            self._phase = Phase.PRACTICE_DONE
-            self._current = None
-            self._question_presented_at_s = None
-            return True
-
-        self._deal_new_trial()
-        return True
+        if command.upper().startswith("MEM:"):
+            return self._submit_memory(command[4:])
+        if command.upper().startswith("CLR:"):
+            return self._submit_color(command[4:])
+        return self._submit_math(command)
 
     def scored_summary(self) -> AttemptSummary:
-        duration_s = float(self._scored_duration_s)
+        duration_s = float(self._cfg.scored_duration_s)
         attempted = int(self._scored_attempted)
         correct = int(self._scored_correct)
         accuracy = 0.0 if attempted == 0 else correct / attempted
         throughput = (attempted / duration_s) * 60.0
         rts = [e.response_time_s for e in self._events if e.phase is Phase.SCORED]
         mean_rt = None if not rts else (sum(rts) / len(rts))
+
+        total_score = float(self._scored_points)
+        max_score = (attempted * 2.0) + (self._scored_cleared * 0.5)
+        score_ratio = 0.0 if max_score <= 0.0 else clamp01(max(0.0, total_score) / max_score)
         return AttemptSummary(
             attempted=attempted,
             correct=correct,
@@ -292,6 +294,9 @@ class ColoursLettersNumbersTest:
             duration_s=duration_s,
             throughput_per_min=float(throughput),
             mean_response_time_s=mean_rt,
+            total_score=total_score,
+            max_score=max_score,
+            score_ratio=score_ratio,
         )
 
     def snapshot(self) -> TestSnapshot:
@@ -299,24 +304,50 @@ class ColoursLettersNumbersTest:
             title=self._title,
             phase=self._phase,
             prompt=self._prompt_text(),
-            input_hint="Type numeric answer then Enter",
+            input_hint="Math answer: type number then Enter",
             time_remaining_s=self.time_remaining_s(),
             attempted_scored=self._scored_attempted,
             correct_scored=self._scored_correct,
             payload=self._payload(),
         )
 
+    def _options_active(self) -> bool:
+        if self._memory_cycle_started_at_s is None:
+            return False
+        return (self._clock.now() - self._memory_cycle_started_at_s) >= self._cfg.sequence_show_s
+
     def _payload(self) -> ColoursLettersNumbersPayload | None:
         if self._phase not in (Phase.PRACTICE, Phase.SCORED):
             return None
-        assert self._current is not None
+        if self._memory_current is None or self._math_current is None:
+            return None
+
+        options_active = self._options_active()
+        target_sequence = self._memory_current.target_sequence if not options_active else None
+
+        diamonds = tuple(
+            ColoursLettersNumbersDiamond(
+                id=d.id,
+                color=d.color,
+                row=d.row,
+                x_norm=float(d.x_norm),
+            )
+            for d in self._diamonds
+        )
         return ColoursLettersNumbersPayload(
-            kind=self._current.kind,
-            target=self._current.target,
-            options=self._current.options,
-            equation_text=self._current.equation_text,
-            color_bars=self._current.color_bars,
-            prompt=self._current.prompt,
+            target_sequence=target_sequence,
+            options=self._memory_current.options,
+            options_active=options_active,
+            memory_answered=self._memory_answered,
+            math_answered=False,
+            math_prompt=self._math_current.math_prompt,
+            lane_colors=self._LANE_COLORS,
+            lane_start_norm=self._HIT_ZONE_START,
+            lane_end_norm=self._HIT_ZONE_END,
+            diamonds=diamonds,
+            missed_diamonds=self._scored_missed,
+            cleared_diamonds=self._scored_cleared,
+            points=float(self._scored_points),
         )
 
     def _prompt_text(self) -> str:
@@ -325,12 +356,14 @@ class ColoursLettersNumbersTest:
                 [
                     "Colours, Letters and Numbers",
                     "",
-                    "Shift attention between multiple task channels.",
-                    "- Match letter strings",
-                    "- Solve simple arithmetic",
-                    "- Monitor colour bars",
+                    "1) Memorize the sequence shown at the top.",
+                    "2) After it disappears, click the matching corner option (mouse).",
+                    "3) Solve math by typing a number then Enter (no math timer).",
+                    "4) Clear moving diamonds with color keys while over matching zones:",
+                    "   Q=Blue, W=Green, E=Yellow, R=Red (right to left).",
+                    "Memory, math, and colours run on separate loops.",
+                    "Letting diamonds pass reduces score.",
                     "",
-                    "Type numeric answers and press Enter.",
                     "Press Enter to start practice.",
                 ]
             )
@@ -338,7 +371,9 @@ class ColoursLettersNumbersTest:
             return "Practice complete. Press Enter to begin the timed test."
         if self._phase is Phase.RESULTS:
             s = self.scored_summary()
-            mean_ms = "—" if s.mean_response_time_s is None else f"{s.mean_response_time_s * 1000.0:.0f}"
+            mean_ms = (
+                "—" if s.mean_response_time_s is None else f"{s.mean_response_time_s * 1000.0:.0f}"
+            )
             mm = int(round(s.duration_s)) // 60
             ss = int(round(s.duration_s)) % 60
             return "\n".join(
@@ -351,21 +386,243 @@ class ColoursLettersNumbersTest:
                     f"Time:      {mm:02d}:{ss:02d}",
                     f"Rate:      {s.throughput_per_min:.1f} / min",
                     f"Mean RT:   {mean_ms} ms",
+                    f"Cleared:   {self._scored_cleared}",
+                    f"Missed:    {self._scored_missed}",
+                    f"Score:     {s.total_score:.1f}",
                     "",
                     "Press Enter to return.",
                 ]
             )
-        assert self._current is not None
-        return self._current.prompt
+        if self._math_current is None:
+            return ""
+        return self._math_current.math_prompt
 
-    def _deal_new_trial(self) -> None:
-        self._current = self._gen.next_trial(difficulty=self._difficulty)
-        self._question_presented_at_s = self._clock.now()
+    def _start_channels(self) -> None:
+        now = self._clock.now()
+        self._last_update_s = now
+        self._spawn_cooldown_s = self._cfg.diamond_spawn_interval_s
+        self._diamonds.clear()
+        self._start_memory_cycle(now)
+        self._start_math_cycle(now)
+
+    def _start_memory_cycle(self, now: float) -> None:
+        trial = self._gen.next_trial(difficulty=self._difficulty)
+        self._memory_current = trial
+        self._memory_cycle_started_at_s = now
+        self._memory_prompted_at_s = now + self._cfg.sequence_show_s
+        self._memory_answered = False
+
+    def _start_math_cycle(self, now: float) -> None:
+        trial = self._gen.next_trial(difficulty=self._difficulty)
+        self._math_current = trial
+        self._math_prompted_at_s = now
+
+    def _update_memory_cycle(self, now: float) -> None:
+        if self._memory_current is None or self._memory_cycle_started_at_s is None:
+            return
+
+        elapsed = now - self._memory_cycle_started_at_s
+        if elapsed < self._cfg.round_duration_s:
+            return
+
+        if not self._memory_answered:
+            self._record_memory_result(
+                now=now,
+                response="TIMEOUT",
+                is_correct=False,
+            )
+
+        if self._phase is Phase.PRACTICE:
+            self._practice_memory_cycles_completed += 1
+            if self._practice_memory_cycles_completed >= self._cfg.practice_rounds:
+                self._phase = Phase.PRACTICE_DONE
+                self._clear_task_state()
+                return
+
+        self._start_memory_cycle(now)
+
+    def _clear_task_state(self) -> None:
+        self._memory_current = None
+        self._math_current = None
+        self._memory_cycle_started_at_s = None
+        self._last_update_s = None
+        self._memory_prompted_at_s = None
+        self._math_prompted_at_s = None
+        self._memory_answered = False
+        self._diamonds.clear()
 
     def _finish_to_results(self) -> None:
         self._phase = Phase.RESULTS
-        self._current = None
-        self._question_presented_at_s = None
+        self._clear_task_state()
+
+    def _update_diamonds(self, dt: float) -> None:
+        if dt <= 0.0:
+            return
+
+        self._spawn_cooldown_s -= dt
+        if self._spawn_cooldown_s <= 0.0:
+            interval = self._cfg.diamond_spawn_interval_s
+            overdue = -self._spawn_cooldown_s
+            spawn_steps = 1 + int(overdue // interval)
+            self._spawn_cooldown_s += float(spawn_steps) * interval
+
+            spawn_slots = max(0, self._cfg.max_live_diamonds - len(self._diamonds))
+            for _ in range(min(spawn_steps, spawn_slots)):
+                self._spawn_diamond()
+
+        survivors: list[_LiveDiamond] = []
+        for d in self._diamonds:
+            d.x_norm += self._cfg.diamond_speed_norm_per_s * dt
+            if d.x_norm >= 1.02:
+                if self._phase is Phase.SCORED:
+                    self._scored_missed += 1
+                    self._scored_points -= 1.0
+                continue
+            survivors.append(d)
+        self._diamonds = survivors
+
+    def _spawn_diamond(self) -> None:
+        color = str(self._rng.choice(self._LANE_COLORS))
+        row = int(self._rng.randint(0, 2))
+        d = _LiveDiamond(
+            id=self._next_diamond_id,
+            color=color,
+            row=row,
+            x_norm=0.02,
+        )
+        self._next_diamond_id += 1
+        self._diamonds.append(d)
+
+    def _record_memory_result(self, *, now: float, response: str, is_correct: bool) -> None:
+        if self._memory_current is None:
+            return
+        base = self._memory_prompted_at_s if self._memory_prompted_at_s is not None else now
+        rt = max(0.0, now - base)
+        self._events.append(
+            ColoursLettersNumbersEvent(
+                phase=self._phase,
+                kind=ColoursLettersNumbersQuestionKind.MEMORY_SEQUENCE,
+                expected=str(self._memory_current.expected_option_code),
+                response=str(response),
+                is_correct=is_correct,
+                response_time_s=rt,
+            )
+        )
+        self._memory_answered = True
+
+        if self._phase is Phase.SCORED:
+            self._scored_attempted += 1
+            if is_correct:
+                self._scored_correct += 1
+                self._scored_points += 2.0
+
+    def _submit_memory(self, raw_code: str) -> bool:
+        if self._memory_current is None:
+            return False
+        if not self._options_active():
+            return False
+        if self._memory_answered:
+            return False
+
+        code_text = "".join(ch for ch in str(raw_code) if ch.isdigit())
+        if code_text == "":
+            return False
+        code = int(code_text)
+        is_correct = code == int(self._memory_current.expected_option_code)
+
+        now = self._clock.now()
+        self._record_memory_result(now=now, response=str(code), is_correct=is_correct)
+        return True
+
+    def _submit_math(self, raw_text: str) -> bool:
+        if self._math_current is None:
+            return False
+
+        text = str(raw_text).strip()
+        if text == "":
+            return False
+        if text.startswith("-"):
+            digits = "".join(ch for ch in text[1:] if ch.isdigit())
+            if digits == "":
+                return False
+            value = -int(digits)
+        else:
+            digits = "".join(ch for ch in text if ch.isdigit())
+            if digits == "":
+                return False
+            value = int(digits)
+
+        is_correct = int(value) == int(self._math_current.math_answer)
+
+        now = self._clock.now()
+        base = self._math_prompted_at_s if self._math_prompted_at_s is not None else now
+        rt = max(0.0, now - base)
+
+        self._events.append(
+            ColoursLettersNumbersEvent(
+                phase=self._phase,
+                kind=ColoursLettersNumbersQuestionKind.MATH,
+                expected=str(self._math_current.math_answer),
+                response=str(value),
+                is_correct=is_correct,
+                response_time_s=rt,
+            )
+        )
+
+        if self._phase is Phase.SCORED:
+            self._scored_attempted += 1
+            if is_correct:
+                self._scored_correct += 1
+                self._scored_points += 2.0
+
+        self._start_math_cycle(now)
+        return True
+
+    def _submit_color(self, raw_key: str) -> bool:
+        key = str(raw_key).strip().upper()
+        key_map = {
+            # Gameplay mapping is right-to-left: Q, W, E, R.
+            "Q": "BLUE",
+            "W": "GREEN",
+            "E": "YELLOW",
+            "R": "RED",
+            # Backward-compatible aliases.
+            "Y": "YELLOW",
+            "G": "GREEN",
+            "B": "BLUE",
+        }
+        color = key_map.get(key)
+        if color is None:
+            return False
+
+        lane_bounds = self._color_lane_bounds(color)
+        if lane_bounds is None:
+            return False
+        lane_start, lane_end = lane_bounds
+        lane_mid = (lane_start + lane_end) * 0.5
+        candidates = [
+            d for d in self._diamonds if d.color == color and lane_start <= d.x_norm <= lane_end
+        ]
+        if not candidates:
+            return False
+
+        best = min(candidates, key=lambda d: abs(d.x_norm - lane_mid))
+        self._diamonds = [d for d in self._diamonds if d.id != best.id]
+
+        if self._phase is Phase.SCORED:
+            self._scored_cleared += 1
+            self._scored_points += 0.5
+        return True
+
+    def _color_lane_bounds(self, color: str) -> tuple[float, float] | None:
+        try:
+            idx = self._LANE_COLORS.index(color)
+        except ValueError:
+            return None
+        lane_w = (self._HIT_ZONE_END - self._HIT_ZONE_START) / float(len(self._LANE_COLORS))
+        lane_start = self._HIT_ZONE_START + (lane_w * float(idx))
+        lane_end = lane_start + lane_w
+        return lane_start, lane_end
 
 
 def build_colours_letters_numbers_test(
@@ -374,12 +631,33 @@ def build_colours_letters_numbers_test(
     seed: int,
     difficulty: float = 0.5,
     practice: bool = True,
-    scored_duration_s: float = 240.0,
+    scored_duration_s: float | None = None,
+    config: ColoursLettersNumbersConfig | None = None,
 ) -> ColoursLettersNumbersTest:
+    cfg = config or ColoursLettersNumbersConfig()
+    if not practice:
+        cfg = ColoursLettersNumbersConfig(
+            scored_duration_s=cfg.scored_duration_s,
+            practice_rounds=0,
+            round_duration_s=cfg.round_duration_s,
+            sequence_show_s=cfg.sequence_show_s,
+            diamond_spawn_interval_s=cfg.diamond_spawn_interval_s,
+            diamond_speed_norm_per_s=cfg.diamond_speed_norm_per_s,
+            max_live_diamonds=cfg.max_live_diamonds,
+        )
+    if scored_duration_s is not None:
+        cfg = ColoursLettersNumbersConfig(
+            scored_duration_s=float(scored_duration_s),
+            practice_rounds=cfg.practice_rounds,
+            round_duration_s=cfg.round_duration_s,
+            sequence_show_s=cfg.sequence_show_s,
+            diamond_spawn_interval_s=cfg.diamond_spawn_interval_s,
+            diamond_speed_norm_per_s=cfg.diamond_speed_norm_per_s,
+            max_live_diamonds=cfg.max_live_diamonds,
+        )
     return ColoursLettersNumbersTest(
         clock=clock,
         seed=seed,
         difficulty=difficulty,
-        practice_questions=(4 if practice else 0),
-        scored_duration_s=float(scored_duration_s),
+        config=cfg,
     )

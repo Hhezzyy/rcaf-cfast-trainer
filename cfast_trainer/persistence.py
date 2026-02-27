@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from pathlib import Path
 import sqlite3
 import time
+from pathlib import Path
 
 from .results import AttemptResult
 
@@ -83,7 +83,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
             """
         )
         conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_cognitive_event_attempt_seq ON cognitive_event(attempt_id, seq);"
+            "CREATE INDEX IF NOT EXISTS idx_cognitive_event_attempt_seq "
+            "ON cognitive_event(attempt_id, seq);"
         )
         conn.execute(f"PRAGMA user_version={SCHEMA_VERSION};")
 
@@ -144,7 +145,9 @@ def _insert_attempt(*, conn: sqlite3.Connection, result: AttemptResult, app_vers
             "median_rt_ms": median_rt,
         }
         for k, v in metrics.items():
-            conn.execute("INSERT INTO metric(attempt_id, key, value) VALUES (?, ?, ?)", (attempt_id, k, v))
+            conn.execute(
+                "INSERT INTO metric(attempt_id, key, value) VALUES (?, ?, ?)", (attempt_id, k, v)
+            )
 
         for e in result.events:
             # Map QuestionEvent -> persistence schema.

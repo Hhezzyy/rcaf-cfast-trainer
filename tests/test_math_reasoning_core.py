@@ -1,8 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import cast
 
-from cfast_trainer.math_reasoning import MathReasoningConfig, MathReasoningGenerator, build_math_reasoning_test
+from cfast_trainer.math_reasoning import (
+    MathReasoningConfig,
+    MathReasoningGenerator,
+    MathReasoningPayload,
+    build_math_reasoning_test,
+)
 
 
 @dataclass
@@ -25,6 +31,33 @@ def test_generator_determinism_same_seed_same_sequence() -> None:
     seq2 = [gen2.next_problem(difficulty=0.3) for _ in range(25)]
 
     assert [(p.prompt, p.answer) for p in seq1] == [(p.prompt, p.answer) for p in seq2]
+
+
+def test_generated_problem_has_payload_with_four_unique_options() -> None:
+    gen = MathReasoningGenerator(seed=17)
+    problem = gen.next_problem(difficulty=0.7)
+    payload = cast(MathReasoningPayload, problem.payload)
+
+    assert isinstance(payload, MathReasoningPayload)
+    assert len(payload.options) == 4
+    assert [opt.code for opt in payload.options] == [1, 2, 3, 4]
+
+    values = [opt.value for opt in payload.options]
+    assert len(set(values)) == 4
+    assert problem.answer == payload.correct_code
+    assert any(
+        opt.code == payload.correct_code and opt.value == payload.correct_value
+        for opt in payload.options
+    )
+
+
+def test_generator_stream_contains_multiple_domains() -> None:
+    gen = MathReasoningGenerator(seed=555)
+    domains: set[str] = set()
+    for _ in range(48):
+        payload = cast(MathReasoningPayload, gen.next_problem(difficulty=0.8).payload)
+        domains.add(payload.domain)
+    assert len(domains) >= 4
 
 
 def test_session_lifecycle_including_practice_gate() -> None:
@@ -72,3 +105,22 @@ def test_session_lifecycle_including_practice_gate() -> None:
     s = engine.scored_summary()
     assert s.attempted == 1
     assert s.correct == 1
+
+
+def test_timer_boundary_transitions_to_results_and_rejects_late_submit() -> None:
+    seed = 404
+    clock = FakeClock()
+
+    engine = build_math_reasoning_test(
+        clock=clock,
+        seed=seed,
+        difficulty=0.5,
+        config=MathReasoningConfig(scored_duration_s=2.0, practice_questions=0),
+    )
+    engine.start_scored()
+
+    clock.advance(2.0)
+    engine.update()
+
+    assert engine.phase.value == "results"
+    assert engine.submit_answer("1") is False

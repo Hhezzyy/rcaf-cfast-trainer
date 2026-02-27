@@ -85,8 +85,7 @@ class SystemLogicGenerator:
 
         unit_hint = payload.answer_unit if payload.answer_unit else "value"
         prompt = (
-            f"{payload.scenario_code}\n{payload.question}\n"
-            f"Enter whole-number answer ({unit_hint})."
+            f"{payload.scenario_code}\n{payload.question}\nEnter whole-number answer ({unit_hint})."
         )
         return Problem(prompt=prompt, answer=payload.correct_value, payload=payload)
 

@@ -59,8 +59,9 @@ def test_headless_scripted_run_produces_expected_summary() -> None:
     assert engine.submit_answer(str(p2.answer)) is True
 
     p3 = gen.next_problem(difficulty=difficulty)
+    wrong_choice = 1 if p3.answer != 1 else 2
     clock.advance(0.5)
-    assert engine.submit_answer(str(p3.answer + 10)) is True
+    assert engine.submit_answer(str(wrong_choice)) is True
 
     # Expire timer.
     clock.advance(6.0)
@@ -70,3 +71,6 @@ def test_headless_scripted_run_produces_expected_summary() -> None:
     s = engine.scored_summary()
     assert s.attempted == 3
     assert s.correct == 2
+    assert s.accuracy == 2 / 3
+    assert s.throughput_per_min == 30.0
+    assert s.mean_response_time_s == 0.5

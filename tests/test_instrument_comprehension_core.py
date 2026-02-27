@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import pytest
 
@@ -12,6 +12,7 @@ from cfast_trainer.instrument_comprehension import (
     InstrumentComprehensionScorer,
     InstrumentComprehensionTrialKind,
     InstrumentOption,
+    InstrumentState,
     build_instrument_comprehension_test,
 )
 
@@ -40,54 +41,59 @@ def test_generator_determinism_same_seed_same_sequence() -> None:
     ]
 
 
+def test_generator_emits_all_required_trial_kinds() -> None:
+    gen = InstrumentComprehensionGenerator(seed=1234)
+    seen: set[InstrumentComprehensionTrialKind] = set()
+    for _ in range(120):
+        p = gen.next_problem(difficulty=0.6)
+        payload = p.payload
+        assert isinstance(payload, InstrumentComprehensionPayload)
+        seen.add(payload.kind)
+
+    assert seen == {
+        InstrumentComprehensionTrialKind.INSTRUMENTS_TO_DESCRIPTION,
+        InstrumentComprehensionTrialKind.DESCRIPTION_TO_INSTRUMENTS,
+        InstrumentComprehensionTrialKind.INSTRUMENTS_TO_AIRCRAFT,
+    }
+
+
 def test_scoring_exact_and_estimation_behavior() -> None:
     scorer = InstrumentComprehensionScorer()
 
+    base = InstrumentState(
+        speed_kts=240,
+        altitude_ft=1500,
+        vertical_rate_fpm=-400,
+        bank_deg=-10,
+        pitch_deg=-4,
+        heading_deg=315,
+        slip=0,
+    )
     payload = InstrumentComprehensionPayload(
-        kind=InstrumentComprehensionTrialKind.ATTITUDE_MATCH,
-        heading_deg=90,
-        bank_deg=20,
-        pitch_deg=8,
-        verbal_cue="Instrument cue",
+        kind=InstrumentComprehensionTrialKind.INSTRUMENTS_TO_DESCRIPTION,
+        prompt_state=base,
+        prompt_description="Speed 240 knots ...",
         options=(
+            InstrumentOption(code=1, state=base, description="A"),
+            InstrumentOption(code=2, state=replace(base, heading_deg=330), description="B"),
+            InstrumentOption(code=3, state=replace(base, altitude_ft=2200), description="C"),
             InstrumentOption(
-                code=1,
-                label="bank right 20°, nose up 8°, HDG 090",
-                bank_deg=20,
-                pitch_deg=8,
-                heading_deg=90,
-            ),
-            InstrumentOption(
-                code=2,
-                label="bank right 20°, nose up 8°, HDG 110",
-                bank_deg=20,
-                pitch_deg=8,
-                heading_deg=110,
-            ),
-            InstrumentOption(
-                code=3,
-                label="bank left 20°, nose up 8°, HDG 090",
-                bank_deg=-20,
-                pitch_deg=8,
-                heading_deg=90,
-            ),
-            InstrumentOption(
-                code=4,
-                label="bank left 20°, nose down 8°, HDG 170",
-                bank_deg=-20,
-                pitch_deg=-8,
-                heading_deg=170,
+                code=4, state=replace(base, bank_deg=25, pitch_deg=8), description="D"
             ),
         ),
-        option_errors=(0, 20, 55, 100),
+        option_errors=(0, 15, 42, 98),
         full_credit_error=0,
-        zero_credit_error=80,
+        zero_credit_error=90,
     )
-    problem = Problem(prompt="Pick the best option", answer=1, payload=payload)
+    problem = Problem(prompt="Pick best", answer=1, payload=payload)
 
     assert scorer.score(problem=problem, user_answer=1, raw="1") == pytest.approx(1.0)
-    assert scorer.score(problem=problem, user_answer=2, raw="2") == pytest.approx((80 - 20) / 80, abs=1e-9)
-    assert scorer.score(problem=problem, user_answer=3, raw="3") == pytest.approx((80 - 55) / 80, abs=1e-9)
+    assert scorer.score(problem=problem, user_answer=2, raw="2") == pytest.approx(
+        (90 - 15) / 90, abs=1e-9
+    )
+    assert scorer.score(problem=problem, user_answer=3, raw="3") == pytest.approx(
+        (90 - 42) / 90, abs=1e-9
+    )
     assert scorer.score(problem=problem, user_answer=4, raw="4") == pytest.approx(0.0)
     assert scorer.score(problem=problem, user_answer=9, raw="9") == pytest.approx(0.0)
 

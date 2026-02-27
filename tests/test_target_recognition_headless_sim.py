@@ -4,12 +4,12 @@ from dataclasses import dataclass
 
 import pytest
 
-from cfast_trainer.angles_bearings_degrees import (
-    AnglesBearingsDegreesConfig,
-    AnglesBearingsDegreesGenerator,
-    build_angles_bearings_degrees_test,
-)
 from cfast_trainer.cognitive_core import Phase
+from cfast_trainer.target_recognition import (
+    TargetRecognitionConfig,
+    TargetRecognitionGenerator,
+    build_target_recognition_test,
+)
 
 
 @dataclass
@@ -20,21 +20,21 @@ class FakeClock:
         return self.t
 
     def advance(self, dt: float) -> None:
-        self.t += dt
+        self.t += float(dt)
 
 
-def test_headless_scripted_run_produces_expected_summary_and_scores() -> None:
-    seed = 808
-    difficulty = 0.6
+def test_headless_scripted_run_produces_expected_summary_and_partial_scores() -> None:
+    seed = 5151
+    difficulty = 0.58
     clock = FakeClock()
 
-    engine = build_angles_bearings_degrees_test(
+    engine = build_target_recognition_test(
         clock=clock,
         seed=seed,
         difficulty=difficulty,
-        config=AnglesBearingsDegreesConfig(scored_duration_s=6.0, practice_questions=1),
+        config=TargetRecognitionConfig(scored_duration_s=6.0, practice_questions=1),
     )
-    mirror = AnglesBearingsDegreesGenerator(seed=seed)
+    mirror = TargetRecognitionGenerator(seed=seed)
 
     engine.start_practice()
     assert engine.phase is Phase.PRACTICE
@@ -53,12 +53,11 @@ def test_headless_scripted_run_produces_expected_summary_and_scores() -> None:
 
     p2 = mirror.next_problem(difficulty=difficulty)
     clock.advance(0.5)
-    assert engine.submit_answer(str(p2.answer)) is True
+    assert engine.submit_answer(str(p2.answer + 1)) is True
 
     p3 = mirror.next_problem(difficulty=difficulty)
-    wrong = 1 if p3.answer != 1 else 2
     clock.advance(0.5)
-    assert engine.submit_answer(str(wrong)) is True
+    assert engine.submit_answer(str(p3.answer + 3)) is True
 
     clock.advance(6.0)
     engine.update()
@@ -66,12 +65,12 @@ def test_headless_scripted_run_produces_expected_summary_and_scores() -> None:
 
     summary = engine.scored_summary()
     assert summary.attempted == 3
-    assert summary.correct == 2
-    assert summary.accuracy == pytest.approx(2 / 3)
+    assert summary.correct == 1
+    assert summary.accuracy == pytest.approx(1 / 3)
     assert summary.mean_response_time_s == pytest.approx(0.5)
 
     scored_events = [e for e in engine.events() if e.phase is Phase.SCORED]
     assert len(scored_events) == 3
     assert scored_events[0].score == pytest.approx(1.0)
-    assert scored_events[1].score == pytest.approx(1.0)
+    assert 0.0 < scored_events[1].score < 1.0
     assert scored_events[2].score == pytest.approx(0.0)

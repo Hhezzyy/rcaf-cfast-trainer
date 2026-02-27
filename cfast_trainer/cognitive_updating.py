@@ -5,6 +5,79 @@ from dataclasses import dataclass
 from .clock import Clock
 from .cognitive_core import AnswerScorer, Problem, SeededRng, TimedTextInputTest, clamp01, lerp_int
 
+GRACE_WINDOW_S = 5
+EVAL_INTERVAL_S = 5.0
+BUTTON_FLASH_S = 0.35
+PUMP_RISE_PER_S = 0.60
+PUMP_FALL_PER_S = 0.32
+KNOTS_DRIFT_PER_S = 0.50
+ACTIVE_TANK_DRAIN_PER_S = 1.00
+IDLE_TANK_DRAIN_PER_S = 0.00
+MESSAGE_REVEAL_LAT_S = 3.0
+MESSAGE_REVEAL_LON_S = 11.0
+MESSAGE_REVEAL_COMMS_S = 15.0
+MESSAGE_REVEAL_TIME_S = 23.0
+
+
+def _clamp_int(value: int, low: int, high: int) -> int:
+    return max(low, min(high, int(value)))
+
+
+def _clamp_float(value: float, low: float, high: float) -> float:
+    return max(float(low), min(float(high), float(value)))
+
+
+def _distance_score(*, user_answer: int, target: int, tolerance: int) -> float:
+    delta = abs(int(user_answer) - int(target))
+    if delta == 0:
+        return 1.0
+    tol = max(1, int(tolerance))
+    max_delta = tol * 2
+    if delta >= max_delta:
+        return 0.0
+    return float(max_delta - delta) / float(max_delta)
+
+
+def _domain_score(*, bad_ticks: int, eval_ticks: int, manual_hits: int) -> int:
+    if eval_ticks <= 0:
+        base = 100
+    else:
+        ratio = float(max(0, bad_ticks)) / float(max(1, eval_ticks))
+        base = int(round(100.0 * (1.0 - ratio)))
+    bonus = min(20, max(0, int(manual_hits)) * 2)
+    return _clamp_int(base + bonus, 0, 100)
+
+
+def _task_points(*, due_s: int, first_action_s: float | None) -> int:
+    if first_action_s is None:
+        return 0
+    return 25 if abs(float(first_action_s) - float(due_s)) <= float(GRACE_WINDOW_S) else 0
+
+
+def _parse_hms(hms: str) -> int:
+    token = str(hms).strip()
+    parts = token.split(":")
+    if len(parts) != 3:
+        return 0
+    try:
+        hh = int(parts[0])
+        mm = int(parts[1])
+        ss = int(parts[2])
+    except ValueError:
+        return 0
+    hh = max(0, min(23, hh))
+    mm = max(0, min(59, mm))
+    ss = max(0, min(59, ss))
+    return (hh * 3600) + (mm * 60) + ss
+
+
+def _fmt_hms(total_seconds: int) -> str:
+    value = int(total_seconds) % (24 * 3600)
+    hh = value // 3600
+    mm = (value % 3600) // 60
+    ss = value % 60
+    return f"{hh:02d}:{mm:02d}:{ss:02d}"
+
 
 @dataclass(frozen=True, slots=True)
 class CognitiveUpdatingPayload:
@@ -29,6 +102,7 @@ class CognitiveUpdatingPayload:
     air_sensor_due_s: int
     ground_sensor_due_s: int
     parcel_target: tuple[int, int, int]
+    objective_deadline_s: int
     dispenser_lit: int
     question: str
     answer_unit: str
@@ -51,8 +125,42 @@ class CognitiveUpdatingActionEvent:
 
 
 @dataclass(frozen=True, slots=True)
+class CognitiveUpdatingSubmission:
+    entered_code: str
+    state_code: str
+    controls_score: int
+    navigation_score: int
+    engine_score: int
+    sensors_score: int
+    objectives_score: int
+    warnings_penalty_points: int
+    overall_score: int
+    event_count: int
+
+
+def decode_cognitive_updating_submission_raw(raw: str) -> CognitiveUpdatingSubmission | None:
+    digits = "".join(ch for ch in str(raw).strip() if ch.isdigit())
+    if len(digits) < 32:
+        return None
+    value = digits[:32]
+    return CognitiveUpdatingSubmission(
+        entered_code=value[0:4],
+        state_code=value[4:8],
+        controls_score=_clamp_int(int(value[8:11]), 0, 100),
+        navigation_score=_clamp_int(int(value[11:14]), 0, 100),
+        engine_score=_clamp_int(int(value[14:17]), 0, 100),
+        sensors_score=_clamp_int(int(value[17:20]), 0, 100),
+        objectives_score=_clamp_int(int(value[20:23]), 0, 100),
+        warnings_penalty_points=_clamp_int(int(value[23:26]), 0, 999),
+        overall_score=_clamp_int(int(value[26:29]), 0, 100),
+        event_count=_clamp_int(int(value[29:32]), 0, 999),
+    )
+
+
+@dataclass(frozen=True, slots=True)
 class CognitiveUpdatingRuntimeSnapshot:
     elapsed_s: int
+    clock_hms: str
     current_knots: int
     pump_on: bool
     active_tank: int
@@ -67,131 +175,86 @@ class CognitiveUpdatingRuntimeSnapshot:
     air_time_left_s: int
     ground_time_left_s: int
     comms_time_left_s: int
+    objective_deadline_left_s: int
     state_code: str
     operation_score_hint: float
     event_count: int
-
-
-def _distance_score(*, user_answer: int, target: int, tolerance: int) -> float:
-    delta = abs(int(user_answer) - int(target))
-    if delta == 0:
-        return 1.0
-    tol = max(1, int(tolerance))
-    max_delta = tol * 2
-    if delta >= max_delta:
-        return 0.0
-    return float(max_delta - delta) / float(max_delta)
-
-
-def _pressure_digit(*, payload: CognitiveUpdatingPayload, pump_on: bool) -> int:
-    adjusted_pressure = int(payload.pressure_value) + (4 if pump_on else -4)
-    if adjusted_pressure < int(payload.pressure_low):
-        return 1
-    if adjusted_pressure > int(payload.pressure_high):
-        return 3
-    return 2
-
-
-def _speed_digit(*, payload: CognitiveUpdatingPayload, current_knots: int) -> int:
-    low = int(payload.required_knots) - 10
-    high = int(payload.required_knots) + 10
-    if int(current_knots) < low:
-        return 1
-    if int(current_knots) > high:
-        return 3
-    return 2
-
-
-def _camera_digit(
-    *,
-    payload: CognitiveUpdatingPayload,
-    alpha_armed_at_s: float | None,
-    bravo_armed_at_s: float | None,
-) -> int:
-    alpha_due = int(payload.alpha_camera_due_s)
-    bravo_due = int(payload.bravo_camera_due_s)
-
-    if alpha_due <= bravo_due:
-        primary_armed = alpha_armed_at_s
-        primary_due = alpha_due
-        alternate_armed = bravo_armed_at_s
-        alternate_due = bravo_due
-    else:
-        primary_armed = bravo_armed_at_s
-        primary_due = bravo_due
-        alternate_armed = alpha_armed_at_s
-        alternate_due = alpha_due
-
-    if primary_armed is not None and primary_armed <= primary_due:
-        return 1
-    if alternate_armed is not None and alternate_armed <= alternate_due:
-        return 2
-    return 3
-
-
-def _sensor_digit(
-    *,
-    payload: CognitiveUpdatingPayload,
-    air_armed_at_s: float | None,
-    ground_armed_at_s: float | None,
-) -> int:
-    air_due = int(payload.air_sensor_due_s)
-    ground_due = int(payload.ground_sensor_due_s)
-
-    if air_due <= ground_due:
-        primary_armed = air_armed_at_s
-        primary_due = air_due
-        alternate_armed = ground_armed_at_s
-        alternate_due = ground_due
-    else:
-        primary_armed = ground_armed_at_s
-        primary_due = ground_due
-        alternate_armed = air_armed_at_s
-        alternate_due = air_due
-
-    if primary_armed is not None and primary_armed <= primary_due:
-        return 1
-    if alternate_armed is not None and alternate_armed <= alternate_due:
-        return 2
-    return 3
-
-
-def _operation_score_from_state_code(state_code: str) -> float:
-    if len(state_code) != 4 or not state_code.isdigit():
-        return 0.0
-    digits = tuple(int(ch) for ch in state_code)
-    checks = (
-        digits[0] == 1,  # camera timing task
-        digits[1] == 2,  # pressure in nominal range
-        digits[2] == 2,  # speed in nominal range
-        digits[3] == 1,  # sensor timing task
-    )
-    return float(sum(1 for ok in checks if ok)) / 4.0
+    pressure_value: int
+    tank_levels_l: tuple[int, int, int]
+    warning_lines: tuple[str, ...]
+    message_lines: tuple[str, ...]
+    controls_score: int
+    navigation_score: int
+    engine_score: int
+    sensors_score: int
+    objectives_score: int
+    warnings_penalty_points: int
+    overall_score: int
+    objective_drop_ready: bool
+    objective_drop_complete: bool
 
 
 class CognitiveUpdatingRuntime:
-    """Deterministic state machine for panel operations and countdowns."""
+    """Deterministic state machine for panel operations, warnings, and scoring."""
 
     def __init__(self, *, payload: CognitiveUpdatingPayload, clock: Clock) -> None:
         self._payload = payload
         self._clock = clock
         self._started_at_s = float(clock.now())
+        self._clock_base_s = _parse_hms(payload.clock_hms)
+        self._last_advance_s = 0.0
+        self._next_eval_s = EVAL_INTERVAL_S
 
-        self._current_knots = int(payload.current_knots)
+        self._pressure_value = float(payload.pressure_value)
+        self._current_knots = float(payload.current_knots)
+        self._tank_levels = [
+            float(payload.tank_levels_l[0]),
+            float(payload.tank_levels_l[1]),
+            float(payload.tank_levels_l[2]),
+        ]
+
         self._pump_on = bool(payload.pump_on)
         self._active_tank = int(payload.active_tank)
-        self._alpha_armed = False
-        self._bravo_armed = False
-        self._air_sensor_armed = False
-        self._ground_sensor_armed = False
         self._alpha_armed_at_s: float | None = None
         self._bravo_armed_at_s: float | None = None
         self._air_sensor_armed_at_s: float | None = None
         self._ground_sensor_armed_at_s: float | None = None
+        self._alpha_last_press_s: float | None = None
+        self._bravo_last_press_s: float | None = None
+        self._air_last_press_s: float | None = None
+        self._ground_last_press_s: float | None = None
+        self._alpha_hits = 0
+        self._bravo_hits = 0
+        self._air_hits = 0
+        self._ground_hits = 0
+        self._alpha_interval_s = max(8, int(payload.alpha_camera_due_s))
+        self._bravo_interval_s = max(8, int(payload.bravo_camera_due_s))
+        self._air_interval_s = max(8, int(payload.air_sensor_due_s))
+        self._ground_interval_s = max(8, int(payload.ground_sensor_due_s))
+        self._alpha_next_due_s = float(payload.alpha_camera_due_s)
+        self._bravo_next_due_s = float(payload.bravo_camera_due_s)
+        self._air_next_due_s = float(payload.air_sensor_due_s)
+        self._ground_next_due_s = float(payload.ground_sensor_due_s)
+
         self._parcel_values = ["", "", ""]
         self._active_parcel_field = 0
         self._comms_input = ""
-        self._dispenser_lit = int(payload.dispenser_lit)
+
+        self._objective_cycle_duration_s = max(1, int(payload.objective_deadline_s))
+        self._objective_deadline_s = float(self._objective_cycle_duration_s)
+        self._objective_successes = 0
+        self._objective_last_drop_late = False
+        self._objective_last_drop_at_s: float | None = None
+
+        self._eval_ticks = 0
+        self._controls_bad_ticks = 0
+        self._navigation_bad_ticks = 0
+        self._engine_bad_ticks = 0
+        self._warning_penalty_points = 0
+        self._controls_input_hits = 0
+        self._navigation_input_hits = 0
+        self._engine_input_hits = 0
+
         self._events: list[CognitiveUpdatingActionEvent] = []
 
     def _now_elapsed_s(self) -> float:
@@ -199,80 +262,221 @@ class CognitiveUpdatingRuntime:
 
     def _record(self, action: str, value: str) -> None:
         self._events.append(
-            CognitiveUpdatingActionEvent(
-                at_s=self._now_elapsed_s(),
-                action=action,
-                value=value,
-            )
+            CognitiveUpdatingActionEvent(at_s=self._now_elapsed_s(), action=action, value=value)
         )
 
+    def _controls_in_range(self) -> bool:
+        return (
+            int(self._payload.pressure_low)
+            <= int(round(self._pressure_value))
+            <= int(self._payload.pressure_high)
+        )
+
+    def _navigation_in_range(self) -> bool:
+        return abs(int(round(self._current_knots)) - int(self._payload.required_knots)) <= 10
+
+    def _tank_spread(self) -> int:
+        values = [int(round(v)) for v in self._tank_levels]
+        return max(values) - min(values)
+
+    def _engine_in_range(self) -> bool:
+        return self._tank_spread() < 50
+
+    def _camera_overdue(self, at_s: float) -> bool:
+        return (at_s > float(self._alpha_next_due_s + GRACE_WINDOW_S)) or (
+            at_s > float(self._bravo_next_due_s + GRACE_WINDOW_S)
+        )
+
+    def _sensor_overdue(self, at_s: float) -> bool:
+        return (at_s > float(self._air_next_due_s + GRACE_WINDOW_S)) or (
+            at_s > float(self._ground_next_due_s + GRACE_WINDOW_S)
+        )
+
+    def _objective_mistyped(self) -> bool:
+        for typed, token in zip(self._parcel_values, self._parcel_target_tokens(), strict=True):
+            if typed == "":
+                continue
+            if len(typed) > len(token):
+                return True
+            if not token.startswith(typed):
+                return True
+        return False
+
+    def _parcel_exact(self) -> bool:
+        for typed, token in zip(self._parcel_values, self._parcel_target_tokens(), strict=True):
+            if typed != token:
+                return False
+        return True
+
+    def _parcel_target_tokens(self) -> tuple[str, str, str]:
+        lat, lon, time_code = self._payload.parcel_target
+        return (
+            f"{int(lat):06d}",
+            f"{int(lon):06d}",
+            f"{int(time_code):06d}",
+        )
+
+    def _objective_drop_ready(self) -> bool:
+        return (not self._objective_mistyped()) and self._parcel_exact()
+
+    def _collect_warnings(self, at_s: float) -> tuple[str, ...]:
+        warnings: list[str] = []
+        if not self._controls_in_range():
+            warnings.append("Check Pressure")
+        if not self._navigation_in_range():
+            warnings.append("Air Speed Warning")
+        if not self._engine_in_range():
+            warnings.append("Engine Panel")
+        if self._camera_overdue(at_s) or self._sensor_overdue(at_s):
+            warnings.append("Sensor Panel")
+        if self._objective_mistyped() or (at_s > float(self._objective_deadline_s)):
+            warnings.append("Objective Warning")
+        return tuple(warnings)
+
+    def _evaluate_interval(self, at_s: float) -> None:
+        self._eval_ticks += 1
+        if not self._controls_in_range():
+            self._controls_bad_ticks += 1
+        if not self._navigation_in_range():
+            self._navigation_bad_ticks += 1
+        if not self._engine_in_range():
+            self._engine_bad_ticks += 1
+        self._warning_penalty_points += len(self._collect_warnings(at_s))
+
+    def _advance(self) -> float:
+        now_s = self._now_elapsed_s()
+        dt = now_s - self._last_advance_s
+        if dt <= 0.0:
+            return now_s
+
+        if self._pump_on:
+            self._pressure_value += PUMP_RISE_PER_S * dt
+        else:
+            self._pressure_value -= PUMP_FALL_PER_S * dt
+        self._pressure_value = _clamp_float(self._pressure_value, 65.0, 138.0)
+
+        if self._current_knots >= float(self._payload.required_knots):
+            self._current_knots += KNOTS_DRIFT_PER_S * dt
+        else:
+            self._current_knots -= KNOTS_DRIFT_PER_S * dt
+        self._current_knots = _clamp_float(self._current_knots, 40.0, 220.0)
+
+        for idx in range(3):
+            drain = (
+                ACTIVE_TANK_DRAIN_PER_S if (idx + 1) == self._active_tank else IDLE_TANK_DRAIN_PER_S
+            )
+            self._tank_levels[idx] = max(260.0, self._tank_levels[idx] - (drain * dt))
+
+        while self._next_eval_s <= now_s + 1e-9:
+            self._evaluate_interval(self._next_eval_s)
+            self._next_eval_s += EVAL_INTERVAL_S
+
+        self._last_advance_s = now_s
+        return now_s
+
     def toggle_camera(self, camera: str) -> None:
+        self._advance()
         now_s = self._now_elapsed_s()
         token = camera.strip().lower()
         if token == "alpha":
-            self._alpha_armed = not self._alpha_armed
-            if self._alpha_armed and self._alpha_armed_at_s is None:
+            if abs(float(now_s) - float(self._alpha_next_due_s)) <= float(GRACE_WINDOW_S):
+                self._alpha_hits += 1
+            self._alpha_last_press_s = now_s
+            self._alpha_next_due_s = now_s + float(self._alpha_interval_s)
+            if self._alpha_armed_at_s is None:
                 self._alpha_armed_at_s = now_s
-            self._record("camera_alpha", "1" if self._alpha_armed else "0")
+            self._record("camera_alpha", "1")
             return
         if token == "bravo":
-            self._bravo_armed = not self._bravo_armed
-            if self._bravo_armed and self._bravo_armed_at_s is None:
+            if abs(float(now_s) - float(self._bravo_next_due_s)) <= float(GRACE_WINDOW_S):
+                self._bravo_hits += 1
+            self._bravo_last_press_s = now_s
+            self._bravo_next_due_s = now_s + float(self._bravo_interval_s)
+            if self._bravo_armed_at_s is None:
                 self._bravo_armed_at_s = now_s
-            self._record("camera_bravo", "1" if self._bravo_armed else "0")
+            self._record("camera_bravo", "1")
 
     def toggle_sensor(self, sensor: str) -> None:
+        self._advance()
         now_s = self._now_elapsed_s()
         token = sensor.strip().lower()
         if token == "air":
-            self._air_sensor_armed = not self._air_sensor_armed
-            if self._air_sensor_armed and self._air_sensor_armed_at_s is None:
+            if abs(float(now_s) - float(self._air_next_due_s)) <= float(GRACE_WINDOW_S):
+                self._air_hits += 1
+            self._air_last_press_s = now_s
+            self._air_next_due_s = now_s + float(self._air_interval_s)
+            if self._air_sensor_armed_at_s is None:
                 self._air_sensor_armed_at_s = now_s
-            self._record("sensor_air", "1" if self._air_sensor_armed else "0")
+            self._record("sensor_air", "1")
             return
         if token == "ground":
-            self._ground_sensor_armed = not self._ground_sensor_armed
-            if self._ground_sensor_armed and self._ground_sensor_armed_at_s is None:
+            if abs(float(now_s) - float(self._ground_next_due_s)) <= float(GRACE_WINDOW_S):
+                self._ground_hits += 1
+            self._ground_last_press_s = now_s
+            self._ground_next_due_s = now_s + float(self._ground_interval_s)
+            if self._ground_sensor_armed_at_s is None:
                 self._ground_sensor_armed_at_s = now_s
-            self._record("sensor_ground", "1" if self._ground_sensor_armed else "0")
+            self._record("sensor_ground", "1")
 
     def set_pump(self, on: bool) -> None:
+        self._advance()
         self._pump_on = bool(on)
+        if self._controls_in_range():
+            self._controls_input_hits += 1
         self._record("pump", "1" if self._pump_on else "0")
 
     def adjust_knots(self, delta: int) -> None:
+        self._advance()
         change = int(delta)
         if change == 0:
             return
-        self._current_knots = max(40, min(260, self._current_knots + change))
-        self._record("knots", str(self._current_knots))
+        self._current_knots = _clamp_float(self._current_knots + float(change), 40.0, 220.0)
+        if self._navigation_in_range():
+            self._navigation_input_hits += 1
+        self._record("knots", str(int(round(self._current_knots))))
 
     def set_active_tank(self, tank: int) -> None:
-        idx = max(1, min(3, int(tank)))
+        self._advance()
+        idx = _clamp_int(tank, 1, 3)
         self._active_tank = idx
+        if self._engine_in_range():
+            self._engine_input_hits += 1
         self._record("tank", str(idx))
 
     def activate_dispenser(self) -> None:
-        self._dispenser_lit = min(5, self._dispenser_lit + 1)
-        self._record("dispenser", str(self._dispenser_lit))
+        self._advance()
+        now_s = self._now_elapsed_s()
+        ready = self._objective_drop_ready()
+        if ready:
+            self._objective_successes += 1
+            self._objective_last_drop_late = now_s > float(self._objective_deadline_s)
+            self._objective_last_drop_at_s = now_s
+            self._parcel_values = ["", "", ""]
+            self._active_parcel_field = 0
+            self._objective_deadline_s = now_s + float(self._objective_cycle_duration_s)
+        self._record("objective_drop", "1" if ready else "0")
 
     def set_parcel_field(self, index: int) -> None:
-        idx = max(0, min(2, int(index)))
+        self._advance()
+        idx = _clamp_int(index, 0, 2)
         self._active_parcel_field = idx
         self._record("parcel_field", str(idx))
 
     def append_parcel_digit(self, digit: str) -> None:
+        self._advance()
         if len(digit) != 1 or not digit.isdigit():
             return
-        idx = max(0, min(2, self._active_parcel_field))
-        if len(self._parcel_values[idx]) >= 4:
+        idx = _clamp_int(self._active_parcel_field, 0, 2)
+        target_len = len(self._parcel_target_tokens()[idx])
+        if len(self._parcel_values[idx]) >= target_len:
             return
         self._parcel_values[idx] += digit
         self._record("parcel_digit", digit)
-        if len(self._parcel_values[idx]) >= 3 and idx < 2:
+        if len(self._parcel_values[idx]) >= target_len and idx < 2:
             self._active_parcel_field = idx + 1
 
     def append_comms_digit(self, digit: str) -> None:
+        self._advance()
         if len(digit) != 1 or not digit.isdigit():
             return
         if len(self._comms_input) >= 4:
@@ -281,53 +485,216 @@ class CognitiveUpdatingRuntime:
         self._record("comms_digit", digit)
 
     def clear_comms(self) -> None:
+        self._advance()
         self._comms_input = ""
         self._record("comms_clear", "")
 
+    def _camera_score(self) -> int:
+        return _clamp_int((self._alpha_hits + self._bravo_hits) * 25, 0, 50)
+
+    def _sensor_score(self) -> int:
+        return _clamp_int((self._air_hits + self._ground_hits) * 25, 0, 50)
+
+    def _objectives_score(self) -> int:
+        if self._objective_mistyped():
+            return 0
+        if self._objective_successes > 0:
+            return 40 if self._objective_last_drop_late else 100
+        if self._objective_drop_ready():
+            return 80
+        filled = sum(1 for v in self._parcel_values if v != "")
+        return _clamp_int(filled * 20, 0, 60)
+
+    def _objective_lights(self) -> int:
+        completed_fields = sum(
+            1
+            for typed, token in zip(self._parcel_values, self._parcel_target_tokens(), strict=True)
+            if typed == token
+        )
+        lights = 1 + completed_fields
+        if self._objective_drop_ready():
+            return 5
+        return _clamp_int(lights, 1, 4)
+
+    def _camera_digit(self) -> int:
+        if self._camera_score() >= 50:
+            return 1
+        if (self._alpha_hits + self._bravo_hits) > 0:
+            return 2
+        return 3
+
+    def _sensor_digit(self) -> int:
+        if self._sensor_score() >= 50:
+            return 1
+        if (self._air_hits + self._ground_hits) > 0:
+            return 2
+        return 3
+
+    def _pressure_digit(self) -> int:
+        pressure = int(round(self._pressure_value))
+        if pressure < int(self._payload.pressure_low):
+            return 1
+        if pressure > int(self._payload.pressure_high):
+            return 3
+        return 2
+
+    def _speed_digit(self) -> int:
+        speed = int(round(self._current_knots))
+        low = int(self._payload.required_knots) - 10
+        high = int(self._payload.required_knots) + 10
+        if speed < low:
+            return 1
+        if speed > high:
+            return 3
+        return 2
+
     def state_code(self) -> str:
-        cam_digit = _camera_digit(
-            payload=self._payload,
-            alpha_armed_at_s=self._alpha_armed_at_s,
-            bravo_armed_at_s=self._bravo_armed_at_s,
+        self._advance()
+        return (
+            f"{self._camera_digit()}"
+            f"{self._pressure_digit()}"
+            f"{self._speed_digit()}"
+            f"{self._sensor_digit()}"
         )
-        pressure_digit = _pressure_digit(payload=self._payload, pump_on=self._pump_on)
-        speed_digit = _speed_digit(payload=self._payload, current_knots=self._current_knots)
-        sensor_digit = _sensor_digit(
-            payload=self._payload,
-            air_armed_at_s=self._air_sensor_armed_at_s,
-            ground_armed_at_s=self._ground_sensor_armed_at_s,
-        )
-        return f"{cam_digit}{pressure_digit}{speed_digit}{sensor_digit}"
 
     def build_submission_raw(self) -> str:
+        self._advance()
         if len(self._comms_input) != 4:
             return ""
-        code = self.state_code()
-        event_count = min(99, len(self._events))
-        return f"{self._comms_input}{code}{event_count:02d}"
+        snap = self.snapshot()
+        return (
+            f"{self._comms_input}"
+            f"{snap.state_code}"
+            f"{snap.controls_score:03d}"
+            f"{snap.navigation_score:03d}"
+            f"{snap.engine_score:03d}"
+            f"{snap.sensors_score:03d}"
+            f"{snap.objectives_score:03d}"
+            f"{snap.warnings_penalty_points:03d}"
+            f"{snap.overall_score:03d}"
+            f"{min(999, len(self._events)):03d}"
+        )
 
     def snapshot(self) -> CognitiveUpdatingRuntimeSnapshot:
-        elapsed = int(self._now_elapsed_s())
-        code = self.state_code()
+        now_s = float(self._advance())
+        elapsed = int(now_s)
+        controls_score = _domain_score(
+            bad_ticks=self._controls_bad_ticks,
+            eval_ticks=self._eval_ticks,
+            manual_hits=self._controls_input_hits,
+        )
+        navigation_score = _domain_score(
+            bad_ticks=self._navigation_bad_ticks,
+            eval_ticks=self._eval_ticks,
+            manual_hits=self._navigation_input_hits,
+        )
+        engine_score = _domain_score(
+            bad_ticks=self._engine_bad_ticks,
+            eval_ticks=self._eval_ticks,
+            manual_hits=self._engine_input_hits,
+        )
+        sensors_score = _clamp_int(self._camera_score() + self._sensor_score(), 0, 100)
+        objectives_score = self._objectives_score()
+        overall_score = _clamp_int(
+            int(
+                round(
+                    (
+                        controls_score
+                        + navigation_score
+                        + engine_score
+                        + sensors_score
+                        + objectives_score
+                    )
+                    / 5
+                )
+            )
+            - int(self._warning_penalty_points),
+            0,
+            100,
+        )
+
+        warning_lines = self._collect_warnings(float(elapsed))
+        air_left = max(0, int(round(self._air_next_due_s - now_s)))
+        ground_left = max(0, int(round(self._ground_next_due_s - now_s)))
+        alpha_due_hms = _fmt_hms(self._clock_base_s + int(round(self._alpha_next_due_s)))
+        bravo_due_hms = _fmt_hms(self._clock_base_s + int(round(self._bravo_next_due_s)))
+        target_lat, target_lon, target_time = self._parcel_target_tokens()
+        latitude_line = f"Latitude: {target_lat}" if now_s >= MESSAGE_REVEAL_LAT_S else ""
+        longitude_line = f"Longitude: {target_lon}" if now_s >= MESSAGE_REVEAL_LON_S else ""
+        time_line = f"Time: {target_time}" if now_s >= MESSAGE_REVEAL_TIME_S else ""
+        comms_line = (
+            f"Comms Code: {self._payload.comms_code[:3]}" if now_s >= MESSAGE_REVEAL_COMMS_S else ""
+        )
+        message_lines = (
+            latitude_line,
+            longitude_line,
+            time_line,
+            comms_line,
+            f"Activate Alpha Camera at: {alpha_due_hms}",
+            f"Activate Bravo Camera at: {bravo_due_hms}",
+        )
+        deadline_left = max(0, int(round(self._objective_deadline_s - now_s)))
+
+        alpha_flash = (
+            self._alpha_last_press_s is not None
+            and (now_s - float(self._alpha_last_press_s)) <= BUTTON_FLASH_S
+        )
+        bravo_flash = (
+            self._bravo_last_press_s is not None
+            and (now_s - float(self._bravo_last_press_s)) <= BUTTON_FLASH_S
+        )
+        air_flash = (
+            self._air_last_press_s is not None
+            and (now_s - float(self._air_last_press_s)) <= BUTTON_FLASH_S
+        )
+        ground_flash = (
+            self._ground_last_press_s is not None
+            and (now_s - float(self._ground_last_press_s)) <= BUTTON_FLASH_S
+        )
+
+        drop_flash = (
+            self._objective_last_drop_at_s is not None
+            and (now_s - float(self._objective_last_drop_at_s)) <= BUTTON_FLASH_S
+        )
+
         return CognitiveUpdatingRuntimeSnapshot(
             elapsed_s=elapsed,
-            current_knots=self._current_knots,
+            clock_hms=_fmt_hms(self._clock_base_s + elapsed),
+            current_knots=int(round(self._current_knots)),
             pump_on=self._pump_on,
             active_tank=self._active_tank,
-            alpha_armed=self._alpha_armed,
-            bravo_armed=self._bravo_armed,
-            air_sensor_armed=self._air_sensor_armed,
-            ground_sensor_armed=self._ground_sensor_armed,
+            alpha_armed=alpha_flash,
+            bravo_armed=bravo_flash,
+            air_sensor_armed=air_flash,
+            ground_sensor_armed=ground_flash,
             parcel_values=(self._parcel_values[0], self._parcel_values[1], self._parcel_values[2]),
             active_parcel_field=self._active_parcel_field,
             comms_input=self._comms_input,
-            dispenser_lit=self._dispenser_lit,
-            air_time_left_s=max(0, int(self._payload.air_sensor_due_s) - elapsed),
-            ground_time_left_s=max(0, int(self._payload.ground_sensor_due_s) - elapsed),
+            dispenser_lit=self._objective_lights(),
+            air_time_left_s=air_left,
+            ground_time_left_s=ground_left,
             comms_time_left_s=max(0, int(self._payload.comms_time_limit_s) - elapsed),
-            state_code=code,
-            operation_score_hint=_operation_score_from_state_code(code),
+            objective_deadline_left_s=deadline_left,
+            state_code=self.state_code(),
+            operation_score_hint=float(overall_score) / 100.0,
             event_count=len(self._events),
+            pressure_value=int(round(self._pressure_value)),
+            tank_levels_l=(
+                int(round(self._tank_levels[0])),
+                int(round(self._tank_levels[1])),
+                int(round(self._tank_levels[2])),
+            ),
+            warning_lines=warning_lines,
+            message_lines=message_lines,
+            controls_score=controls_score,
+            navigation_score=navigation_score,
+            engine_score=engine_score,
+            sensors_score=sensors_score,
+            objectives_score=objectives_score,
+            warnings_penalty_points=int(self._warning_penalty_points),
+            overall_score=overall_score,
+            objective_drop_ready=self._objective_drop_ready(),
+            objective_drop_complete=drop_flash,
         )
 
     def events(self) -> tuple[CognitiveUpdatingActionEvent, ...]:
@@ -335,27 +702,36 @@ class CognitiveUpdatingRuntime:
 
 
 class CognitiveUpdatingScorer(AnswerScorer):
-    """Score code entry plus operation quality from deterministic runtime state."""
+    """Score code entry plus per-domain performance and warning penalties."""
 
     def score(self, *, problem: Problem, user_answer: int, raw: str) -> float:
         payload = problem.payload
         if not isinstance(payload, CognitiveUpdatingPayload):
             return 1.0 if int(user_answer) == int(problem.answer) else 0.0
 
-        digits = "".join(ch for ch in str(raw).strip() if ch.isdigit())
-        if len(digits) >= 8:
-            entered_text = digits[0:4]
-            state_text = digits[4:8]
-            entered = int(entered_text)
-            target = int(state_text)
+        decoded = decode_cognitive_updating_submission_raw(raw)
+        if decoded is not None:
             code_score = _distance_score(
-                user_answer=entered,
-                target=target,
+                user_answer=int(decoded.entered_code),
+                target=int(decoded.state_code),
                 tolerance=max(1, int(payload.estimate_tolerance)),
             )
-            ops_score = _operation_score_from_state_code(state_text)
-            combined = (0.7 * code_score) + (0.3 * ops_score)
-            return max(0.0, min(1.0, combined))
+            sub_avg = (
+                float(decoded.controls_score)
+                + float(decoded.navigation_score)
+                + float(decoded.engine_score)
+                + float(decoded.sensors_score)
+                + float(decoded.objectives_score)
+            ) / 500.0
+            overall_component = float(decoded.overall_score) / 100.0
+            warning_factor = min(0.80, float(decoded.warnings_penalty_points) / 100.0)
+            combined = (
+                (0.45 * code_score)
+                + (0.35 * overall_component)
+                + (0.20 * sub_avg)
+                - (0.20 * warning_factor)
+            )
+            return _clamp_float(combined, 0.0, 1.0)
 
         return _distance_score(
             user_answer=int(user_answer),
@@ -396,52 +772,32 @@ class CognitiveUpdatingGenerator:
 
         pressure_low = self._rng.randint(86, 94)
         pressure_high = pressure_low + self._rng.randint(14, 20)
-        pressure_state = self._rng.randint(0, 2)
-        pressure_span = lerp_int(16, 8, difficulty)
-        if pressure_state == 0:
-            pressure_value = pressure_low - self._rng.randint(1, pressure_span)
-            pressure_digit = 1
-            pressure_warning = "Check Pressure"
-            pump_on = True
-        elif pressure_state == 1:
-            pressure_value = self._rng.randint(pressure_low, pressure_high)
-            pressure_digit = 2
-            pressure_warning = "Pressure Nominal"
-            pump_on = bool(self._rng.randint(0, 1))
-        else:
-            pressure_value = pressure_high + self._rng.randint(1, pressure_span)
-            pressure_digit = 3
-            pressure_warning = "Pressure High"
-            pump_on = False
+        pressure_value = self._rng.randint(pressure_low, pressure_high)
+        pressure_digit = 2
+        pressure_warning = "Pressure Nominal"
+        pump_on = bool(self._rng.randint(0, 1))
 
         required_knots = self._rng.randint(90, 160)
-        speed_state = self._rng.randint(0, 2)
-        speed_span = lerp_int(24, 12, difficulty)
-        if speed_state == 0:
-            current_knots = required_knots - (10 + self._rng.randint(1, speed_span))
-            speed_digit = 1
-            speed_warning = "CHECK AIRSPEED"
-        elif speed_state == 1:
-            current_knots = required_knots + self._rng.randint(-10, 10)
-            speed_digit = 2
-            speed_warning = "AIRSPEED NOMINAL"
-        else:
-            current_knots = required_knots + (10 + self._rng.randint(1, speed_span))
-            speed_digit = 3
-            speed_warning = "AIRSPEED WARNING"
+        current_knots = required_knots + self._rng.randint(-4, 4)
+        speed_digit = 2
+        speed_warning = "AIRSPEED NOMINAL"
         current_knots = max(40, current_knots)
 
-        tank_levels = tuple(self._rng.randint(360, 460) for _ in range(3))
+        tank_center = self._rng.randint(390, 450)
+        tank_levels = tuple(
+            _clamp_int(tank_center + self._rng.randint(-12, 12), 320, 520) for _ in range(3)
+        )
         active_tank = self._rng.randint(1, 3)
 
         warning_lines = [pressure_warning, speed_warning]
         if min(air_sensor_due_s, ground_sensor_due_s) <= 20:
             warning_lines.append("SENSOR PANEL")
 
-        parcel_lat = self._rng.randint(120, 950)
-        parcel_lon = self._rng.randint(120, 950)
-        parcel_time = self._rng.randint(1, 59)
-        dispenser_lit = self._rng.randint(0, 4)
+        parcel_lat = self._rng.randint(100000, 999999)
+        parcel_lon = self._rng.randint(100000, 999999)
+        parcel_time = int(self._fmt_hms(self._rng.randint(0, (24 * 3600) - 1)).replace(":", ""))
+        objective_deadline_s = self._rng.randint(25, 75)
+        dispenser_lit = 0
 
         answer_digits = (camera_digit, pressure_digit, speed_digit, sensor_digit)
         answer_text = "".join(str(d) for d in answer_digits)
@@ -477,6 +833,7 @@ class CognitiveUpdatingGenerator:
             air_sensor_due_s=air_sensor_due_s,
             ground_sensor_due_s=ground_sensor_due_s,
             parcel_target=(parcel_lat, parcel_lon, parcel_time),
+            objective_deadline_s=objective_deadline_s,
             dispenser_lit=dispenser_lit,
             question="Enter the 4-digit comms code from the live panel state.",
             answer_unit="code",
@@ -496,11 +853,7 @@ class CognitiveUpdatingGenerator:
 
     @staticmethod
     def _fmt_hms(total_seconds: int) -> str:
-        value = int(total_seconds) % (24 * 3600)
-        hh = value // 3600
-        mm = (value % 3600) // 60
-        ss = value % 60
-        return f"{hh:02d}:{mm:02d}:{ss:02d}"
+        return _fmt_hms(total_seconds)
 
 
 def build_cognitive_updating_test(
@@ -519,16 +872,17 @@ def build_cognitive_updating_test(
         "Manage and coordinate simultaneous system tasks using dual multifunction displays.",
         "You must update priorities while monitoring warnings and clock cues.",
         "",
-        "Goal:",
-        "Compute and enter the 4-digit comms code from the live panel state.",
+        "Scoring model:",
+        "- Domain subscores: Controls, Navigation, Engine, Sensors, Objectives",
+        "- Warnings are sampled every 5 seconds and subtract points",
+        "- Late sensor/objective timing earns no points and increases warning penalty",
         "",
-        "Controls during questions: mouse tabs/buttons or keyboard shortcuts.",
+        "Controls:",
         "- Q/E: switch upper display (Messages, Objectives, Controls)",
         "- A/D: switch lower display (Navigation, Sensors, Engine)",
-        "- Type digits and press Enter, or use panel keypads",
+        "- No backspace editing",
+        "- Enter or Comms Submit sends your coded response",
         "",
-        "No backspace editing is available during this test.",
-        "Score combines code accuracy with operation quality from your panel actions.",
         "Once the timed block starts, continue until completion.",
     ]
 

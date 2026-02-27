@@ -50,7 +50,7 @@ class AirborneScenario:
 
     # per-problem label (helps UI/tests)
     question_kind: str  # "arrival_time" | "empty_time"
-    target_label: str   # destination code or "EMPTY"
+    target_label: str  # destination code or "EMPTY"
 
     # convenience aliases (fixes Pylance red + keeps old UI code working)
     @property
@@ -92,7 +92,15 @@ TEMPLATES: tuple[MapTemplate, ...] = (
     ),
     MapTemplate(
         name="T5",
-        nodes=((0.10, 0.20), (0.35, 0.15), (0.60, 0.12), (0.85, 0.20), (0.25, 0.55), (0.55, 0.55), (0.85, 0.60)),
+        nodes=(
+            (0.10, 0.20),
+            (0.35, 0.15),
+            (0.60, 0.12),
+            (0.85, 0.20),
+            (0.25, 0.55),
+            (0.55, 0.55),
+            (0.85, 0.60),
+        ),
         edges=((0, 1), (1, 2), (2, 3), (0, 4), (4, 5), (5, 2), (5, 6), (6, 3)),
     ),
     MapTemplate(
@@ -105,9 +113,31 @@ TEMPLATES: tuple[MapTemplate, ...] = (
 TEMPLATES_BY_NAME = {t.name: t for t in TEMPLATES}
 
 _NODE_CODES = (
-    "ALP", "BRV", "CHL", "DLT", "ECO", "FOX", "GLF", "HIL", "IND", "JUL",
-    "KIL", "MKE", "NVR", "OPS", "PRM", "QNT", "RDL", "SNR", "TNG", "ULS",
-    "VCT", "WHS", "XRY", "YLD", "ZUL",
+    "ALP",
+    "BRV",
+    "CHL",
+    "DLT",
+    "ECO",
+    "FOX",
+    "GLF",
+    "HIL",
+    "IND",
+    "JUL",
+    "KIL",
+    "MKE",
+    "NVR",
+    "OPS",
+    "PRM",
+    "QNT",
+    "RDL",
+    "SNR",
+    "TNG",
+    "ULS",
+    "VCT",
+    "WHS",
+    "XRY",
+    "YLD",
+    "ZUL",
 )
 
 
@@ -130,7 +160,7 @@ def _minutes_to_hhmm_int(minutes: int) -> int:
 
 def _route_minutes(legs: tuple[RouteLeg, ...], speed_value: int) -> int:
     # Round once at final answer (your preference).
-    total_dist = sum(l.distance for l in legs)
+    total_dist = sum(leg.distance for leg in legs)
     return int(round_half_up((total_dist / max(speed_value, 1)) * 60.0))
 
 
@@ -165,7 +195,9 @@ def _pick_node_names(rng: SeededRng, n: int) -> tuple[str, ...]:
     return tuple(picks)
 
 
-def _make_weight_speed_table(rng: SeededRng, speed_unit: str) -> tuple[tuple[tuple[int, int], ...], int, int]:
+def _make_weight_speed_table(
+    rng: SeededRng, speed_unit: str
+) -> tuple[tuple[tuple[int, int], ...], int, int]:
     weights = sorted(rng.sample(list(range(150, 851, 50)), k=6))
     parcel_weight = int(rng.choice(weights))
 
@@ -187,7 +219,9 @@ def _make_weight_speed_table(rng: SeededRng, speed_unit: str) -> tuple[tuple[tup
     return (tuple(rows), parcel_weight, chosen_speed)
 
 
-def _make_speed_fuel_table(rng: SeededRng, speed_unit: str, chosen_speed: int) -> tuple[tuple[tuple[int, int], ...], int]:
+def _make_speed_fuel_table(
+    rng: SeededRng, speed_unit: str, chosen_speed: int
+) -> tuple[tuple[tuple[int, int], ...], int]:
     if speed_unit == "km/h":
         step = 40
         lo, hi = 220, 600
@@ -228,7 +262,7 @@ class AirborneNumericalGenerator:
 
     def check(self, problem: Problem, user_answer: int) -> bool:
         return int(user_answer) == int(problem.answer)
-    
+
     def next_problem(self, *, difficulty: float) -> Problem:
         _ = difficulty
         return self.generate()
@@ -349,4 +383,4 @@ def build_airborne_numerical_test(
         difficulty=difficulty,
         practice_questions=6 if practice else 0,
         scored_duration_s=scored_duration_s,
-)
+    )

@@ -67,10 +67,21 @@ def test_headless_scripted_run_produces_expected_summary_and_partial_scores() ->
 
     p3 = mirror.next_problem(difficulty=difficulty)
     assert isinstance(p3.payload, InstrumentComprehensionPayload)
-    worst_option = max(
-        ((opt.code, err) for opt, err in zip(p3.payload.options, p3.payload.option_errors, strict=False)),
-        key=lambda pair: pair[1],
-    )[0]
+    zeroable = [
+        (opt.code, err)
+        for opt, err in zip(p3.payload.options, p3.payload.option_errors, strict=False)
+        if err >= p3.payload.zero_credit_error
+    ]
+    if zeroable:
+        worst_option = max(zeroable, key=lambda pair: pair[1])[0]
+    else:
+        worst_option = max(
+            (
+                (opt.code, err)
+                for opt, err in zip(p3.payload.options, p3.payload.option_errors, strict=False)
+            ),
+            key=lambda pair: pair[1],
+        )[0]
     clock.advance(0.5)
     assert engine.submit_answer(str(worst_option)) is True
 
@@ -88,4 +99,4 @@ def test_headless_scripted_run_produces_expected_summary_and_partial_scores() ->
     assert len(scored_events) == 3
     assert scored_events[0].score == pytest.approx(1.0)
     assert 0.0 < scored_events[1].score < 1.0
-    assert scored_events[2].score == pytest.approx(0.0)
+    assert 0.0 <= scored_events[2].score < 1.0

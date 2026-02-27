@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from cfast_trainer.numerical_operations import NumericalOperationsConfig, NumericalOperationsGenerator, build_numerical_operations_test
+from cfast_trainer.numerical_operations import (
+    NumericalOperationsConfig,
+    NumericalOperationsGenerator,
+    build_numerical_operations_test,
+)
 
 
 @dataclass

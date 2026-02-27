@@ -2,28 +2,29 @@ from __future__ import annotations
 
 import math
 import random
+from collections.abc import Sequence
 from dataclasses import dataclass
-from enum import Enum
-from typing import Protocol, Sequence, TypeVar
+from enum import StrEnum
+from typing import Protocol, TypeVar
+
+from .clock import Clock
 
 T = TypeVar("T")
-from .clock import Clock
 
 
 class ProblemGenerator(Protocol):
     """Deterministic generator of problems."""
 
-    def next_problem(self, *, difficulty: float) -> "Problem":
-        ...
+    def next_problem(self, *, difficulty: float) -> Problem: ...
 
 
 class AnswerScorer(Protocol):
-    def score(self, *, problem: "Problem", user_answer: int, raw: str) -> float:
+    def score(self, *, problem: Problem, user_answer: int, raw: str) -> float:
         """Return score in [0.0, 1.0]."""
         ...
 
 
-class Phase(str, Enum):
+class Phase(StrEnum):
     INSTRUCTIONS = "instructions"
     PRACTICE = "practice"
     PRACTICE_DONE = "practice_done"
@@ -169,7 +170,12 @@ class TimedTextInputTest:
 
     def can_exit(self) -> bool:
         # Enforce "must continue once started" during SCORED.
-        return self._phase in (Phase.INSTRUCTIONS, Phase.PRACTICE, Phase.PRACTICE_DONE, Phase.RESULTS)
+        return self._phase in (
+            Phase.INSTRUCTIONS,
+            Phase.PRACTICE,
+            Phase.PRACTICE_DONE,
+            Phase.RESULTS,
+        )
 
     def start_practice(self) -> None:
         if self._phase is not Phase.INSTRUCTIONS:
@@ -177,6 +183,7 @@ class TimedTextInputTest:
         self._phase = Phase.PRACTICE
         self._deal_new_problem()
         # Backwards-compatibility shim: older tests call start() to begin practice.
+
     def start(self) -> None:
         self.start_practice()
 
@@ -251,7 +258,9 @@ class TimedTextInputTest:
             tol = 0 if self._current.tolerance < 0 else self._current.tolerance
             score = 1.0 if abs(user_answer - self._current.answer) <= tol else 0.0
         else:
-            score = float(self._scorer.score(problem=self._current, user_answer=user_answer, raw=raw_in))
+            score = float(
+                self._scorer.score(problem=self._current, user_answer=user_answer, raw=raw_in)
+            )
             if score < 0.0:
                 score = 0.0
             elif score > 1.0:

@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 from .clock import Clock
 from .cognitive_core import AttemptSummary, Phase, SeededRng, TestSnapshot, lerp_int
 
 
-class DigitRecognitionQuestionKind(str, Enum):
+class DigitRecognitionQuestionKind(StrEnum):
     RECALL = "recall"
     COUNT_TARGET = "count_target"
 
@@ -26,7 +26,7 @@ class DigitRecognitionPayload:
     accepting_input: bool
 
 
-class _Stage(str, Enum):
+class _Stage(StrEnum):
     SHOW = "show"
     MASK = "mask"
     QUESTION = "question"
@@ -275,7 +275,9 @@ class DigitRecognitionTest:
             return None
         if self._stage is _Stage.SHOW:
             assert self._current is not None
-            return DigitRecognitionPayload(display_digits=" ".join(self._current.digits), accepting_input=False)
+            return DigitRecognitionPayload(
+                display_digits=" ".join(self._current.digits), accepting_input=False
+            )
         if self._stage is _Stage.MASK:
             return DigitRecognitionPayload(display_digits=None, accepting_input=False)
         if self._stage is _Stage.QUESTION:
@@ -298,7 +300,9 @@ class DigitRecognitionTest:
             return "Practice complete. Press Enter to begin the timed test."
         if self._phase is Phase.RESULTS:
             s = self.scored_summary()
-            mean_ms = "—" if s.mean_response_time_s is None else f"{s.mean_response_time_s * 1000.0:.0f}"
+            mean_ms = (
+                "—" if s.mean_response_time_s is None else f"{s.mean_response_time_s * 1000.0:.0f}"
+            )
             mm = int(round(s.duration_s)) // 60
             ss = int(round(s.duration_s)) % 60
             return "\n".join(

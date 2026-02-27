@@ -33,11 +33,13 @@ def test_airborne_numerical_practice_flow() -> None:
     start_minutes = _hhmm_to_minutes(int(scenario.start_time_hhmm))
 
     if str(snap.prompt).startswith("ARRIVAL TIME"):
-        total_dist = sum(l.distance for l in scenario.legs)
+        total_dist = sum(leg.distance for leg in scenario.legs)
         route_minutes = int(round_half_up((total_dist / scenario.speed_value) * 60.0))
         expected = _minutes_to_hhmm_int(start_minutes + route_minutes)
     else:
-        endurance_min = int(round_half_up((scenario.start_fuel_liters / scenario.fuel_burn_per_hr) * 60.0))
+        endurance_min = int(
+            round_half_up((scenario.start_fuel_liters / scenario.fuel_burn_per_hr) * 60.0)
+        )
         expected = _minutes_to_hhmm_int(start_minutes + endurance_min)
 
     test.submit_answer(expected)

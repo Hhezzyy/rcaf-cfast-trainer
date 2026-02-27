@@ -16,8 +16,8 @@ from .cognitive_core import (
 
 @dataclass(frozen=True, slots=True)
 class VisualSearchConfig:
-    # Candidate guide describes ~25 minutes total including instructions.
-    scored_duration_s: float = 20.0 * 60.0
+    # Guide describes this as a short test; keep timed block compact by default.
+    scored_duration_s: float = 4.0 * 60.0
     practice_questions: int = 4
 
 
@@ -70,7 +70,11 @@ class VisualSearchGenerator:
 
     def __init__(self, *, seed: int) -> None:
         self._rng = SeededRng(seed)
-        self._kinds = tuple(VisualSearchTaskKind)
+        # Visual Search guide scope: letters and line figures only.
+        self._kinds = (
+            VisualSearchTaskKind.ALPHANUMERIC,
+            VisualSearchTaskKind.SYMBOL_CODE,
+        )
         self._last_kind: VisualSearchTaskKind | None = None
 
     def next_problem(self, *, difficulty: float) -> Problem:
@@ -135,14 +139,10 @@ class VisualSearchGenerator:
 
     def _prompt_for(self, *, kind: VisualSearchTaskKind, target: str) -> str:
         if kind is VisualSearchTaskKind.ALPHANUMERIC:
-            prefix = "Alphanumeric strings"
-        elif kind is VisualSearchTaskKind.SYMBOL_CODE:
-            prefix = "Codes and symbols"
-        elif kind is VisualSearchTaskKind.WARNING_SIGN:
-            prefix = "Warning signs"
+            prefix = "Letters"
         else:
-            prefix = "Colour patterns"
-        return f"{prefix}: find '{target}' and enter its small block number."
+            prefix = "Line figures"
+        return f"{prefix}: find '{target}' and enter its block number."
 
 
 def build_visual_search_test(
@@ -155,13 +155,12 @@ def build_visual_search_test(
     cfg = config or VisualSearchConfig()
 
     instructions = [
-        "Visual Search (Target Recognition)",
+        "Visual Search Test",
         "",
         "Scan each grid quickly and find the requested target.",
         "Each block shows a small number label.",
         "Enter the number label for the matching target block.",
-        "Targets alternate between alphanumeric strings, symbol codes,",
-        "warning signs, and colour-pattern codes.",
+        "Targets alternate between letters and line-figure symbols.",
         "",
         "Controls:",
         "- Type the block number as a whole number",
@@ -171,7 +170,7 @@ def build_visual_search_test(
     ]
 
     return TimedTextInputTest(
-        title="Visual Search (Target Recognition)",
+        title="Visual Search",
         instructions=instructions,
         generator=VisualSearchGenerator(seed=seed),
         clock=clock,

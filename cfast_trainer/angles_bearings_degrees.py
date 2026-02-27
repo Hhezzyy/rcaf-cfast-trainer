@@ -5,7 +5,6 @@ from enum import StrEnum
 
 from .clock import Clock
 from .cognitive_core import (
-    AnswerScorer,
     Problem,
     SeededRng,
     TimedTextInputTest,
@@ -27,46 +26,22 @@ class AnglesBearingsQuestionKind(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
+class AnglesBearingsOption:
+    code: int
+    text: str
+    value_deg: int
+
+
+@dataclass(frozen=True, slots=True)
 class AnglesBearingsDegreesPayload:
     kind: AnglesBearingsQuestionKind
+    stem: str
     reference_bearing_deg: int
     target_bearing_deg: int
     object_label: str
-    full_credit_error_deg: int
-    zero_credit_error_deg: int
-
-
-def _circular_error_deg(a: int, b: int) -> int:
-    aa = int(a) % 360
-    bb = int(b) % 360
-    diff = abs(aa - bb)
-    return min(diff, 360 - diff)
-
-
-class AnglesBearingsScorer(AnswerScorer):
-    """Linear estimation score with full-credit and zero-credit error bands."""
-
-    def score(self, *, problem: Problem, user_answer: int, raw: str) -> float:
-        _ = raw
-
-        payload = problem.payload
-        if not isinstance(payload, AnglesBearingsDegreesPayload):
-            return 1.0 if int(user_answer) == int(problem.answer) else 0.0
-
-        full = max(0, int(payload.full_credit_error_deg))
-        zero = max(full + 1, int(payload.zero_credit_error_deg))
-
-        if payload.kind is AnglesBearingsQuestionKind.BEARING_FROM_REFERENCE:
-            err = _circular_error_deg(int(user_answer), int(problem.answer))
-        else:
-            err = abs(int(user_answer) - int(problem.answer))
-
-        if err <= full:
-            return 1.0
-        if err >= zero:
-            return 0.0
-
-        return clamp01((zero - err) / float(zero - full))
+    options: tuple[AnglesBearingsOption, ...]
+    correct_code: int
+    correct_value_deg: int
 
 
 class AnglesBearingsDegreesGenerator:
@@ -95,44 +70,132 @@ class AnglesBearingsDegreesGenerator:
         else:
             target_bearing = (reference_bearing - angle) % 360
 
-        full_credit = lerp_int(4, 2, difficulty)
-        zero_credit = lerp_int(35, 15, difficulty)
-
-        payload = AnglesBearingsDegreesPayload(
+        stem = "Estimate the smaller angle between the two rays."
+        distractors = (
+            360 - angle,  # Common mistake: report the reflex angle.
+            (target_bearing - reference_bearing) % 360,  # Common mistake: one-way sweep.
+            angle + quant_step,  # Common mistake: close arithmetic overshoot.
+        )
+        return self._multiple_choice_problem(
             kind=AnglesBearingsQuestionKind.ANGLE_BETWEEN_LINES,
+            stem=stem,
+            correct_value=angle,
             reference_bearing_deg=reference_bearing,
             target_bearing_deg=target_bearing,
             object_label="",
-            full_credit_error_deg=full_credit,
-            zero_credit_error_deg=zero_credit,
-        )
-        return Problem(
-            prompt="Estimate the smaller angle between the two rays (degrees).",
-            answer=int(angle),
-            payload=payload,
+            distractors=distractors,
         )
 
     def _make_bearing_problem(self, difficulty: float) -> Problem:
         quant_step = lerp_int(15, 1, difficulty)
         bearing = self._sample_quantized(0, 359, quant_step)
         label = str(self._rng.choice(self._labels))
-
-        full_credit = lerp_int(5, 2, difficulty)
-        zero_credit = lerp_int(40, 18, difficulty)
-
-        payload = AnglesBearingsDegreesPayload(
+        stem = f"Estimate the bearing of point {label} from the center (000-359)."
+        distractors = (
+            (bearing + 180) % 360,  # Common mistake: reciprocal bearing.
+            (90 - bearing) % 360,  # Common mistake: math-angle conversion error.
+            (360 - bearing) % 360,  # Common mistake: counterclockwise read.
+        )
+        return self._multiple_choice_problem(
             kind=AnglesBearingsQuestionKind.BEARING_FROM_REFERENCE,
+            stem=stem,
+            correct_value=bearing,
             reference_bearing_deg=0,
             target_bearing_deg=bearing,
             object_label=label,
-            full_credit_error_deg=full_credit,
-            zero_credit_error_deg=zero_credit,
+            distractors=distractors,
+        )
+
+    def _multiple_choice_problem(
+        self,
+        *,
+        kind: AnglesBearingsQuestionKind,
+        stem: str,
+        correct_value: int,
+        reference_bearing_deg: int,
+        target_bearing_deg: int,
+        object_label: str,
+        distractors: tuple[int, int, int],
+    ) -> Problem:
+        values: list[int] = [self._normalize_value(kind=kind, value=correct_value)]
+        for distractor in distractors:
+            value = self._normalize_value(kind=kind, value=distractor)
+            if value in values:
+                continue
+            values.append(value)
+            if len(values) == 4:
+                break
+
+        while len(values) < 4:
+            candidate = self._fallback_distractor(
+                kind=kind,
+                correct_value=int(correct_value),
+            )
+            if candidate in values:
+                continue
+            values.append(candidate)
+
+        order = self._rng.sample([0, 1, 2, 3], k=4)
+        shuffled = [values[idx] for idx in order]
+
+        options = tuple(
+            AnglesBearingsOption(
+                code=idx + 1,
+                text=self._format_option(kind=kind, value=value),
+                value_deg=int(value),
+            )
+            for idx, value in enumerate(shuffled)
+        )
+        correct_code = next(opt.code for opt in options if opt.value_deg == int(correct_value))
+
+        prompt_lines = [stem, ""]
+        for option in options:
+            prompt_lines.append(f"{option.code}) {option.text}")
+        prompt = "\n".join(prompt_lines)
+
+        payload = AnglesBearingsDegreesPayload(
+            kind=kind,
+            stem=stem,
+            reference_bearing_deg=int(reference_bearing_deg),
+            target_bearing_deg=int(target_bearing_deg),
+            object_label=str(object_label),
+            options=options,
+            correct_code=int(correct_code),
+            correct_value_deg=int(correct_value),
         )
         return Problem(
-            prompt=f"Estimate the bearing of point {label} from the center (000-359).",
-            answer=int(bearing),
+            prompt=prompt,
+            answer=int(correct_code),
             payload=payload,
         )
+
+    def _normalize_value(self, *, kind: AnglesBearingsQuestionKind, value: int) -> int:
+        if kind is AnglesBearingsQuestionKind.BEARING_FROM_REFERENCE:
+            return int(value) % 360
+        normalized = int(value) % 360
+        if normalized == 0:
+            return 360
+        return normalized
+
+    def _fallback_distractor(self, *, kind: AnglesBearingsQuestionKind, correct_value: int) -> int:
+        if kind is AnglesBearingsQuestionKind.BEARING_FROM_REFERENCE:
+            delta = self._rng.choice((10, 20, 30, 40, 50))
+            direction = -1 if self._rng.random() < 0.5 else 1
+            return (int(correct_value) + (direction * delta)) % 360
+
+        delta = self._rng.choice((5, 10, 15, 20, 25, 30))
+        direction = -1 if self._rng.random() < 0.5 else 1
+        candidate = int(correct_value) + (direction * delta)
+        if candidate < 1:
+            return 1
+        if candidate > 359:
+            return 359
+        return candidate
+
+    def _format_option(self, *, kind: AnglesBearingsQuestionKind, value: int) -> str:
+        if kind is AnglesBearingsQuestionKind.BEARING_FROM_REFERENCE:
+            return f"{int(value) % 360:03d}"
+        return str(int(value))
 
     def _sample_quantized(self, lo: int, hi: int, step: int) -> int:
         if step <= 1:
@@ -159,17 +222,19 @@ def build_angles_bearings_degrees_test(
     cfg = config or AnglesBearingsDegreesConfig()
 
     instructions = [
-        "Angles, Bearings and Degrees",
+        "Angles, Bearings and Degrees (Multiple Choice)",
         "",
         "Estimate angles and bearings quickly and accurately.",
         "Part A: estimate the smaller angle between two lines.",
         "Part B: estimate the bearing of an object from a reference point.",
         "",
         "Controls:",
-        "- Type your estimate as whole degrees",
+        "- Press 1, 2, 3, or 4 to choose an option",
+        "- Use Up/Down to move between options",
         "- Press Enter to submit",
         "",
         "You will get a short practice, then a timed scored block.",
+        "Once the timed block starts, continue until completion.",
     ]
 
     return TimedTextInputTest(
@@ -181,5 +246,4 @@ def build_angles_bearings_degrees_test(
         difficulty=difficulty,
         practice_questions=cfg.practice_questions,
         scored_duration_s=cfg.scored_duration_s,
-        scorer=AnglesBearingsScorer(),
     )

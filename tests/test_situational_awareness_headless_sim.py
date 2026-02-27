@@ -4,12 +4,12 @@ from dataclasses import dataclass
 
 import pytest
 
-from cfast_trainer.angles_bearings_degrees import (
-    AnglesBearingsDegreesConfig,
-    AnglesBearingsDegreesGenerator,
-    build_angles_bearings_degrees_test,
-)
 from cfast_trainer.cognitive_core import Phase
+from cfast_trainer.situational_awareness import (
+    SituationalAwarenessConfig,
+    SituationalAwarenessGenerator,
+    build_situational_awareness_test,
+)
 
 
 @dataclass
@@ -20,21 +20,21 @@ class FakeClock:
         return self.t
 
     def advance(self, dt: float) -> None:
-        self.t += dt
+        self.t += float(dt)
 
 
-def test_headless_scripted_run_produces_expected_summary_and_scores() -> None:
-    seed = 808
-    difficulty = 0.6
+def test_headless_scripted_run_tracks_scored_attempts_and_partial_credit() -> None:
+    seed = 5151
+    difficulty = 0.65
     clock = FakeClock()
 
-    engine = build_angles_bearings_degrees_test(
+    engine = build_situational_awareness_test(
         clock=clock,
         seed=seed,
         difficulty=difficulty,
-        config=AnglesBearingsDegreesConfig(scored_duration_s=6.0, practice_questions=1),
+        config=SituationalAwarenessConfig(scored_duration_s=6.0, practice_questions=1),
     )
-    mirror = AnglesBearingsDegreesGenerator(seed=seed)
+    mirror = SituationalAwarenessGenerator(seed=seed)
 
     engine.start_practice()
     assert engine.phase is Phase.PRACTICE
@@ -53,12 +53,13 @@ def test_headless_scripted_run_produces_expected_summary_and_scores() -> None:
 
     p2 = mirror.next_problem(difficulty=difficulty)
     clock.advance(0.5)
-    assert engine.submit_answer(str(p2.answer)) is True
+    wrong_answer = (int(p2.answer) % 4) + 1
+    assert wrong_answer != p2.answer
+    assert engine.submit_answer(str(wrong_answer)) is True
 
     p3 = mirror.next_problem(difficulty=difficulty)
-    wrong = 1 if p3.answer != 1 else 2
     clock.advance(0.5)
-    assert engine.submit_answer(str(wrong)) is True
+    assert engine.submit_answer(str(p3.answer)) is True
 
     clock.advance(6.0)
     engine.update()
@@ -70,8 +71,8 @@ def test_headless_scripted_run_produces_expected_summary_and_scores() -> None:
     assert summary.accuracy == pytest.approx(2 / 3)
     assert summary.mean_response_time_s == pytest.approx(0.5)
 
-    scored_events = [e for e in engine.events() if e.phase is Phase.SCORED]
+    scored_events = [event for event in engine.events() if event.phase is Phase.SCORED]
     assert len(scored_events) == 3
     assert scored_events[0].score == pytest.approx(1.0)
-    assert scored_events[1].score == pytest.approx(1.0)
-    assert scored_events[2].score == pytest.approx(0.0)
+    assert scored_events[2].score == pytest.approx(1.0)
+    assert scored_events[1].score <= 0.5
