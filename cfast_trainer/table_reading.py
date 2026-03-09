@@ -289,7 +289,7 @@ def build_table_reading_test(
         "Part 2: use Card B and Card C in sequence to compute drift correction.",
         "",
         "Controls:",
-        "- Press 1, 2, 3, 4, or 5 to choose an option",
+        "- Press A, S, D, F, or G to choose an option",
         "- Use Up/Down to move between options",
         "- Press Enter to submit",
         "",

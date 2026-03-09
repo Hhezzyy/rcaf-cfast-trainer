@@ -33,17 +33,17 @@ def test_generator_determinism_same_seed_same_sequence() -> None:
     assert [(p.prompt, p.answer) for p in seq1] == [(p.prompt, p.answer) for p in seq2]
 
 
-def test_generated_problem_has_payload_with_four_unique_options() -> None:
+def test_generated_problem_has_payload_with_five_unique_options() -> None:
     gen = MathReasoningGenerator(seed=17)
     problem = gen.next_problem(difficulty=0.7)
     payload = cast(MathReasoningPayload, problem.payload)
 
     assert isinstance(payload, MathReasoningPayload)
-    assert len(payload.options) == 4
-    assert [opt.code for opt in payload.options] == [1, 2, 3, 4]
+    assert len(payload.options) == 5
+    assert [opt.code for opt in payload.options] == [1, 2, 3, 4, 5]
 
     values = [opt.value for opt in payload.options]
-    assert len(set(values)) == 4
+    assert len(set(values)) == 5
     assert problem.answer == payload.correct_code
     assert any(
         opt.code == payload.correct_code and opt.value == payload.correct_value

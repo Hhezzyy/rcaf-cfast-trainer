@@ -10,11 +10,13 @@ from .cognitive_core import AttemptSummary, Phase, SeededRng, TestSnapshot, lerp
 class DigitRecognitionQuestionKind(StrEnum):
     RECALL = "recall"
     COUNT_TARGET = "count_target"
+    DIFFERENT_DIGIT = "different_digit"
 
 
 @dataclass(frozen=True, slots=True)
 class DigitRecognitionTrial:
     digits: str
+    comparison_digits: str | None
     kind: DigitRecognitionQuestionKind
     prompt: str
     expected: str
@@ -23,6 +25,7 @@ class DigitRecognitionTrial:
 @dataclass(frozen=True, slots=True)
 class DigitRecognitionPayload:
     display_digits: str | None
+    display_lines: tuple[str, ...] | None
     accepting_input: bool
 
 
@@ -56,22 +59,40 @@ class DigitRecognitionGenerator:
 
         digits = "".join(str(self._rng.randint(0, 9)) for _ in range(n))
 
-        kind = (
-            DigitRecognitionQuestionKind.RECALL
-            if (self._index % 2 == 0)
-            else DigitRecognitionQuestionKind.COUNT_TARGET
-        )
+        if self._index % 2 == 0:
+            kind = DigitRecognitionQuestionKind.RECALL
+        elif (self._index // 2) % 2 == 0:
+            kind = DigitRecognitionQuestionKind.COUNT_TARGET
+        else:
+            kind = DigitRecognitionQuestionKind.DIFFERENT_DIGIT
 
         if kind is DigitRecognitionQuestionKind.RECALL:
             prompt = "ENTER THE DIGIT STRING:"
             expected = digits
+            comparison_digits = None
         else:
-            target = str(self._rng.randint(0, 9))
-            prompt = f"HOW MANY {target}s WERE THERE?"
-            expected = str(sum(1 for ch in digits if ch == target))
+            if kind is DigitRecognitionQuestionKind.COUNT_TARGET:
+                target = str(self._rng.randint(0, 9))
+                prompt = f"HOW MANY {target}s WERE THERE?"
+                expected = str(sum(1 for ch in digits if ch == target))
+                comparison_digits = None
+            else:
+                pos = int(self._rng.randint(0, n - 1))
+                original = digits[pos]
+                replacement_pool = [str(d) for d in range(10) if str(d) != original]
+                changed = str(self._rng.choice(replacement_pool))
+                comparison_digits = digits[:pos] + changed + digits[pos + 1 :]
+                prompt = "SECOND STRING: WHAT DIGIT WAS DIFFERENT?"
+                expected = changed
 
         self._index += 1
-        return DigitRecognitionTrial(digits=digits, kind=kind, prompt=prompt, expected=expected)
+        return DigitRecognitionTrial(
+            digits=digits,
+            comparison_digits=comparison_digits,
+            kind=kind,
+            prompt=prompt,
+            expected=expected,
+        )
 
 
 class DigitRecognitionTest:
@@ -275,13 +296,26 @@ class DigitRecognitionTest:
             return None
         if self._stage is _Stage.SHOW:
             assert self._current is not None
+            lines = [" ".join(self._current.digits)]
+            if self._current.comparison_digits is not None:
+                lines.append(" ".join(self._current.comparison_digits))
             return DigitRecognitionPayload(
-                display_digits=" ".join(self._current.digits), accepting_input=False
+                display_digits=lines[0],
+                display_lines=tuple(lines),
+                accepting_input=False,
             )
         if self._stage is _Stage.MASK:
-            return DigitRecognitionPayload(display_digits=None, accepting_input=False)
+            return DigitRecognitionPayload(
+                display_digits=None,
+                display_lines=None,
+                accepting_input=False,
+            )
         if self._stage is _Stage.QUESTION:
-            return DigitRecognitionPayload(display_digits=None, accepting_input=True)
+            return DigitRecognitionPayload(
+                display_digits=None,
+                display_lines=None,
+                accepting_input=True,
+            )
         return None
 
     def _prompt_text(self) -> str:
@@ -291,7 +325,9 @@ class DigitRecognitionTest:
                     "Digit Recognition",
                     "",
                     "Remember strings of digits of varying lengths.",
-                    "Answer questions about the digit string shown.",
+                    "Some questions ask you to retype the full string.",
+                    "Others ask for information about it, such as counts or",
+                    "which digit changed between two similar strings.",
                     "",
                     "Press Enter to start practice.",
                 ]

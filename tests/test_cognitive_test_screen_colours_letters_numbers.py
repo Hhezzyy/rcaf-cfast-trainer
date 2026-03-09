@@ -73,6 +73,7 @@ def _build_payload(*, options_active: bool = True) -> ColoursLettersNumbersPaylo
             ColoursLettersNumbersOption(code=2, label="ABCDF"),
             ColoursLettersNumbersOption(code=3, label="ABGDE"),
             ColoursLettersNumbersOption(code=4, label="XBCDE"),
+            ColoursLettersNumbersOption(code=5, label="ABCDX"),
         ),
         options_active=options_active,
         memory_answered=False,
@@ -88,7 +89,7 @@ def _build_payload(*, options_active: bool = True) -> ColoursLettersNumbersPaylo
     )
 
 
-def test_cln_memory_keys_use_asdf_mapping() -> None:
+def test_cln_memory_keys_use_asdfg_mapping() -> None:
     _app, screen, engine = _build_screen(_build_payload(options_active=True))
     try:
         for key, expected in (
@@ -96,6 +97,7 @@ def test_cln_memory_keys_use_asdf_mapping() -> None:
             (pygame.K_s, "MEM:2"),
             (pygame.K_d, "MEM:3"),
             (pygame.K_f, "MEM:4"),
+            (pygame.K_g, "MEM:5"),
         ):
             screen.handle_event(
                 pygame.event.Event(pygame.KEYDOWN, {"key": key, "mod": 0, "unicode": ""})

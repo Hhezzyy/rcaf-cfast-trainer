@@ -13,6 +13,8 @@ from cfast_trainer.instrument_comprehension import (
     InstrumentComprehensionTrialKind,
     InstrumentOption,
     InstrumentState,
+    airspeed_turn,
+    altimeter_hand_turns,
     build_instrument_comprehension_test,
 )
 
@@ -52,7 +54,6 @@ def test_generator_emits_all_required_trial_kinds() -> None:
 
     assert seen == {
         InstrumentComprehensionTrialKind.INSTRUMENTS_TO_DESCRIPTION,
-        InstrumentComprehensionTrialKind.DESCRIPTION_TO_INSTRUMENTS,
         InstrumentComprehensionTrialKind.INSTRUMENTS_TO_AIRCRAFT,
     }
 
@@ -80,8 +81,9 @@ def test_scoring_exact_and_estimation_behavior() -> None:
             InstrumentOption(
                 code=4, state=replace(base, bank_deg=25, pitch_deg=8), description="D"
             ),
+            InstrumentOption(code=5, state=replace(base, speed_kts=280), description="E"),
         ),
-        option_errors=(0, 15, 42, 98),
+        option_errors=(0, 15, 42, 98, 60),
         full_credit_error=0,
         zero_credit_error=90,
     )
@@ -98,6 +100,23 @@ def test_scoring_exact_and_estimation_behavior() -> None:
     assert scorer.score(problem=problem, user_answer=9, raw="9") == pytest.approx(0.0)
 
 
+def test_altimeter_hands_use_thousands_and_hundreds_turns() -> None:
+    thousands_turn, hundreds_turn = altimeter_hand_turns(1500)
+    assert thousands_turn == pytest.approx(0.15)
+    assert hundreds_turn == pytest.approx(0.5)
+
+    thousands_turn, hundreds_turn = altimeter_hand_turns(9876)
+    assert thousands_turn == pytest.approx(0.9876)
+    assert hundreds_turn == pytest.approx(0.876)
+
+
+def test_airspeed_turn_uses_full_zero_to_360_circle() -> None:
+    assert airspeed_turn(0) == pytest.approx(0.0)
+    assert airspeed_turn(180) == pytest.approx(0.5)
+    assert airspeed_turn(360) == pytest.approx(1.0)
+    assert airspeed_turn(420) == pytest.approx(1.0)
+
+
 def test_timer_boundary_transitions_to_results_and_rejects_late_submit() -> None:
     clock = FakeClock()
     engine = build_instrument_comprehension_test(
@@ -108,9 +127,48 @@ def test_timer_boundary_transitions_to_results_and_rejects_late_submit() -> None
     )
     engine.start_scored()
 
-    assert engine.time_remaining_s() == pytest.approx(2.0)
-    clock.advance(2.0)
+    assert engine.time_remaining_s() == pytest.approx(1.0)
+    clock.advance(1.0)
     engine.update()
 
+    assert engine.phase.value == "practice_done"
+    engine.start_scored()
+    assert engine.phase.value == "scored"
+    clock.advance(1.0)
+    engine.update()
     assert engine.phase.value == "results"
     assert engine.submit_answer("1") is False
+
+
+def test_skip_commands_advance_across_practice_parts_and_results() -> None:
+    clock = FakeClock()
+    engine = build_instrument_comprehension_test(
+        clock=clock,
+        seed=9,
+        difficulty=0.5,
+        config=InstrumentComprehensionConfig(scored_duration_s=20.0, practice_questions=1),
+    )
+
+    engine.start_practice()
+    assert engine.phase.value == "practice"
+
+    assert engine.submit_answer("__skip_practice__") is True
+    assert engine.phase.value == "practice_done"
+
+    engine.start_scored()
+    assert engine.phase.value == "scored"
+
+    assert engine.submit_answer("__skip_section__") is True
+    assert engine.phase.value == "practice_done"
+
+    engine.start_scored()
+    assert engine.phase.value == "practice"
+
+    assert engine.submit_answer("__skip_practice__") is True
+    assert engine.phase.value == "practice_done"
+
+    engine.start_scored()
+    assert engine.phase.value == "scored"
+
+    assert engine.submit_answer("__skip_all__") is True
+    assert engine.phase.value == "results"

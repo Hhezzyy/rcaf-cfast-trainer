@@ -224,7 +224,7 @@ class SpatialIntegrationGenerator:
             alt_levels=alt_levels,
         )
 
-        order = self._rng.sample((0, 1, 2, 3), k=4)
+        order = self._rng.sample((0, 1, 2, 3, 4), k=5)
         options: list[SpatialIntegrationOption] = []
         correct_code = 1
         for code, idx in enumerate(order, start=1):
@@ -369,6 +369,7 @@ class SpatialIntegrationGenerator:
         SpatialIntegrationPoint,
         SpatialIntegrationPoint,
         SpatialIntegrationPoint,
+        SpatialIntegrationPoint,
     ]:
         points: list[SpatialIntegrationPoint] = [correct]
 
@@ -420,7 +421,7 @@ class SpatialIntegrationGenerator:
                 )
             )
 
-        while len(points) < 4:
+        while len(points) < 5:
             candidate = SpatialIntegrationPoint(
                 x=_clamp(correct.x + int(self._rng.randint(-2, 2)), 0, grid_cols - 1),
                 y=_clamp(correct.y + int(self._rng.randint(-2, 2)), 0, grid_rows - 1),
@@ -430,7 +431,7 @@ class SpatialIntegrationGenerator:
                 continue
             add(candidate)
 
-        return points[0], points[1], points[2], points[3]
+        return points[0], points[1], points[2], points[3], points[4]
 
 
 class SpatialIntegrationEngine:
@@ -685,7 +686,7 @@ class SpatialIntegrationEngine:
                 "Section B: lower/oblique memory scene.\n"
                 "Section C: oblique scene with moving aircraft.\n\n"
                 "Each section has a short practice, then scored trials.\n"
-                "Controls: type 1-4 then Enter.\n"
+                "Controls: type A, S, D, F, or G then Enter.\n"
                 "Testing shortcuts: F10 skip practice, F11 skip section, F8 skip all."
             )
         if self._phase is Phase.PRACTICE_DONE:
@@ -742,7 +743,7 @@ class SpatialIntegrationEngine:
 
     def snapshot(self) -> TestSnapshot:
         payload = self._snapshot_payload()
-        hint = "Type 1-4 then Enter"
+        hint = "Type A, S, D, F, or G then Enter"
         if (
             isinstance(payload, SpatialIntegrationPayload)
             and payload.trial_stage is SpatialIntegrationTrialStage.MEMORIZE

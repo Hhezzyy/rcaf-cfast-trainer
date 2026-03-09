@@ -17,10 +17,10 @@ class ColoursLettersNumbersConfig:
     sequence_show_s: float = 2.0
     memory_recall_delay_s: float = 5.0
     memory_recall_delay_max_s: float = 60.0
-    diamond_spawn_interval_s: float = 1.45
-    diamond_spawn_interval_max_s: float = 2.10
-    diamond_speed_norm_per_s: float = 0.18
-    diamond_speed_max_norm_per_s: float = 0.30
+    diamond_spawn_interval_s: float = 1.30
+    diamond_spawn_interval_max_s: float = 1.90
+    diamond_speed_norm_per_s: float = 0.12
+    diamond_speed_max_norm_per_s: float = 0.48
     max_live_diamonds: int = 4
 
 
@@ -115,7 +115,7 @@ class ColoursLettersNumbersGenerator:
     def _build_options(self, sequence: str) -> tuple[ColoursLettersNumbersOption, ...]:
         variants = [sequence]
         seen = {sequence}
-        while len(variants) < 4:
+        while len(variants) < 5:
             idx = int(self._rng.randint(0, len(sequence) - 1))
             alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ"
             replacement = sequence[idx]
@@ -515,7 +515,7 @@ class ColoursLettersNumbersTest:
 
     def _spawn_diamond(self) -> None:
         color = str(self._rng.choice(self._LANE_COLORS))
-        row = int(self._rng.randint(0, 2))
+        row = self._sample_diamond_row()
         d = _LiveDiamond(
             id=self._next_diamond_id,
             color=color,
@@ -534,6 +534,15 @@ class ColoursLettersNumbersTest:
             self._cfg.diamond_spawn_interval_s,
             self._cfg.diamond_spawn_interval_max_s,
         )
+
+    def _sample_diamond_row(self) -> int:
+        # Bias the stream slightly lower on screen while preserving all three rows.
+        pick = self._rng.random()
+        if pick < 0.20:
+            return 0
+        if pick < 0.55:
+            return 1
+        return 2
 
     def _record_memory_result(self, *, now: float, response: str, is_correct: bool) -> None:
         if self._memory_current is None:

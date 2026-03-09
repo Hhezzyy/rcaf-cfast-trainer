@@ -74,3 +74,44 @@ def test_headless_sim_practice_then_scored_mixed_correctness() -> None:
     s = engine.scored_summary()
     assert s.attempted == 4
     assert s.correct == 3
+
+
+def test_difference_trial_payload_shows_two_strings() -> None:
+    seed = 77
+    clock = FakeClock()
+    mirror = DigitRecognitionGenerator(SeededRng(seed))
+
+    target = None
+    for _ in range(8):
+        trial = mirror.next_trial(difficulty=0.5)
+        if trial.kind is DigitRecognitionQuestionKind.DIFFERENT_DIGIT:
+            target = trial
+            break
+
+    assert target is not None
+
+    engine = build_digit_recognition_test(
+        clock=clock,
+        seed=seed,
+        practice=False,
+        scored_duration_s=8.0,
+    )
+    engine.start_practice()
+    engine.start_scored()
+
+    for _ in range(8):
+        snap = engine.snapshot()
+        payload = snap.payload
+        if (
+            payload is not None
+            and getattr(payload, "display_lines", None) is not None
+            and len(payload.display_lines) == 2
+        ):
+            first = payload.display_lines[0].replace(" ", "")
+            second = payload.display_lines[1].replace(" ", "")
+            assert first != second
+            return
+        _advance_to_question(clock, engine)
+        assert engine.submit_answer(engine._current.expected) is True  # type: ignore[attr-defined]
+
+    raise AssertionError("expected a two-line difference trial payload")

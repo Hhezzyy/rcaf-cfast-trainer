@@ -1,0 +1,104 @@
+{
+  "assets": {
+    "plane_red": {
+      "category": "aircraft",
+      "fallback": "plane",
+      "scale": 1.0,
+      "candidates": [
+        "aircraft/plane_red.glb",
+        "aircraft/plane_red.gltf",
+        "aircraft/plane_red.obj"
+      ]
+    },
+    "plane_blue": {
+      "category": "aircraft",
+      "fallback": "plane",
+      "scale": 1.0,
+      "candidates": [
+        "aircraft/plane_blue.glb",
+        "aircraft/plane_blue.gltf",
+        "aircraft/plane_blue.obj"
+      ]
+    },
+    "plane_green": {
+      "category": "aircraft",
+      "fallback": "plane",
+      "scale": 1.0,
+      "candidates": [
+        "aircraft/plane_green.glb",
+        "aircraft/plane_green.gltf",
+        "aircraft/plane_green.obj"
+      ]
+    },
+    "plane_yellow": {
+      "category": "aircraft",
+      "fallback": "plane",
+      "scale": 1.0,
+      "candidates": [
+        "aircraft/plane_yellow.glb",
+        "aircraft/plane_yellow.gltf",
+        "aircraft/plane_yellow.obj"
+      ]
+    },
+    "helicopter_green": {
+      "category": "helicopter",
+      "fallback": "helicopter",
+      "scale": 1.0,
+      "candidates": [
+        "helicopters/helicopter_green.glb",
+        "helicopters/helicopter_green.gltf",
+        "helicopters/helicopter_green.obj"
+      ]
+    },
+    "truck_olive": {
+      "category": "vehicle",
+      "fallback": "truck",
+      "scale": 1.0,
+      "candidates": [
+        "vehicles/truck_olive.glb",
+        "vehicles/truck_olive.gltf",
+        "vehicles/truck_olive.obj"
+      ]
+    },
+    "building_hangar": {
+      "category": "scenery",
+      "fallback": "hangar",
+      "scale": 1.0,
+      "candidates": [
+        "scenery/building_hangar.glb",
+        "scenery/building_hangar.gltf",
+        "scenery/building_hangar.obj"
+      ]
+    },
+    "building_tower": {
+      "category": "scenery",
+      "fallback": "tower",
+      "scale": 1.0,
+      "candidates": [
+        "scenery/building_tower.glb",
+        "scenery/building_tower.gltf",
+        "scenery/building_tower.obj"
+      ]
+    },
+    "trees_pine_cluster": {
+      "category": "scenery",
+      "fallback": "trees",
+      "scale": 1.0,
+      "candidates": [
+        "scenery/trees_pine_cluster.glb",
+        "scenery/trees_pine_cluster.gltf",
+        "scenery/trees_pine_cluster.obj"
+      ]
+    },
+    "soldiers_patrol": {
+      "category": "personnel",
+      "fallback": "soldiers",
+      "scale": 1.0,
+      "candidates": [
+        "personnel/soldiers_patrol.glb",
+        "personnel/soldiers_patrol.gltf",
+        "personnel/soldiers_patrol.obj"
+      ]
+    }
+  }
+}

@@ -38,17 +38,17 @@ def test_generator_determinism_same_seed_same_sequence() -> None:
     ]
 
 
-def test_generated_problem_has_four_unique_options_and_correct_code() -> None:
+def test_generated_problem_has_five_unique_options_and_correct_code() -> None:
     gen = AnglesBearingsDegreesGenerator(seed=31)
     problem = gen.next_problem(difficulty=0.6)
     payload = cast(AnglesBearingsDegreesPayload, problem.payload)
 
     assert isinstance(payload, AnglesBearingsDegreesPayload)
-    assert len(payload.options) == 4
-    assert [opt.code for opt in payload.options] == [1, 2, 3, 4]
+    assert len(payload.options) == 5
+    assert [opt.code for opt in payload.options] == [1, 2, 3, 4, 5]
 
     values = [opt.value_deg for opt in payload.options]
-    assert len(set(values)) == 4
+    assert len(set(values)) == 5
     assert problem.answer == payload.correct_code
     assert any(
         opt.code == payload.correct_code and opt.value_deg == payload.correct_value_deg
@@ -66,6 +66,27 @@ def test_generator_emits_both_angle_and_bearing_trials() -> None:
         AnglesBearingsQuestionKind.ANGLE_BETWEEN_LINES,
         AnglesBearingsQuestionKind.BEARING_FROM_REFERENCE,
     }
+
+
+def test_angle_trials_mark_the_measured_sweep_for_ui_indicator() -> None:
+    gen = AnglesBearingsDegreesGenerator(seed=91)
+
+    for _ in range(80):
+        payload = cast(AnglesBearingsDegreesPayload, gen.next_problem(difficulty=0.7).payload)
+        if payload.kind is not AnglesBearingsQuestionKind.ANGLE_BETWEEN_LINES:
+            continue
+
+        clockwise_delta = (
+            payload.target_bearing_deg - payload.reference_bearing_deg
+        ) % 360
+        counterclockwise_delta = (
+            payload.reference_bearing_deg - payload.target_bearing_deg
+        ) % 360
+        assert payload.angle_measure == "smaller"
+        assert payload.correct_value_deg == min(clockwise_delta, counterclockwise_delta)
+        break
+    else:
+        raise AssertionError("Expected at least one angle trial")
 
 
 def test_timer_boundary_transitions_to_results_and_rejects_late_submit() -> None:

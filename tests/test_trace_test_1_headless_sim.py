@@ -8,6 +8,8 @@ from cfast_trainer.cognitive_core import Phase
 from cfast_trainer.trace_test_1 import (
     TraceTest1Config,
     TraceTest1Generator,
+    TraceTest1Payload,
+    TraceTest1TrialStage,
     build_trace_test_1_test,
 )
 
@@ -32,7 +34,12 @@ def test_headless_scripted_run_produces_expected_summary() -> None:
         clock=clock,
         seed=seed,
         difficulty=difficulty,
-        config=TraceTest1Config(scored_duration_s=6.0, practice_questions=1),
+        config=TraceTest1Config(
+            scored_duration_s=6.0,
+            practice_questions=1,
+            practice_observe_s=0.2,
+            scored_observe_s=0.2,
+        ),
     )
     mirror = TraceTest1Generator(seed=seed)
 
@@ -40,7 +47,10 @@ def test_headless_scripted_run_produces_expected_summary() -> None:
     assert engine.phase is Phase.PRACTICE
 
     practice_problem = mirror.next_problem(difficulty=difficulty)
-    clock.advance(0.2)
+    practice_payload = engine.snapshot().payload
+    assert isinstance(practice_payload, TraceTest1Payload)
+    assert practice_payload.trial_stage is TraceTest1TrialStage.QUESTION
+    clock.advance(0.5)
     assert engine.submit_answer(str(practice_problem.answer)) is True
     assert engine.phase is Phase.PRACTICE_DONE
 

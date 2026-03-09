@@ -10,7 +10,6 @@ from .cognitive_core import (
     SeededRng,
     TimedTextInputTest,
     clamp01,
-    lerp_int,
 )
 
 
@@ -63,8 +62,21 @@ class VisualSearchScorer(AnswerScorer):
 class VisualSearchGenerator:
     """Deterministic generator for mixed visual scan/search counting trials."""
 
-    _ALPHANUMERIC_TOKENS = ("A7", "A1", "B7", "B1", "D7", "D1", "E7", "E1", "G7", "G1")
-    _SYMBOL_TOKENS = ("<>", "<|", "|>", "[]", "{}", "()", "/\\", "\\/", "==", "=~")
+    _ALPHANUMERIC_TOKENS = ("A", "B", "E", "F", "G", "H", "K", "L", "M", "P", "R", "S")
+    _SYMBOL_TOKENS = (
+        "X_MARK",
+        "DOUBLE_CROSS",
+        "S_BEND",
+        "RING_SPOKE",
+        "L_HOOK",
+        "BOX",
+        "STAR",
+        "TRIANGLE",
+        "LOLLIPOP",
+        "PIN",
+        "BOLT",
+        "FORK",
+    )
     _WARNING_TOKENS = ("FUEL", "OXY", "HYD", "ELEC", "ICE", "ENG", "FIRE", "WARN", "RAD", "NAV")
     _COLOR_PATTERN_TOKENS = ("RG", "GR", "RB", "BR", "GY", "YG", "BY", "YB", "RW", "WR", "BW", "WB")
 
@@ -78,11 +90,11 @@ class VisualSearchGenerator:
         self._last_kind: VisualSearchTaskKind | None = None
 
     def next_problem(self, *, difficulty: float) -> Problem:
-        d = clamp01(difficulty)
+        _ = clamp01(difficulty)
         kind = self._pick_kind()
 
-        rows = lerp_int(4, 7, d)
-        cols = lerp_int(6, 10, d)
+        rows = 3
+        cols = 4
         cell_count = rows * cols
 
         bank = self._token_bank(kind)
@@ -94,14 +106,12 @@ class VisualSearchGenerator:
         cells[target_idx] = target
 
         # Visible per-cell numeric labels that the user types as the answer.
-        pool_hi = max(99, cell_count + 50)
-        code_pool = tuple(range(1, pool_hi + 1))
-        sampled = self._rng.sample(code_pool, k=cell_count)
-        cell_codes = tuple(int(v) for v in sampled)
+        code_pool = tuple(range(10, 10 + cell_count))
+        cell_codes = tuple(int(v) for v in self._rng.sample(code_pool, k=cell_count))
         correct_code = int(cell_codes[target_idx])
 
         full_credit_error = 0
-        zero_credit_error = lerp_int(6, 3, d)
+        zero_credit_error = 1
 
         payload = VisualSearchPayload(
             kind=kind,
@@ -142,7 +152,7 @@ class VisualSearchGenerator:
             prefix = "Letters"
         else:
             prefix = "Line figures"
-        return f"{prefix}: find '{target}' and enter its block number."
+        return f"{prefix}: find the matching tile and enter its block number."
 
 
 def build_visual_search_test(
@@ -157,13 +167,13 @@ def build_visual_search_test(
     instructions = [
         "Visual Search Test",
         "",
-        "Scan each grid quickly and find the requested target.",
-        "Each block shows a small number label.",
-        "Enter the number label for the matching target block.",
+        "Scan the numbered tiles and match the tile shown underneath the grid.",
+        "Each board uses 12 numbered blocks labelled 10 to 21.",
+        "Enter the number from the matching block.",
         "Targets alternate between letters and line-figure symbols.",
         "",
         "Controls:",
-        "- Type the block number as a whole number",
+        "- Type the two-digit block number",
         "- Press Enter to submit",
         "",
         "You will get a short practice, then a timed scored block.",

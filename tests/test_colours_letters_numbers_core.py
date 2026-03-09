@@ -308,3 +308,16 @@ def test_diamond_spawn_and_speed_vary_within_configured_ranges() -> None:
     assert speeds
     assert all(0.2 <= speed <= 0.35 for speed in speeds)
     assert max(speeds) > min(speeds)
+
+
+def test_default_diamond_ranges_allow_faster_later_hits() -> None:
+    cfg = ColoursLettersNumbersConfig()
+
+    distance_to_zone = 0.54 - 0.02
+    slow_arrival_s = distance_to_zone / cfg.diamond_speed_norm_per_s
+    fast_later_arrival_s = (
+        cfg.diamond_spawn_interval_max_s
+        + (distance_to_zone / cfg.diamond_speed_max_norm_per_s)
+    )
+
+    assert fast_later_arrival_s < slow_arrival_s

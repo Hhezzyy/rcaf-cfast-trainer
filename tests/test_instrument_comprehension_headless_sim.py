@@ -9,6 +9,7 @@ from cfast_trainer.instrument_comprehension import (
     InstrumentComprehensionConfig,
     InstrumentComprehensionGenerator,
     InstrumentComprehensionPayload,
+    InstrumentComprehensionTrialKind,
     build_instrument_comprehension_test,
 )
 
@@ -40,7 +41,10 @@ def test_headless_scripted_run_produces_expected_summary_and_partial_scores() ->
     engine.start_practice()
     assert engine.phase is Phase.PRACTICE
 
-    p_practice = mirror.next_problem(difficulty=difficulty)
+    p_practice = mirror.next_problem_for_kind(
+        kind=InstrumentComprehensionTrialKind.INSTRUMENTS_TO_AIRCRAFT,
+        difficulty=difficulty,
+    )
     clock.advance(0.2)
     assert engine.submit_answer(str(p_practice.answer)) is True
     assert engine.phase is Phase.PRACTICE_DONE
@@ -48,11 +52,40 @@ def test_headless_scripted_run_produces_expected_summary_and_partial_scores() ->
     engine.start_scored()
     assert engine.phase is Phase.SCORED
 
-    p1 = mirror.next_problem(difficulty=difficulty)
+    p1 = mirror.next_problem_for_kind(
+        kind=InstrumentComprehensionTrialKind.INSTRUMENTS_TO_AIRCRAFT,
+        difficulty=difficulty,
+    )
     clock.advance(0.5)
     assert engine.submit_answer(str(p1.answer)) is True
 
-    p2 = mirror.next_problem(difficulty=difficulty)
+    # Mirror the unanswered prompt the engine deals after the first scored response.
+    mirror.next_problem_for_kind(
+        kind=InstrumentComprehensionTrialKind.INSTRUMENTS_TO_AIRCRAFT,
+        difficulty=difficulty,
+    )
+    clock.advance(3.0)
+    engine.update()
+    assert engine.phase is Phase.PRACTICE_DONE
+
+    engine.start_scored()
+    assert engine.phase is Phase.PRACTICE
+
+    p_practice_2 = mirror.next_problem_for_kind(
+        kind=InstrumentComprehensionTrialKind.INSTRUMENTS_TO_DESCRIPTION,
+        difficulty=difficulty,
+    )
+    clock.advance(0.2)
+    assert engine.submit_answer(str(p_practice_2.answer)) is True
+    assert engine.phase is Phase.PRACTICE_DONE
+
+    engine.start_scored()
+    assert engine.phase is Phase.SCORED
+
+    p2 = mirror.next_problem_for_kind(
+        kind=InstrumentComprehensionTrialKind.INSTRUMENTS_TO_DESCRIPTION,
+        difficulty=difficulty,
+    )
     assert isinstance(p2.payload, InstrumentComprehensionPayload)
     near_option = min(
         (
@@ -65,7 +98,10 @@ def test_headless_scripted_run_produces_expected_summary_and_partial_scores() ->
     clock.advance(0.5)
     assert engine.submit_answer(str(near_option)) is True
 
-    p3 = mirror.next_problem(difficulty=difficulty)
+    p3 = mirror.next_problem_for_kind(
+        kind=InstrumentComprehensionTrialKind.INSTRUMENTS_TO_DESCRIPTION,
+        difficulty=difficulty,
+    )
     assert isinstance(p3.payload, InstrumentComprehensionPayload)
     zeroable = [
         (opt.code, err)
@@ -85,7 +121,7 @@ def test_headless_scripted_run_produces_expected_summary_and_partial_scores() ->
     clock.advance(0.5)
     assert engine.submit_answer(str(worst_option)) is True
 
-    clock.advance(6.0)
+    clock.advance(3.0)
     engine.update()
     assert engine.phase is Phase.RESULTS
 

@@ -23,7 +23,7 @@ class FakeClock:
         self.t += float(dt)
 
 
-def test_headless_scripted_run_produces_expected_summary_and_partial_scores() -> None:
+def test_headless_scripted_run_produces_expected_summary_and_scores() -> None:
     seed = 5150
     difficulty = 0.6
     clock = FakeClock()
@@ -72,5 +72,5 @@ def test_headless_scripted_run_produces_expected_summary_and_partial_scores() ->
     scored_events = [e for e in engine.events() if e.phase is Phase.SCORED]
     assert len(scored_events) == 3
     assert scored_events[0].score == pytest.approx(1.0)
-    assert 0.0 < scored_events[1].score < 1.0
+    assert scored_events[1].score == pytest.approx(0.0)
     assert scored_events[2].score == pytest.approx(0.0)

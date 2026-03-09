@@ -317,9 +317,9 @@ class SituationalAwarenessGenerator:
         correct_pair = tuple(sorted((contact_a.callsign, contact_b.callsign)))
         all_pairs = [tuple(sorted((a.callsign, b.callsign))) for a, b in combinations(contacts, 2)]
         distractors = [pair for pair in all_pairs if pair != correct_pair]
-        sampled = self._rng.sample(distractors, k=3)
+        sampled = self._rng.sample(distractors, k=4)
         pair_values = [correct_pair, *sampled]
-        order = self._rng.sample([0, 1, 2, 3], k=4)
+        order = self._rng.sample([0, 1, 2, 3, 4], k=5)
         shuffled = [pair_values[idx] for idx in order]
 
         options = tuple(
@@ -383,14 +383,16 @@ class SituationalAwarenessGenerator:
         )
         contacts = (priority, traffic, support)
 
+        merge_cell = cell_label_from_xy(meet_x, meet_y)
         correct_text = f"Vector {traffic.callsign} away; keep {priority.callsign} direct."
         option_texts = (
             correct_text,
             f"Hold {priority.callsign}; keep {traffic.callsign} direct.",
             "Maintain both routes and monitor one more sweep.",
             "Change both to backup channel before vectoring.",
+            f"Turn both flights away from {merge_cell} and delay both equally.",
         )
-        order = self._rng.sample([0, 1, 2, 3], k=4)
+        order = self._rng.sample([0, 1, 2, 3, 4], k=5)
         shuffled = [option_texts[idx] for idx in order]
         options = tuple(
             SituationalAwarenessOption(code=index + 1, text=text)
@@ -398,7 +400,6 @@ class SituationalAwarenessGenerator:
         )
         correct_code = next(opt.code for opt in options if opt.text == correct_text)
 
-        merge_cell = cell_label_from_xy(meet_x, meet_y)
         stem = "Best immediate action?"
         prompt = self._compose_prompt(
             aural=f"{priority.callsign} reports MIN fuel; {traffic.callsign} normal.",
@@ -543,10 +544,10 @@ class SituationalAwarenessGenerator:
             if candidate in labels:
                 continue
             labels.append(candidate)
-            if len(labels) == 4:
+            if len(labels) == 5:
                 break
 
-        while len(labels) < 4:
+        while len(labels) < 5:
             candidate = cell_label_from_xy(
                 self._rng.randint(0, _GRID_SIZE - 1), self._rng.randint(0, _GRID_SIZE - 1)
             )
@@ -554,7 +555,7 @@ class SituationalAwarenessGenerator:
                 continue
             labels.append(candidate)
 
-        order = self._rng.sample([0, 1, 2, 3], k=4)
+        order = self._rng.sample([0, 1, 2, 3, 4], k=5)
         shuffled = [labels[idx] for idx in order]
         options = tuple(
             SituationalAwarenessOption(code=index + 1, text=label, cell_label=label)
@@ -622,8 +623,8 @@ def build_situational_awareness_test(
         "",
         "Controls:",
         "- Click highlighted map cells (projection trials) or option rows",
-        "- Keyboard fallback: 1, 2, 3, or 4 then Enter",
-        "- Up/Down cycles options when using keyboard",
+        "- Keyboard fallback: A, S, D, F, or G then Enter",
+        "- Arrow keys cycle options when using keyboard",
         "",
         "Timed block default is 12 minutes for repeatable training sessions.",
     ]

@@ -65,7 +65,7 @@ def test_generator_determinism_same_seed_same_sequence() -> None:
         ]
 
 
-def test_generated_problem_has_four_unique_options_and_correct_code() -> None:
+def test_generated_problem_has_five_unique_options_and_correct_code() -> None:
     gen = SpatialIntegrationGenerator(seed=18)
     for section in (
         SpatialIntegrationSection.PART_A,
@@ -76,11 +76,11 @@ def test_generated_problem_has_four_unique_options_and_correct_code() -> None:
         payload = cast(SpatialIntegrationPayload, problem.payload)
 
         assert isinstance(payload, SpatialIntegrationPayload)
-        assert len(payload.options) == 4
-        assert [opt.code for opt in payload.options] == [1, 2, 3, 4]
+        assert len(payload.options) == 5
+        assert [opt.code for opt in payload.options] == [1, 2, 3, 4, 5]
 
         labels = [opt.label for opt in payload.options]
-        assert len(set(labels)) == 4
+        assert len(set(labels)) == 5
         assert problem.answer == payload.correct_code
         assert any(
             opt.code == payload.correct_code and opt.point == payload.correct_point

@@ -38,6 +38,7 @@ class AnglesBearingsDegreesPayload:
     stem: str
     reference_bearing_deg: int
     target_bearing_deg: int
+    angle_measure: str | None
     object_label: str
     options: tuple[AnglesBearingsOption, ...]
     correct_code: int
@@ -82,6 +83,7 @@ class AnglesBearingsDegreesGenerator:
             correct_value=angle,
             reference_bearing_deg=reference_bearing,
             target_bearing_deg=target_bearing,
+            angle_measure="smaller",
             object_label="",
             distractors=distractors,
         )
@@ -102,6 +104,7 @@ class AnglesBearingsDegreesGenerator:
             correct_value=bearing,
             reference_bearing_deg=0,
             target_bearing_deg=bearing,
+            angle_measure=None,
             object_label=label,
             distractors=distractors,
         )
@@ -114,6 +117,7 @@ class AnglesBearingsDegreesGenerator:
         correct_value: int,
         reference_bearing_deg: int,
         target_bearing_deg: int,
+        angle_measure: str | None,
         object_label: str,
         distractors: tuple[int, int, int],
     ) -> Problem:
@@ -126,7 +130,7 @@ class AnglesBearingsDegreesGenerator:
             if len(values) == 4:
                 break
 
-        while len(values) < 4:
+        while len(values) < 5:
             candidate = self._fallback_distractor(
                 kind=kind,
                 correct_value=int(correct_value),
@@ -135,7 +139,7 @@ class AnglesBearingsDegreesGenerator:
                 continue
             values.append(candidate)
 
-        order = self._rng.sample([0, 1, 2, 3], k=4)
+        order = self._rng.sample([0, 1, 2, 3, 4], k=5)
         shuffled = [values[idx] for idx in order]
 
         options = tuple(
@@ -158,6 +162,7 @@ class AnglesBearingsDegreesGenerator:
             stem=stem,
             reference_bearing_deg=int(reference_bearing_deg),
             target_bearing_deg=int(target_bearing_deg),
+            angle_measure=angle_measure,
             object_label=str(object_label),
             options=options,
             correct_code=int(correct_code),
@@ -229,7 +234,7 @@ def build_angles_bearings_degrees_test(
         "Part B: estimate the bearing of an object from a reference point.",
         "",
         "Controls:",
-        "- Press 1, 2, 3, or 4 to choose an option",
+        "- Press A, S, D, F, or G to choose an option",
         "- Use Up/Down to move between options",
         "- Press Enter to submit",
         "",

@@ -44,11 +44,29 @@ def test_generated_answer_matches_target_block_code() -> None:
     p = gen.next_problem(difficulty=0.5)
     payload = p.payload
     assert isinstance(payload, VisualSearchPayload)
+    assert payload.rows == 3
+    assert payload.cols == 4
+    assert sorted(payload.cell_codes) == list(range(10, 22))
 
     target_indices = [i for i, tok in enumerate(payload.cells) if tok == payload.target]
     assert len(target_indices) == 1
     idx = target_indices[0]
     assert p.answer == payload.cell_codes[idx]
+
+
+def test_block_numbers_move_between_questions() -> None:
+    gen = VisualSearchGenerator(seed=456)
+
+    first = gen.next_problem(difficulty=0.5)
+    second = gen.next_problem(difficulty=0.5)
+    first_payload = first.payload
+    second_payload = second.payload
+
+    assert isinstance(first_payload, VisualSearchPayload)
+    assert isinstance(second_payload, VisualSearchPayload)
+    assert sorted(first_payload.cell_codes) == list(range(10, 22))
+    assert sorted(second_payload.cell_codes) == list(range(10, 22))
+    assert first_payload.cell_codes != second_payload.cell_codes
 
 
 def test_scoring_exact_and_estimation_behavior() -> None:
@@ -61,13 +79,13 @@ def test_scoring_exact_and_estimation_behavior() -> None:
         cells=("A7", "B1", "A7", "D1", "E1", "B7"),
         cell_codes=(12, 57, 44, 3, 98, 6),
         full_credit_error=0,
-        zero_credit_error=6,
+        zero_credit_error=1,
     )
     problem = Problem(prompt="Find A7", answer=57, payload=payload)
 
     assert scorer.score(problem=problem, user_answer=57, raw="57") == 1.0
-    assert scorer.score(problem=problem, user_answer=58, raw="58") == pytest.approx(5 / 6, abs=1e-9)
-    assert scorer.score(problem=problem, user_answer=62, raw="62") == pytest.approx(1 / 6, abs=1e-9)
+    assert scorer.score(problem=problem, user_answer=58, raw="58") == 0.0
+    assert scorer.score(problem=problem, user_answer=62, raw="62") == 0.0
     assert scorer.score(problem=problem, user_answer=70, raw="70") == 0.0
 
 

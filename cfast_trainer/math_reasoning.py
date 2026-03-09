@@ -280,11 +280,11 @@ class MathReasoningGenerator:
             if item < 0 or item in values:
                 continue
             values.append(item)
-            if len(values) == 4:
+            if len(values) == 5:
                 break
 
         jitter = max(2, abs(int(correct_value)) // 6)
-        while len(values) < 4:
+        while len(values) < 5:
             direction = -1 if self._rng.randint(0, 1) == 0 else 1
             scale = self._rng.randint(1, 3)
             candidate = int(correct_value) + direction * jitter * scale
@@ -292,7 +292,7 @@ class MathReasoningGenerator:
                 continue
             values.append(candidate)
 
-        order = self._rng.sample([0, 1, 2, 3], k=4)
+        order = self._rng.sample([0, 1, 2, 3, 4], k=5)
         shuffled = [values[idx] for idx in order]
 
         options = tuple(
@@ -343,7 +343,7 @@ def build_math_reasoning_test(
         "Questions mix aviation-style rates, percentages, averages, and planning math.",
         "",
         "Controls:",
-        "- Press 1, 2, 3, or 4 to choose an option",
+        "- Press A, S, D, F, or G to choose an option",
         "- Press Enter to submit",
         "",
         "You will get a short practice, then a timed scored block.",

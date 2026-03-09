@@ -3,7 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from cfast_trainer.cognitive_core import Phase, SeededRng
-from cfast_trainer.digit_recognition import DigitRecognitionGenerator, build_digit_recognition_test
+from cfast_trainer.digit_recognition import (
+    DigitRecognitionGenerator,
+    DigitRecognitionQuestionKind,
+    build_digit_recognition_test,
+)
 
 
 @dataclass
@@ -35,13 +39,12 @@ def test_generator_is_deterministic_for_same_seed() -> None:
     assert seq1 == seq2
 
 
-def test_scoring_recall_and_count_target() -> None:
+def test_scoring_mixed_question_bank() -> None:
     seed = 42
     clock = FakeClock()
 
     mirror = DigitRecognitionGenerator(SeededRng(seed))
-    t1 = mirror.next_trial(difficulty=0.5)
-    t2 = mirror.next_trial(difficulty=0.5)
+    trials = [mirror.next_trial(difficulty=0.5) for _ in range(4)]
 
     engine = build_digit_recognition_test(
         clock=clock, seed=seed, practice=False, scored_duration_s=10.0
@@ -49,16 +52,40 @@ def test_scoring_recall_and_count_target() -> None:
     engine.start_practice()
     engine.start_scored()
 
-    _advance_to_question(clock, engine)
-    assert engine.submit_answer(t1.expected) is True
-
-    _advance_to_question(clock, engine)
-    assert engine.submit_answer(t2.expected) is True
+    for trial in trials:
+        _advance_to_question(clock, engine)
+        assert engine.submit_answer(trial.expected) is True
 
     s = engine.scored_summary()
-    assert s.attempted == 2
-    assert s.correct == 2
+    assert s.attempted == 4
+    assert s.correct == 4
     assert s.accuracy == 1.0
+
+
+def test_generator_emits_recall_count_and_difference_trials() -> None:
+    gen = DigitRecognitionGenerator(SeededRng(123))
+    trials = [gen.next_trial(difficulty=0.5) for _ in range(8)]
+    kinds = {trial.kind for trial in trials}
+
+    assert DigitRecognitionQuestionKind.RECALL in kinds
+    assert DigitRecognitionQuestionKind.COUNT_TARGET in kinds
+    assert DigitRecognitionQuestionKind.DIFFERENT_DIGIT in kinds
+
+    for trial in trials:
+        if trial.kind is DigitRecognitionQuestionKind.COUNT_TARGET:
+            target = trial.prompt.split("HOW MANY ", 1)[1][0]
+            assert trial.expected == str(sum(1 for ch in trial.digits if ch == target))
+        if trial.kind is DigitRecognitionQuestionKind.DIFFERENT_DIGIT:
+            assert trial.comparison_digits is not None
+            diffs = [
+                idx
+                for idx, (left, right) in enumerate(
+                    zip(trial.digits, trial.comparison_digits, strict=True)
+                )
+                if left != right
+            ]
+            assert len(diffs) == 1
+            assert trial.expected == trial.comparison_digits[diffs[0]]
 
 
 def test_timer_boundary_transitions_to_results_and_rejects_late_submit() -> None:
