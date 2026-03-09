@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
+from typing import cast
 
 from .clock import Clock
 from .cognitive_core import (
@@ -8,15 +10,15 @@ from .cognitive_core import (
     Problem,
     SeededRng,
     TimedTextInputTest,
-    lerp_int,
     round_half_up,
 )
 
 # -----------------------------------------------------------------------------
 # Airborne Numerical (training recreation)
-# - Answers are HHMM (24h) and must be exactly 4 digits (UI enforces)
-# - No backspace (UI enforces)
 # - Deterministic generation (seeded RNG)
+# - 4-digit input UI is preserved; all generated answers fit within it
+# - Some reference pages can be charts instead of tables; chart-driven questions
+#   carry a tolerance so estimated reads are still marked fairly
 # -----------------------------------------------------------------------------
 
 
@@ -28,6 +30,27 @@ class RouteLeg:
 
 
 @dataclass(frozen=True, slots=True)
+class UnitProfile:
+    speed_unit: str
+    distance_unit: str
+    speed_minutes: int
+    fuel_unit: str
+    fuel_minutes: int
+    distance_range: tuple[int, int]
+    speed_max_range: tuple[int, int]
+    speed_floor: int
+    speed_drop_range: tuple[int, int]
+    speed_neighbor_step: int
+    fuel_base_range: tuple[int, int]
+    fuel_factor_range: tuple[float, float]
+    fuel_minimum: int
+    start_fuel_range: tuple[int, int]
+    start_fuel_step: int
+    speed_chart_steps: tuple[int, ...]
+    fuel_chart_steps: tuple[int, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class AirborneScenario:
     template_name: str
     node_names: tuple[str, ...]
@@ -36,23 +59,42 @@ class AirborneScenario:
     legs: tuple[RouteLeg, ...]
 
     start_time_hhmm: str
+    given_time_label: str
+    given_time_hhmm: str
     speed_value: int
     speed_unit: str
+    speed_minutes: int
     distance_unit: str
 
     fuel_burn_per_hr: int
+    fuel_unit: str
+    fuel_minutes: int
     parcel_weight: int
     start_fuel_liters: int
 
-    # overlay “menus” (for tables/graphs)
+    route_distance_total: int
+    route_travel_minutes: int
+    arrival_time_hhmm: str
+    empty_time_hhmm: str
+    fuel_used_on_route: int
+
+    # overlay “menus” (table or chart)
     weight_speed_table: tuple[tuple[int, int], ...]  # (kg, speed)
-    speed_fuel_table: tuple[tuple[int, int], ...]  # (speed, L/hr)
+    speed_fuel_table: tuple[tuple[int, int], ...]  # (speed, fuel burn)
+    parcel_reference_format: str  # "table" | "chart"
+    fuel_reference_format: str  # "table" | "chart"
+    parcel_chart_step: int
+    fuel_chart_step: int
 
     # per-problem label (helps UI/tests)
-    question_kind: str  # "arrival_time" | "empty_time"
-    target_label: str  # destination code or "EMPTY"
+    question_kind: str
+    target_label: str
+    answer_format: str  # "hhmm" | "number"
+    answer_label: str
+    answer_unit_label: str
+    answer_digits: int
 
-    # convenience aliases (fixes Pylance red + keeps old UI code working)
+    # convenience aliases (keeps older UI code working)
     @property
     def parcel_weight_kg(self) -> int:
         return self.parcel_weight
@@ -67,6 +109,19 @@ class MapTemplate:
     name: str
     nodes: tuple[tuple[float, float], ...]  # normalized (0..1) positions
     edges: tuple[tuple[int, int], ...]  # (node_a, node_b)
+
+
+@dataclass(frozen=True, slots=True)
+class AirborneDifficultyProfile:
+    family: str
+    level: int
+    question_kinds: tuple[tuple[str, float], ...]
+    min_legs: int = 1
+    max_legs: int = 4
+    speed_minutes: tuple[int, ...] = (60, 1)
+    fuel_minutes: tuple[int, ...] = (60, 1)
+    parcel_reference_formats: tuple[str, ...] = ("table", "chart")
+    fuel_reference_formats: tuple[str, ...] = ("table", "chart")
 
 
 TEMPLATES: tuple[MapTemplate, ...] = (
@@ -112,6 +167,85 @@ TEMPLATES: tuple[MapTemplate, ...] = (
 
 TEMPLATES_BY_NAME = {t.name: t for t in TEMPLATES}
 
+UNIT_PROFILES: tuple[UnitProfile, ...] = (
+    UnitProfile(
+        speed_unit="km/h",
+        distance_unit="km",
+        speed_minutes=60,
+        fuel_unit="L/hr",
+        fuel_minutes=60,
+        distance_range=(40, 180),
+        speed_max_range=(360, 520),
+        speed_floor=220,
+        speed_drop_range=(80, 170),
+        speed_neighbor_step=20,
+        fuel_base_range=(800, 1600),
+        fuel_factor_range=(3.8, 6.3),
+        fuel_minimum=400,
+        start_fuel_range=(2200, 9000),
+        start_fuel_step=50,
+        speed_chart_steps=(10, 20, 25, 50),
+        fuel_chart_steps=(100, 200, 250, 500),
+    ),
+    UnitProfile(
+        speed_unit="knots",
+        distance_unit="NM",
+        speed_minutes=60,
+        fuel_unit="L/hr",
+        fuel_minutes=60,
+        distance_range=(25, 120),
+        speed_max_range=(190, 310),
+        speed_floor=120,
+        speed_drop_range=(40, 90),
+        speed_neighbor_step=10,
+        fuel_base_range=(600, 1200),
+        fuel_factor_range=(3.0, 5.2),
+        fuel_minimum=350,
+        start_fuel_range=(1800, 7200),
+        start_fuel_step=50,
+        speed_chart_steps=(5, 10, 20, 25),
+        fuel_chart_steps=(50, 100, 200, 250),
+    ),
+    UnitProfile(
+        speed_unit="mi/min",
+        distance_unit="miles",
+        speed_minutes=1,
+        fuel_unit="L/min",
+        fuel_minutes=1,
+        distance_range=(12, 60),
+        speed_max_range=(6, 11),
+        speed_floor=3,
+        speed_drop_range=(2, 5),
+        speed_neighbor_step=1,
+        fuel_base_range=(3, 8),
+        fuel_factor_range=(0.5, 1.1),
+        fuel_minimum=2,
+        start_fuel_range=(120, 650),
+        start_fuel_step=5,
+        speed_chart_steps=(1, 2),
+        fuel_chart_steps=(1, 2, 5),
+    ),
+    UnitProfile(
+        speed_unit="km/min",
+        distance_unit="km",
+        speed_minutes=1,
+        fuel_unit="L/min",
+        fuel_minutes=1,
+        distance_range=(18, 90),
+        speed_max_range=(7, 13),
+        speed_floor=4,
+        speed_drop_range=(2, 6),
+        speed_neighbor_step=1,
+        fuel_base_range=(4, 10),
+        fuel_factor_range=(0.6, 1.3),
+        fuel_minimum=2,
+        start_fuel_range=(140, 720),
+        start_fuel_step=5,
+        speed_chart_steps=(1, 2),
+        fuel_chart_steps=(1, 2, 5),
+    ),
+)
+
 _NODE_CODES = (
     "ALP",
     "BRV",
@@ -140,6 +274,366 @@ _NODE_CODES = (
     "ZUL",
 )
 
+QUESTION_KINDS: tuple[tuple[str, float], ...] = (
+    ("arrival_time", 0.15),
+    ("takeoff_time", 0.12),
+    ("empty_time", 0.12),
+    ("fuel_endurance", 0.11),
+    ("fuel_burned", 0.14),
+    ("distance_travelled", 0.12),
+    ("parcel_weight", 0.12),
+    ("parcel_effect", 0.12),
+)
+
+PRACTICE_KIND_ORDER: tuple[str, ...] = (
+    "arrival_time",
+    "takeoff_time",
+    "empty_time",
+    "fuel_endurance",
+    "fuel_burned",
+    "distance_travelled",
+    "parcel_weight",
+    "parcel_effect",
+)
+
+PRACTICE_REFERENCE_PAIRS: tuple[tuple[str, str], ...] = (
+    ("table", "table"),
+    ("chart", "table"),
+    ("table", "chart"),
+    ("chart", "chart"),
+    ("table", "chart"),
+    ("chart", "table"),
+)
+
+
+def _clamp01(value: float) -> float:
+    return max(0.0, min(1.0, float(value)))
+
+
+def _difficulty_to_level(difficulty: float) -> int:
+    return max(1, min(10, int(round(_clamp01(difficulty) * 9.0)) + 1))
+
+
+def _normalize_question_weights(
+    options: tuple[tuple[str, float], ...],
+) -> tuple[tuple[str, float], ...]:
+    if not options:
+        raise ValueError("question weight profile must not be empty")
+    total = sum(max(0.0, float(weight)) for _label, weight in options)
+    if total <= 0.0:
+        uniform = 1.0 / float(len(options))
+        return tuple((label, uniform) for label, _weight in options)
+    return tuple((label, max(0.0, float(weight)) / total) for label, weight in options)
+
+
+def build_ant_airborne_difficulty_profile(
+    level: int,
+    *,
+    family: str = "full",
+) -> AirborneDifficultyProfile:
+    clamped = max(1, min(10, int(level)))
+    token = str(family).strip().lower() or "full"
+
+    if token == "route_time":
+        if clamped <= 2:
+            kinds = (("arrival_time", 1.0),)
+            return AirborneDifficultyProfile(
+                family=token,
+                level=clamped,
+                question_kinds=kinds,
+                max_legs=2,
+                speed_minutes=(60,),
+                parcel_reference_formats=("table",),
+            )
+        if clamped <= 4:
+            kinds = _normalize_question_weights((("arrival_time", 0.7), ("takeoff_time", 0.3)))
+            return AirborneDifficultyProfile(
+                family=token,
+                level=clamped,
+                question_kinds=kinds,
+                max_legs=3,
+                speed_minutes=(60,),
+                parcel_reference_formats=("table",),
+            )
+        if clamped <= 6:
+            kinds = _normalize_question_weights((("arrival_time", 0.55), ("takeoff_time", 0.45)))
+            return AirborneDifficultyProfile(
+                family=token,
+                level=clamped,
+                question_kinds=kinds,
+                max_legs=4,
+                speed_minutes=(60,),
+                parcel_reference_formats=("table",),
+            )
+        return AirborneDifficultyProfile(
+            family=token,
+            level=clamped,
+            question_kinds=_normalize_question_weights(
+                (("arrival_time", 0.5), ("takeoff_time", 0.5))
+            ),
+            min_legs=3 if clamped >= 9 else 1,
+            max_legs=4,
+            speed_minutes=(60, 1),
+            parcel_reference_formats=("table", "chart"),
+        )
+
+    if token == "endurance":
+        if clamped <= 2:
+            kinds = (("fuel_endurance", 1.0),)
+            return AirborneDifficultyProfile(
+                family=token,
+                level=clamped,
+                question_kinds=kinds,
+                max_legs=2,
+                fuel_minutes=(60,),
+                fuel_reference_formats=("table",),
+            )
+        if clamped <= 4:
+            kinds = _normalize_question_weights((("fuel_endurance", 0.65), ("empty_time", 0.35)))
+            return AirborneDifficultyProfile(
+                family=token,
+                level=clamped,
+                question_kinds=kinds,
+                max_legs=3,
+                fuel_minutes=(60,),
+                fuel_reference_formats=("table",),
+            )
+        if clamped <= 6:
+            kinds = _normalize_question_weights((("fuel_endurance", 0.5), ("empty_time", 0.5)))
+            return AirborneDifficultyProfile(
+                family=token,
+                level=clamped,
+                question_kinds=kinds,
+                max_legs=3,
+                fuel_minutes=(60,),
+                fuel_reference_formats=("table", "chart"),
+            )
+        return AirborneDifficultyProfile(
+            family=token,
+            level=clamped,
+            question_kinds=_normalize_question_weights((("fuel_endurance", 0.45), ("empty_time", 0.55))),
+            max_legs=4,
+            fuel_minutes=(60, 1),
+            fuel_reference_formats=("table", "chart"),
+        )
+
+    if token == "fuel_burn":
+        if clamped <= 2:
+            return AirborneDifficultyProfile(
+                family=token,
+                level=clamped,
+                question_kinds=(("fuel_burned", 1.0),),
+                max_legs=2,
+                speed_minutes=(60,),
+                fuel_minutes=(60,),
+                parcel_reference_formats=("table",),
+                fuel_reference_formats=("table",),
+            )
+        if clamped <= 4:
+            return AirborneDifficultyProfile(
+                family=token,
+                level=clamped,
+                question_kinds=(("fuel_burned", 1.0),),
+                max_legs=3,
+                speed_minutes=(60,),
+                fuel_minutes=(60,),
+                parcel_reference_formats=("table",),
+                fuel_reference_formats=("table",),
+            )
+        if clamped <= 6:
+            return AirborneDifficultyProfile(
+                family=token,
+                level=clamped,
+                question_kinds=(("fuel_burned", 1.0),),
+                max_legs=3,
+                speed_minutes=(60,),
+                fuel_minutes=(60,),
+                parcel_reference_formats=("table",),
+                fuel_reference_formats=("table",),
+            )
+        return AirborneDifficultyProfile(
+            family=token,
+            level=clamped,
+            question_kinds=(("fuel_burned", 1.0),),
+            min_legs=3 if clamped >= 9 else 1,
+            max_legs=4,
+            speed_minutes=(60, 1),
+            fuel_minutes=(60, 1),
+            parcel_reference_formats=("table", "chart"),
+            fuel_reference_formats=("table", "chart"),
+        )
+
+    if token == "distance":
+        if clamped <= 2:
+            return AirborneDifficultyProfile(
+                family=token,
+                level=clamped,
+                question_kinds=(("distance_travelled", 1.0),),
+                max_legs=2,
+                speed_minutes=(60,),
+                fuel_minutes=(60,),
+            )
+        if clamped <= 4:
+            return AirborneDifficultyProfile(
+                family=token,
+                level=clamped,
+                question_kinds=(("distance_travelled", 1.0),),
+                max_legs=3,
+                speed_minutes=(60,),
+                fuel_minutes=(60,),
+            )
+        if clamped <= 6:
+            return AirborneDifficultyProfile(
+                family=token,
+                level=clamped,
+                question_kinds=(("distance_travelled", 1.0),),
+                max_legs=4,
+                speed_minutes=(60,),
+                fuel_minutes=(60,),
+            )
+        return AirborneDifficultyProfile(
+            family=token,
+            level=clamped,
+            question_kinds=(("distance_travelled", 1.0),),
+            min_legs=4 if clamped >= 9 else 1,
+            max_legs=4,
+            speed_minutes=(60, 1),
+            fuel_minutes=(60, 1),
+        )
+
+    if token == "payload":
+        if clamped <= 2:
+            return AirborneDifficultyProfile(
+                family=token,
+                level=clamped,
+                question_kinds=(("parcel_weight", 1.0),),
+                max_legs=2,
+                speed_minutes=(60,),
+                parcel_reference_formats=("table",),
+            )
+        if clamped <= 4:
+            kinds = _normalize_question_weights((("parcel_weight", 0.65), ("parcel_effect", 0.35)))
+            return AirborneDifficultyProfile(
+                family=token,
+                level=clamped,
+                question_kinds=kinds,
+                max_legs=3,
+                speed_minutes=(60,),
+                parcel_reference_formats=("table",),
+            )
+        if clamped <= 6:
+            kinds = _normalize_question_weights((("parcel_weight", 0.55), ("parcel_effect", 0.45)))
+            return AirborneDifficultyProfile(
+                family=token,
+                level=clamped,
+                question_kinds=kinds,
+                max_legs=3,
+                speed_minutes=(60,),
+                parcel_reference_formats=("table", "chart"),
+            )
+        return AirborneDifficultyProfile(
+            family=token,
+            level=clamped,
+            question_kinds=_normalize_question_weights((("parcel_weight", 0.45), ("parcel_effect", 0.55))),
+            max_legs=4,
+            speed_minutes=(60, 1),
+            parcel_reference_formats=("chart",) if clamped >= 9 else ("table", "chart"),
+        )
+
+    if token != "full":
+        raise ValueError(f"Unknown airborne difficulty family: {family}")
+
+    if clamped <= 2:
+        kinds = _normalize_question_weights(
+            (
+                ("arrival_time", 0.18),
+                ("takeoff_time", 0.08),
+                ("empty_time", 0.08),
+                ("fuel_endurance", 0.18),
+                ("fuel_burned", 0.10),
+                ("distance_travelled", 0.16),
+                ("parcel_weight", 0.14),
+                ("parcel_effect", 0.08),
+            )
+        )
+        return AirborneDifficultyProfile(
+            family=token,
+            level=clamped,
+            question_kinds=kinds,
+            max_legs=2,
+            speed_minutes=(60,),
+            fuel_minutes=(60,),
+            parcel_reference_formats=("table",),
+            fuel_reference_formats=("table",),
+        )
+    if clamped <= 4:
+        kinds = _normalize_question_weights(
+            (
+                ("arrival_time", 0.16),
+                ("takeoff_time", 0.10),
+                ("empty_time", 0.10),
+                ("fuel_endurance", 0.14),
+                ("fuel_burned", 0.12),
+                ("distance_travelled", 0.14),
+                ("parcel_weight", 0.12),
+                ("parcel_effect", 0.12),
+            )
+        )
+        return AirborneDifficultyProfile(
+            family=token,
+            level=clamped,
+            question_kinds=kinds,
+            max_legs=3,
+            speed_minutes=(60,),
+            fuel_minutes=(60,),
+            parcel_reference_formats=("table",),
+            fuel_reference_formats=("table",),
+        )
+    if clamped <= 6:
+        return AirborneDifficultyProfile(
+            family=token,
+            level=clamped,
+            question_kinds=_normalize_question_weights(QUESTION_KINDS),
+            max_legs=4,
+            speed_minutes=(60,),
+            fuel_minutes=(60,),
+            parcel_reference_formats=("table", "chart"),
+            fuel_reference_formats=("table",),
+        )
+    if clamped <= 8:
+        kinds = _normalize_question_weights(
+            (
+                ("arrival_time", 0.13),
+                ("takeoff_time", 0.13),
+                ("empty_time", 0.13),
+                ("fuel_endurance", 0.11),
+                ("fuel_burned", 0.13),
+                ("distance_travelled", 0.12),
+                ("parcel_weight", 0.11),
+                ("parcel_effect", 0.14),
+            )
+        )
+        return AirborneDifficultyProfile(
+            family=token,
+            level=clamped,
+            question_kinds=kinds,
+            max_legs=4,
+            speed_minutes=(60, 1),
+            fuel_minutes=(60, 1),
+            parcel_reference_formats=("table", "chart"),
+            fuel_reference_formats=("table", "chart"),
+        )
+    return AirborneDifficultyProfile(
+        family=token,
+        level=clamped,
+        question_kinds=_normalize_question_weights(QUESTION_KINDS),
+        max_legs=4,
+        speed_minutes=(60, 1),
+        fuel_minutes=(60, 1),
+        parcel_reference_formats=("table", "chart"),
+        fuel_reference_formats=("table", "chart"),
+    )
+
 
 def _hhmm_str_to_minutes(hhmm: str) -> int:
     hh = int(hhmm[:2])
@@ -158,36 +652,11 @@ def _minutes_to_hhmm_int(minutes: int) -> int:
     return int(_minutes_to_hhmm_str(minutes))
 
 
-def _route_minutes(legs: tuple[RouteLeg, ...], speed_value: int) -> int:
-    # Round once at final answer (your preference).
-    total_dist = sum(leg.distance for leg in legs)
-    return int(round_half_up((total_dist / max(speed_value, 1)) * 60.0))
-
-
-class AirborneTimeScorer(AnswerScorer):
-    """Score HHMM answers with a +/-30 minute linear tolerance.
-    Exact match = 1.0, >=30 min error = 0.0.
-    """
-
-    def score(self, *, problem: Problem, user_answer: int, raw: str) -> float:
-        correct_hhmm = int(problem.answer)
-        user_hhmm = int(user_answer)
-
-        correct_min = _hhmm_str_to_minutes(f"{correct_hhmm:04d}")
-        user_min = _hhmm_str_to_minutes(f"{user_hhmm:04d}")
-
-        diff = abs(user_min - correct_min)
-        diff = min(diff, 24 * 60 - diff)
-
-        if diff <= 0:
-            return 1.0
-        if diff >= 30:
-            return 0.0
-        return float(lerp_int(1000, 0, diff / 30.0)) / 1000.0
-
-
-# Back-compat name
-AirborneArrivalTimeScorer = AirborneTimeScorer
+def _minute_diff_hhmm(a_hhmm: int, b_hhmm: int) -> int:
+    a = _hhmm_str_to_minutes(f"{int(a_hhmm):04d}")
+    b = _hhmm_str_to_minutes(f"{int(b_hhmm):04d}")
+    diff = abs(a - b)
+    return min(diff, 24 * 60 - diff)
 
 
 def _pick_node_names(rng: SeededRng, n: int) -> tuple[str, ...]:
@@ -195,154 +664,565 @@ def _pick_node_names(rng: SeededRng, n: int) -> tuple[str, ...]:
     return tuple(picks)
 
 
-def _make_weight_speed_table(
-    rng: SeededRng, speed_unit: str
-) -> tuple[tuple[tuple[int, int], ...], int, int]:
-    weights = sorted(rng.sample(list(range(150, 851, 50)), k=6))
-    parcel_weight = int(rng.choice(weights))
-
-    if speed_unit == "km/h":
-        max_speed = int(rng.randint(360, 520))
-        min_speed = int(max(220, max_speed - rng.randint(80, 170)))
-    else:
-        max_speed = int(rng.randint(190, 310))
-        min_speed = int(max(120, max_speed - rng.randint(40, 90)))
-
-    w0, w1 = weights[0], weights[-1]
-    rows: list[tuple[int, int]] = []
-    for w in weights:
-        t = 0.0 if w1 == w0 else (w - w0) / (w1 - w0)
-        spd = int(round_half_up(max_speed + (min_speed - max_speed) * t))
-        rows.append((w, spd))
-
-    chosen_speed = next(spd for w, spd in rows if w == parcel_weight)
-    return (tuple(rows), parcel_weight, chosen_speed)
+def _weighted_choice(rng: SeededRng, options: tuple[tuple[str, float], ...]) -> str:
+    ticket = rng.random()
+    total = 0.0
+    for label, weight in options:
+        total += weight
+        if ticket <= total:
+            return label
+    return options[-1][0]
 
 
-def _make_speed_fuel_table(
-    rng: SeededRng, speed_unit: str, chosen_speed: int
-) -> tuple[tuple[tuple[int, int], ...], int]:
-    if speed_unit == "km/h":
-        step = 40
-        lo, hi = 220, 600
-        base = rng.randint(800, 1600)
-        factor = rng.random() * 2.5 + 3.8  # ~3.8..6.3
-    else:
-        step = 20
-        lo, hi = 120, 360
-        base = rng.randint(600, 1200)
-        factor = rng.random() * 2.2 + 3.0  # ~3.0..5.2
+def _scenario_matches_profile(
+    scenario: AirborneScenario,
+    profile: AirborneDifficultyProfile,
+) -> bool:
+    allowed_kinds = {kind for kind, _weight in profile.question_kinds}
+    if scenario.question_kind not in allowed_kinds:
+        return False
 
-    speeds = {chosen_speed}
-    while len(speeds) < 6:
-        delta = step * rng.randint(-3, 3)
-        cand = int(max(lo, min(hi, chosen_speed + delta)))
-        speeds.add(cand)
+    legs = len(scenario.legs)
+    if legs < profile.min_legs or legs > profile.max_legs:
+        return False
+    if scenario.speed_minutes not in profile.speed_minutes:
+        return False
+    if scenario.fuel_minutes not in profile.fuel_minutes:
+        return False
+    if scenario.parcel_reference_format not in profile.parcel_reference_formats:
+        return False
+    if scenario.fuel_reference_format not in profile.fuel_reference_formats:
+        return False
 
-    speeds_sorted = sorted(speeds)
-    rows: list[tuple[int, int]] = []
-    burn_at = 0
-    for spd in speeds_sorted:
-        jitter = rng.randint(-120, 120)
-        burn = int(max(400, round_half_up(base + spd * factor + jitter)))
-        rows.append((spd, burn))
-        if spd == chosen_speed:
-            burn_at = burn
+    if profile.family == "route_time" and profile.level >= 9:
+        return legs >= 3 and (
+            scenario.parcel_reference_format == "chart" or scenario.speed_minutes != 60
+        )
 
-    return (tuple(rows), burn_at)
+    if profile.family == "endurance" and profile.level >= 9:
+        return scenario.fuel_reference_format == "chart" or scenario.fuel_minutes != 60
+
+    if profile.family == "fuel_burn" and profile.level >= 9:
+        has_chart = (
+            scenario.fuel_reference_format == "chart"
+            or scenario.parcel_reference_format == "chart"
+        )
+        return legs >= 3 and (
+            has_chart or scenario.speed_minutes != 60 or scenario.fuel_minutes != 60
+        )
+
+    if profile.family == "distance" and profile.level >= 9:
+        return legs >= 4 and scenario.speed_minutes != 60
+
+    if profile.family == "payload" and profile.level >= 9:
+        return scenario.parcel_reference_format == "chart"
+
+    if profile.family == "full" and profile.level >= 9:
+        return (
+            scenario.parcel_reference_format == "chart"
+            or scenario.fuel_reference_format == "chart"
+            or scenario.speed_minutes != 60
+            or scenario.fuel_minutes != 60
+        )
+
+    return True
+
+
+def _route_minutes(route_distance: int, speed_value: int, speed_minutes: int) -> int:
+    return int(round_half_up((route_distance / max(speed_value, 1)) * float(speed_minutes)))
+
+
+def _fuel_used_for_minutes(route_minutes: int, fuel_burn: int, fuel_minutes: int) -> int:
+    return int(round_half_up((route_minutes / float(max(fuel_minutes, 1))) * fuel_burn))
+
+
+def _fuel_endurance_minutes(start_fuel: int, fuel_burn: int, fuel_minutes: int) -> int:
+    return int(round_half_up((start_fuel / float(max(fuel_burn, 1))) * float(fuel_minutes)))
+
+
+def _pick_chart_step(max_value: int, candidates: tuple[int, ...]) -> int:
+    best = candidates[0]
+    best_score = abs(math.ceil(max_value / max(best, 1)) - 5)
+    for step in candidates[1:]:
+        score = abs(math.ceil(max_value / max(step, 1)) - 5)
+        if score < best_score:
+            best = step
+            best_score = score
+    return best
+
+
+def _speed_tolerance_units(scenario: AirborneScenario) -> int:
+    if scenario.parcel_reference_format != "chart":
+        return 0
+    return max(1, int(math.ceil(scenario.parcel_chart_step / 2.0)))
+
+
+def _fuel_tolerance_units(scenario: AirborneScenario) -> int:
+    if scenario.fuel_reference_format != "chart":
+        return 0
+    return max(1, int(math.ceil(scenario.fuel_chart_step / 2.0)))
+
+
+def _time_tolerance_from_speed(scenario: AirborneScenario) -> int:
+    speed_tol = _speed_tolerance_units(scenario)
+    if speed_tol <= 0:
+        return 0
+    base = scenario.route_travel_minutes
+    low_speed = max(1, scenario.speed_value - speed_tol)
+    high_speed = scenario.speed_value + speed_tol
+    variants = (
+        _route_minutes(scenario.route_distance_total, low_speed, scenario.speed_minutes),
+        _route_minutes(scenario.route_distance_total, high_speed, scenario.speed_minutes),
+    )
+    return max(abs(base - variant) for variant in variants)
+
+
+def _time_tolerance_from_fuel(scenario: AirborneScenario) -> int:
+    fuel_tol = _fuel_tolerance_units(scenario)
+    if fuel_tol <= 0:
+        return 0
+    base_endurance = _hhmm_str_to_minutes(scenario.empty_time_hhmm) - _hhmm_str_to_minutes(
+        scenario.start_time_hhmm
+    )
+    variants: list[int] = []
+    for burn in {
+        max(1, scenario.fuel_burn_per_hr - fuel_tol),
+        scenario.fuel_burn_per_hr + fuel_tol,
+    }:
+        endurance = int(
+            round_half_up(
+                (scenario.start_fuel_liters / float(max(burn, 1))) * float(scenario.fuel_minutes)
+            )
+        )
+        variants.append(endurance)
+    return max(abs(base_endurance - variant) for variant in variants)
+
+
+def _numeric_tolerance_from_graphs(scenario: AirborneScenario) -> int:
+    speed_tol = _speed_tolerance_units(scenario)
+    fuel_tol = _fuel_tolerance_units(scenario)
+    if scenario.question_kind == "fuel_endurance":
+        return _time_tolerance_from_fuel(scenario)
+    if scenario.question_kind == "fuel_burned":
+        baseline = scenario.fuel_used_on_route
+        values: list[int] = []
+        speeds = {scenario.speed_value}
+        burns = {scenario.fuel_burn_per_hr}
+        if speed_tol > 0:
+            speeds.update(
+                {
+                    max(1, scenario.speed_value - speed_tol),
+                    scenario.speed_value + speed_tol,
+                }
+            )
+        if fuel_tol > 0:
+            burns.update(
+                {max(1, scenario.fuel_burn_per_hr - fuel_tol), scenario.fuel_burn_per_hr + fuel_tol}
+            )
+        for speed in speeds:
+            route_minutes = _route_minutes(
+                scenario.route_distance_total,
+                speed,
+                scenario.speed_minutes,
+            )
+            for burn in burns:
+                values.append(_fuel_used_for_minutes(route_minutes, burn, scenario.fuel_minutes))
+        return max(abs(baseline - value) for value in values)
+    if scenario.question_kind == "parcel_effect" and scenario.parcel_reference_format == "chart":
+        return max(1, speed_tol * 2)
+    if scenario.question_kind == "parcel_weight" and scenario.parcel_reference_format == "chart":
+        weights = [weight for weight, _ in scenario.weight_speed_table]
+        step = min(
+            (right - left for left, right in zip(weights, weights[1:], strict=False)),
+            default=50,
+        )
+        return max(1, int(step))
+    return 0
+
+
+def _build_problem_tolerance(scenario: AirborneScenario) -> int:
+    if scenario.answer_format == "hhmm":
+        if scenario.question_kind in {"arrival_time", "takeoff_time"}:
+            return _time_tolerance_from_speed(scenario)
+        if scenario.question_kind == "empty_time":
+            return _time_tolerance_from_fuel(scenario)
+        return 0
+    return _numeric_tolerance_from_graphs(scenario)
+
+
+class AirborneScorer(AnswerScorer):
+    def score(self, *, problem: Problem, user_answer: int, raw: str) -> float:
+        _ = raw
+        scenario = cast(AirborneScenario | None, problem.payload)
+        tolerance = max(0, int(problem.tolerance))
+        if scenario is not None and scenario.answer_format == "hhmm":
+            diff = _minute_diff_hhmm(int(problem.answer), int(user_answer))
+            return 1.0 if diff <= tolerance else 0.0
+        diff = abs(int(user_answer) - int(problem.answer))
+        return 1.0 if diff <= tolerance else 0.0
 
 
 class AirborneNumericalGenerator:
-    def __init__(self, rng: SeededRng):
+    def __init__(self, rng: SeededRng, *, scripted_diverse_problems: int = 0):
         self._rng = rng
+        self._scripted_specs = self._build_scripted_specs(scripted_diverse_problems)
 
-    def generate(self) -> Problem:
-        scenario, prompt, answer = self._build_problem()
-        return Problem(prompt=prompt, answer=int(answer), payload=scenario)
+    def generate(self, *, profile: AirborneDifficultyProfile | None = None) -> Problem:
+        for _ in range(128):
+            spec = self._scripted_specs[0] if self._scripted_specs else None
+            if spec is None:
+                if profile is None:
+                    scenario, prompt, answer = self._build_problem()
+                else:
+                    scenario, prompt, answer = self._build_problem_from_profile(profile)
+            else:
+                question_kind, unit_profile, parcel_format, fuel_format = spec
+                scenario, prompt, answer = self._build_problem(
+                    forced_question_kind=question_kind,
+                    forced_unit_profile=unit_profile,
+                    forced_parcel_reference_format=parcel_format,
+                    forced_fuel_reference_format=fuel_format,
+                )
+            if 0 <= int(answer) <= 9999:
+                if spec is not None:
+                    self._scripted_specs.pop(0)
+                tolerance = _build_problem_tolerance(scenario)
+                return Problem(
+                    prompt=prompt,
+                    answer=int(answer),
+                    tolerance=tolerance,
+                    payload=scenario,
+                )
+        raise RuntimeError("unable to generate a 4-digit airborne numerical answer")
 
     def check(self, problem: Problem, user_answer: int) -> bool:
-        return int(user_answer) == int(problem.answer)
+        scenario = cast(AirborneScenario | None, problem.payload)
+        if scenario is not None and scenario.answer_format == "hhmm":
+            return _minute_diff_hhmm(problem.answer, user_answer) <= max(0, problem.tolerance)
+        return abs(int(user_answer) - int(problem.answer)) <= max(0, int(problem.tolerance))
 
     def next_problem(self, *, difficulty: float) -> Problem:
-        _ = difficulty
-        return self.generate()
+        if self._scripted_specs:
+            return self.generate()
+        level = _difficulty_to_level(difficulty)
+        profile = build_ant_airborne_difficulty_profile(level, family="full")
+        return self.generate(profile=profile)
 
-    def _build_problem(self) -> tuple[AirborneScenario, str, int]:
+    def _build_scripted_specs(
+        self,
+        scripted_diverse_problems: int,
+    ) -> list[tuple[str, UnitProfile, str, str]]:
+        count = max(0, int(scripted_diverse_problems))
+        if count <= 0:
+            return []
+
+        specs: list[tuple[str, UnitProfile, str, str]] = []
+        unit_offset = int(self._rng.randint(0, len(UNIT_PROFILES) - 1))
+        ref_offset = int(self._rng.randint(0, len(PRACTICE_REFERENCE_PAIRS) - 1))
+        for idx in range(count):
+            kind = PRACTICE_KIND_ORDER[idx % len(PRACTICE_KIND_ORDER)]
+            unit_profile = UNIT_PROFILES[(unit_offset + idx) % len(UNIT_PROFILES)]
+            parcel_format, fuel_format = PRACTICE_REFERENCE_PAIRS[
+                (ref_offset + idx) % len(PRACTICE_REFERENCE_PAIRS)
+            ]
+            specs.append((kind, unit_profile, parcel_format, fuel_format))
+        return specs
+
+    def _build_problem_from_profile(
+        self,
+        profile: AirborneDifficultyProfile,
+    ) -> tuple[AirborneScenario, str, int]:
+        for _ in range(1024):
+            question_kind = _weighted_choice(self._rng, profile.question_kinds)
+            scenario, prompt, answer = self._build_problem(forced_question_kind=question_kind)
+            if _scenario_matches_profile(scenario, profile):
+                return scenario, prompt, answer
+        raise RuntimeError(
+            f"unable to generate airborne numerical problem for profile {profile.family} L{profile.level}"
+        )
+
+    def _build_problem(
+        self,
+        *,
+        forced_question_kind: str | None = None,
+        forced_unit_profile: UnitProfile | None = None,
+        forced_parcel_reference_format: str | None = None,
+        forced_fuel_reference_format: str | None = None,
+    ) -> tuple[AirborneScenario, str, int]:
         rng = self._rng
         template = rng.choice(list(TEMPLATES))
+        unit_profile = forced_unit_profile or rng.choice(list(UNIT_PROFILES))
         node_names = _pick_node_names(rng, len(template.nodes))
 
-        # Units (consistent within a problem)
-        speed_unit = rng.choice(["km/h", "knots"])
-        distance_unit = "km" if speed_unit == "km/h" else "NM"
+        edge_lo, edge_hi = unit_profile.distance_range
+        edge_distances = tuple(int(rng.randint(edge_lo, edge_hi)) for _ in template.edges)
 
-        # Edge distances aligned with template.edges
-        if distance_unit == "km":
-            edge_distances = tuple(int(rng.randint(40, 180)) for _ in template.edges)
-        else:
-            edge_distances = tuple(int(rng.randint(25, 120)) for _ in template.edges)
-
-        # Route: 2-4 legs
         start_node = int(rng.randint(0, len(template.nodes) - 1))
         route = [start_node]
-        max_legs = int(rng.randint(2, 4))  # supports up to 3 vias
+        max_legs = int(rng.randint(2, 4))
         for _ in range(max_legs):
             cur = route[-1]
             options = [b if a == cur else a for a, b in template.edges if a == cur or b == cur]
-            options2 = [o for o in options if o not in route]
-            nxt = int(rng.choice(options2 if options2 else options))
+            unseen = [node for node in options if node not in route]
+            nxt = int(rng.choice(unseen if unseen else options))
             route.append(nxt)
         route_t = tuple(route)
 
         legs: list[RouteLeg] = []
         for a, b in zip(route_t, route_t[1:], strict=False):
             edge_key = tuple(sorted((a, b)))
-            idx = next(i for i, e in enumerate(template.edges) if tuple(sorted(e)) == edge_key)
+            idx = next(
+                i
+                for i, edge in enumerate(template.edges)
+                if tuple(sorted(edge)) == edge_key
+            )
             legs.append(RouteLeg(frm=a, to=b, distance=int(edge_distances[idx])))
+        legs_t = tuple(legs)
 
-        # Menus (tables/graphs)
-        weight_speed_table, parcel_weight, speed_value = _make_weight_speed_table(rng, speed_unit)
-        speed_fuel_table, fuel_burn = _make_speed_fuel_table(rng, speed_unit, speed_value)
-        start_fuel = int(rng.randint(2000, 9000) // 50 * 50)
+        weight_speed_table, parcel_weight, speed_value = _make_weight_speed_table(rng, unit_profile)
+        speed_fuel_table, fuel_burn = _make_speed_fuel_table(rng, unit_profile, speed_value)
+        start_fuel = int(
+            round_half_up(
+                rng.randint(*unit_profile.start_fuel_range)
+                / float(max(unit_profile.start_fuel_step, 1))
+            )
+            * unit_profile.start_fuel_step
+        )
 
-        # Start time
         start_minutes = int(rng.randint(0, 23) * 60 + rng.randint(0, 59))
         start_time_hhmm = _minutes_to_hhmm_str(start_minutes)
 
-        # Question kind mix: include fuel-based time questions now
-        question_kind = "arrival_time" if rng.random() < 0.6 else "empty_time"
+        route_distance_total = sum(leg.distance for leg in legs_t)
+        route_travel_minutes = _route_minutes(
+            route_distance_total,
+            speed_value,
+            unit_profile.speed_minutes,
+        )
+        arrival_time_hhmm = _minutes_to_hhmm_str(start_minutes + route_travel_minutes)
+        empty_minutes = _fuel_endurance_minutes(start_fuel, fuel_burn, unit_profile.fuel_minutes)
+        empty_time_hhmm = _minutes_to_hhmm_str(start_minutes + empty_minutes)
+        fuel_used_on_route = _fuel_used_for_minutes(
+            route_travel_minutes,
+            fuel_burn,
+            unit_profile.fuel_minutes,
+        )
+        clean_speed = int(weight_speed_table[0][1])
+        parcel_effect = int(max(0, clean_speed - speed_value))
+
+        parcel_reference_format = forced_parcel_reference_format or (
+            "chart" if rng.random() < 0.45 else "table"
+        )
+        fuel_reference_format = forced_fuel_reference_format or (
+            "chart" if rng.random() < 0.45 else "table"
+        )
+        parcel_chart_step = _pick_chart_step(
+            max(speed for _, speed in weight_speed_table),
+            unit_profile.speed_chart_steps,
+        )
+        fuel_chart_step = _pick_chart_step(
+            max(burn for _, burn in speed_fuel_table),
+            unit_profile.fuel_chart_steps,
+        )
+
+        question_kind = forced_question_kind or _weighted_choice(rng, QUESTION_KINDS)
+        dest = node_names[route_t[-1]]
 
         if question_kind == "arrival_time":
-            dest = node_names[route_t[-1]]
-            minutes = _route_minutes(tuple(legs), speed_value)
-            answer = _minutes_to_hhmm_int(start_minutes + minutes)
-            target_label = dest
+            answer = _minutes_to_hhmm_int(start_minutes + route_travel_minutes)
             prompt = f"ARRIVAL TIME at {dest} (HHMM). Enter 4 digits:"
-        else:
-            endurance_min = int(round_half_up((start_fuel / max(fuel_burn, 1)) * 60.0))
-            answer = _minutes_to_hhmm_int(start_minutes + endurance_min)
-            target_label = "EMPTY"
+            given_time_label = "Time Now"
+            given_time_hhmm = start_time_hhmm
+            target_label = dest
+            answer_format = "hhmm"
+            answer_label = "Arrival Time"
+            answer_unit_label = "HHMM"
+        elif question_kind == "takeoff_time":
+            answer = _minutes_to_hhmm_int(start_minutes)
+            prompt = f"TAKE OFF TIME for {dest} (HHMM). Enter 4 digits:"
+            given_time_label = "Arrival Time"
+            given_time_hhmm = arrival_time_hhmm
+            target_label = dest
+            answer_format = "hhmm"
+            answer_label = "Take Off"
+            answer_unit_label = "HHMM"
+        elif question_kind == "empty_time":
+            answer = _minutes_to_hhmm_int(start_minutes + empty_minutes)
             prompt = "EMPTY TIME (HHMM). Enter 4 digits:"
+            given_time_label = "Time Now"
+            given_time_hhmm = start_time_hhmm
+            target_label = "EMPTY"
+            answer_format = "hhmm"
+            answer_label = "Empty Time"
+            answer_unit_label = "HHMM"
+        elif question_kind == "fuel_endurance":
+            answer = int(empty_minutes)
+            prompt = "FUEL ENDURANCE (minutes). Enter 4 digits:"
+            given_time_label = "Time Now"
+            given_time_hhmm = start_time_hhmm
+            target_label = "ENDURANCE"
+            answer_format = "number"
+            answer_label = "Fuel Endurance"
+            answer_unit_label = "min"
+        elif question_kind == "fuel_burned":
+            answer = int(fuel_used_on_route)
+            prompt = (
+                f"FUEL BURNED to {dest} ({unit_profile.fuel_unit.split('/')[0]}). "
+                "Enter 4 digits:"
+            )
+            given_time_label = "Time Now"
+            given_time_hhmm = start_time_hhmm
+            target_label = dest
+            answer_format = "number"
+            answer_label = "Fuel Used"
+            answer_unit_label = unit_profile.fuel_unit.split("/")[0]
+        elif question_kind == "distance_travelled":
+            answer = int(route_distance_total)
+            prompt = (
+                f"DISTANCE TRAVELLED to {dest} ({unit_profile.distance_unit}). "
+                "Enter 4 digits:"
+            )
+            given_time_label = "Time Now"
+            given_time_hhmm = start_time_hhmm
+            target_label = dest
+            answer_format = "number"
+            answer_label = "Distance"
+            answer_unit_label = unit_profile.distance_unit
+        elif question_kind == "parcel_weight":
+            answer = int(parcel_weight)
+            prompt = f"PARCEL WEIGHT for {dest} (kg). Enter 4 digits:"
+            given_time_label = "Arrival Time"
+            given_time_hhmm = arrival_time_hhmm
+            target_label = dest
+            answer_format = "number"
+            answer_label = "Parcel Weight"
+            answer_unit_label = "kg"
+        else:
+            answer = parcel_effect
+            prompt = f"PARCEL EFFECT on speed ({unit_profile.speed_unit}). Enter 4 digits:"
+            given_time_label = "Time Now"
+            given_time_hhmm = start_time_hhmm
+            target_label = dest
+            answer_format = "number"
+            answer_label = "Parcel Effect"
+            answer_unit_label = unit_profile.speed_unit
 
         scenario = AirborneScenario(
             template_name=template.name,
             node_names=node_names,
             edge_distances=edge_distances,
             route=route_t,
-            legs=tuple(legs),
+            legs=legs_t,
             start_time_hhmm=start_time_hhmm,
+            given_time_label=given_time_label,
+            given_time_hhmm=given_time_hhmm,
             speed_value=int(speed_value),
-            speed_unit=speed_unit,
-            distance_unit=distance_unit,
+            speed_unit=unit_profile.speed_unit,
+            speed_minutes=unit_profile.speed_minutes,
+            distance_unit=unit_profile.distance_unit,
             fuel_burn_per_hr=int(fuel_burn),
+            fuel_unit=unit_profile.fuel_unit,
+            fuel_minutes=unit_profile.fuel_minutes,
             parcel_weight=int(parcel_weight),
             start_fuel_liters=start_fuel,
+            route_distance_total=int(route_distance_total),
+            route_travel_minutes=int(route_travel_minutes),
+            arrival_time_hhmm=arrival_time_hhmm,
+            empty_time_hhmm=empty_time_hhmm,
+            fuel_used_on_route=int(fuel_used_on_route),
             weight_speed_table=weight_speed_table,
             speed_fuel_table=speed_fuel_table,
+            parcel_reference_format=parcel_reference_format,
+            fuel_reference_format=fuel_reference_format,
+            parcel_chart_step=int(parcel_chart_step),
+            fuel_chart_step=int(fuel_chart_step),
             question_kind=question_kind,
             target_label=target_label,
+            answer_format=answer_format,
+            answer_label=answer_label,
+            answer_unit_label=answer_unit_label,
+            answer_digits=4,
         )
         return scenario, prompt, int(answer)
+
+
+def _make_weight_speed_table(
+    rng: SeededRng, profile: UnitProfile
+) -> tuple[tuple[tuple[int, int], ...], int, int]:
+    weights = [0] + sorted(rng.sample(list(range(150, 851, 50)), k=5))
+    parcel_weight = int(rng.choice(weights[1:]))
+
+    min_required_drop = len(weights) - 1
+    max_speed_lo = max(profile.speed_max_range[0], profile.speed_floor + min_required_drop)
+    max_speed = int(rng.randint(max_speed_lo, profile.speed_max_range[1]))
+    max_total_drop = min(profile.speed_drop_range[1], max_speed - profile.speed_floor)
+    min_total_drop = min(max_total_drop, max(5, profile.speed_drop_range[0]))
+    total_drop = int(rng.randint(min_total_drop, max_total_drop))
+    remaining = total_drop - (len(weights) - 1)
+    gaps = [1] * (len(weights) - 1)
+    for idx in range(len(gaps)):
+        max_extra = remaining
+        if max_extra <= 0:
+            break
+        extra = int(rng.randint(0, max_extra))
+        gaps[idx] += extra
+        remaining -= extra
+    gaps[-1] += remaining
+
+    speeds = [max_speed]
+    current_speed = max_speed
+    for gap in gaps:
+        current_speed -= gap
+        speeds.append(current_speed)
+
+    rows = [(weight, speed) for weight, speed in zip(weights, speeds, strict=True)]
+
+    chosen_speed = next(speed for weight, speed in rows if weight == parcel_weight)
+    return tuple(rows), parcel_weight, chosen_speed
+
+
+def _make_speed_fuel_table(
+    rng: SeededRng,
+    profile: UnitProfile,
+    chosen_speed: int,
+) -> tuple[tuple[tuple[int, int], ...], int]:
+    speeds = {chosen_speed}
+
+    offsets = [1, -1, 2, -2, 3, -3, 4, -4, 5, -5]
+    for offset in offsets:
+        if len(speeds) >= 6:
+            break
+        candidate = chosen_speed + (offset * profile.speed_neighbor_step)
+        candidate = max(profile.speed_floor, min(profile.speed_max_range[1], candidate))
+        speeds.add(int(candidate))
+
+    if len(speeds) < 6:
+        pool = [
+            speed
+            for speed in range(
+                profile.speed_floor,
+                profile.speed_max_range[1] + 1,
+                max(1, profile.speed_neighbor_step),
+            )
+            if speed not in speeds
+        ]
+        picks = rng.sample(pool, k=min(len(pool), 6 - len(speeds)))
+        speeds.update(int(speed) for speed in picks)
+
+    speeds_sorted = sorted(speeds)
+    base = rng.randint(*profile.fuel_base_range)
+    factor_lo, factor_hi = profile.fuel_factor_range
+    factor = factor_lo + (rng.random() * (factor_hi - factor_lo))
+
+    rows: list[tuple[int, int]] = []
+    chosen_burn = profile.fuel_minimum
+    for speed in speeds_sorted:
+        jitter = rng.randint(-2, 2) if profile.fuel_minutes == 1 else rng.randint(-120, 120)
+        burn = int(max(profile.fuel_minimum, round_half_up(base + speed * factor + jitter)))
+        rows.append((speed, burn))
+        if speed == chosen_speed:
+            chosen_burn = burn
+
+    return tuple(rows), int(chosen_burn)
 
 
 def build_airborne_numerical_test(
@@ -350,27 +1230,37 @@ def build_airborne_numerical_test(
     seed: int,
     *,
     practice: bool = True,
-    difficulty: float = 0.5,  # accepted for UI compatibility (can be used later)
+    difficulty: float = 0.5,
     scored_duration_s: float = 35.0 * 60.0,
 ) -> TimedTextInputTest:
     rng = SeededRng(seed)
-    gen = AirborneNumericalGenerator(rng)  # keep as-is for now
-    scorer = AirborneArrivalTimeScorer()
+    practice_questions = len(PRACTICE_KIND_ORDER) if practice else 0
+    gen = AirborneNumericalGenerator(rng, scripted_diverse_problems=practice_questions)
+    scorer = AirborneScorer()
 
     intro = [
         "Airborne Numerical",
         "",
-        "Find the required time (HHMM) for each question.",
-        "Enter 4 digits (24-hour clock). No backspace.",
+        (
+            "Questions can ask for arrival time, take off time, empty time, "
+            "fuel endurance, fuel used, distance travelled, parcel weight, "
+            "or parcel effect on speed."
+        ),
+        (
+            "Some reference pages are tables. Others are bar charts, so you may "
+            "need to estimate between grid lines."
+        ),
+        "All answers use 4 digits. Use a leading zero for non-time answers when needed.",
         "",
         "Controls:",
         "  Hold A: Show distances",
-        "  Hold S: Intro",
-        "  Hold D: Speed & Fuel Consumption",
-        "  Hold F: Speed & Parcel Weight",
+        "  Hold S: Introduction",
+        "  Hold D: Speed & Fuel reference",
+        "  Hold F: Speed & Parcel reference",
         "",
         "Scoring:",
-        "  Practice can show feedback. Scored section does not.",
+        "  Table-based reads expect exact answers.",
+        "  Chart-based reads allow a small tolerance for fair estimation.",
     ]
 
     return TimedTextInputTest(
@@ -381,6 +1271,6 @@ def build_airborne_numerical_test(
         instructions=intro,
         seed=seed,
         difficulty=difficulty,
-        practice_questions=6 if practice else 0,
+        practice_questions=practice_questions,
         scored_duration_s=scored_duration_s,
     )
