@@ -8,8 +8,18 @@ from pathlib import Path
 
 import pygame
 
+from .aircraft_art import build_panda_palette, build_panda3d_fixed_wing_model
 from .panda3d_assets import Panda3DAssetCatalog
-from .rapid_tracking import RapidTrackingPayload
+from .rapid_tracking import (
+    RapidTrackingCompoundLayout,
+    RapidTrackingPayload,
+    build_rapid_tracking_compound_layout,
+)
+from .rapid_tracking_view import (
+    RapidTrackingCameraRigState,
+    camera_rig_state as shared_camera_rig_state,
+    rapid_tracking_seed_unit,
+)
 
 
 def panda3d_rapid_tracking_rendering_available() -> bool:
@@ -35,21 +45,6 @@ class _RapidTrackingDecoy:
     altitude: float
     route: str = "air_loop"
     activation_progress: float = 0.0
-
-
-@dataclass(frozen=True, slots=True)
-class RapidTrackingCameraRigState:
-    cam_world_x: float
-    cam_world_y: float
-    cam_world_z: float
-    carrier_heading_deg: float
-    heading_deg: float
-    pitch_deg: float
-    roll_deg: float
-    fov_deg: float
-    orbit_weight: float
-    orbit_radius: float
-    altitude_agl: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,8 +92,13 @@ class RapidTrackingPanda3DRenderer:
     _CAMERA_SWEEP_LIMIT_DEG = 66.0
     _TARGET_SWEEP_LIMIT_DEG = 78.0
     _SCENE_X_SPAN = 3.0
+    _TARGET_VIEW_LIMIT = 1.3
     _TERRAIN_HALF_SPAN = 260.0 * _WORLD_EXTENT_SCALE
     _GROUND_INTERSECT_MAX_DISTANCE = 320.0
+    _RECENTER_ENTER_H_RATIO = 0.88
+    _RECENTER_ENTER_V_RATIO = 0.82
+    _RECENTER_EXIT_H_RATIO = 0.62
+    _RECENTER_EXIT_V_RATIO = 0.62
 
     def __init__(self, *, size: tuple[int, int]) -> None:
         from panda3d.core import (
@@ -115,10 +115,23 @@ class RapidTrackingPanda3DRenderer:
         self._size = (width, height)
         self._elapsed_s = 0.0
         self._last_render_ms = pygame.time.get_ticks()
+        self._session_seed = 0
+        self._layout: RapidTrackingCompoundLayout | None = None
         self._catalog = Panda3DAssetCatalog()
         self._active_target_node = None
         self._active_target_kind = ""
+        self._active_scenery_target_node = None
+        self._selected_target_node = None
+        self._selected_target_kind = ""
+        self._selected_target_variant = ""
         self._target_overlay_state: RapidTrackingOverlayState | None = None
+        self._last_camera_rig: RapidTrackingCameraRigState | None = None
+        self._scenery_nodes_by_kind: dict[str, list[object]] = {
+            "hangar": [],
+            "tower": [],
+            "truck": [],
+            "soldiers": [],
+        }
 
         loadPrcFileData("", "window-type offscreen")
         loadPrcFileData("", "audio-library-name null")
@@ -152,11 +165,14 @@ class RapidTrackingPanda3DRenderer:
 
         self._world_root = self._base.render.attachNewNode("rapid-world")
         self._terrain_root = self._world_root.attachNewNode("rapid-terrain")
+        self._road_root = self._world_root.attachNewNode("rapid-roads")
         self._scenery_root = self._world_root.attachNewNode("rapid-scenery")
         self._decoy_root = self._world_root.attachNewNode("rapid-decoys")
         self._target_root = self._world_root.attachNewNode("rapid-targets")
         self._cloud_root = self._world_root.attachNewNode("rapid-clouds")
         self._direction_probe = self._base.render.attachNewNode("rapid-direction-probe")
+        self._road_segment_nodes: list[object] = []
+        self._road_intersection_nodes: list[object] = []
 
         self._build_world()
 
@@ -166,6 +182,9 @@ class RapidTrackingPanda3DRenderer:
 
     def target_overlay_state(self) -> RapidTrackingOverlayState | None:
         return self._target_overlay_state
+
+    def last_camera_rig_state(self) -> RapidTrackingCameraRigState | None:
+        return self._last_camera_rig
 
     def close(self) -> None:
         try:
@@ -186,107 +205,44 @@ class RapidTrackingPanda3DRenderer:
         cls,
         *,
         elapsed_s: float,
+        seed: int = 0,
         progress: float,
-        cam_x: float,
-        cam_y: float,
+        camera_yaw_deg: float | None,
+        camera_pitch_deg: float | None,
         zoom: float,
         target_kind: str,
-        target_rel_x: float,
-        target_rel_y: float,
-        assist_strength: float,
+        target_world_x: float = 0.0,
+        target_world_y: float = 0.0,
+        focus_world_x: float = 0.0,
+        focus_world_y: float = 70.0,
         turbulence_strength: float,
     ) -> RapidTrackingCameraRigState:
-        p = _clamp(float(progress), 0.0, 1.0)
-        assist = _clamp(float(assist_strength), 0.0, 1.0)
-        turbulence = max(0.0, float(turbulence_strength))
-        orbit_phase = 0.42 + (elapsed_s * 0.15) + (p * 0.24)
-        orbit_radius = _lerp(58.0, 42.0, _smoothstep(0.0, 0.52, p))
-        orbit_x = math.cos(orbit_phase) * orbit_radius
-        orbit_y = math.sin(orbit_phase) * (orbit_radius * 0.86)
-        orbit_heading = (90.0 - math.degrees(math.atan2(-orbit_y, -orbit_x))) % 360.0
-
-        path_transition = _smoothstep(0.56, 0.84, p)
-        path_t = _smoothstep(0.60, 1.0, p)
-        path_x, path_y = cls._path_point(t=path_t)
-        next_x, next_y = cls._path_point(t=min(1.0, path_t + 0.015))
-        path_dx = next_x - path_x
-        path_dy = next_y - path_y
-        if abs(path_dx) < 1e-6 and abs(path_dy) < 1e-6:
-            path_heading = orbit_heading
-        else:
-            path_heading = (90.0 - math.degrees(math.atan2(path_dy, path_dx))) % 360.0
-
-        right_mount = 1.35
-        heading_base = _lerp_angle_deg(orbit_heading, path_heading, path_transition)
-        heading_rad = math.radians(heading_base)
-        right_vec_x = math.cos(heading_rad)
-        right_vec_y = -math.sin(heading_rad)
-
-        base_x = _lerp(orbit_x, path_x, path_transition)
-        base_y = _lerp(orbit_y, path_y, path_transition)
-        cam_world_x = base_x + (right_vec_x * right_mount)
-        cam_world_y = base_y + (right_vec_y * right_mount)
-
-        ground_z = cls._terrain_height(cam_world_x, cam_world_y)
-        altitude_agl = _lerp(24.0, 5.8, _smoothstep(0.0, 1.0, p))
-        bob = (
-            math.sin((elapsed_s * 2.1) + 0.25) * _lerp(0.18, 0.08, path_transition) * turbulence
-            + math.sin((elapsed_s * 4.6) + 1.1) * _lerp(0.09, 0.04, path_transition) * turbulence
-        )
-        cam_world_z = ground_z + altitude_agl + bob + (zoom * 0.22)
-
-        local_yaw_deg = _clamp(
-            (cam_x / 5.2) * cls._CAMERA_SWEEP_LIMIT_DEG,
-            -cls._CAMERA_SWEEP_LIMIT_DEG,
-            cls._CAMERA_SWEEP_LIMIT_DEG,
-        )
-        air_target = str(target_kind).strip().lower() in {"jet", "helicopter"}
-        late_air_assist = (_smoothstep(0.68, 1.0, p) * assist) if air_target else 0.0
-        heading_deg = (
-            heading_base
-            + (local_yaw_deg * (1.0 - (assist * 0.25)))
-            + (assist * target_rel_x * 8.0)
-            + (late_air_assist * target_rel_x * 12.0)
-        )
-
-        pitch_base = _lerp(-12.0, 3.0, _smoothstep(0.0, 0.86, p))
-        pitch_from_input = -cam_y * 9.6
-        pitch_from_air = late_air_assist * (8.0 + max(0.0, -float(target_rel_y)) * 10.0)
-        pitch_deg = _clamp(pitch_base + pitch_from_input + pitch_from_air, -34.0, 26.0)
-
-        orbit_bank = _lerp(7.5, 2.0, path_transition)
-        roll_deg = (
-            orbit_bank
-            + (
-                math.sin((elapsed_s * 1.9) + 0.4)
-                * _lerp(2.0, 0.9, path_transition)
-                * max(0.15, turbulence)
-            )
-            + (-cam_x * 2.4)
-        )
-
-        fov_deg = _clamp(52.0 - (zoom * 6.0), 44.0, 52.0)
-        orbit_weight = 1.0 - path_transition
-
-        return RapidTrackingCameraRigState(
-            cam_world_x=float(cam_world_x),
-            cam_world_y=float(cam_world_y),
-            cam_world_z=float(cam_world_z),
-            carrier_heading_deg=float(heading_base % 360.0),
-            heading_deg=float(heading_deg),
-            pitch_deg=float(pitch_deg),
-            roll_deg=float(roll_deg),
-            fov_deg=float(fov_deg),
-            orbit_weight=float(orbit_weight),
-            orbit_radius=float(orbit_radius),
-            altitude_agl=float(altitude_agl),
+        return shared_camera_rig_state(
+            elapsed_s=elapsed_s,
+            seed=seed,
+            progress=progress,
+            camera_yaw_deg=camera_yaw_deg,
+            camera_pitch_deg=camera_pitch_deg,
+            zoom=zoom,
+            target_kind=target_kind,
+            target_world_x=target_world_x,
+            target_world_y=target_world_y,
+            focus_world_x=focus_world_x,
+            focus_world_y=focus_world_y,
+            turbulence_strength=turbulence_strength,
         )
 
     def render(self, *, payload: RapidTrackingPayload | None) -> pygame.Surface:
-        now_ms = pygame.time.get_ticks()
-        dt_s = max(0.0, min(0.05, (now_ms - self._last_render_ms) / 1000.0))
-        self._last_render_ms = now_ms
-        self._elapsed_s += dt_s
+        if payload is None:
+            now_ms = pygame.time.get_ticks()
+            dt_s = max(0.0, min(0.05, (now_ms - self._last_render_ms) / 1000.0))
+            self._last_render_ms = now_ms
+            self._elapsed_s += dt_s
+            self._ensure_seeded_layout(seed=0)
+        else:
+            self._last_render_ms = pygame.time.get_ticks()
+            self._elapsed_s = max(0.0, float(payload.phase_elapsed_s))
+            self._ensure_seeded_layout(seed=int(payload.session_seed))
 
         self._update_camera(payload=payload)
         self._update_target(payload=payload)
@@ -309,7 +265,7 @@ class RapidTrackingPanda3DRenderer:
     ) -> float:
         if abs(vx) <= 1e-6 and abs(vy) <= 1e-6:
             return float(default_heading) % 360.0
-        return float((-math.degrees(math.atan2(vx, vy))) % 360.0)
+        return float(math.degrees(math.atan2(vx, vy)) % 360.0)
 
     @classmethod
     def _ground_route_pose(
@@ -344,7 +300,7 @@ class RapidTrackingPanda3DRenderer:
         else:
             x = travel * (30.0 + (float(depth_bias) * 0.36))
             y = 24.0 + float(depth_bias) + (float(lateral_bias) * 0.08)
-            heading = 270.0 if forward > 0.0 else 90.0
+            heading = 90.0 if forward > 0.0 else 270.0
 
         if tank_spin and route != "tank_hold":
             heading = (
@@ -408,154 +364,454 @@ class RapidTrackingPanda3DRenderer:
     def _build_world(self) -> None:
         terrain = self._build_terrain_mesh()
         terrain.reparentTo(self._terrain_root)
-        self._build_central_compound()
 
-        self._place_scenery(
-            asset_id="building_hangar",
-            fallback="hangar",
-            pos=(-15.0, 62.0, self._terrain_height(-15.0, 62.0) + 1.4),
-            scale=1.2,
-        )
-        self._place_scenery(
-            asset_id="building_tower",
-            fallback="tower",
-            pos=(18.0, 56.0, self._terrain_height(18.0, 56.0) + 2.2),
-            scale=0.95,
-        )
-        self._place_scenery(
-            asset_id="trees_pine_cluster",
-            fallback="trees",
-            pos=(-24.0, 44.0, self._terrain_height(-24.0, 44.0)),
-            scale=1.4,
-        )
-        self._place_scenery(
-            asset_id="trees_pine_cluster",
-            fallback="trees",
-            pos=(25.0, 72.0, self._terrain_height(25.0, 72.0)),
-            scale=1.6,
-        )
-        self._place_scenery(
-            asset_id="building_hangar",
-            fallback="hangar",
-            pos=(21.0, 88.0, self._terrain_height(21.0, 88.0) + 1.1),
-            scale=0.82,
-        )
-        self._place_scenery(
-            asset_id="building_tower",
-            fallback="tower",
-            pos=(-28.0, 102.0, self._terrain_height(-28.0, 102.0) + 2.0),
-            scale=0.88,
-        )
-        self._place_scenery(
-            asset_id="trees_pine_cluster",
-            fallback="trees",
-            pos=(-12.0, 118.0, self._terrain_height(-12.0, 118.0)),
-            scale=2.0,
-        )
-        self._place_scenery(
-            asset_id="trees_pine_cluster",
-            fallback="trees",
-            pos=(34.0, 126.0, self._terrain_height(34.0, 126.0)),
-            scale=1.8,
-        )
-        self._place_scenery(
-            asset_id="truck_olive",
-            fallback="truck",
-            pos=(-7.0, 58.0, self._terrain_height(-7.0, 58.0) + 0.35),
-            scale=0.94,
-        )
-        self._place_scenery(
-            asset_id="soldiers_patrol",
-            fallback="soldiers",
-            pos=(-14.0, 66.0, self._terrain_height(-14.0, 66.0)),
-            scale=1.0,
-        )
-        self._place_scenery(
-            asset_id="soldiers_patrol",
-            fallback="soldiers",
-            pos=(14.0, 62.0, self._terrain_height(14.0, 62.0)),
-            scale=0.94,
-        )
-
-        self._target_jet = self._load_asset_or_fallback(
-            asset_id="plane_red",
-            fallback="plane",
-            color=(0.88, 0.20, 0.16, 1.0),
-            scale=1.56,
-            parent=self._target_root,
-        )
-        self._target_helicopter = self._load_asset_or_fallback(
-            asset_id="helicopter_green",
-            fallback="helicopter",
-            color=(0.24, 0.54, 0.32, 1.0),
-            scale=1.34,
-            parent=self._target_root,
-        )
-        self._target_truck = self._load_asset_or_fallback(
-            asset_id="truck_olive",
-            fallback="truck",
-            color=(0.38, 0.42, 0.24, 1.0),
-            scale=1.24,
-            parent=self._target_root,
-        )
-        self._target_hangar = self._load_asset_or_fallback(
-            asset_id="building_hangar",
-            fallback="hangar",
-            color=(0.72, 0.76, 0.82, 1.0),
-            scale=0.98,
-            parent=self._target_root,
-        )
-        self._target_tower = self._load_asset_or_fallback(
-            asset_id="building_tower",
-            fallback="tower",
-            color=(0.74, 0.78, 0.82, 1.0),
-            scale=1.08,
-            parent=self._target_root,
-        )
-        self._target_soldier = self._build_fallback_model(
-            kind="soldier",
-            color=(0.74, 0.28, 0.24, 1.0),
-        )
-        self._target_soldier.reparentTo(self._target_root)
-        self._target_soldier.setScale(1.06)
-        self._soldier_group = [
-            self._build_fallback_model(kind="soldier", color=(0.18, 0.24, 0.16, 1.0))
-            for _ in range(4)
+        self._jet_pool = [
+            self._load_asset_or_fallback(
+                asset_id="plane_red",
+                fallback="plane",
+                color=(0.88, 0.20, 0.16, 1.0),
+                scale=1.56,
+                parent=self._target_root,
+            ),
+            self._load_asset_or_fallback(
+                asset_id="plane_yellow",
+                fallback="plane",
+                color=(0.90, 0.76, 0.24, 1.0),
+                scale=1.42,
+                parent=self._target_root,
+            ),
         ]
-        for node in self._soldier_group:
+        self._helicopter_pool = [
+            self._load_asset_or_fallback(
+                asset_id="helicopter_green",
+                fallback="helicopter",
+                color=(0.24, 0.54, 0.32, 1.0),
+                scale=1.34,
+                parent=self._target_root,
+            ),
+            self._load_asset_or_fallback(
+                asset_id="helicopter_green",
+                fallback="helicopter",
+                color=(0.18, 0.44, 0.28, 1.0),
+                scale=1.22,
+                parent=self._target_root,
+            ),
+        ]
+        self._truck_pool = [
+            self._load_asset_or_fallback(
+                asset_id="truck_olive",
+                fallback="truck",
+                color=(0.38, 0.42, 0.24, 1.0),
+                scale=1.24,
+                parent=self._target_root,
+            ),
+            self._load_asset_or_fallback(
+                asset_id="truck_olive",
+                fallback="truck",
+                color=(0.30, 0.36, 0.20, 1.0),
+                scale=1.16,
+                parent=self._target_root,
+            ),
+        ]
+        self._soldier_pool = [
+            self._build_soldier_squad(
+                leader_color=(0.74, 0.28, 0.24, 1.0),
+                wing_color=(0.18, 0.24, 0.16, 1.0),
+            ),
+            self._build_soldier_squad(
+                leader_color=(0.78, 0.34, 0.28, 1.0),
+                wing_color=(0.20, 0.26, 0.18, 1.0),
+            ),
+        ]
+        for node in self._soldier_pool:
             node.reparentTo(self._target_root)
-            node.setScale(0.92)
 
-        self._target_nodes = (
-            self._target_jet,
-            self._target_helicopter,
-            self._target_truck,
-            self._target_hangar,
-            self._target_tower,
-            self._target_soldier,
-            *self._soldier_group,
+        self._dynamic_target_nodes = (
+            *self._jet_pool,
+            *self._helicopter_pool,
+            *self._truck_pool,
+            *self._soldier_pool,
         )
-        for node in self._target_nodes:
+        for node in self._dynamic_target_nodes:
             node.setTransparency(True)
-        self._decoys = self._build_traffic_pool()
-        self._build_surround_scenery()
+        self._decoys = []
+        self._clouds = []
+        self._ensure_seeded_layout(seed=0)
+        self._hide_target_nodes()
 
+    def _ensure_seeded_layout(self, *, seed: int) -> None:
+        normalized_seed = int(seed)
+        if self._layout is not None and self._session_seed == normalized_seed:
+            return
+        self._session_seed = normalized_seed
+        self._layout = build_rapid_tracking_compound_layout(seed=normalized_seed)
+        self._rebuild_seeded_scenery(layout=self._layout)
+
+    @staticmethod
+    def _clear_node_children(root) -> None:
+        for child in list(root.getChildren()):
+            child.removeNode()
+
+    def _scene_track_world_xy(self, *, track_x: float, track_y: float) -> tuple[float, float]:
+        lateral_bias = 0.0 if self._layout is None else float(self._layout.path_lateral_bias)
+        x = (float(track_x) * 34.0) + (lateral_bias * 14.0)
+        y = 70.0 + ((float(track_y) + 0.18) * 56.0)
+        return float(x), float(y)
+
+    def _world_pos_from_anchor(self, anchor, *, y_bias: float = 0.0) -> tuple[float, float, float]:
+        x, y = self._scene_track_world_xy(track_x=float(anchor.x), track_y=float(anchor.y))
+        y += y_bias
+        z = self._terrain_height(x, y)
+        return float(x), float(y), float(z)
+
+    def _ground_target_world_pos(
+        self,
+        *,
+        world_x: float,
+        world_y: float,
+        clearance: float,
+    ) -> tuple[float, float, float]:
+        return (
+            float(world_x),
+            float(world_y),
+            float(self._terrain_height(world_x, world_y) + clearance),
+        )
+
+    def _air_target_world_pos(
+        self,
+        *,
+        kind: str,
+        world_x: float,
+        world_y: float,
+        phase_elapsed_s: float,
+        scene_progress: float,
+    ) -> tuple[float, float, float]:
+        terrain_z = float(self._terrain_height(world_x, world_y))
+        phase = (
+            (float(phase_elapsed_s) * (1.4 if str(kind).strip().lower() == "helicopter" else 2.0))
+            + (float(world_x) * 0.018)
+            + (float(world_y) * 0.014)
+            + (self._session_seed * 0.00073)
+        )
+        if str(kind).strip().lower() == "helicopter":
+            clearance = 9.0 + (math.sin(phase) * 1.4) + (math.cos((phase * 0.58) + 0.35) * 0.9)
+            clearance += _lerp(-0.4, 0.7, _smoothstep(0.0, 1.0, float(scene_progress)))
+            minimum = 6.4
+        else:
+            clearance = 17.0 + (math.sin(phase) * 1.9) + (math.cos((phase * 0.52) + 0.7) * 1.2)
+            clearance += _lerp(0.0, 2.8, _smoothstep(0.18, 1.0, float(scene_progress)))
+            minimum = 12.0
+        return (
+            world_x,
+            world_y,
+            float(max(terrain_z + minimum, terrain_z + clearance)),
+        )
+
+    def _carrier_focus_world(self) -> tuple[float, float]:
+        if self._layout is None:
+            return (0.0, 70.0)
+        return self._scene_track_world_xy(
+            track_x=float(self._layout.compound_center_x),
+            track_y=float(self._layout.compound_center_y),
+        )
+
+    def _rebuild_seeded_scenery(self, *, layout: RapidTrackingCompoundLayout) -> None:
+        self._clear_node_children(self._road_root)
+        self._clear_node_children(self._scenery_root)
+        self._clear_node_children(self._decoy_root)
+        self._clear_node_children(self._cloud_root)
+        self._road_segment_nodes = []
+        self._road_intersection_nodes = []
+        self._scenery_nodes_by_kind = {
+            "hangar": [],
+            "tower": [],
+            "truck": [],
+            "soldiers": [],
+        }
+        self._selected_target_node = None
+        self._selected_target_kind = ""
+        self._selected_target_variant = ""
+        self._build_seeded_roads(layout=layout)
+        self._build_seeded_compound(layout=layout)
+        self._build_seeded_foliage(layout=layout)
+        self._build_seeded_ring(layout=layout)
+        self._decoys = self._build_traffic_pool(layout=layout)
         self._clouds = [
-            self._build_cloud(scale=scale) for scale in (1.0, 1.4, 0.8, 1.2, 0.95, 1.55, 1.75)
+            self._build_cloud(scale=scale) for scale in (1.0, 1.35, 0.92, 1.22, 1.62, 1.85)
         ]
         for idx, cloud in enumerate(self._clouds):
-            ang = (idx / max(1, len(self._clouds))) * math.tau
-            radius = self._world_extent_distance(108.0 + (idx * 14.0))
+            ang = layout.orbit_phase_offset + (layout.orbit_direction * idx * 0.78)
+            radius = self._world_extent_distance(92.0 + (idx * 12.0 * layout.orbit_radius_scale))
             cloud.reparentTo(self._cloud_root)
             cloud.setPos(
                 math.cos(ang) * radius,
                 math.sin(ang) * radius,
-                25.0 + (idx * 2.2),
+                23.0 + layout.altitude_bias + (idx * 2.3),
             )
 
-        self._hide_target_nodes()
+    def _build_seeded_foliage(self, *, layout: RapidTrackingCompoundLayout) -> None:
+        for cluster in (*layout.shrub_clusters, *layout.tree_clusters, *layout.forest_clusters):
+            for idx in range(max(1, int(cluster.count))):
+                angle = rapid_tracking_seed_unit(
+                    seed=layout.seed,
+                    salt=f"{cluster.cluster_id}:angle:{idx}",
+                ) * math.tau
+                radius = math.sqrt(
+                    rapid_tracking_seed_unit(
+                        seed=layout.seed,
+                        salt=f"{cluster.cluster_id}:radius:{idx}",
+                    )
+                ) * float(cluster.radius)
+                jitter_x = math.cos(angle) * radius
+                jitter_y = math.sin(angle) * radius * (0.72 if cluster.fallback == "forest" else 1.0)
+                world_x, world_y = self._scene_track_world_xy(
+                    track_x=float(cluster.x) + jitter_x,
+                    track_y=float(cluster.y) + jitter_y,
+                )
+                scale = float(cluster.scale) * _lerp(
+                    0.82,
+                    1.18,
+                    rapid_tracking_seed_unit(
+                        seed=layout.seed,
+                        salt=f"{cluster.cluster_id}:scale:{idx}",
+                    ),
+                )
+                node = self._place_scenery(
+                    asset_id=str(cluster.asset_id),
+                    fallback=str(cluster.fallback),
+                    pos=(world_x, world_y, self._terrain_height(world_x, world_y)),
+                    scale=scale,
+                )
+                node.setHpr(
+                    rapid_tracking_seed_unit(
+                        seed=layout.seed,
+                        salt=f"{cluster.cluster_id}:heading:{idx}",
+                    )
+                    * 360.0,
+                    0.0,
+                    0.0,
+                )
 
-    def _build_traffic_pool(self) -> list[_RapidTrackingDecoy]:
+    @staticmethod
+    def _seeded_road_segment_ids() -> tuple[tuple[str, str], ...]:
+        return (
+            ("road-west-a", "road-mid-a"),
+            ("road-mid-a", "road-east-a"),
+            ("road-east-a", "road-east-b"),
+            ("road-west-v0", "road-west-v1"),
+            ("road-east-v0", "road-east-v1"),
+        )
+
+    def _build_seeded_roads(self, *, layout: RapidTrackingCompoundLayout) -> None:
+        for start_id, end_id in self._seeded_road_segment_ids():
+            self._build_road_segment(
+                start_anchor=layout.anchor(start_id),
+                end_anchor=layout.anchor(end_id),
+                seed=layout.seed,
+            )
+
+        for anchor in layout.road_anchors:
+            self._build_road_intersection(anchor=anchor, seed=layout.seed)
+
+    def _build_road_segment(self, *, start_anchor, end_anchor, seed: int) -> None:
+        from panda3d.core import NodePath
+
+        start_x, start_y, start_z = self._world_pos_from_anchor(start_anchor)
+        end_x, end_y, end_z = self._world_pos_from_anchor(end_anchor)
+        dx = float(end_x) - float(start_x)
+        dy = float(end_y) - float(start_y)
+        segment_length = max(1.0, math.hypot(dx, dy))
+        wear = rapid_tracking_seed_unit(
+            seed=int(seed),
+            salt=f"road:{start_anchor.anchor_id}:{end_anchor.anchor_id}:wear",
+        )
+        road_width = _lerp(8.1, 9.6, wear)
+        shoulder_width = road_width + _lerp(2.6, 3.4, wear)
+        stripe_width = _lerp(0.26, 0.38, wear)
+        piece_count = max(4, int(math.ceil(segment_length / 8.0)))
+        piece_overlap = 1.2
+
+        root = NodePath(f"rapid-road-segment-{start_anchor.anchor_id}-{end_anchor.anchor_id}")
+        root.reparentTo(self._road_root)
+        for idx in range(piece_count):
+            t0 = idx / piece_count
+            t1 = (idx + 1) / piece_count
+            seg_start_x = _lerp(float(start_x), float(end_x), t0)
+            seg_start_y = _lerp(float(start_y), float(end_y), t0)
+            seg_end_x = _lerp(float(start_x), float(end_x), t1)
+            seg_end_y = _lerp(float(start_y), float(end_y), t1)
+            seg_start_z = self._terrain_height(seg_start_x, seg_start_y)
+            seg_end_z = self._terrain_height(seg_end_x, seg_end_y)
+            seg_dx = seg_end_x - seg_start_x
+            seg_dy = seg_end_y - seg_start_y
+            seg_length = max(1.0, math.hypot(seg_dx, seg_dy))
+            seg_heading_deg = self._heading_from_velocity(vx=seg_dx, vy=seg_dy)
+            seg_pitch_deg = -math.degrees(
+                math.atan2(seg_end_z - seg_start_z, max(1e-3, seg_length))
+            )
+            seg_mid_x = (seg_start_x + seg_end_x) * 0.5
+            seg_mid_y = (seg_start_y + seg_end_y) * 0.5
+            seg_mid_z = max(seg_start_z, seg_end_z, self._terrain_height(seg_mid_x, seg_mid_y)) + 0.035
+            asphalt_tint = _lerp(0.0, 0.035, (idx % 2) / 1.0)
+
+            piece_root = NodePath(f"road-piece-{idx}")
+            piece_root.reparentTo(root)
+            piece_root.setPos(seg_mid_x, seg_mid_y, seg_mid_z)
+            piece_root.setHpr(seg_heading_deg, seg_pitch_deg, 0.0)
+
+            shoulder = self._make_box(
+                size=(shoulder_width, seg_length + piece_overlap + 1.2, 0.06),
+                color=(0.36, 0.30, 0.22, 1.0),
+            )
+            shoulder.setZ(-0.012)
+            shoulder.reparentTo(piece_root)
+
+            asphalt = self._make_box(
+                size=(road_width, seg_length + piece_overlap, 0.05),
+                color=(0.13 + asphalt_tint, 0.14 + asphalt_tint, 0.15 + asphalt_tint, 1.0),
+            )
+            asphalt.reparentTo(piece_root)
+
+            if idx % 2 == 0:
+                stripe = self._make_box(
+                    size=(stripe_width, max(2.8, seg_length * 0.62), 0.014),
+                    color=(0.84, 0.78, 0.54, 0.96),
+                )
+                stripe.setPos(0.0, 0.0, 0.035)
+                stripe.reparentTo(piece_root)
+
+        self._road_segment_nodes.append(root)
+
+    def _build_road_intersection(self, *, anchor, seed: int) -> None:
+        from panda3d.core import NodePath
+
+        x, y, z = self._world_pos_from_anchor(anchor)
+        wear = rapid_tracking_seed_unit(
+            seed=int(seed),
+            salt=f"road:{anchor.anchor_id}:pad",
+        )
+        pad_size = _lerp(8.2, 9.6, wear)
+        root = NodePath(f"rapid-road-junction-{anchor.anchor_id}")
+        root.reparentTo(self._road_root)
+        root.setPos(x, y, z + 0.034)
+        shoulder = self._make_box(
+            size=(pad_size + 2.8, pad_size + 2.8, 0.06),
+            color=(0.34, 0.29, 0.22, 1.0),
+        )
+        shoulder.setZ(-0.012)
+        shoulder.reparentTo(root)
+        pad = self._make_box(
+            size=(pad_size, pad_size, 0.052),
+            color=(0.14, 0.15, 0.16, 1.0),
+        )
+        pad.reparentTo(root)
+        diamond = self._make_box(
+            size=(pad_size * 0.68, pad_size * 0.68, 0.018),
+            color=(0.18, 0.19, 0.20, 0.96),
+        )
+        diamond.setHpr(45.0, 0.0, 0.0)
+        diamond.setZ(0.016)
+        diamond.reparentTo(root)
+        self._road_intersection_nodes.append(root)
+
+    def _build_seeded_compound(self, *, layout: RapidTrackingCompoundLayout) -> None:
+        for anchor in layout.building_anchors:
+            wx, wy, wz = self._world_pos_from_anchor(anchor)
+            if anchor.variant == "tower":
+                self._place_scenery(
+                    asset_id="building_tower",
+                    fallback="tower",
+                    pos=(wx, wy, wz + 2.1),
+                    scale=0.76 + (rapid_tracking_seed_unit(seed=layout.seed, salt=anchor.anchor_id) * 0.18),
+                )
+            else:
+                self._place_scenery(
+                    asset_id="building_hangar",
+                    fallback="hangar",
+                    pos=(wx, wy, wz + 1.1),
+                    scale=0.76 + (rapid_tracking_seed_unit(seed=layout.seed, salt=anchor.anchor_id) * 0.24),
+                )
+
+        for idx, anchor in enumerate(layout.patrol_anchors):
+            wx, wy, wz = self._world_pos_from_anchor(anchor, y_bias=6.0)
+            if idx % 2 == 0:
+                self._place_scenery(
+                    asset_id="soldiers_patrol",
+                    fallback="soldiers",
+                    pos=(wx, wy, wz),
+                    scale=0.82 + (0.08 * (idx % 3)),
+                )
+            else:
+                self._place_scenery(
+                    asset_id="trees_field_cluster",
+                    fallback="trees",
+                    pos=(wx, wy, wz),
+                    scale=1.14 + (0.16 * (idx % 4)),
+                )
+
+        for idx, anchor in enumerate(layout.road_anchors):
+            wx, wy, wz = self._world_pos_from_anchor(anchor, y_bias=4.0)
+            if idx % 3 == 0:
+                self._place_scenery(
+                    asset_id="truck_olive",
+                    fallback="truck",
+                    pos=(wx, wy, wz + 0.34),
+                    scale=0.78 + (0.10 * ((idx + 1) % 3)),
+                )
+            elif idx % 3 == 1:
+                self._place_scenery(
+                    asset_id="shrubs_low_cluster",
+                    fallback="shrub",
+                    pos=(wx, wy, wz),
+                    scale=0.88 + (0.10 * (idx % 3)),
+                )
+            else:
+                self._place_scenery(
+                    asset_id="soldiers_patrol",
+                    fallback="soldiers",
+                    pos=(wx, wy, wz),
+                    scale=0.84,
+                )
+
+        for idx, anchor in enumerate(layout.ridge_anchors):
+            wx, wy, wz = self._world_pos_from_anchor(anchor, y_bias=18.0 + (idx * 8.0))
+            self._place_scenery(
+                asset_id="forest_canopy_patch" if idx % 2 == 0 else "trees_field_cluster",
+                fallback="forest" if idx % 2 == 0 else "trees",
+                pos=(wx, wy, wz),
+                scale=(2.1 + (0.30 * idx)) if idx % 2 == 0 else (1.5 + (0.20 * idx)),
+            )
+
+    def _build_seeded_ring(self, *, layout: RapidTrackingCompoundLayout) -> None:
+        for idx in range(14):
+            ang = layout.orbit_phase_offset + (idx * (math.tau / 14.0))
+            radius = self._world_extent_distance(96.0 + (idx * 7.0 * layout.orbit_radius_scale))
+            x = math.cos(ang) * radius
+            y = math.sin(ang) * radius
+            z = self._terrain_height(x, y)
+            if idx % 5 == 0:
+                self._place_scenery(
+                    asset_id="building_hangar",
+                    fallback="hangar",
+                    pos=(x, y, z + 1.0),
+                    scale=0.78 + (0.06 * (idx % 3)),
+                )
+            elif idx % 5 == 1:
+                self._place_scenery(
+                    asset_id="building_tower",
+                    fallback="tower",
+                    pos=(x, y, z + 2.0),
+                    scale=0.74 + (0.05 * (idx % 4)),
+                )
+            else:
+                self._place_scenery(
+                    asset_id="forest_canopy_patch" if idx % 4 == 2 else "trees_field_cluster",
+                    fallback="forest" if idx % 4 == 2 else "trees",
+                    pos=(x, y, z),
+                    scale=(1.9 + (0.18 * (idx % 4))) if idx % 4 == 2 else (1.5 + (0.2 * (idx % 4))),
+                )
+
+    def _build_traffic_pool(self, *, layout: RapidTrackingCompoundLayout) -> list[_RapidTrackingDecoy]:
         decoys = [
             _RapidTrackingDecoy(
                 node=self._load_asset_or_fallback(
@@ -566,11 +822,11 @@ class RapidTrackingPanda3DRenderer:
                     parent=self._decoy_root,
                 ),
                 kind="plane",
-                phase=0.15,
-                speed=0.78,
-                lateral_bias=-18.0,
-                depth_bias=0.0,
-                altitude=18.0,
+                phase=layout.orbit_phase_offset + 0.15,
+                speed=0.66 + (rapid_tracking_seed_unit(seed=layout.seed, salt="decoy-plane-blue") * 0.18),
+                lateral_bias=-18.0 * layout.orbit_direction,
+                depth_bias=2.0,
+                altitude=18.0 + layout.altitude_bias,
                 route="air_loop",
                 activation_progress=0.0,
             ),
@@ -583,11 +839,11 @@ class RapidTrackingPanda3DRenderer:
                     parent=self._decoy_root,
                 ),
                 kind="plane",
-                phase=1.80,
-                speed=0.62,
+                phase=layout.orbit_phase_offset + 1.80,
+                speed=0.58 + (rapid_tracking_seed_unit(seed=layout.seed, salt="decoy-plane-green") * 0.16),
                 lateral_bias=14.0,
-                depth_bias=14.0,
-                altitude=22.0,
+                depth_bias=14.0 + (layout.path_lateral_bias * 8.0),
+                altitude=22.0 + layout.altitude_bias,
                 route="air_cross",
                 activation_progress=0.0,
             ),
@@ -600,11 +856,11 @@ class RapidTrackingPanda3DRenderer:
                     parent=self._decoy_root,
                 ),
                 kind="plane",
-                phase=0.62,
-                speed=0.74,
+                phase=layout.orbit_phase_offset + 0.62,
+                speed=0.68 + (rapid_tracking_seed_unit(seed=layout.seed, salt="decoy-plane-yellow") * 0.16),
                 lateral_bias=-6.0,
                 depth_bias=22.0,
-                altitude=16.0,
+                altitude=16.0 + layout.altitude_bias,
                 route="air_loop",
                 activation_progress=0.24,
             ),
@@ -617,11 +873,11 @@ class RapidTrackingPanda3DRenderer:
                     parent=self._decoy_root,
                 ),
                 kind="helicopter",
-                phase=2.18,
-                speed=0.55,
+                phase=layout.orbit_phase_offset + 2.18,
+                speed=0.46 + (rapid_tracking_seed_unit(seed=layout.seed, salt="decoy-helo") * 0.18),
                 lateral_bias=22.0,
                 depth_bias=28.0,
-                altitude=12.0,
+                altitude=12.0 + layout.altitude_bias,
                 route="helo_arc",
                 activation_progress=0.38,
             ),
@@ -631,7 +887,7 @@ class RapidTrackingPanda3DRenderer:
                     color=(0.46, 0.44, 0.24, 1.0),
                 ),
                 kind="tank",
-                phase=0.55,
+                phase=layout.orbit_phase_offset + 0.55,
                 speed=0.38,
                 lateral_bias=-11.0,
                 depth_bias=18.0,
@@ -648,8 +904,8 @@ class RapidTrackingPanda3DRenderer:
                     parent=self._decoy_root,
                 ),
                 kind="truck",
-                phase=2.10,
-                speed=0.36,
+                phase=layout.orbit_phase_offset + 2.10,
+                speed=0.30 + (rapid_tracking_seed_unit(seed=layout.seed, salt="decoy-truck") * 0.14),
                 lateral_bias=12.0,
                 depth_bias=26.0,
                 altitude=0.0,
@@ -662,11 +918,11 @@ class RapidTrackingPanda3DRenderer:
                     color=(0.78, 0.30, 0.22, 1.0),
                 ),
                 kind="plane",
-                phase=1.34,
-                speed=0.82,
-                lateral_bias=4.0,
+                phase=layout.orbit_phase_offset + 1.34,
+                speed=0.76 + (rapid_tracking_seed_unit(seed=layout.seed, salt="decoy-plane-red") * 0.18),
+                lateral_bias=4.0 * layout.orbit_direction,
                 depth_bias=40.0,
-                altitude=27.0,
+                altitude=27.0 + layout.altitude_bias,
                 route="air_cross",
                 activation_progress=0.79,
             ),
@@ -676,8 +932,8 @@ class RapidTrackingPanda3DRenderer:
                     color=(0.28, 0.36, 0.22, 1.0),
                 ),
                 kind="truck",
-                phase=2.92,
-                speed=0.34,
+                phase=layout.orbit_phase_offset + 2.92,
+                speed=0.28 + (rapid_tracking_seed_unit(seed=layout.seed, salt="decoy-convoy") * 0.12),
                 lateral_bias=-18.0,
                 depth_bias=34.0,
                 altitude=0.0,
@@ -696,7 +952,10 @@ class RapidTrackingPanda3DRenderer:
     def _hide_target_nodes(self) -> None:
         self._active_target_node = None
         self._active_target_kind = ""
-        for node in self._target_nodes:
+        if self._active_scenery_target_node is not None:
+            self._active_scenery_target_node.setAlphaScale(1.0)
+            self._active_scenery_target_node = None
+        for node in self._dynamic_target_nodes:
             node.hide()
             node.setAlphaScale(0.0)
 
@@ -770,6 +1029,28 @@ class RapidTrackingPanda3DRenderer:
                 scale=scale,
             )
 
+        # Forward-corridor buildings give the engine-driven building segments
+        # stable pre-existing scenery to hand off to while the camera is
+        # looking down the late run-in path.
+        for asset_id, fallback, x, y, scale in (
+            ("building_hangar", "hangar", 128.0, 22.0, 0.84),
+            ("building_hangar", "hangar", 60.0, -16.0, 0.78),
+            ("building_hangar", "hangar", 44.0, -20.0, 0.74),
+            ("building_tower", "tower", 46.0, -36.0, 0.82),
+            ("building_tower", "tower", 128.0, -64.0, 0.78),
+        ):
+            z = self._terrain_height(x, y)
+            if fallback == "hangar":
+                z += 1.0
+            else:
+                z += 2.0
+            self._place_scenery(
+                asset_id=asset_id,
+                fallback=fallback,
+                pos=(x, y, z),
+                scale=scale,
+            )
+
     def _build_central_compound(self) -> None:
         compound_items = (
             ("building_hangar", "hangar", -24.0, 36.0, 1.18),
@@ -820,120 +1101,294 @@ class RapidTrackingPanda3DRenderer:
             tank.setPos(x, y, self._terrain_height(x, y) + 0.28)
             tank.setHpr(heading, 0.0, 0.0)
 
-    def _update_camera(self, *, payload: RapidTrackingPayload | None) -> None:
-        cam_x = 0.0 if payload is None else float(payload.camera_x)
-        cam_y = 0.0 if payload is None else float(payload.camera_y)
-        progress = 0.0 if payload is None else float(payload.scene_progress)
-        zoom = 0.0 if payload is None else float(payload.capture_zoom)
-        assist_strength = 0.0 if payload is None else float(payload.camera_assist_strength)
-        turbulence_strength = 0.65 if payload is None else float(payload.turbulence_strength)
-        target_kind = "" if payload is None else str(payload.target_kind)
-        target_rel_x = 0.0 if payload is None else float(payload.target_rel_x)
-        target_rel_y = 0.0 if payload is None else float(payload.target_rel_y)
-        rig = self._camera_rig_state(
-            elapsed_s=self._elapsed_s,
-            progress=progress,
-            cam_x=cam_x,
-            cam_y=cam_y,
-            zoom=zoom,
-            target_kind=target_kind,
+    def _build_soldier_squad(
+        self,
+        *,
+        leader_color: tuple[float, float, float, float],
+        wing_color: tuple[float, float, float, float],
+    ):
+        from panda3d.core import NodePath
+
+        root = NodePath("rapid-soldier-squad")
+        leader = self._build_fallback_model(kind="soldier", color=leader_color)
+        leader.reparentTo(root)
+        leader.setZ(0.26)
+        leader.setScale(1.06)
+
+        for ox, oy in ((-1.1, 0.8), (1.0, 0.7), (-0.9, -0.8), (1.1, -0.9)):
+            wing = self._build_fallback_model(kind="soldier", color=wing_color)
+            wing.reparentTo(root)
+            wing.setPos(ox, oy, 0.24)
+            wing.setScale(0.92)
+        return root
+
+    @staticmethod
+    def _normalized_building_variant(variant: str) -> str:
+        return "tower" if str(variant).strip().lower() == "tower" else "hangar"
+
+    def _select_target_node_from_candidates(
+        self,
+        *,
+        kind: str,
+        variant: str,
+        candidates: list[object],
+        desired_pos: tuple[float, float, float],
+        desired_screen: tuple[float, float] | None = None,
+        overlay_kind: str | None = None,
+    ):
+        if not candidates:
+            return None
+        current_selected = (
+            self._selected_target_node in candidates
+            and self._selected_target_kind == kind
+            and self._selected_target_variant == variant
+        )
+        if current_selected and desired_screen is None:
+            return self._selected_target_node
+
+        desired_x, desired_y, desired_z = desired_pos
+
+        def distance_sq(node) -> float:
+            pos = node.getPos(self._base.render)
+            dx = float(pos.x) - desired_x
+            dy = float(pos.y) - desired_y
+            dz = float(pos.z) - desired_z
+            return (dx * dx) + (dy * dy) + (dz * dz)
+
+        if desired_screen is None:
+            selected = min(candidates, key=distance_sq)
+        else:
+            desired_screen_x, desired_screen_y = desired_screen
+            projected_kind = overlay_kind or kind
+
+            def projected_score(node):
+                projection = self._project_target_node(node=node, kind=projected_kind)
+                offscreen_dx = max(0.0, -projection.screen_x) + max(
+                    0.0,
+                    projection.screen_x - self._size[0],
+                )
+                offscreen_dy = max(0.0, -projection.screen_y) + max(
+                    0.0,
+                    projection.screen_y - self._size[1],
+                )
+                screen_dx = projection.screen_x - desired_screen_x
+                screen_dy = projection.screen_y - desired_screen_y
+                visibility_rank = 0 if projection.on_screen else (1 if projection.in_front else 2)
+                return (
+                    visibility_rank,
+                    offscreen_dx + offscreen_dy,
+                    (screen_dx * screen_dx) + (screen_dy * screen_dy),
+                    distance_sq(node),
+                )
+
+            selected = min(candidates, key=projected_score)
+            if current_selected:
+                current_score = projected_score(self._selected_target_node)
+                selected_score = projected_score(selected)
+                if current_score[0] == 0 and selected_score[0] == 0:
+                    return self._selected_target_node
+                if current_score[0] < selected_score[0]:
+                    return self._selected_target_node
+                if current_score[0] == selected_score[0] and current_score[1] <= (
+                    selected_score[1] + 36.0
+                ):
+                    return self._selected_target_node
+        self._selected_target_node = selected
+        self._selected_target_kind = kind
+        self._selected_target_variant = variant
+        return selected
+
+    @classmethod
+    def _target_rel_to_lens(cls, *, target_rel_x: float, target_rel_y: float) -> tuple[float, float]:
+        lens_x = (
+            _clamp(float(target_rel_x), -cls._TARGET_VIEW_LIMIT, cls._TARGET_VIEW_LIMIT)
+            / cls._TARGET_VIEW_LIMIT
+        )
+        lens_y = -(
+            _clamp(float(target_rel_y), -cls._TARGET_VIEW_LIMIT, cls._TARGET_VIEW_LIMIT)
+            / cls._TARGET_VIEW_LIMIT
+        )
+        return (
+            _clamp(lens_x, -0.95, 0.95),
+            _clamp(lens_y, -0.95, 0.95),
+        )
+
+    def _target_rel_to_viewport(
+        self,
+        *,
+        target_rel_x: float,
+        target_rel_y: float,
+    ) -> tuple[float, float]:
+        clamped_x = _clamp(float(target_rel_x), -self._TARGET_VIEW_LIMIT, self._TARGET_VIEW_LIMIT)
+        clamped_y = _clamp(float(target_rel_y), -self._TARGET_VIEW_LIMIT, self._TARGET_VIEW_LIMIT)
+        width = max(1, self._size[0])
+        height = max(1, self._size[1])
+        return (
+            ((clamped_x + self._TARGET_VIEW_LIMIT) / (self._TARGET_VIEW_LIMIT * 2.0)) * width,
+            ((clamped_y + self._TARGET_VIEW_LIMIT) / (self._TARGET_VIEW_LIMIT * 2.0)) * height,
+        )
+
+    def _desired_tracking_anchor(
+        self,
+        *,
+        target_rel_x: float,
+        target_rel_y: float,
+        distance: float,
+    ) -> tuple[float, float, float]:
+        cam_pos, forward, right, up = self._camera_basis()
+        lateral = _clamp(float(target_rel_x), -1.5, 1.5) * 18.0
+        vertical = _clamp(-float(target_rel_y), -1.25, 1.25) * 10.0
+        anchor = cam_pos + (forward * max(10.0, float(distance))) + (right * lateral) + (up * vertical)
+        return (float(anchor.x), float(anchor.y), float(anchor.z))
+
+    def _ground_target_anchor(
+        self,
+        *,
+        target_rel_x: float,
+        target_rel_y: float,
+        clearance: float,
+        distance_bias: float,
+        ray_target,
+    ) -> tuple[float, float, float]:
+        lens_x, lens_y = self._target_rel_to_lens(
             target_rel_x=target_rel_x,
             target_rel_y=target_rel_y,
-            assist_strength=assist_strength,
+        )
+        terrain_anchor = self._world_point_on_terrain(
+            lens_x=lens_x,
+            lens_y=lens_y,
+            clearance=clearance,
+        )
+        if terrain_anchor is not None:
+            return terrain_anchor
+
+        desired = self._desired_tracking_anchor(
+            target_rel_x=target_rel_x,
+            target_rel_y=target_rel_y,
+            distance=distance_bias + _clamp((0.42 - target_rel_y) * 12.0, -6.0, 14.0),
+        )
+        if ray_target is None:
+            return (
+                desired[0],
+                desired[1],
+                self._terrain_height(desired[0], desired[1]) + clearance,
+            )
+        x = _lerp(ray_target[0], desired[0], 0.72)
+        y = _lerp(ray_target[1], desired[1], 0.72)
+        return (
+            x,
+            y,
+            self._terrain_height(x, y) + clearance,
+        )
+
+    def _update_camera(self, *, payload: RapidTrackingPayload | None) -> None:
+        progress = 0.0 if payload is None else float(payload.scene_progress)
+        zoom = 0.0 if payload is None else float(payload.capture_zoom)
+        turbulence_strength = 0.65 if payload is None else float(payload.turbulence_strength)
+        target_kind = "" if payload is None else str(payload.target_kind)
+        target_world_x = 0.0 if payload is None else float(payload.target_world_x)
+        target_world_y = 0.0 if payload is None else float(payload.target_world_y)
+        focus_world_x = (
+            self._carrier_focus_world()[0] if payload is None else float(payload.focus_world_x)
+        )
+        focus_world_y = (
+            self._carrier_focus_world()[1] if payload is None else float(payload.focus_world_y)
+        )
+
+        rig = self._camera_rig_state(
+            elapsed_s=self._elapsed_s,
+            seed=0 if payload is None else int(payload.session_seed),
+            progress=progress,
+            camera_yaw_deg=None if payload is None else float(payload.camera_yaw_deg),
+            camera_pitch_deg=None if payload is None else float(payload.camera_pitch_deg),
+            zoom=zoom,
+            target_kind=target_kind,
+            target_world_x=target_world_x,
+            target_world_y=target_world_y,
+            focus_world_x=focus_world_x,
+            focus_world_y=focus_world_y,
             turbulence_strength=turbulence_strength,
         )
+        self._last_camera_rig = rig
 
         self._base.camLens.setFov(rig.fov_deg)
         self._base.cam.setPos(rig.cam_world_x, rig.cam_world_y, rig.cam_world_z)
         self._base.cam.setHpr(
-            rig.heading_deg,
-            rig.pitch_deg,
+            rig.view_heading_deg,
+            rig.view_pitch_deg,
             rig.roll_deg,
         )
 
     def _update_target(self, *, payload: RapidTrackingPayload | None) -> None:
-        from panda3d.core import Vec3
-
         self._hide_target_nodes()
 
         if payload is None:
-            self._target_jet.show()
-            self._target_jet.setAlphaScale(1.0)
-            self._target_jet.setPos(
+            demo_node = self._select_target_node_from_candidates(
+                kind="jet",
+                variant="demo",
+                candidates=self._jet_pool,
+                desired_pos=(0.0, 62.0, 16.0),
+            )
+            if demo_node is None:
+                return
+            demo_node.show()
+            demo_node.setAlphaScale(1.0)
+            demo_node.setPos(
                 math.sin(self._elapsed_s * 0.9) * 8.0,
                 62.0,
                 16.0 + (math.sin(self._elapsed_s * 1.4) * 2.2),
             )
-            self._target_jet.setHpr(
-                math.sin(self._elapsed_s * 0.8) * 20.0,
+            demo_node.setHpr(
+                90.0 + (math.sin(self._elapsed_s * 0.8) * 20.0),
                 math.cos(self._elapsed_s * 1.1) * 6.0,
                 math.sin(self._elapsed_s * 1.6) * 18.0,
             )
-            self._active_target_node = self._target_jet
+            self._active_target_node = demo_node
             self._active_target_kind = "jet"
             return
 
         kind = str(payload.target_kind).strip().lower()
         variant = str(payload.target_variant).strip().lower()
         progress = float(payload.scene_progress)
-        scene_x = float(payload.target_rel_x + payload.camera_x)
-        scene_y = float(payload.target_rel_y + payload.camera_y)
-        cam_pos = self._base.cam.getPos(self._base.render)
-        target_direction = self._scene_direction(
-            scene_x=scene_x,
-            scene_y=scene_y,
-            progress=progress,
-        )
+        scene_x = float(payload.target_rel_x)
+        scene_y = float(payload.target_rel_y)
+        track_x = float(payload.target_world_x)
+        track_y = float(payload.target_world_y)
         visible_alpha = 1.0 if bool(payload.target_visible) else 0.76
 
-        def ground_target(*, clearance: float, distance_bias: float) -> tuple[float, float, float]:
-            target_pos = self._world_point_on_terrain_along_direction(
-                origin=cam_pos,
-                direction=target_direction,
-                clearance=clearance,
-            )
-            if target_pos is None:
-                flat_direction = Vec3(target_direction.x, target_direction.y, 0.0)
-                if flat_direction.lengthSquared() <= 1e-6:
-                    flat_direction = Vec3(0.0, 1.0, 0.0)
-                else:
-                    flat_direction.normalize()
-                ground_distance = distance_bias + _clamp((0.58 - scene_y) * 18.0, -10.0, 16.0)
-                fallback = cam_pos + (flat_direction * ground_distance)
-                return (
-                    float(fallback.x),
-                    float(fallback.y),
-                    self._terrain_height(float(fallback.x), float(fallback.y)) + clearance,
-                )
-            return target_pos
-
         if kind == "soldier":
-            x, y, z = ground_target(clearance=0.05, distance_bias=40.0)
+            x, y, z = self._ground_target_world_pos(world_x=track_x, world_y=track_y, clearance=0.05)
+            node = self._select_target_node_from_candidates(
+                kind="soldier",
+                variant="target",
+                candidates=self._soldier_pool,
+                desired_pos=(x, y, z),
+            )
+            if node is None:
+                return
             heading = self._heading_from_velocity(
                 vx=float(payload.target_vx),
                 vy=float(payload.target_vy),
             )
-            self._target_soldier.setPos(x, y, z + 0.26)
-            self._target_soldier.setHpr(heading, 0.0, 0.0)
-            self._target_soldier.setAlphaScale(visible_alpha)
-            self._target_soldier.show()
-            self._active_target_node = self._target_soldier
+            node.setPos(x, y, z)
+            node.setHpr(heading, 0.0, 0.0)
+            node.setAlphaScale(visible_alpha)
+            node.show()
+            self._active_target_node = node
             self._active_target_kind = kind
-            if visible_alpha > 0.0:
-                offsets = ((-1.1, 0.8), (1.0, 0.7), (-0.9, -0.8), (1.1, -0.9))
-                for node, (ox, oy) in zip(self._soldier_group, offsets):
-                    gx = x + ox
-                    gy = y + oy
-                    gz = self._terrain_height(gx, gy) + 0.24
-                    node.setPos(gx, gy, gz)
-                    node.setHpr(heading + (oy * 8.0), 0.0, 0.0)
-                    node.setAlphaScale(0.92)
-                    node.show()
             return
         if kind == "truck":
-            x, y, z = ground_target(clearance=0.34, distance_bias=42.0)
-            self._target_truck.setPos(x, y, z)
-            self._target_truck.setHpr(
+            x, y, z = self._ground_target_world_pos(world_x=track_x, world_y=track_y, clearance=0.34)
+            node = self._select_target_node_from_candidates(
+                kind="truck",
+                variant="olive",
+                candidates=self._truck_pool,
+                desired_pos=(x, y, z),
+            )
+            if node is None:
+                return
+            node.setPos(x, y, z)
+            node.setHpr(
                 self._heading_from_velocity(
                     vx=float(payload.target_vx),
                     vy=float(payload.target_vy),
@@ -941,60 +1396,93 @@ class RapidTrackingPanda3DRenderer:
                 0.0,
                 0.0,
             )
-            self._target_truck.setAlphaScale(visible_alpha)
-            self._target_truck.show()
-            self._active_target_node = self._target_truck
-            self._active_target_kind = kind
-            return
-
-        if kind == "building":
-            x, y, z = ground_target(clearance=0.0, distance_bias=44.0)
-            if variant == "tower":
-                node = self._target_tower
-                z += 2.2
-            else:
-                node = self._target_hangar
-                z += 1.25
-            node.setPos(x, y, z)
-            node.setHpr(0.0, 0.0, 0.0)
-            node.setAlphaScale(0.96 if visible_alpha > 0.0 else 0.0)
+            node.setAlphaScale(visible_alpha)
             node.show()
             self._active_target_node = node
             self._active_target_kind = kind
             return
 
-        if kind == "helicopter":
-            air_distance = 46.0 + _clamp((-scene_y) * 12.0, -10.0, 16.0)
-            air_pos = cam_pos + (target_direction * air_distance)
-            x = float(air_pos.x)
-            y = float(air_pos.y)
-            z = max(self._terrain_height(x, y) + 5.8, min(34.0, float(air_pos.z)))
-            self._target_helicopter.setPos(x, y, z)
-            self._target_helicopter.setHpr(
-                -math.degrees(math.atan2(float(payload.target_vx) * 16.0, 1.0)),
-                _clamp(-float(payload.target_vy) * 60.0, -12.0, 12.0),
-                _clamp(-float(payload.target_vx) * 80.0, -18.0, 18.0),
+        if kind == "building":
+            building_variant = self._normalized_building_variant(variant)
+            x, y, z = self._ground_target_world_pos(
+                world_x=track_x,
+                world_y=track_y,
+                clearance=2.2 if building_variant == "tower" else 1.25,
             )
-            self._target_helicopter.setAlphaScale(visible_alpha)
-            self._target_helicopter.show()
-            self._active_target_node = self._target_helicopter
+            node = self._select_target_node_from_candidates(
+                kind="building",
+                variant=building_variant,
+                candidates=self._scenery_nodes_by_kind[building_variant],
+                desired_pos=(x, y, z),
+            )
+            if node is None:
+                return
+            node.setAlphaScale(0.96 if visible_alpha > 0.0 else 0.76)
+            self._active_scenery_target_node = node
+            self._active_target_node = node
             self._active_target_kind = kind
             return
 
-        air_distance = 60.0 + _clamp((-scene_y) * 14.0, -12.0, 18.0)
-        air_pos = cam_pos + (target_direction * air_distance)
-        x = float(air_pos.x)
-        y = float(air_pos.y)
-        z = max(self._terrain_height(x, y) + 10.0, min(42.0, float(air_pos.z)))
-        self._target_jet.setPos(x, y, z)
-        self._target_jet.setHpr(
-            -math.degrees(math.atan2(float(payload.target_vx) * 18.0, 1.0)),
+        if kind == "helicopter":
+            x, y, z = self._air_target_world_pos(
+                kind=kind,
+                world_x=track_x,
+                world_y=track_y,
+                phase_elapsed_s=float(payload.phase_elapsed_s),
+                scene_progress=progress,
+            )
+            node = self._select_target_node_from_candidates(
+                kind="helicopter",
+                variant="green",
+                candidates=self._helicopter_pool,
+                desired_pos=(x, y, z),
+            )
+            if node is None:
+                return
+            node.setPos(x, y, z)
+            node.setHpr(
+                self._heading_from_velocity(
+                    vx=float(payload.target_vx),
+                    vy=float(payload.target_vy),
+                    default_heading=self._helicopter_heading_deg(progress=progress),
+                ),
+                _clamp(-float(payload.target_vy) * 60.0, -12.0, 12.0),
+                _clamp(-float(payload.target_vx) * 80.0, -18.0, 18.0),
+            )
+            node.setAlphaScale(visible_alpha)
+            node.show()
+            self._active_target_node = node
+            self._active_target_kind = kind
+            return
+
+        x, y, z = self._air_target_world_pos(
+            kind=kind,
+            world_x=track_x,
+            world_y=track_y,
+            phase_elapsed_s=float(payload.phase_elapsed_s),
+            scene_progress=progress,
+        )
+        node = self._select_target_node_from_candidates(
+            kind="jet",
+            variant="fast-pass",
+            candidates=self._jet_pool,
+            desired_pos=(x, y, z),
+        )
+        if node is None:
+            return
+        node.setPos(x, y, z)
+        node.setHpr(
+            self._heading_from_velocity(
+                vx=float(payload.target_vx),
+                vy=float(payload.target_vy),
+                default_heading=self._helicopter_heading_deg(progress=progress),
+            ),
             _clamp(-float(payload.target_vy) * 80.0, -16.0, 16.0),
             _clamp(-float(payload.target_vx) * 120.0, -30.0, 30.0),
         )
-        self._target_jet.setAlphaScale(visible_alpha)
-        self._target_jet.show()
-        self._active_target_node = self._target_jet
+        node.setAlphaScale(visible_alpha)
+        node.show()
+        self._active_target_node = node
         self._active_target_kind = kind
 
     def _update_decoys(self, *, payload: RapidTrackingPayload | None) -> None:
@@ -1098,26 +1586,40 @@ class RapidTrackingPanda3DRenderer:
             )
 
     def _update_overlay_state(self, *, payload: RapidTrackingPayload | None) -> None:
-        from panda3d.core import Point3
-
         node = self._active_target_node
         if node is None:
             self._target_overlay_state = None
             return
 
-        world_pos = node.getPos(self._base.render)
         kind = str(self._active_target_kind).strip().lower()
-        if kind == "soldier":
-            world_pos = Point3(world_pos.x, world_pos.y, world_pos.z + 0.48)
-        elif kind == "truck":
-            world_pos = Point3(world_pos.x, world_pos.y, world_pos.z + 0.42)
-        elif kind == "building":
-            world_pos = Point3(world_pos.x, world_pos.y, world_pos.z + 1.8)
-        elif kind == "helicopter":
-            world_pos = Point3(world_pos.x, world_pos.y, world_pos.z + 0.8)
-        else:
-            world_pos = Point3(world_pos.x, world_pos.y, world_pos.z + 0.6)
+        projection = self._project_target_node(node=node, kind=kind)
+        target_visible = bool(payload.target_visible) if payload is not None else True
+        self._target_overlay_state = RapidTrackingOverlayState(
+            screen_x=float(projection.screen_x),
+            screen_y=float(projection.screen_y),
+            on_screen=bool(projection.on_screen),
+            in_front=bool(projection.in_front),
+            target_visible=bool(target_visible),
+        )
 
+    def _target_overlay_world_pos(self, *, node, kind: str):
+        from panda3d.core import Point3
+
+        world_pos = node.getPos(self._base.render)
+        if kind == "soldier":
+            lift = 0.48
+        elif kind == "truck":
+            lift = 0.42
+        elif kind == "building":
+            lift = 1.8
+        elif kind == "helicopter":
+            lift = 0.8
+        else:
+            lift = 0.6
+        return Point3(world_pos.x, world_pos.y, world_pos.z + lift)
+
+    def _project_target_node(self, *, node, kind: str) -> RapidTrackingOverlayState:
+        world_pos = self._target_overlay_world_pos(node=node, kind=kind)
         cam_pos = self._base.cam.getRelativePoint(self._base.render, world_pos)
         fov = self._base.camLens.getFov()
         screen_x, screen_y, on_screen, in_front = self._camera_space_to_viewport(
@@ -1128,13 +1630,12 @@ class RapidTrackingPanda3DRenderer:
             h_fov_deg=float(fov[0]),
             v_fov_deg=float(fov[1]),
         )
-        target_visible = bool(payload.target_visible) if payload is not None else True
-        self._target_overlay_state = RapidTrackingOverlayState(
+        return RapidTrackingOverlayState(
             screen_x=float(screen_x),
             screen_y=float(screen_y),
             on_screen=bool(on_screen),
             in_front=bool(in_front),
-            target_visible=bool(target_visible),
+            target_visible=True,
         )
 
     def _camera_basis(self):
@@ -1172,14 +1673,12 @@ class RapidTrackingPanda3DRenderer:
     def _helicopter_heading_deg(self, *, progress: float) -> float:
         rig = self._camera_rig_state(
             elapsed_s=self._elapsed_s,
+            seed=self._session_seed,
             progress=progress,
-            cam_x=0.0,
-            cam_y=0.0,
+            camera_yaw_deg=None,
+            camera_pitch_deg=None,
             zoom=0.0,
             target_kind="",
-            target_rel_x=0.0,
-            target_rel_y=0.0,
-            assist_strength=0.0,
             turbulence_strength=0.65,
         )
         return rig.carrier_heading_deg
@@ -1363,8 +1862,8 @@ class RapidTrackingPanda3DRenderer:
         fallback: str,
         pos: tuple[float, float, float],
         scale: float,
-    ) -> None:
-        self._load_asset_or_fallback(
+    ):
+        node = self._load_asset_or_fallback(
             asset_id=asset_id,
             fallback=fallback,
             color=(1.0, 1.0, 1.0, 1.0),
@@ -1372,6 +1871,10 @@ class RapidTrackingPanda3DRenderer:
             parent=self._scenery_root,
             pos=pos,
         )
+        node.setTransparency(True)
+        if fallback in self._scenery_nodes_by_kind:
+            self._scenery_nodes_by_kind[fallback].append(node)
+        return node
 
     def _build_cloud(self, *, scale: float):
         from panda3d.core import CardMaker, NodePath
@@ -1401,23 +1904,26 @@ class RapidTrackingPanda3DRenderer:
         scale: float,
         parent,
         pos: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        hpr: tuple[float, float, float] = (0.0, 0.0, 0.0),
     ):
         entry = self._catalog.entry(asset_id)
         resolved = self._catalog.resolve_path(asset_id)
+        fallback_kind = entry.fallback if entry is not None else fallback
         node = None
-        if resolved is not None:
+        if resolved is not None and fallback_kind != "plane":
             try:
                 node = self._load_model(resolved)
-                if entry is not None:
-                    scale *= entry.scale
             except Exception:
                 node = None
         if node is None:
-            fallback_kind = entry.fallback if entry is not None else fallback
             node = self._build_fallback_model(kind=fallback_kind, color=color)
         node.reparentTo(parent)
-        node.setPos(*pos)
-        node.setScale(scale)
+        if resolved is not None and entry is not None and fallback_kind != "plane":
+            entry.apply_loaded_model_transform(node, pos=pos, hpr=hpr, scale=scale)
+        else:
+            node.setPos(*pos)
+            node.setHpr(*hpr)
+            node.setScale(scale)
         return node
 
     def _load_model(self, path: Path):
@@ -1438,17 +1944,10 @@ class RapidTrackingPanda3DRenderer:
 
         root = NodePath(kind)
         if kind == "plane":
-            fuselage = self._make_box(size=(0.7, 3.2, 0.55), color=color)
-            wing = self._make_box(size=(3.8, 0.55, 0.10), color=color)
-            tail = self._make_box(size=(1.4, 0.36, 0.10), color=color)
-            fin = self._make_box(size=(0.10, 0.55, 0.55), color=(0.88, 0.88, 0.90, 1.0))
-            wing.setZ(0.04)
-            tail.setY(-1.28)
-            tail.setZ(0.18)
-            fin.setY(-1.35)
-            fin.setZ(0.42)
-            for child in (fuselage, wing, tail, fin):
-                child.reparentTo(root)
+            return build_panda3d_fixed_wing_model(
+                palette=build_panda_palette(body_color=color),
+                name="rapid-plane",
+            )
         elif kind == "helicopter":
             body = self._make_box(size=(0.9, 1.8, 0.8), color=color)
             tail = self._make_box(size=(0.14, 1.5, 0.14), color=color)
@@ -1518,6 +2017,33 @@ class RapidTrackingPanda3DRenderer:
                 trunk.setZ(0.4)
                 crown.setX(offset)
                 crown.setZ(1.25)
+                trunk.reparentTo(root)
+                crown.reparentTo(root)
+        elif kind == "shrub":
+            for offset_x, offset_y, size in ((-0.26, 0.06, 0.42), (0.04, -0.10, 0.48), (0.30, 0.08, 0.36)):
+                crown = self._make_box(
+                    size=(size, size * 0.9, size * 0.58),
+                    color=(0.18, 0.46, 0.20, 0.96),
+                )
+                crown.setPos(offset_x, offset_y, size * 0.30)
+                crown.reparentTo(root)
+        elif kind == "forest":
+            for offset_x, offset_y, scale in (
+                (-1.3, -0.3, 1.0),
+                (-0.4, 0.4, 1.2),
+                (0.5, -0.2, 0.9),
+                (1.2, 0.3, 1.1),
+            ):
+                trunk = self._make_box(
+                    size=(0.18 * scale, 0.18 * scale, 1.0 * scale),
+                    color=(0.34, 0.22, 0.12, 1.0),
+                )
+                crown = self._make_box(
+                    size=(1.1 * scale, 1.1 * scale, 1.4 * scale),
+                    color=(0.12, 0.34, 0.14, 0.94),
+                )
+                trunk.setPos(offset_x, offset_y, 0.5 * scale)
+                crown.setPos(offset_x, offset_y, 1.5 * scale)
                 trunk.reparentTo(root)
                 crown.reparentTo(root)
         else:

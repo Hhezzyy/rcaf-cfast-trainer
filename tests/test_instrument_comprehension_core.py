@@ -6,9 +6,11 @@ import pytest
 
 from cfast_trainer.cognitive_core import Problem
 from cfast_trainer.instrument_comprehension import (
+    InstrumentAircraftViewPreset,
     InstrumentComprehensionConfig,
     InstrumentComprehensionGenerator,
     InstrumentComprehensionPayload,
+    InstrumentOptionRenderMode,
     InstrumentComprehensionScorer,
     InstrumentComprehensionTrialKind,
     InstrumentOption,
@@ -16,6 +18,7 @@ from cfast_trainer.instrument_comprehension import (
     airspeed_turn,
     altimeter_hand_turns,
     build_instrument_comprehension_test,
+    instrument_aircraft_view_preset_for_code,
 )
 
 
@@ -53,9 +56,49 @@ def test_generator_emits_all_required_trial_kinds() -> None:
         seen.add(payload.kind)
 
     assert seen == {
+        InstrumentComprehensionTrialKind.AIRCRAFT_TO_INSTRUMENTS,
         InstrumentComprehensionTrialKind.INSTRUMENTS_TO_DESCRIPTION,
         InstrumentComprehensionTrialKind.INSTRUMENTS_TO_AIRCRAFT,
     }
+
+
+def test_part1_option_generation_uses_fixed_view_family_by_code() -> None:
+    gen = InstrumentComprehensionGenerator(seed=31415)
+    problem = gen.next_problem_for_kind(
+        kind=InstrumentComprehensionTrialKind.INSTRUMENTS_TO_AIRCRAFT,
+        difficulty=0.6,
+    )
+    payload = problem.payload
+    assert isinstance(payload, InstrumentComprehensionPayload)
+
+    assert tuple(option.view_preset for option in payload.options) == (
+        InstrumentAircraftViewPreset.FRONT_LEFT,
+        InstrumentAircraftViewPreset.FRONT_RIGHT,
+        InstrumentAircraftViewPreset.PROFILE_LEFT,
+        InstrumentAircraftViewPreset.PROFILE_RIGHT,
+        InstrumentAircraftViewPreset.TOP_OBLIQUE,
+    )
+    assert payload.option_render_mode is InstrumentOptionRenderMode.AIRCRAFT
+    assert payload.prompt_view_preset is None
+    assert tuple(
+        instrument_aircraft_view_preset_for_code(option.code) for option in payload.options
+    ) == tuple(option.view_preset for option in payload.options)
+    assert payload.options[problem.answer - 1].state == payload.prompt_state
+
+
+def test_part2_reverse_generation_uses_aircraft_prompt_and_panel_answers() -> None:
+    gen = InstrumentComprehensionGenerator(seed=27182)
+    problem = gen.next_problem_for_kind(
+        kind=InstrumentComprehensionTrialKind.AIRCRAFT_TO_INSTRUMENTS,
+        difficulty=0.6,
+    )
+    payload = problem.payload
+    assert isinstance(payload, InstrumentComprehensionPayload)
+
+    assert payload.option_render_mode is InstrumentOptionRenderMode.INSTRUMENT_PANEL
+    assert payload.prompt_view_preset in set(InstrumentAircraftViewPreset)
+    assert all(option.view_preset is None for option in payload.options)
+    assert payload.options[problem.answer - 1].state == payload.prompt_state
 
 
 def test_scoring_exact_and_estimation_behavior() -> None:
@@ -127,14 +170,19 @@ def test_timer_boundary_transitions_to_results_and_rejects_late_submit() -> None
     )
     engine.start_scored()
 
-    assert engine.time_remaining_s() == pytest.approx(1.0)
-    clock.advance(1.0)
+    assert engine.time_remaining_s() == pytest.approx(2.0 / 3.0)
+    clock.advance(2.0 / 3.0)
     engine.update()
 
     assert engine.phase.value == "practice_done"
     engine.start_scored()
     assert engine.phase.value == "scored"
-    clock.advance(1.0)
+    clock.advance(2.0 / 3.0)
+    engine.update()
+    assert engine.phase.value == "practice_done"
+    engine.start_scored()
+    assert engine.phase.value == "scored"
+    clock.advance(2.0 / 3.0)
     engine.update()
     assert engine.phase.value == "results"
     assert engine.submit_answer("1") is False
@@ -150,6 +198,18 @@ def test_skip_commands_advance_across_practice_parts_and_results() -> None:
     )
 
     engine.start_practice()
+    assert engine.phase.value == "practice"
+
+    assert engine.submit_answer("__skip_practice__") is True
+    assert engine.phase.value == "practice_done"
+
+    engine.start_scored()
+    assert engine.phase.value == "scored"
+
+    assert engine.submit_answer("__skip_section__") is True
+    assert engine.phase.value == "practice_done"
+
+    engine.start_scored()
     assert engine.phase.value == "practice"
 
     assert engine.submit_answer("__skip_practice__") is True

@@ -1,19 +1,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import cast
 
 import pytest
 
-from cfast_trainer.cognitive_core import Phase
+from cfast_trainer.cognitive_core import Phase, Problem
 from cfast_trainer.spatial_integration import (
+    SpatialIntegrationAnswerMode,
     SpatialIntegrationConfig,
     SpatialIntegrationGenerator,
+    SpatialIntegrationPart,
     SpatialIntegrationPayload,
     SpatialIntegrationQuestionKind,
-    SpatialIntegrationSceneView,
     SpatialIntegrationScorer,
-    SpatialIntegrationSection,
     SpatialIntegrationTrialStage,
     build_spatial_integration_test,
 )
@@ -34,7 +33,7 @@ def _wait_for_question(
     *,
     engine: object,
     clock: FakeClock,
-    max_steps: int = 80,
+    max_steps: int = 120,
     dt: float = 0.05,
 ) -> SpatialIntegrationPayload:
     for _ in range(max_steps):
@@ -47,141 +46,239 @@ def _wait_for_question(
     raise AssertionError("Timed out waiting for question stage.")
 
 
-def test_generator_determinism_same_seed_same_sequence() -> None:
+def test_scene_generator_is_deterministic_for_both_parts() -> None:
     seed = 515
-    for section in (
-        SpatialIntegrationSection.PART_A,
-        SpatialIntegrationSection.PART_B,
-        SpatialIntegrationSection.PART_C,
-    ):
+    for part in (SpatialIntegrationPart.STATIC, SpatialIntegrationPart.AIRCRAFT):
         g1 = SpatialIntegrationGenerator(seed=seed)
         g2 = SpatialIntegrationGenerator(seed=seed)
 
-        seq1 = [g1.next_problem(section=section, difficulty=0.64) for _ in range(25)]
-        seq2 = [g2.next_problem(section=section, difficulty=0.64) for _ in range(25)]
+        seq1 = [g1.next_scene_cluster(part=part, difficulty=0.64) for _ in range(8)]
+        seq2 = [g2.next_scene_cluster(part=part, difficulty=0.64) for _ in range(8)]
 
-        assert [(p.prompt, p.answer, p.payload) for p in seq1] == [
-            (p.prompt, p.answer, p.payload) for p in seq2
-        ]
+        assert seq1 == seq2
 
 
-def test_generated_problem_has_five_unique_options_and_correct_code() -> None:
+def test_static_scene_cluster_has_expected_question_mix() -> None:
     gen = SpatialIntegrationGenerator(seed=18)
-    for section in (
-        SpatialIntegrationSection.PART_A,
-        SpatialIntegrationSection.PART_B,
-        SpatialIntegrationSection.PART_C,
-    ):
-        problem = gen.next_problem(section=section, difficulty=0.6)
-        payload = cast(SpatialIntegrationPayload, problem.payload)
+    scene = gen.next_scene_cluster(part=SpatialIntegrationPart.STATIC, difficulty=0.6)
 
-        assert isinstance(payload, SpatialIntegrationPayload)
-        assert len(payload.options) == 5
-        assert [opt.code for opt in payload.options] == [1, 2, 3, 4, 5]
-
-        labels = [opt.label for opt in payload.options]
-        assert len(set(labels)) == 5
-        assert problem.answer == payload.correct_code
-        assert any(
-            opt.code == payload.correct_code and opt.point == payload.correct_point
-            for opt in payload.options
-        )
-
-        if section is SpatialIntegrationSection.PART_A:
-            assert payload.kind is SpatialIntegrationQuestionKind.LANDMARK_LOCATION
-            assert payload.scene_view is SpatialIntegrationSceneView.TOPDOWN
-            assert payload.show_aircraft_motion is False
-        elif section is SpatialIntegrationSection.PART_B:
-            assert payload.kind is SpatialIntegrationQuestionKind.LANDMARK_LOCATION
-            assert payload.scene_view is SpatialIntegrationSceneView.OBLIQUE
-            assert payload.show_aircraft_motion is False
-        else:
-            assert payload.kind is SpatialIntegrationQuestionKind.AIRCRAFT_EXTRAPOLATION
-            assert payload.scene_view is SpatialIntegrationSceneView.OBLIQUE
-            assert payload.show_aircraft_motion is True
+    assert scene.part is SpatialIntegrationPart.STATIC
+    assert len(scene.reference_views) == 3
+    assert all(view.scene_view.value == "oblique" for view in scene.reference_views)
+    assert scene.questions[0].kind is SpatialIntegrationQuestionKind.LANDMARK_GRID
+    assert scene.questions[0].answer_mode is SpatialIntegrationAnswerMode.GRID_CLICK
+    assert scene.questions[1].kind is SpatialIntegrationQuestionKind.LANDMARK_GRID
+    assert scene.questions[2].kind is SpatialIntegrationQuestionKind.SCENE_RECONSTRUCTION
+    assert scene.questions[2].answer_mode is SpatialIntegrationAnswerMode.OPTION_PICK
+    assert len(scene.questions[2].options) == 4
+    assert any(opt.answer_token == "correct" for opt in scene.questions[2].options)
 
 
-def test_scorer_exact_and_partial_credit_behavior() -> None:
-    gen = SpatialIntegrationGenerator(seed=90)
-    problem = gen.next_problem(section=SpatialIntegrationSection.PART_C, difficulty=0.85)
-    payload = cast(SpatialIntegrationPayload, problem.payload)
-    scorer = SpatialIntegrationScorer()
+def test_aircraft_scene_cluster_has_expected_question_mix() -> None:
+    gen = SpatialIntegrationGenerator(seed=19)
+    scene = gen.next_scene_cluster(part=SpatialIntegrationPart.AIRCRAFT, difficulty=0.6)
 
-    assert scorer.score(
-        problem=problem, user_answer=payload.correct_code, raw=str(payload.correct_code)
-    ) == pytest.approx(1.0)
+    assert scene.part is SpatialIntegrationPart.AIRCRAFT
+    assert len(scene.reference_views) == 3
+    assert all(view.scene_view.value == "oblique" for view in scene.reference_views)
+    assert len(scene.route_points) >= 5
+    assert scene.questions[0].kind is SpatialIntegrationQuestionKind.AIRCRAFT_ROUTE_SELECTION
+    assert scene.questions[0].answer_mode is SpatialIntegrationAnswerMode.OPTION_PICK
+    assert scene.questions[1].kind is SpatialIntegrationQuestionKind.AIRCRAFT_ROUTE_SELECTION
+    assert scene.questions[2].kind is SpatialIntegrationQuestionKind.AIRCRAFT_LOCATION_GRID
+    assert scene.questions[2].answer_mode is SpatialIntegrationAnswerMode.GRID_CLICK
+    assert len(scene.questions[0].options) == 4
+    assert len(scene.questions[1].options) == 4
 
-    wrong = min(
-        (opt for opt in payload.options if opt.code != payload.correct_code),
-        key=lambda opt: int(opt.error),
+
+def test_generator_supports_multiple_objects_in_one_grid_cell() -> None:
+    gen = SpatialIntegrationGenerator(seed=77)
+    scenes = [gen.next_scene_cluster(part=SpatialIntegrationPart.STATIC, difficulty=0.6) for _ in range(12)]
+
+    assert any(len({(item.x, item.y) for item in scene.landmarks}) < len(scene.landmarks) for scene in scenes)
+
+
+def test_scorer_is_exact_for_grid_and_option_answers() -> None:
+    gen = SpatialIntegrationGenerator(seed=44)
+    static_scene = gen.next_scene_cluster(part=SpatialIntegrationPart.STATIC, difficulty=0.5)
+    static_question = static_scene.questions[0]
+    static_problem = Problem(
+        prompt=static_question.stem,
+        answer=1,
+        payload=SpatialIntegrationPayload(
+            part=static_scene.part,
+            trial_stage=SpatialIntegrationTrialStage.QUESTION,
+            block_kind="practice",
+            scene_id=static_scene.scene_id,
+            scene_index_in_block=1,
+            scenes_in_block=2,
+            study_view_index=3,
+            study_views_in_scene=3,
+            question_index_in_scene=1,
+            questions_in_scene=3,
+            stage_time_remaining_s=8.0,
+            part_time_remaining_s=None,
+            kind=static_question.kind,
+            answer_mode=static_question.answer_mode,
+            stem=static_question.stem,
+            query_label=static_question.query_label,
+            north_arrow_deg=0,
+            scene_view=static_scene.scene_view,
+            grid_cols=static_scene.grid_cols,
+            grid_rows=static_scene.grid_rows,
+            alt_levels=static_scene.alt_levels,
+            reference_views=static_scene.reference_views,
+            active_reference_view=None,
+            hills=static_scene.hills,
+            landmarks=static_scene.landmarks,
+            answer_map_landmarks=static_question.answer_map_landmarks,
+            route_points=static_scene.route_points,
+            route_current_index=static_scene.route_current_index,
+            aircraft_prev=static_scene.aircraft_prev,
+            aircraft_now=static_scene.aircraft_now,
+            velocity=static_scene.velocity,
+            show_aircraft_motion=static_scene.show_aircraft_motion,
+            options=(),
+            correct_code=0,
+            correct_point=static_question.correct_point,
+            correct_answer_token=static_question.correct_answer_token,
+        ),
     )
-    full = int(payload.full_credit_error)
-    zero = int(payload.zero_credit_error)
-    if wrong.error <= full:
-        expected = 1.0
-    elif wrong.error >= zero:
-        expected = 0.0
-    else:
-        expected = (zero - wrong.error) / float(zero - full)
 
-    near = scorer.score(problem=problem, user_answer=wrong.code, raw=str(wrong.code))
-    assert near == pytest.approx(expected, abs=1e-9)
-    assert scorer.score(problem=problem, user_answer=9, raw="9") == pytest.approx(0.0)
+    scorer = SpatialIntegrationScorer()
+    assert scorer.score(problem=static_problem, user_answer=1, raw=static_question.correct_answer_token) == pytest.approx(1.0)
+    expected_wrong = 1.0 if static_question.correct_answer_token == "A1" else 0.0
+    assert scorer.score(problem=static_problem, user_answer=1, raw="A1") == pytest.approx(expected_wrong)
+
+    aircraft_scene = gen.next_scene_cluster(part=SpatialIntegrationPart.AIRCRAFT, difficulty=0.5)
+    aircraft_question = aircraft_scene.questions[0]
+    correct_code = next(opt.code for opt in aircraft_question.options if opt.answer_token == "correct")
+    wrong_code = next(opt.code for opt in aircraft_question.options if opt.answer_token != "correct")
+    aircraft_problem = Problem(
+        prompt=aircraft_question.stem,
+        answer=int(correct_code),
+        payload=SpatialIntegrationPayload(
+            part=aircraft_scene.part,
+            trial_stage=SpatialIntegrationTrialStage.QUESTION,
+            block_kind="practice",
+            scene_id=aircraft_scene.scene_id,
+            scene_index_in_block=1,
+            scenes_in_block=2,
+            study_view_index=3,
+            study_views_in_scene=3,
+            question_index_in_scene=1,
+            questions_in_scene=3,
+            stage_time_remaining_s=8.0,
+            part_time_remaining_s=None,
+            kind=aircraft_question.kind,
+            answer_mode=aircraft_question.answer_mode,
+            stem=aircraft_question.stem,
+            query_label=aircraft_question.query_label,
+            north_arrow_deg=0,
+            scene_view=aircraft_scene.scene_view,
+            grid_cols=aircraft_scene.grid_cols,
+            grid_rows=aircraft_scene.grid_rows,
+            alt_levels=aircraft_scene.alt_levels,
+            reference_views=aircraft_scene.reference_views,
+            active_reference_view=None,
+            hills=aircraft_scene.hills,
+            landmarks=aircraft_scene.landmarks,
+            answer_map_landmarks=aircraft_question.answer_map_landmarks,
+            route_points=aircraft_scene.route_points,
+            route_current_index=aircraft_scene.route_current_index,
+            aircraft_prev=aircraft_scene.aircraft_prev,
+            aircraft_now=aircraft_scene.aircraft_now,
+            velocity=aircraft_scene.velocity,
+            show_aircraft_motion=aircraft_scene.show_aircraft_motion,
+            options=aircraft_question.options,
+            correct_code=int(correct_code),
+            correct_point=aircraft_question.correct_point,
+            correct_answer_token=str(correct_code),
+        ),
+    )
+
+    assert scorer.score(problem=aircraft_problem, user_answer=int(correct_code), raw=str(correct_code)) == pytest.approx(1.0)
+    assert scorer.score(problem=aircraft_problem, user_answer=int(wrong_code), raw=str(wrong_code)) == pytest.approx(0.0)
 
 
-def test_memorize_stage_transitions_to_question_and_accepts_answer() -> None:
+def test_engine_advances_static_practice_scene_through_three_questions() -> None:
     clock = FakeClock()
     engine = build_spatial_integration_test(
         clock=clock,
         seed=7,
         difficulty=0.5,
         config=SpatialIntegrationConfig(
-            practice_questions=1,
-            scored_questions_per_section=1,
-            practice_memorize_s=0.2,
-            scored_memorize_s=0.2,
+            practice_scenes_per_part=1,
+            static_scored_duration_s=20.0,
+            aircraft_scored_duration_s=20.0,
+            static_study_s=0.2,
+            aircraft_study_s=0.2,
+            question_time_limit_s=0.3,
         ),
     )
     engine.start_practice()
     assert engine.phase is Phase.PRACTICE
 
-    snap = engine.snapshot()
-    payload = cast(SpatialIntegrationPayload, snap.payload)
-    assert payload.trial_stage is SpatialIntegrationTrialStage.MEMORIZE
-    assert engine.submit_answer(str(payload.correct_code)) is False
-    assert engine.time_remaining_s() == pytest.approx(0.2, abs=0.05)
+    first_study = engine.snapshot().payload
+    assert isinstance(first_study, SpatialIntegrationPayload)
+    assert first_study.trial_stage is SpatialIntegrationTrialStage.STUDY
+    assert first_study.study_view_index == 1
 
-    payload_q = _wait_for_question(engine=engine, clock=clock)
-    assert payload_q.trial_stage is SpatialIntegrationTrialStage.QUESTION
-    assert engine.time_remaining_s() is None
-    assert engine.submit_answer(str(payload_q.correct_code)) is True
+    clock.advance(0.08)
+    engine.update()
+    second_study = engine.snapshot().payload
+    assert isinstance(second_study, SpatialIntegrationPayload)
+    assert second_study.trial_stage is SpatialIntegrationTrialStage.STUDY
+    assert second_study.study_view_index == 2
+
+    clock.advance(0.08)
+    engine.update()
+    third_study = engine.snapshot().payload
+    assert isinstance(third_study, SpatialIntegrationPayload)
+    assert third_study.trial_stage is SpatialIntegrationTrialStage.STUDY
+    assert third_study.study_view_index == 3
+
+    payload_1 = _wait_for_question(engine=engine, clock=clock)
+    assert payload_1.part is SpatialIntegrationPart.STATIC
+    assert payload_1.question_index_in_scene == 1
+    assert engine.submit_answer(payload_1.correct_answer_token) is True
+
+    payload_2 = engine.snapshot().payload
+    assert isinstance(payload_2, SpatialIntegrationPayload)
+    assert payload_2.question_index_in_scene == 2
+    assert engine.submit_answer(payload_2.correct_answer_token) is True
+
+    payload_3 = engine.snapshot().payload
+    assert isinstance(payload_3, SpatialIntegrationPayload)
+    assert payload_3.question_index_in_scene == 3
+    assert payload_3.answer_mode is SpatialIntegrationAnswerMode.OPTION_PICK
+    assert engine.submit_answer(str(payload_3.correct_code)) is True
     assert engine.phase is Phase.PRACTICE_DONE
 
 
-def test_skip_controls_allow_fast_navigation() -> None:
+def test_engine_part_timer_finishes_current_question_then_rolls_forward() -> None:
     clock = FakeClock()
     engine = build_spatial_integration_test(
         clock=clock,
         seed=11,
         difficulty=0.55,
         config=SpatialIntegrationConfig(
-            practice_questions=2,
-            scored_questions_per_section=2,
-            practice_memorize_s=0.2,
-            scored_memorize_s=0.2,
+            practice_scenes_per_part=1,
+            static_scored_duration_s=0.01,
+            aircraft_scored_duration_s=0.01,
+            static_study_s=0.15,
+            aircraft_study_s=0.15,
+            question_time_limit_s=0.25,
         ),
     )
-    engine.start_practice()
-    assert engine.phase is Phase.PRACTICE
-
-    assert engine.submit_answer("__skip_practice__") is True
-    assert engine.phase is Phase.PRACTICE_DONE
-
     engine.start_scored()
     assert engine.phase is Phase.SCORED
 
-    assert engine.submit_answer("__skip_section__") is True
+    payload = _wait_for_question(engine=engine, clock=clock)
+    assert payload.part is SpatialIntegrationPart.STATIC
+    assert engine.submit_answer(payload.correct_answer_token) is True
     assert engine.phase is Phase.PRACTICE_DONE
 
-    assert engine.submit_answer("__skip_all__") is True
-    assert engine.phase is Phase.RESULTS
+    summary = engine.scored_summary()
+    assert summary.attempted == 1
+    assert summary.correct == 1

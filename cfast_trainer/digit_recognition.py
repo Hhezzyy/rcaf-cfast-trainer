@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Literal
 
 from .clock import Clock
 from .cognitive_core import AttemptSummary, Phase, SeededRng, TestSnapshot, lerp_int
@@ -11,6 +12,43 @@ class DigitRecognitionQuestionKind(StrEnum):
     RECALL = "recall"
     COUNT_TARGET = "count_target"
     DIFFERENT_DIGIT = "different_digit"
+
+
+@dataclass(frozen=True, slots=True)
+class DigitRecognitionProfile:
+    allowed_kinds: tuple[DigitRecognitionQuestionKind, ...] = (
+        DigitRecognitionQuestionKind.RECALL,
+        DigitRecognitionQuestionKind.COUNT_TARGET,
+        DigitRecognitionQuestionKind.DIFFERENT_DIGIT,
+    )
+    min_length_easy: int = 5
+    min_length_hard: int = 7
+    max_length_easy: int = 8
+    max_length_hard: int = 11
+    display_s_easy: float = 1.25
+    display_s_hard: float = 1.25
+    mask_s_easy: float = 0.25
+    mask_s_hard: float = 0.25
+    visible_supported: bool = False
+    string_profile: Literal["default", "friendly", "noisy"] = "default"
+
+    def normalized_kinds(self) -> tuple[DigitRecognitionQuestionKind, ...]:
+        unique = tuple(dict.fromkeys(self.allowed_kinds))
+        if not unique:
+            return (
+                DigitRecognitionQuestionKind.RECALL,
+                DigitRecognitionQuestionKind.COUNT_TARGET,
+                DigitRecognitionQuestionKind.DIFFERENT_DIGIT,
+            )
+        return unique
+
+    def display_s_for(self, difficulty: float) -> float:
+        d = 0.0 if difficulty <= 0.0 else 1.0 if difficulty >= 1.0 else float(difficulty)
+        return float(self.display_s_easy) + ((float(self.display_s_hard) - float(self.display_s_easy)) * d)
+
+    def mask_s_for(self, difficulty: float) -> float:
+        d = 0.0 if difficulty <= 0.0 else 1.0 if difficulty >= 1.0 else float(difficulty)
+        return float(self.mask_s_easy) + ((float(self.mask_s_hard) - float(self.mask_s_easy)) * d)
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,6 +65,24 @@ class DigitRecognitionPayload:
     display_digits: str | None
     display_lines: tuple[str, ...] | None
     accepting_input: bool
+    prompt_text: str = ""
+    input_digits: int = 16
+    family: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class DigitRecognitionTrainingSpec:
+    kind: DigitRecognitionQuestionKind
+    display_lines: tuple[str, ...]
+    question_prompt: str
+    expected_digits: str
+    display_answer_text: str
+    input_digits: int
+    answer_digits: int
+    initial_display_s: float
+    mask_s: float
+    keep_display_visible_during_question: bool
+    question_cap_s: float | None = None
 
 
 class _Stage(StrEnum):
@@ -46,25 +102,24 @@ class DigitRecognitionEvent:
 
 
 class DigitRecognitionGenerator:
-    def __init__(self, rng: SeededRng):
+    def __init__(self, rng: SeededRng, *, profile: DigitRecognitionProfile | None = None):
         self._rng = rng
         self._index = 0
+        self._profile = profile or DigitRecognitionProfile()
+        self._allowed_kinds = self._profile.normalized_kinds()
+
+    def next_digit_string(self, *, difficulty: float) -> str:
+        difficulty = 0.0 if difficulty <= 0.0 else 1.0 if difficulty >= 1.0 else float(difficulty)
+        lo = lerp_int(self._profile.min_length_easy, self._profile.min_length_hard, difficulty)
+        hi = lerp_int(self._profile.max_length_easy, self._profile.max_length_hard, difficulty)
+        n = int(self._rng.randint(lo, hi))
+        return self._build_digit_string(length=n, difficulty=difficulty)
 
     def next_trial(self, *, difficulty: float) -> DigitRecognitionTrial:
         difficulty = 0.0 if difficulty <= 0.0 else 1.0 if difficulty >= 1.0 else float(difficulty)
-
-        lo = lerp_int(5, 7, difficulty)
-        hi = lerp_int(8, 11, difficulty)
-        n = int(self._rng.randint(lo, hi))
-
-        digits = "".join(str(self._rng.randint(0, 9)) for _ in range(n))
-
-        if self._index % 2 == 0:
-            kind = DigitRecognitionQuestionKind.RECALL
-        elif (self._index // 2) % 2 == 0:
-            kind = DigitRecognitionQuestionKind.COUNT_TARGET
-        else:
-            kind = DigitRecognitionQuestionKind.DIFFERENT_DIGIT
+        digits = self.next_digit_string(difficulty=difficulty)
+        n = len(digits)
+        kind = self._pick_kind()
 
         if kind is DigitRecognitionQuestionKind.RECALL:
             prompt = "ENTER THE DIGIT STRING:"
@@ -79,7 +134,11 @@ class DigitRecognitionGenerator:
             else:
                 pos = int(self._rng.randint(0, n - 1))
                 original = digits[pos]
-                replacement_pool = [str(d) for d in range(10) if str(d) != original]
+                replacement_pool = self._replacement_pool(
+                    digits=digits,
+                    original_digit=original,
+                    difficulty=difficulty,
+                )
                 changed = str(self._rng.choice(replacement_pool))
                 comparison_digits = digits[:pos] + changed + digits[pos + 1 :]
                 prompt = "SECOND STRING: WHAT DIGIT WAS DIFFERENT?"
@@ -94,6 +153,77 @@ class DigitRecognitionGenerator:
             expected=expected,
         )
 
+    def _pick_kind(self) -> DigitRecognitionQuestionKind:
+        if len(self._allowed_kinds) == 1:
+            return self._allowed_kinds[0]
+        if self._allowed_kinds == (
+            DigitRecognitionQuestionKind.RECALL,
+            DigitRecognitionQuestionKind.COUNT_TARGET,
+            DigitRecognitionQuestionKind.DIFFERENT_DIGIT,
+        ):
+            if self._index % 2 == 0:
+                return DigitRecognitionQuestionKind.RECALL
+            if (self._index // 2) % 2 == 0:
+                return DigitRecognitionQuestionKind.COUNT_TARGET
+            return DigitRecognitionQuestionKind.DIFFERENT_DIGIT
+        return DigitRecognitionQuestionKind(str(self._rng.choice(self._allowed_kinds)))
+
+    def _build_digit_string(self, *, length: int, difficulty: float) -> str:
+        length = max(1, int(length))
+        style = self._profile.string_profile
+        if style == "friendly":
+            return self._build_friendly_digit_string(length)
+        if style == "noisy":
+            return self._build_noisy_digit_string(length=length, difficulty=difficulty)
+        return "".join(str(self._rng.randint(0, 9)) for _ in range(length))
+
+    def _build_friendly_digit_string(self, length: int) -> str:
+        pieces: list[str] = []
+        while sum(len(piece) for piece in pieces) < length:
+            family = str(self._rng.choice(("repeat", "pair", "step", "mirror")))
+            remaining = length - sum(len(piece) for piece in pieces)
+            if family == "repeat":
+                digit = str(self._rng.randint(0, 9))
+                piece = digit * min(remaining, int(self._rng.choice((2, 3))))
+            elif family == "pair":
+                a = str(self._rng.randint(0, 9))
+                b = str(self._rng.randint(0, 9))
+                piece = (a + b) * max(1, min(2, remaining // 2))
+            elif family == "step":
+                start = int(self._rng.randint(0, 7))
+                width = min(remaining, int(self._rng.choice((2, 3))))
+                piece = "".join(str((start + idx) % 10) for idx in range(width))
+            else:
+                left = str(self._rng.randint(0, 9))
+                right = str(self._rng.randint(0, 9))
+                piece = left + right + left
+            pieces.append(piece[:remaining])
+        return "".join(pieces)[:length]
+
+    def _build_noisy_digit_string(self, *, length: int, difficulty: float) -> str:
+        pool_size = 4 if difficulty < 0.5 else 3 if difficulty < 0.8 else 2
+        pool = [str(self._rng.randint(0, 9)) for _ in range(pool_size)]
+        digits: list[str] = []
+        while len(digits) < length:
+            if digits and self._rng.random() < (0.20 + (0.35 * difficulty)):
+                digits.append(digits[-1])
+                continue
+            digits.append(str(self._rng.choice(pool)))
+        return "".join(digits[:length])
+
+    def _replacement_pool(
+        self,
+        *,
+        digits: str,
+        original_digit: str,
+        difficulty: float,
+    ) -> list[str]:
+        if difficulty >= 0.7:
+            preferred = [digit for digit in dict.fromkeys(digits) if digit != original_digit]
+            if preferred:
+                return preferred
+        return [str(d) for d in range(10) if str(d) != original_digit]
+
 
 class DigitRecognitionTest:
     def __init__(
@@ -106,6 +236,7 @@ class DigitRecognitionTest:
         scored_duration_s: float = 360.0,
         display_s: float = 1.25,
         mask_s: float = 0.25,
+        profile: DigitRecognitionProfile | None = None,
     ) -> None:
         if not (0.0 <= difficulty <= 1.0):
             raise ValueError("difficulty must be in [0.0, 1.0]")
@@ -126,8 +257,9 @@ class DigitRecognitionTest:
         self._scored_duration_s = float(scored_duration_s)
         self._display_s = float(display_s)
         self._mask_s = float(mask_s)
+        self._profile = profile or DigitRecognitionProfile()
 
-        self._gen = DigitRecognitionGenerator(SeededRng(int(seed)))
+        self._gen = DigitRecognitionGenerator(SeededRng(int(seed)), profile=self._profile)
 
         self._phase = Phase.INSTRUCTIONS
         self._stage: _Stage | None = None
@@ -385,13 +517,15 @@ def build_digit_recognition_test(
     difficulty: float = 0.5,
     practice: bool = True,
     scored_duration_s: float = 360.0,
-) -> DigitRecognitionTest:
+    ) -> DigitRecognitionTest:
+    profile = DigitRecognitionProfile()
     return DigitRecognitionTest(
         clock=clock,
         seed=seed,
         difficulty=difficulty,
         practice_questions=(3 if practice else 0),
         scored_duration_s=float(scored_duration_s),
-        display_s=1.25,
-        mask_s=0.25,
+        display_s=profile.display_s_for(difficulty),
+        mask_s=profile.mask_s_for(difficulty),
+        profile=profile,
     )

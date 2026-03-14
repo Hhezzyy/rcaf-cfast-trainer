@@ -6,6 +6,7 @@ import os
 
 import pygame
 
+from .aircraft_art import build_panda_palette, build_panda3d_fixed_wing_model
 from .spatial_integration import (
     SpatialIntegrationPayload,
     SpatialIntegrationSceneView,
@@ -458,30 +459,10 @@ class SpatialIntegrationPanda3DRenderer:
         return marker, label_np
 
     def _build_aircraft_model(self, *, color: tuple[float, float, float, float]):
-        from panda3d.core import NodePath
-
-        root = NodePath("spatial-aircraft-model")
-        fuselage = self._make_box(size=(1.0, 7.2, 0.9), color=color)
-        wing = self._make_box(size=(9.2, 1.0, 0.20), color=color)
-        tail_plane = self._make_box(size=(3.1, 0.7, 0.18), color=color)
-        fin = self._make_box(size=(0.18, 1.0, 1.0), color=color)
-        canopy = self._make_box(size=(0.64, 1.4, 0.44), color=(0.94, 0.97, 1.0, color[3]))
-        nose = self._make_box(size=(0.64, 0.60, 0.56), color=(0.94, 0.97, 1.0, color[3]))
-
-        wing.setY(-0.18)
-        wing.setZ(0.05)
-        tail_plane.setY(-2.48)
-        tail_plane.setZ(0.26)
-        fin.setY(-2.74)
-        fin.setZ(0.70)
-        canopy.setY(1.65)
-        canopy.setZ(0.36)
-        nose.setY(3.4)
-        nose.setZ(0.12)
-
-        for child in (fuselage, wing, tail_plane, fin, canopy, nose):
-            child.reparentTo(root)
-        return root
+        return build_panda3d_fixed_wing_model(
+            palette=build_panda_palette(body_color=color),
+            name="spatial-aircraft-model",
+        )
 
     def _make_box(
         self,

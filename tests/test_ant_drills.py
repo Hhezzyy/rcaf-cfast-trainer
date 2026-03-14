@@ -507,7 +507,8 @@ def test_ant_info_grabber_generator_is_deterministic_and_uses_airborne_payloads(
         (problem.prompt, problem.answer) for problem in seq2
     ]
     assert all(isinstance(problem.payload, AirborneScenario) for problem in seq1)
-    assert all("Target:" in problem.prompt for problem in seq1)
+    assert all(problem.prompt.startswith("Find the ") for problem in seq1)
+    assert all(getattr(problem.payload, "input_digits", 4) == 8 for problem in seq1)
 
 
 def test_ant_info_grabber_partial_digit_credit_counts_without_exact_hit() -> None:

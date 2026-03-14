@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 
 from .clock import Clock
@@ -25,6 +25,21 @@ class VisualSearchTaskKind(StrEnum):
     SYMBOL_CODE = "symbol_code"
     WARNING_SIGN = "warning_sign"
     COLOR_PATTERN = "color_pattern"
+
+
+@dataclass(frozen=True, slots=True)
+class VisualSearchProfile:
+    allowed_kinds: tuple[VisualSearchTaskKind, ...] = field(
+        default_factory=lambda: (
+            VisualSearchTaskKind.ALPHANUMERIC,
+            VisualSearchTaskKind.SYMBOL_CODE,
+        )
+    )
+    similarity_floor: float = 0.05
+    similarity_ceiling: float = 0.85
+    family_switch_floor: float = 0.15
+    family_switch_ceiling: float = 0.75
+    preview_emphasis: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,7 +75,7 @@ class VisualSearchScorer(AnswerScorer):
 
 
 class VisualSearchGenerator:
-    """Deterministic generator for mixed visual scan/search counting trials."""
+    """Deterministic generator for mixed visual search trials."""
 
     _ALPHANUMERIC_TOKENS = ("A", "B", "E", "F", "G", "H", "K", "L", "M", "P", "R", "S")
     _SYMBOL_TOKENS = (
@@ -79,19 +94,27 @@ class VisualSearchGenerator:
     )
     _WARNING_TOKENS = ("FUEL", "OXY", "HYD", "ELEC", "ICE", "ENG", "FIRE", "WARN", "RAD", "NAV")
     _COLOR_PATTERN_TOKENS = ("RG", "GR", "RB", "BR", "GY", "YG", "BY", "YB", "RW", "WR", "BW", "WB")
+    _LETTER_CONFUSABLE_CLUSTERS = (
+        ("E", "F", "H", "K", "L"),
+        ("A", "M", "R"),
+        ("B", "G", "P", "R", "S"),
+    )
+    _SYMBOL_CONFUSABLE_CLUSTERS = (
+        ("X_MARK", "DOUBLE_CROSS", "STAR", "BOLT"),
+        ("L_HOOK", "PIN", "FORK"),
+        ("BOX", "TRIANGLE", "RING_SPOKE"),
+        ("S_BEND", "LOLLIPOP"),
+    )
 
-    def __init__(self, *, seed: int) -> None:
+    def __init__(self, *, seed: int, profile: VisualSearchProfile | None = None) -> None:
         self._rng = SeededRng(seed)
-        # Visual Search guide scope: letters and line figures only.
-        self._kinds = (
-            VisualSearchTaskKind.ALPHANUMERIC,
-            VisualSearchTaskKind.SYMBOL_CODE,
-        )
+        self._profile = profile or VisualSearchProfile()
+        self._kinds = self._normalize_allowed_kinds(self._profile.allowed_kinds)
         self._last_kind: VisualSearchTaskKind | None = None
 
     def next_problem(self, *, difficulty: float) -> Problem:
-        _ = clamp01(difficulty)
-        kind = self._pick_kind()
+        normalized_difficulty = clamp01(difficulty)
+        kind = self._pick_kind(difficulty=normalized_difficulty)
 
         rows = 3
         cols = 4
@@ -99,9 +122,14 @@ class VisualSearchGenerator:
 
         bank = self._token_bank(kind)
         target = str(self._rng.choice(bank))
-        distractors = tuple(tok for tok in bank if tok != target)
+        distractors = self._build_distractor_pool(
+            kind=kind,
+            target=target,
+            difficulty=normalized_difficulty,
+            count=cell_count,
+        )
 
-        cells = [str(self._rng.choice(distractors)) for _ in range(cell_count)]
+        cells = [str(distractors[idx]) for idx in range(cell_count)]
         target_idx = int(self._rng.randint(0, cell_count - 1))
         cells[target_idx] = target
 
@@ -130,13 +158,47 @@ class VisualSearchGenerator:
             payload=payload,
         )
 
-    def _pick_kind(self) -> VisualSearchTaskKind:
+    def _pick_kind(self, *, difficulty: float) -> VisualSearchTaskKind:
+        if len(self._kinds) == 1:
+            kind = self._kinds[0]
+            self._last_kind = kind
+            return kind
         kind = self._rng.choice(self._kinds)
-        if self._last_kind is not None and kind == self._last_kind and self._rng.random() < 0.65:
+        switch_bias = self._lerp(
+            self._profile.family_switch_floor,
+            self._profile.family_switch_ceiling,
+            clamp01(difficulty),
+        )
+        if self._last_kind is not None and kind == self._last_kind and self._rng.random() < switch_bias:
             alternatives = tuple(k for k in self._kinds if k != kind)
             kind = self._rng.choice(alternatives)
         self._last_kind = kind
         return kind
+
+    def _build_distractor_pool(
+        self,
+        *,
+        kind: VisualSearchTaskKind,
+        target: str,
+        difficulty: float,
+        count: int,
+    ) -> tuple[str, ...]:
+        bank = self._token_bank(kind)
+        confusable = self._confusable_members(kind=kind, target=target)
+        broad = tuple(token for token in bank if token != target and token not in confusable)
+        similarity = self._lerp(
+            self._profile.similarity_floor,
+            self._profile.similarity_ceiling,
+            clamp01(difficulty),
+        )
+        similar_pool = confusable if confusable else tuple(token for token in bank if token != target)
+        broad_pool = broad if broad else tuple(token for token in bank if token != target)
+        picks: list[str] = []
+        for _ in range(max(1, int(count))):
+            use_similar = bool(similar_pool) and self._rng.random() < similarity
+            pool = similar_pool if use_similar else broad_pool
+            picks.append(str(self._rng.choice(pool)))
+        return tuple(picks)
 
     def _token_bank(self, kind: VisualSearchTaskKind) -> tuple[str, ...]:
         if kind is VisualSearchTaskKind.ALPHANUMERIC:
@@ -152,7 +214,55 @@ class VisualSearchGenerator:
             prefix = "Letters"
         else:
             prefix = "Line figures"
+        if self._profile.preview_emphasis:
+            return f"{prefix}: preview the target first, then scan the board and enter its block number."
         return f"{prefix}: find the matching tile and enter its block number."
+
+    def _confusable_members(self, *, kind: VisualSearchTaskKind, target: str) -> tuple[str, ...]:
+        if kind is VisualSearchTaskKind.ALPHANUMERIC:
+            clusters = self._LETTER_CONFUSABLE_CLUSTERS
+        elif kind is VisualSearchTaskKind.SYMBOL_CODE:
+            clusters = self._SYMBOL_CONFUSABLE_CLUSTERS
+        else:
+            return ()
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for cluster in clusters:
+            if target not in cluster:
+                continue
+            for token in cluster:
+                if token == target or token in seen:
+                    continue
+                seen.add(token)
+                ordered.append(token)
+        return tuple(ordered)
+
+    @staticmethod
+    def _normalize_allowed_kinds(
+        allowed_kinds: tuple[VisualSearchTaskKind, ...] | list[VisualSearchTaskKind],
+    ) -> tuple[VisualSearchTaskKind, ...]:
+        supported = {
+            VisualSearchTaskKind.ALPHANUMERIC,
+            VisualSearchTaskKind.SYMBOL_CODE,
+        }
+        cleaned: list[VisualSearchTaskKind] = []
+        seen: set[VisualSearchTaskKind] = set()
+        for kind in tuple(allowed_kinds):
+            if kind not in supported or kind in seen:
+                continue
+            seen.add(kind)
+            cleaned.append(kind)
+        if cleaned:
+            return tuple(cleaned)
+        return (
+            VisualSearchTaskKind.ALPHANUMERIC,
+            VisualSearchTaskKind.SYMBOL_CODE,
+        )
+
+    @staticmethod
+    def _lerp(start: float, end: float, amount: float) -> float:
+        t = clamp01(amount)
+        return float(start) + (float(end) - float(start)) * t
 
 
 def build_visual_search_test(
@@ -161,6 +271,7 @@ def build_visual_search_test(
     seed: int,
     difficulty: float = 0.5,
     config: VisualSearchConfig | None = None,
+    profile: VisualSearchProfile | None = None,
 ) -> TimedTextInputTest:
     cfg = config or VisualSearchConfig()
 
@@ -170,7 +281,7 @@ def build_visual_search_test(
         "Scan the numbered tiles and match the tile shown underneath the grid.",
         "Each board uses 12 numbered blocks labelled 10 to 21.",
         "Enter the number from the matching block.",
-        "Targets alternate between letters and line-figure symbols.",
+        "Targets use letters and line-figure symbols from the same live test family.",
         "",
         "Controls:",
         "- Type the two-digit block number",
@@ -182,7 +293,7 @@ def build_visual_search_test(
     return TimedTextInputTest(
         title="Visual Search",
         instructions=instructions,
-        generator=VisualSearchGenerator(seed=seed),
+        generator=VisualSearchGenerator(seed=seed, profile=profile),
         clock=clock,
         seed=seed,
         difficulty=difficulty,

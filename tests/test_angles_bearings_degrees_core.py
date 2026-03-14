@@ -68,6 +68,65 @@ def test_generator_emits_both_angle_and_bearing_trials() -> None:
     }
 
 
+def test_generator_can_force_a_single_family() -> None:
+    angle_gen = AnglesBearingsDegreesGenerator(
+        seed=12,
+        allowed_kinds=(AnglesBearingsQuestionKind.ANGLE_BETWEEN_LINES,),
+    )
+    bearing_gen = AnglesBearingsDegreesGenerator(
+        seed=13,
+        allowed_kinds=(AnglesBearingsQuestionKind.BEARING_FROM_REFERENCE,),
+    )
+
+    for _ in range(20):
+        angle_payload = cast(AnglesBearingsDegreesPayload, angle_gen.next_problem(difficulty=0.7).payload)
+        bearing_payload = cast(
+            AnglesBearingsDegreesPayload,
+            bearing_gen.next_problem(difficulty=0.7).payload,
+        )
+        assert angle_payload.kind is AnglesBearingsQuestionKind.ANGLE_BETWEEN_LINES
+        assert bearing_payload.kind is AnglesBearingsQuestionKind.BEARING_FROM_REFERENCE
+
+
+def test_bearing_trials_progress_from_cardinals_to_eighths() -> None:
+    gen = AnglesBearingsDegreesGenerator(
+        seed=51,
+        allowed_kinds=(AnglesBearingsQuestionKind.BEARING_FROM_REFERENCE,),
+    )
+
+    low_values = {
+        cast(AnglesBearingsDegreesPayload, gen.next_problem(difficulty=0.1).payload).correct_value_deg
+        for _ in range(20)
+    }
+    high_values = {
+        cast(AnglesBearingsDegreesPayload, gen.next_problem(difficulty=0.9).payload).correct_value_deg
+        for _ in range(40)
+    }
+
+    assert all(value % 90 == 0 for value in low_values)
+    assert all(value % 45 == 0 for value in high_values)
+    assert any(value % 90 != 0 for value in high_values)
+
+
+def test_bearing_trials_allow_closer_to_center_at_higher_difficulty() -> None:
+    gen = AnglesBearingsDegreesGenerator(
+        seed=52,
+        allowed_kinds=(AnglesBearingsQuestionKind.BEARING_FROM_REFERENCE,),
+    )
+
+    low_ratios = [
+        cast(AnglesBearingsDegreesPayload, gen.next_problem(difficulty=0.1).payload).marker_radius_ratio
+        for _ in range(20)
+    ]
+    high_ratios = [
+        cast(AnglesBearingsDegreesPayload, gen.next_problem(difficulty=0.95).payload).marker_radius_ratio
+        for _ in range(30)
+    ]
+
+    assert min(low_ratios) >= 0.74
+    assert min(high_ratios) <= 0.46
+
+
 def test_angle_trials_mark_the_measured_sweep_for_ui_indicator() -> None:
     gen = AnglesBearingsDegreesGenerator(seed=91)
 

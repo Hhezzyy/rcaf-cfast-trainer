@@ -4,11 +4,169 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import cast
 
+from .abd_drills import (
+    AbdDrillConfig,
+    AbdFamilyRunConfig,
+    build_abd_angle_calibration_drill,
+    build_abd_bearing_calibration_drill,
+    build_abd_cardinal_anchors_drill,
+    build_abd_intermediate_anchors_drill,
+    build_abd_mixed_tempo_drill,
+    build_abd_test_style_family_run_drill,
+)
+from .dr_drills import (
+    DigitRecognitionDrillConfig,
+    build_dr_count_target_drill,
+    build_dr_different_digit_drill,
+    build_dr_grouped_family_run_drill,
+    build_dr_mixed_pressure_drill,
+    build_dr_position_probe_drill,
+    build_dr_recall_run_drill,
+    build_dr_visible_copy_drill,
+    build_dr_visible_family_primer_drill,
+)
+from .ic_drills import (
+    IcDrillConfig,
+    build_ic_attitude_frame_drill,
+    build_ic_description_prime_drill,
+    build_ic_description_run_drill,
+    build_ic_heading_anchor_drill,
+    build_ic_mixed_part_run_drill,
+    build_ic_part1_orientation_run_drill,
+    build_ic_pressure_run_drill,
+    build_ic_reverse_panel_prime_drill,
+    build_ic_reverse_panel_run_drill,
+)
+from .ac_drills import (
+    AcDrillConfig,
+    build_ac_callsign_filter_run_drill,
+    build_ac_digit_sequence_prime_drill,
+    build_ac_gate_anchor_drill,
+    build_ac_gate_directive_run_drill,
+    build_ac_mixed_tempo_drill,
+    build_ac_pressure_run_drill,
+    build_ac_state_command_prime_drill,
+    build_ac_trigger_cue_anchor_drill,
+)
+from .cu_drills import (
+    CuDrillConfig,
+    build_cu_controls_anchor_drill,
+    build_cu_engine_balance_run_drill,
+    build_cu_mixed_tempo_drill,
+    build_cu_navigation_anchor_drill,
+    build_cu_objective_prime_drill,
+    build_cu_pressure_run_drill,
+    build_cu_sensors_timing_prime_drill,
+    build_cu_state_code_run_drill,
+)
+from .sa_drills import (
+    SaDrillConfig,
+    build_sa_action_selection_run_drill,
+    build_sa_contact_identification_prime_drill,
+    build_sa_family_switch_run_drill,
+    build_sa_future_projection_run_drill,
+    build_sa_mixed_tempo_drill,
+    build_sa_picture_anchor_drill,
+    build_sa_pressure_run_drill,
+    build_sa_status_recall_prime_drill,
+)
+from .rt_drills import (
+    RtDrillConfig,
+    build_rt_air_speed_run_drill,
+    build_rt_building_handoff_prime_drill,
+    build_rt_capture_timing_prime_drill,
+    build_rt_ground_tempo_run_drill,
+    build_rt_lock_anchor_drill,
+    build_rt_mixed_tempo_drill,
+    build_rt_pressure_run_drill,
+    build_rt_terrain_recovery_run_drill,
+)
+from .tr_drills import (
+    TrDrillConfig,
+    build_tr_light_anchor_drill,
+    build_tr_mixed_tempo_drill,
+    build_tr_panel_switch_run_drill,
+    build_tr_pressure_run_drill,
+    build_tr_scan_anchor_drill,
+    build_tr_scene_anchor_drill,
+    build_tr_scene_modifier_run_drill,
+    build_tr_system_anchor_drill,
+)
+from .sl_drills import (
+    SlDrillConfig,
+    build_sl_fault_diagnosis_prime_drill,
+    build_sl_family_run_drill,
+    build_sl_flow_trace_anchor_drill,
+    build_sl_graph_rule_anchor_drill,
+    build_sl_index_switch_run_drill,
+    build_sl_mixed_tempo_drill,
+    build_sl_pressure_run_drill,
+    build_sl_quantitative_anchor_drill,
+)
+from .tbl_drills import (
+    TblDrillConfig,
+    build_tbl_card_family_run_drill,
+    build_tbl_mixed_tempo_drill,
+    build_tbl_part1_anchor_drill,
+    build_tbl_part1_scan_run_drill,
+    build_tbl_part2_correction_run_drill,
+    build_tbl_part2_prime_drill,
+    build_tbl_part_switch_run_drill,
+    build_tbl_pressure_run_drill,
+)
+from .sma_drills import (
+    SmaDrillConfig,
+    build_sma_disturbance_tempo_drill,
+    build_sma_joystick_hold_run_drill,
+    build_sma_joystick_horizontal_anchor_drill,
+    build_sma_joystick_vertical_anchor_drill,
+    build_sma_mode_switch_run_drill,
+    build_sma_pressure_run_drill,
+    build_sma_split_coordination_run_drill,
+    build_sma_split_horizontal_prime_drill,
+)
+from .cln_drills import (
+    ClnDrillConfig,
+    build_cln_colour_lane_drill,
+    build_cln_full_pressure_drill,
+    build_cln_full_steady_drill,
+    build_cln_math_prime_drill,
+    build_cln_memory_colour_drill,
+    build_cln_memory_math_drill,
+    build_cln_sequence_copy_drill,
+    build_cln_sequence_match_drill,
+)
 from .airborne_numerical import (
     AirborneNumericalGenerator,
     AirborneScorer,
     AirborneScenario,
     build_ant_airborne_difficulty_profile,
+)
+from .angles_bearings_degrees import AnglesBearingsQuestionKind
+from .mr_drills import (
+    MrDrillConfig,
+    build_mr_domain_run_drill,
+    build_mr_mixed_pressure_set_drill,
+    build_mr_multi_step_solve_drill,
+    build_mr_one_step_solve_drill,
+    build_mr_relevant_info_scan_drill,
+    build_mr_unit_relation_prime_drill,
+)
+from .no_drills import (
+    NoDrillConfig,
+    build_no_clean_compute_drill,
+    build_no_fact_prime_drill,
+    build_no_mixed_tempo_drill,
+    build_no_operator_ladders_drill,
+    build_no_pressure_run_drill,
+)
+from .vs_drills import (
+    VsDrillConfig,
+    build_vs_clean_scan_drill,
+    build_vs_family_run_drill,
+    build_vs_mixed_tempo_drill,
+    build_vs_pressure_run_drill,
+    build_vs_target_preview_drill,
 )
 from .ant_drills import (
     AntAdaptiveDifficultyConfig,
@@ -37,6 +195,7 @@ from .ant_drills import (
 )
 from .clock import Clock
 from .cognitive_core import Phase, Problem, QuestionEvent, SeededRng
+from .visual_search import VisualSearchTaskKind
 
 
 def _level_to_difficulty(level: int) -> float:
@@ -559,6 +718,37 @@ class AntWorkoutSession:
                 self._stage = AntWorkoutStage.RESULTS
             return
 
+    def debug_skip_stage(self) -> None:
+        if self._stage is AntWorkoutStage.RESULTS:
+            return
+        if self._stage in (AntWorkoutStage.PRE_REFLECTION, AntWorkoutStage.POST_REFLECTION):
+            if self._reflection_input.strip() == "":
+                self._reflection_input = "skip"
+        self.activate()
+
+    def debug_skip_block(self) -> None:
+        if self._stage is not AntWorkoutStage.BLOCK:
+            self.debug_skip_stage()
+            return
+        if not self._submit_current_engine_skip(
+            ("__skip_section__", "skip_section", "__skip_all__", "skip_all")
+        ):
+            self._force_current_engine_phase(Phase.RESULTS)
+        self.sync_runtime()
+
+    def debug_finish(self) -> None:
+        if self._stage is AntWorkoutStage.BLOCK:
+            if not self._submit_current_engine_skip(
+                ("__skip_all__", "skip_all", "__skip_section__", "skip_section")
+            ):
+                self._force_current_engine_phase(Phase.RESULTS)
+            self._record_current_block_result()
+        self._current_engine = None
+        self._current_block_plan = None
+        self._reflection_input = ""
+        self._reflection_index = 0
+        self._stage = AntWorkoutStage.RESULTS
+
     def submit_answer(self, raw: str) -> bool:
         if self._stage is not AntWorkoutStage.BLOCK or self._current_engine is None:
             return False
@@ -947,6 +1137,1211 @@ class AntWorkoutSession:
                 difficulty=difficulty,
                 scored_duration_s=block.duration_s,
             )
+        elif block.drill_code == "abd_cardinal_anchors":
+            engine = build_abd_cardinal_anchors_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=AbdDrillConfig(
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                ),
+            )
+        elif block.drill_code == "abd_intermediate_anchors":
+            engine = build_abd_intermediate_anchors_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=AbdDrillConfig(
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                ),
+            )
+        elif block.drill_code == "abd_angle_calibration":
+            engine = build_abd_angle_calibration_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=AbdDrillConfig(
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                ),
+            )
+        elif block.drill_code == "abd_bearing_calibration":
+            engine = build_abd_bearing_calibration_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=AbdDrillConfig(
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                ),
+            )
+        elif block.drill_code == "abd_mixed_tempo":
+            engine = build_abd_mixed_tempo_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=AbdDrillConfig(
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                ),
+            )
+        elif block.drill_code == "abd_family_run_angle":
+            engine = build_abd_test_style_family_run_drill(
+                clock=self._clock,
+                seed=block_seed,
+                family=AnglesBearingsQuestionKind.ANGLE_BETWEEN_LINES,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=AbdFamilyRunConfig(
+                    family=AnglesBearingsQuestionKind.ANGLE_BETWEEN_LINES,
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                ),
+            )
+        elif block.drill_code == "abd_family_run_bearing":
+            engine = build_abd_test_style_family_run_drill(
+                clock=self._clock,
+                seed=block_seed,
+                family=AnglesBearingsQuestionKind.BEARING_FROM_REFERENCE,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=AbdFamilyRunConfig(
+                    family=AnglesBearingsQuestionKind.BEARING_FROM_REFERENCE,
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                ),
+            )
+        elif block.drill_code == "no_fact_prime":
+            engine = build_no_fact_prime_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=NoDrillConfig(
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                    adaptive=AntAdaptiveDifficultyConfig(enabled=False),
+                ),
+            )
+        elif block.drill_code == "no_operator_ladders":
+            engine = build_no_operator_ladders_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=NoDrillConfig(
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                    adaptive=AntAdaptiveDifficultyConfig(enabled=False),
+                ),
+            )
+        elif block.drill_code == "no_clean_compute":
+            engine = build_no_clean_compute_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=NoDrillConfig(
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                    adaptive=AntAdaptiveDifficultyConfig(enabled=False),
+                ),
+            )
+        elif block.drill_code == "no_mixed_tempo":
+            engine = build_no_mixed_tempo_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=NoDrillConfig(
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                    adaptive=AntAdaptiveDifficultyConfig(enabled=False),
+                ),
+            )
+        elif block.drill_code == "no_pressure_run":
+            engine = build_no_pressure_run_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=NoDrillConfig(
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                    adaptive=AntAdaptiveDifficultyConfig(enabled=False),
+                ),
+            )
+        elif block.drill_code == "mr_relevant_info_scan":
+            engine = build_mr_relevant_info_scan_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=MrDrillConfig(
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                    adaptive=AntAdaptiveDifficultyConfig(enabled=False),
+                ),
+            )
+        elif block.drill_code == "mr_unit_relation_prime":
+            engine = build_mr_unit_relation_prime_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=MrDrillConfig(
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                    adaptive=AntAdaptiveDifficultyConfig(enabled=False),
+                ),
+            )
+        elif block.drill_code == "mr_one_step_solve":
+            engine = build_mr_one_step_solve_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=MrDrillConfig(
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                    adaptive=AntAdaptiveDifficultyConfig(enabled=False),
+                ),
+            )
+        elif block.drill_code == "mr_multi_step_solve":
+            engine = build_mr_multi_step_solve_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=MrDrillConfig(
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                    adaptive=AntAdaptiveDifficultyConfig(enabled=False),
+                ),
+            )
+        elif block.drill_code == "mr_domain_run":
+            engine = build_mr_domain_run_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=MrDrillConfig(
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                    adaptive=AntAdaptiveDifficultyConfig(enabled=False),
+                ),
+            )
+        elif block.drill_code == "mr_mixed_pressure_set":
+            engine = build_mr_mixed_pressure_set_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=MrDrillConfig(
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                    adaptive=AntAdaptiveDifficultyConfig(enabled=False),
+                ),
+            )
+        elif block.drill_code == "dr_visible_copy":
+            engine = build_dr_visible_copy_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=DigitRecognitionDrillConfig(
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                ),
+            )
+        elif block.drill_code == "dr_position_probe":
+            engine = build_dr_position_probe_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=DigitRecognitionDrillConfig(
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                ),
+            )
+        elif block.drill_code == "dr_visible_family_primer":
+            engine = build_dr_visible_family_primer_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=DigitRecognitionDrillConfig(
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                ),
+            )
+        elif block.drill_code == "dr_recall_run":
+            engine = build_dr_recall_run_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=DigitRecognitionDrillConfig(
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                ),
+            )
+        elif block.drill_code == "dr_count_target":
+            engine = build_dr_count_target_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=DigitRecognitionDrillConfig(
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                ),
+            )
+        elif block.drill_code == "dr_different_digit":
+            engine = build_dr_different_digit_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=DigitRecognitionDrillConfig(
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                ),
+            )
+        elif block.drill_code == "dr_grouped_family_run":
+            engine = build_dr_grouped_family_run_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=DigitRecognitionDrillConfig(
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                ),
+            )
+        elif block.drill_code == "dr_mixed_pressure":
+            engine = build_dr_mixed_pressure_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=DigitRecognitionDrillConfig(
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                ),
+            )
+        elif block.drill_code == "ic_heading_anchor":
+            engine = build_ic_heading_anchor_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=IcDrillConfig(
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                    adaptive=AntAdaptiveDifficultyConfig(enabled=False),
+                ),
+            )
+        elif block.drill_code == "ic_attitude_frame":
+            engine = build_ic_attitude_frame_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=IcDrillConfig(
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                    adaptive=AntAdaptiveDifficultyConfig(enabled=False),
+                ),
+            )
+        elif block.drill_code == "ic_part1_orientation_run":
+            engine = build_ic_part1_orientation_run_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=IcDrillConfig(
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                    adaptive=AntAdaptiveDifficultyConfig(enabled=False),
+                ),
+            )
+        elif block.drill_code == "ic_description_prime":
+            engine = build_ic_description_prime_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=IcDrillConfig(
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                    adaptive=AntAdaptiveDifficultyConfig(enabled=False),
+                ),
+            )
+        elif block.drill_code == "ic_reverse_panel_prime":
+            engine = build_ic_reverse_panel_prime_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=IcDrillConfig(
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                    adaptive=AntAdaptiveDifficultyConfig(enabled=False),
+                ),
+            )
+        elif block.drill_code == "ic_reverse_panel_run":
+            engine = build_ic_reverse_panel_run_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=IcDrillConfig(
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                    adaptive=AntAdaptiveDifficultyConfig(enabled=False),
+                ),
+            )
+        elif block.drill_code == "ic_description_run":
+            engine = build_ic_description_run_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=IcDrillConfig(
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                    adaptive=AntAdaptiveDifficultyConfig(enabled=False),
+                ),
+            )
+        elif block.drill_code == "ic_mixed_part_run":
+            engine = build_ic_mixed_part_run_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=IcDrillConfig(
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                    adaptive=AntAdaptiveDifficultyConfig(enabled=False),
+                ),
+            )
+        elif block.drill_code == "ic_pressure_run":
+            engine = build_ic_pressure_run_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=IcDrillConfig(
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                    adaptive=AntAdaptiveDifficultyConfig(enabled=False),
+                ),
+            )
+        elif block.drill_code == "tr_scene_anchor":
+            engine = build_tr_scene_anchor_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=TrDrillConfig(
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                    adaptive=AntAdaptiveDifficultyConfig(enabled=False),
+                ),
+            )
+        elif block.drill_code == "tr_scene_modifier_run":
+            engine = build_tr_scene_modifier_run_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=TrDrillConfig(
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                    adaptive=AntAdaptiveDifficultyConfig(enabled=False),
+                ),
+            )
+        elif block.drill_code == "tr_light_anchor":
+            engine = build_tr_light_anchor_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=TrDrillConfig(
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                    adaptive=AntAdaptiveDifficultyConfig(enabled=False),
+                ),
+            )
+        elif block.drill_code == "tr_scan_anchor":
+            engine = build_tr_scan_anchor_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=TrDrillConfig(
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                    adaptive=AntAdaptiveDifficultyConfig(enabled=False),
+                ),
+            )
+        elif block.drill_code == "tr_system_anchor":
+            engine = build_tr_system_anchor_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=TrDrillConfig(
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                    adaptive=AntAdaptiveDifficultyConfig(enabled=False),
+                ),
+            )
+        elif block.drill_code == "tr_panel_switch_run":
+            engine = build_tr_panel_switch_run_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=TrDrillConfig(
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                    adaptive=AntAdaptiveDifficultyConfig(enabled=False),
+                ),
+            )
+        elif block.drill_code == "tr_mixed_tempo":
+            engine = build_tr_mixed_tempo_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=TrDrillConfig(
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                    adaptive=AntAdaptiveDifficultyConfig(enabled=False),
+                ),
+            )
+        elif block.drill_code == "tr_pressure_run":
+            engine = build_tr_pressure_run_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=TrDrillConfig(
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                    adaptive=AntAdaptiveDifficultyConfig(enabled=False),
+                ),
+            )
+        elif block.drill_code == "sl_quantitative_anchor":
+            engine = build_sl_quantitative_anchor_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=SlDrillConfig(
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                    adaptive=AntAdaptiveDifficultyConfig(enabled=False),
+                ),
+            )
+        elif block.drill_code == "sl_flow_trace_anchor":
+            engine = build_sl_flow_trace_anchor_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=SlDrillConfig(
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                    adaptive=AntAdaptiveDifficultyConfig(enabled=False),
+                ),
+            )
+        elif block.drill_code == "sl_graph_rule_anchor":
+            engine = build_sl_graph_rule_anchor_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=SlDrillConfig(
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                    adaptive=AntAdaptiveDifficultyConfig(enabled=False),
+                ),
+            )
+        elif block.drill_code == "sl_fault_diagnosis_prime":
+            engine = build_sl_fault_diagnosis_prime_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=SlDrillConfig(
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                    adaptive=AntAdaptiveDifficultyConfig(enabled=False),
+                ),
+            )
+        elif block.drill_code == "sl_index_switch_run":
+            engine = build_sl_index_switch_run_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=SlDrillConfig(
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                    adaptive=AntAdaptiveDifficultyConfig(enabled=False),
+                ),
+            )
+        elif block.drill_code == "sl_family_run":
+            engine = build_sl_family_run_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=SlDrillConfig(
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                    adaptive=AntAdaptiveDifficultyConfig(enabled=False),
+                ),
+            )
+        elif block.drill_code == "sl_mixed_tempo":
+            engine = build_sl_mixed_tempo_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=SlDrillConfig(
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                    adaptive=AntAdaptiveDifficultyConfig(enabled=False),
+                ),
+            )
+        elif block.drill_code == "sl_pressure_run":
+            engine = build_sl_pressure_run_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=SlDrillConfig(
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                    adaptive=AntAdaptiveDifficultyConfig(enabled=False),
+                ),
+            )
+        elif block.drill_code == "tbl_part1_anchor":
+            engine = build_tbl_part1_anchor_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=TblDrillConfig(
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                    adaptive=AntAdaptiveDifficultyConfig(enabled=False),
+                ),
+            )
+        elif block.drill_code == "tbl_part1_scan_run":
+            engine = build_tbl_part1_scan_run_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=TblDrillConfig(
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                    adaptive=AntAdaptiveDifficultyConfig(enabled=False),
+                ),
+            )
+        elif block.drill_code == "tbl_part2_prime":
+            engine = build_tbl_part2_prime_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=TblDrillConfig(
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                    adaptive=AntAdaptiveDifficultyConfig(enabled=False),
+                ),
+            )
+        elif block.drill_code == "tbl_part2_correction_run":
+            engine = build_tbl_part2_correction_run_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=TblDrillConfig(
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                    adaptive=AntAdaptiveDifficultyConfig(enabled=False),
+                ),
+            )
+        elif block.drill_code == "tbl_part_switch_run":
+            engine = build_tbl_part_switch_run_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=TblDrillConfig(
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                    adaptive=AntAdaptiveDifficultyConfig(enabled=False),
+                ),
+            )
+        elif block.drill_code == "tbl_card_family_run":
+            engine = build_tbl_card_family_run_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=TblDrillConfig(
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                    adaptive=AntAdaptiveDifficultyConfig(enabled=False),
+                ),
+            )
+        elif block.drill_code == "tbl_mixed_tempo":
+            engine = build_tbl_mixed_tempo_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=TblDrillConfig(
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                    adaptive=AntAdaptiveDifficultyConfig(enabled=False),
+                ),
+            )
+        elif block.drill_code == "tbl_pressure_run":
+            engine = build_tbl_pressure_run_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=TblDrillConfig(
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                    adaptive=AntAdaptiveDifficultyConfig(enabled=False),
+                ),
+            )
+        elif block.drill_code == "sma_joystick_horizontal_anchor":
+            engine = build_sma_joystick_horizontal_anchor_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=SmaDrillConfig(
+                    scored_duration_s=block.duration_s,
+                ),
+            )
+        elif block.drill_code == "sma_joystick_vertical_anchor":
+            engine = build_sma_joystick_vertical_anchor_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=SmaDrillConfig(
+                    scored_duration_s=block.duration_s,
+                ),
+            )
+        elif block.drill_code == "sma_joystick_hold_run":
+            engine = build_sma_joystick_hold_run_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=SmaDrillConfig(
+                    scored_duration_s=block.duration_s,
+                ),
+            )
+        elif block.drill_code == "sma_split_horizontal_prime":
+            engine = build_sma_split_horizontal_prime_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=SmaDrillConfig(
+                    scored_duration_s=block.duration_s,
+                ),
+            )
+        elif block.drill_code == "sma_split_coordination_run":
+            engine = build_sma_split_coordination_run_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=SmaDrillConfig(
+                    scored_duration_s=block.duration_s,
+                ),
+            )
+        elif block.drill_code == "sma_mode_switch_run":
+            engine = build_sma_mode_switch_run_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=SmaDrillConfig(
+                    scored_duration_s=block.duration_s,
+                ),
+            )
+        elif block.drill_code == "sma_disturbance_tempo":
+            engine = build_sma_disturbance_tempo_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=SmaDrillConfig(
+                    scored_duration_s=block.duration_s,
+                ),
+            )
+        elif block.drill_code == "sma_pressure_run":
+            engine = build_sma_pressure_run_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=SmaDrillConfig(
+                    scored_duration_s=block.duration_s,
+                ),
+            )
+        elif block.drill_code == "ac_gate_anchor":
+            engine = build_ac_gate_anchor_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=AcDrillConfig(
+                    scored_duration_s=block.duration_s,
+                ),
+            )
+        elif block.drill_code == "ac_state_command_prime":
+            engine = build_ac_state_command_prime_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=AcDrillConfig(
+                    scored_duration_s=block.duration_s,
+                ),
+            )
+        elif block.drill_code == "ac_gate_directive_run":
+            engine = build_ac_gate_directive_run_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=AcDrillConfig(
+                    scored_duration_s=block.duration_s,
+                ),
+            )
+        elif block.drill_code == "ac_digit_sequence_prime":
+            engine = build_ac_digit_sequence_prime_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=AcDrillConfig(
+                    scored_duration_s=block.duration_s,
+                ),
+            )
+        elif block.drill_code == "ac_trigger_cue_anchor":
+            engine = build_ac_trigger_cue_anchor_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=AcDrillConfig(
+                    scored_duration_s=block.duration_s,
+                ),
+            )
+        elif block.drill_code == "ac_callsign_filter_run":
+            engine = build_ac_callsign_filter_run_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=AcDrillConfig(
+                    scored_duration_s=block.duration_s,
+                ),
+            )
+        elif block.drill_code == "ac_mixed_tempo":
+            engine = build_ac_mixed_tempo_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=AcDrillConfig(
+                    scored_duration_s=block.duration_s,
+                ),
+            )
+        elif block.drill_code == "ac_pressure_run":
+            engine = build_ac_pressure_run_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=AcDrillConfig(
+                    scored_duration_s=block.duration_s,
+                ),
+            )
+        elif block.drill_code == "cu_controls_anchor":
+            engine = build_cu_controls_anchor_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=CuDrillConfig(scored_duration_s=block.duration_s),
+            )
+        elif block.drill_code == "cu_navigation_anchor":
+            engine = build_cu_navigation_anchor_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=CuDrillConfig(scored_duration_s=block.duration_s),
+            )
+        elif block.drill_code == "cu_engine_balance_run":
+            engine = build_cu_engine_balance_run_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=CuDrillConfig(scored_duration_s=block.duration_s),
+            )
+        elif block.drill_code == "cu_sensors_timing_prime":
+            engine = build_cu_sensors_timing_prime_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=CuDrillConfig(scored_duration_s=block.duration_s),
+            )
+        elif block.drill_code == "cu_objective_prime":
+            engine = build_cu_objective_prime_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=CuDrillConfig(scored_duration_s=block.duration_s),
+            )
+        elif block.drill_code == "cu_state_code_run":
+            engine = build_cu_state_code_run_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=CuDrillConfig(scored_duration_s=block.duration_s),
+            )
+        elif block.drill_code == "cu_mixed_tempo":
+            engine = build_cu_mixed_tempo_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=CuDrillConfig(scored_duration_s=block.duration_s),
+            )
+        elif block.drill_code == "cu_pressure_run":
+            engine = build_cu_pressure_run_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=CuDrillConfig(scored_duration_s=block.duration_s),
+            )
+        elif block.drill_code == "sa_picture_anchor":
+            engine = build_sa_picture_anchor_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=SaDrillConfig(scored_duration_s=block.duration_s),
+            )
+        elif block.drill_code == "sa_contact_identification_prime":
+            engine = build_sa_contact_identification_prime_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=SaDrillConfig(scored_duration_s=block.duration_s),
+            )
+        elif block.drill_code == "sa_status_recall_prime":
+            engine = build_sa_status_recall_prime_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=SaDrillConfig(scored_duration_s=block.duration_s),
+            )
+        elif block.drill_code == "sa_future_projection_run":
+            engine = build_sa_future_projection_run_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=SaDrillConfig(scored_duration_s=block.duration_s),
+            )
+        elif block.drill_code == "sa_action_selection_run":
+            engine = build_sa_action_selection_run_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=SaDrillConfig(scored_duration_s=block.duration_s),
+            )
+        elif block.drill_code == "sa_family_switch_run":
+            engine = build_sa_family_switch_run_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=SaDrillConfig(scored_duration_s=block.duration_s),
+            )
+        elif block.drill_code == "sa_mixed_tempo":
+            engine = build_sa_mixed_tempo_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=SaDrillConfig(scored_duration_s=block.duration_s),
+            )
+        elif block.drill_code == "sa_pressure_run":
+            engine = build_sa_pressure_run_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=SaDrillConfig(scored_duration_s=block.duration_s),
+            )
+        elif block.drill_code == "rt_lock_anchor":
+            engine = build_rt_lock_anchor_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=RtDrillConfig(scored_duration_s=block.duration_s),
+            )
+        elif block.drill_code == "rt_building_handoff_prime":
+            engine = build_rt_building_handoff_prime_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=RtDrillConfig(scored_duration_s=block.duration_s),
+            )
+        elif block.drill_code == "rt_terrain_recovery_run":
+            engine = build_rt_terrain_recovery_run_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=RtDrillConfig(scored_duration_s=block.duration_s),
+            )
+        elif block.drill_code == "rt_capture_timing_prime":
+            engine = build_rt_capture_timing_prime_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=RtDrillConfig(scored_duration_s=block.duration_s),
+            )
+        elif block.drill_code == "rt_ground_tempo_run":
+            engine = build_rt_ground_tempo_run_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=RtDrillConfig(scored_duration_s=block.duration_s),
+            )
+        elif block.drill_code == "rt_air_speed_run":
+            engine = build_rt_air_speed_run_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=RtDrillConfig(scored_duration_s=block.duration_s),
+            )
+        elif block.drill_code == "rt_mixed_tempo":
+            engine = build_rt_mixed_tempo_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=RtDrillConfig(scored_duration_s=block.duration_s),
+            )
+        elif block.drill_code == "rt_pressure_run":
+            engine = build_rt_pressure_run_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=RtDrillConfig(scored_duration_s=block.duration_s),
+            )
+        elif block.drill_code == "cln_sequence_copy":
+            engine = build_cln_sequence_copy_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=ClnDrillConfig(
+                    practice_rounds=0,
+                    scored_duration_s=block.duration_s,
+                ),
+            )
+        elif block.drill_code == "cln_sequence_match":
+            engine = build_cln_sequence_match_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=ClnDrillConfig(
+                    practice_rounds=0,
+                    scored_duration_s=block.duration_s,
+                ),
+            )
+        elif block.drill_code == "cln_math_prime":
+            engine = build_cln_math_prime_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=ClnDrillConfig(
+                    practice_rounds=0,
+                    scored_duration_s=block.duration_s,
+                ),
+            )
+        elif block.drill_code == "cln_colour_lane":
+            engine = build_cln_colour_lane_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=ClnDrillConfig(
+                    practice_rounds=0,
+                    scored_duration_s=block.duration_s,
+                ),
+            )
+        elif block.drill_code == "cln_memory_math":
+            engine = build_cln_memory_math_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=ClnDrillConfig(
+                    practice_rounds=0,
+                    scored_duration_s=block.duration_s,
+                ),
+            )
+        elif block.drill_code == "cln_memory_colour":
+            engine = build_cln_memory_colour_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=ClnDrillConfig(
+                    practice_rounds=0,
+                    scored_duration_s=block.duration_s,
+                ),
+            )
+        elif block.drill_code == "cln_full_steady":
+            engine = build_cln_full_steady_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=ClnDrillConfig(
+                    practice_rounds=0,
+                    scored_duration_s=block.duration_s,
+                ),
+            )
+        elif block.drill_code == "cln_full_pressure":
+            engine = build_cln_full_pressure_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=ClnDrillConfig(
+                    practice_rounds=0,
+                    scored_duration_s=block.duration_s,
+                ),
+            )
+        elif block.drill_code == "vs_target_preview":
+            engine = build_vs_target_preview_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=VsDrillConfig(
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                ),
+            )
+        elif block.drill_code == "vs_clean_scan":
+            engine = build_vs_clean_scan_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=VsDrillConfig(
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                ),
+            )
+        elif block.drill_code == "vs_family_run_letters":
+            engine = build_vs_family_run_drill(
+                clock=self._clock,
+                seed=block_seed,
+                kind=VisualSearchTaskKind.ALPHANUMERIC,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=VsDrillConfig(
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                ),
+            )
+        elif block.drill_code == "vs_family_run_symbols":
+            engine = build_vs_family_run_drill(
+                clock=self._clock,
+                seed=block_seed,
+                kind=VisualSearchTaskKind.SYMBOL_CODE,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=VsDrillConfig(
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                ),
+            )
+        elif block.drill_code == "vs_mixed_tempo":
+            engine = build_vs_mixed_tempo_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=VsDrillConfig(
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                ),
+            )
+        elif block.drill_code == "vs_pressure_run":
+            engine = build_vs_pressure_run_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=VsDrillConfig(
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                ),
+            )
         else:
             raise ValueError(f"Unknown drill code: {block.drill_code}")
 
@@ -954,6 +2349,14 @@ class AntWorkoutSession:
         self._current_engine = engine
 
     def _complete_current_block(self) -> None:
+        if self._current_engine is None or self._current_block_plan is None:
+            return
+        self._record_current_block_result()
+        self._current_engine = None
+        self._current_block_plan = None
+        self._prepare_next_block()
+
+    def _record_current_block_result(self) -> None:
         if self._current_engine is None or self._current_block_plan is None:
             return
         block_plan = self._current_block_plan
@@ -997,9 +2400,6 @@ class AntWorkoutSession:
             )
         )
         self._last_finished_block_level = self._current_block_level
-        self._current_engine = None
-        self._current_block_plan = None
-        self._prepare_next_block()
 
     def _max_timeout_streak(self) -> int:
         max_streak = 0
@@ -1011,3 +2411,23 @@ class AntWorkoutSession:
             else:
                 cur = 0
         return max_streak
+
+    def _submit_current_engine_skip(self, tokens: tuple[str, ...]) -> bool:
+        if self._current_engine is None:
+            return False
+        submit = getattr(self._current_engine, "submit_answer", None)
+        if not callable(submit):
+            return False
+        for token in tokens:
+            if submit(token):
+                return True
+        return False
+
+    def _force_current_engine_phase(self, phase: Phase) -> None:
+        engine = self._current_engine
+        if engine is None or not hasattr(engine, "_phase"):
+            return
+        engine._phase = phase
+        for attr in ("_current", "_presented_at_s"):
+            if hasattr(engine, attr):
+                setattr(engine, attr, None)

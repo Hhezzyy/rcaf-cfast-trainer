@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 import pytest
 
+from cfast_trainer.cognitive_core import Phase
 from cfast_trainer.sensory_motor_apparatus import (
     SensoryMotorApparatusConfig,
     SensoryMotorDisturbanceGenerator,
@@ -63,7 +64,14 @@ def test_timer_boundary_transitions_to_results_and_rejects_submit() -> None:
     assert engine.phase.value == "scored"
     assert engine.can_exit() is False
 
-    clock.advance(2.0)
+    clock.advance(1.0)
+    engine.update()
+    assert engine.phase is Phase.PRACTICE_DONE
+
+    engine.start_scored()
+    assert engine.phase is Phase.SCORED
+
+    clock.advance(1.0)
     engine.update()
 
     assert engine.phase.value == "results"
@@ -91,6 +99,10 @@ def test_engine_determinism_same_seed_same_control_script() -> None:
     e2.start_scored()
 
     for i in range(20):
+        if e1.phase is Phase.PRACTICE_DONE:
+            e1.start_scored()
+        if e2.phase is Phase.PRACTICE_DONE:
+            e2.start_scored()
         cx, cy = controls[i % len(controls)]
         e1.set_control(horizontal=cx, vertical=cy)
         e2.set_control(horizontal=cx, vertical=cy)
@@ -102,3 +114,120 @@ def test_engine_determinism_same_seed_same_control_script() -> None:
     s1 = e1.scored_summary()
     s2 = e2.scored_summary()
     assert s1 == s2
+
+
+def test_engine_progresses_through_four_blocks_and_exposes_block_metadata() -> None:
+    clock = FakeClock()
+    engine = build_sensory_motor_apparatus_test(
+        clock=clock,
+        seed=77,
+        difficulty=0.55,
+        config=SensoryMotorApparatusConfig(
+            practice_duration_s=1.0,
+            scored_duration_s=2.0,
+            tick_hz=120.0,
+        ),
+    )
+
+    engine.start_practice()
+    snap = engine.snapshot()
+    payload = snap.payload
+    assert payload is not None
+    assert engine.phase is Phase.PRACTICE
+    assert payload.control_mode == "joystick_only"
+    assert payload.block_kind == "practice"
+    assert payload.block_index == 1
+    assert payload.block_total == 2
+    assert "joystick x" in snap.input_hint.lower()
+
+    clock.advance(0.5)
+    engine.update()
+    assert engine.phase is Phase.PRACTICE_DONE
+    snap = engine.snapshot()
+    payload = snap.payload
+    assert payload is not None
+    assert payload.control_mode == "split"
+    assert payload.block_kind == "practice"
+    assert payload.block_index == 2
+    assert "Practice 2 of 2" in snap.prompt
+
+    engine.start_scored()
+    snap = engine.snapshot()
+    payload = snap.payload
+    assert payload is not None
+    assert engine.phase is Phase.PRACTICE
+    assert payload.control_mode == "split"
+    assert payload.block_index == 2
+    assert "rudder" in snap.input_hint.lower()
+
+    clock.advance(0.5)
+    engine.update()
+    assert engine.phase is Phase.PRACTICE_DONE
+    snap = engine.snapshot()
+    payload = snap.payload
+    assert payload is not None
+    assert payload.control_mode == "joystick_only"
+    assert payload.block_kind == "scored"
+    assert payload.block_index == 1
+    assert "Timed Test 1 of 2" in snap.prompt
+
+    engine.start_scored()
+    snap = engine.snapshot()
+    payload = snap.payload
+    assert payload is not None
+    assert engine.phase is Phase.SCORED
+    assert payload.control_mode == "joystick_only"
+    assert payload.block_index == 1
+
+    clock.advance(1.0)
+    engine.update()
+    assert engine.phase is Phase.PRACTICE_DONE
+    snap = engine.snapshot()
+    payload = snap.payload
+    assert payload is not None
+    assert payload.control_mode == "split"
+    assert payload.block_kind == "scored"
+    assert payload.block_index == 2
+
+    engine.start_scored()
+    assert engine.phase is Phase.SCORED
+    clock.advance(1.0)
+    engine.update()
+    assert engine.phase is Phase.RESULTS
+
+
+def test_scored_window_carries_across_split_scored_block_boundary() -> None:
+    clock = FakeClock()
+    engine = build_sensory_motor_apparatus_test(
+        clock=clock,
+        seed=1234,
+        difficulty=0.5,
+        config=SensoryMotorApparatusConfig(
+            practice_duration_s=0.0,
+            scored_duration_s=3.0,
+            tick_hz=120.0,
+        ),
+    )
+
+    engine.start_scored()
+    assert engine.phase is Phase.SCORED
+
+    for _ in range(15):
+        clock.advance(0.1)
+        engine.update()
+
+    assert engine.phase is Phase.PRACTICE_DONE
+    assert engine.scored_summary().attempted == 1
+
+    engine.start_scored()
+    assert engine.phase is Phase.SCORED
+
+    for _ in range(15):
+        clock.advance(0.1)
+        engine.update()
+
+    assert engine.phase is Phase.RESULTS
+    summary = engine.scored_summary()
+    assert summary.duration_s == pytest.approx(3.0)
+    assert summary.attempted == 3
+    assert summary.max_score == pytest.approx(3.0)

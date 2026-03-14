@@ -52,68 +52,317 @@ class TableReadingPayload:
     estimate_tolerance: int
 
 
-_PART_ONE_TABLE = TableReadingTable(
-    title="Card A - Lookup Table",
-    row_header="Row",
-    column_header="Column",
-    row_labels=("R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9", "R10"),
-    column_labels=("C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8", "C9", "C10"),
-    values=(
-        (171, 186, 201, 197, 212, 234, 249, 245, 260, 275),
-        (192, 193, 213, 214, 241, 242, 262, 263, 283, 284),
-        (213, 219, 225, 238, 263, 269, 275, 281, 287, 312),
-        (215, 226, 244, 255, 266, 277, 288, 299, 310, 328),
-        (236, 259, 275, 272, 288, 304, 301, 317, 340, 337),
-        (264, 266, 287, 289, 310, 312, 314, 342, 344, 365),
-        (285, 292, 299, 306, 313, 320, 353, 360, 367, 374),
-        (287, 299, 311, 323, 335, 354, 366, 378, 390, 383),
-        (308, 325, 323, 340, 364, 362, 379, 396, 394, 411),
-        (329, 332, 354, 364, 367, 389, 392, 395, 417, 420),
+@dataclass(frozen=True, slots=True)
+class _PartOneCardPack:
+    family: str
+    table: TableReadingTable
+
+
+@dataclass(frozen=True, slots=True)
+class _PartTwoCardSet:
+    family: str
+    index_table: TableReadingTable
+    correction_table: TableReadingTable
+
+
+def _build_grid(
+    row_count: int,
+    col_count: int,
+    *,
+    base: int,
+    row_gain: int,
+    col_gain: int,
+    row_curve: int,
+    col_curve: int,
+    cross: int,
+) -> tuple[tuple[int, ...], ...]:
+    rows: list[tuple[int, ...]] = []
+    for row_idx in range(row_count):
+        current: list[int] = []
+        for col_idx in range(col_count):
+            value = base
+            value += row_idx * row_gain
+            value += col_idx * col_gain
+            value += (row_idx % 3) * row_curve
+            value += (col_idx % 4) * col_curve
+            value += ((row_idx + col_idx) % 3) * cross
+            current.append(int(value))
+        rows.append(tuple(current))
+    return tuple(rows)
+
+
+def _build_part_one_pack(
+    *,
+    family: str,
+    title: str,
+    row_header: str,
+    column_header: str,
+    row_prefix: str,
+    row_count: int,
+    column_prefix: str,
+    column_count: int,
+    base: int,
+    row_gain: int,
+    col_gain: int,
+    row_curve: int,
+    col_curve: int,
+    cross: int,
+) -> _PartOneCardPack:
+    table = TableReadingTable(
+        title=title,
+        row_header=row_header,
+        column_header=column_header,
+        row_labels=tuple(f"{row_prefix}{idx + 1}" for idx in range(row_count)),
+        column_labels=tuple(f"{column_prefix}{idx + 1}" for idx in range(column_count)),
+        values=_build_grid(
+            row_count,
+            column_count,
+            base=base,
+            row_gain=row_gain,
+            col_gain=col_gain,
+            row_curve=row_curve,
+            col_curve=col_curve,
+            cross=cross,
+        ),
+    )
+    return _PartOneCardPack(family=family, table=table)
+
+
+def _build_part_two_index_table(
+    *,
+    title: str,
+    row_header: str,
+    column_header: str,
+    row_labels: tuple[str, ...],
+    column_labels: tuple[str, ...],
+    base: int,
+    row_divisor: int,
+    col_divisor: int,
+    bias: int,
+) -> TableReadingTable:
+    values: list[tuple[int, ...]] = []
+    for row_idx, _row_label in enumerate(row_labels):
+        row_values: list[int] = []
+        for col_idx, _col_label in enumerate(column_labels):
+            value = base
+            value += row_idx // max(1, row_divisor)
+            value += col_idx // max(1, col_divisor)
+            value += ((row_idx + col_idx) % 2) * bias
+            row_values.append(max(1, min(15, int(value))))
+        values.append(tuple(row_values))
+    return TableReadingTable(
+        title=title,
+        row_header=row_header,
+        column_header=column_header,
+        row_labels=row_labels,
+        column_labels=column_labels,
+        values=tuple(values),
+    )
+
+
+def _build_part_two_correction_table(
+    *,
+    title: str,
+    row_header: str,
+    column_header: str,
+    row_labels: tuple[str, ...],
+    column_labels: tuple[str, ...],
+    base: int,
+    row_gain: int,
+    col_gain: int,
+    cross: int,
+) -> TableReadingTable:
+    values: list[tuple[int, ...]] = []
+    for row_idx, _row_label in enumerate(row_labels):
+        row_values: list[int] = []
+        for col_idx, _col_label in enumerate(column_labels):
+            value = base + (row_idx * row_gain) + (col_idx * col_gain)
+            value += ((row_idx + col_idx) % 3) * cross
+            row_values.append(int(value))
+        values.append(tuple(row_values))
+    return TableReadingTable(
+        title=title,
+        row_header=row_header,
+        column_header=column_header,
+        row_labels=row_labels,
+        column_labels=column_labels,
+        values=tuple(values),
+    )
+
+
+def _build_part_two_set(
+    *,
+    family: str,
+    index_title: str,
+    correction_title: str,
+    index_row_header: str,
+    index_column_header: str,
+    index_row_labels: tuple[str, ...],
+    index_column_labels: tuple[str, ...],
+    correction_column_header: str,
+    correction_column_labels: tuple[str, ...],
+    base: int,
+    row_divisor: int,
+    col_divisor: int,
+    bias: int,
+    correction_base: int,
+    correction_row_gain: int,
+    correction_col_gain: int,
+    correction_cross: int,
+) -> _PartTwoCardSet:
+    correction_row_labels = tuple(str(idx) for idx in range(1, 16))
+    return _PartTwoCardSet(
+        family=family,
+        index_table=_build_part_two_index_table(
+            title=index_title,
+            row_header=index_row_header,
+            column_header=index_column_header,
+            row_labels=index_row_labels,
+            column_labels=index_column_labels,
+            base=base,
+            row_divisor=row_divisor,
+            col_divisor=col_divisor,
+            bias=bias,
+        ),
+        correction_table=_build_part_two_correction_table(
+            title=correction_title,
+            row_header="Drift Index",
+            column_header=correction_column_header,
+            row_labels=correction_row_labels,
+            column_labels=correction_column_labels,
+            base=correction_base,
+            row_gain=correction_row_gain,
+            col_gain=correction_col_gain,
+            cross=correction_cross,
+        ),
+    )
+
+
+_PART_ONE_PACKS: tuple[_PartOneCardPack, ...] = (
+    _build_part_one_pack(
+        family="lookup",
+        title="Card A - Lookup Table",
+        row_header="Row",
+        column_header="Column",
+        row_prefix="R",
+        row_count=10,
+        column_prefix="C",
+        column_count=10,
+        base=171,
+        row_gain=18,
+        col_gain=13,
+        row_curve=3,
+        col_curve=2,
+        cross=4,
+    ),
+    _build_part_one_pack(
+        family="station",
+        title="Card D - Station Table",
+        row_header="Station",
+        column_header="Band",
+        row_prefix="S",
+        row_count=8,
+        column_prefix="B",
+        column_count=12,
+        base=142,
+        row_gain=24,
+        col_gain=11,
+        row_curve=4,
+        col_curve=3,
+        cross=5,
+    ),
+    _build_part_one_pack(
+        family="sector",
+        title="Card E - Sector Table",
+        row_header="Sector",
+        column_header="Gate",
+        row_prefix="SX",
+        row_count=12,
+        column_prefix="G",
+        column_count=8,
+        base=196,
+        row_gain=15,
+        col_gain=17,
+        row_curve=5,
+        col_curve=2,
+        cross=3,
     ),
 )
 
-_PART_TWO_INDEX_TABLE = TableReadingTable(
-    title="Card B - Wind Index Table",
-    row_header="Air Speed",
-    column_header="Wind Velocity",
-    row_labels=("80", "100", "120", "140", "160", "180", "200", "220"),
-    column_labels=("4", "8", "12", "16", "20", "24", "28", "32"),
-    values=(
-        (4, 6, 8, 10, 12, 13, 14, 15),
-        (3, 5, 7, 9, 11, 12, 13, 14),
-        (3, 4, 6, 8, 10, 11, 12, 13),
-        (2, 4, 5, 7, 9, 10, 11, 12),
-        (2, 3, 5, 6, 8, 9, 10, 11),
-        (1, 3, 4, 6, 7, 8, 9, 10),
-        (1, 2, 4, 5, 6, 7, 8, 9),
-        (1, 2, 3, 4, 5, 6, 7, 8),
+_PART_TWO_CARD_SETS: tuple[_PartTwoCardSet, ...] = (
+    _build_part_two_set(
+        family="wind",
+        index_title="Card B - Wind Index Table",
+        correction_title="Card C - Angle Correction Table",
+        index_row_header="Air Speed",
+        index_column_header="Wind Velocity",
+        index_row_labels=("80", "100", "120", "140", "160", "180", "200", "220"),
+        index_column_labels=("4", "8", "12", "16", "20", "24", "28", "32"),
+        correction_column_header="Wind Angle",
+        correction_column_labels=("15", "25", "35", "45", "55", "65", "75", "85", "95"),
+        base=1,
+        row_divisor=1,
+        col_divisor=2,
+        bias=1,
+        correction_base=1,
+        correction_row_gain=1,
+        correction_col_gain=1,
+        correction_cross=0,
+    ),
+    _build_part_two_set(
+        family="crosswind",
+        index_title="Card F - Crosswind Drift Table",
+        correction_title="Card G - Course Correction Table",
+        index_row_header="Ground Speed",
+        index_column_header="Crosswind",
+        index_row_labels=("90", "110", "130", "150", "170", "190", "210", "230"),
+        index_column_labels=("5", "10", "15", "20", "25", "30", "35"),
+        correction_column_header="Track Angle",
+        correction_column_labels=("10", "20", "30", "40", "50", "60", "70", "80"),
+        base=2,
+        row_divisor=2,
+        col_divisor=1,
+        bias=1,
+        correction_base=1,
+        correction_row_gain=1,
+        correction_col_gain=1,
+        correction_cross=1,
+    ),
+    _build_part_two_set(
+        family="offset",
+        index_title="Card H - Offset Index Table",
+        correction_title="Card I - Lateral Correction Table",
+        index_row_header="Track Speed",
+        index_column_header="Offset Drift",
+        index_row_labels=("100", "120", "140", "160", "180", "200", "220", "240"),
+        index_column_labels=("6", "12", "18", "24", "30", "36"),
+        correction_column_header="Correction Angle",
+        correction_column_labels=("20", "30", "40", "50", "60", "70", "80", "90"),
+        base=2,
+        row_divisor=1,
+        col_divisor=1,
+        bias=0,
+        correction_base=2,
+        correction_row_gain=1,
+        correction_col_gain=1,
+        correction_cross=1,
     ),
 )
 
-_PART_TWO_CORRECTION_TABLE = TableReadingTable(
-    title="Card C - Angle Correction Table",
-    row_header="Drift Index",
-    column_header="Wind Angle",
-    row_labels=("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15"),
-    column_labels=("15", "25", "35", "45", "55", "65", "75", "85", "95"),
-    values=(
-        (1, 1, 1, 1, 1, 1, 1, 1, 1),
-        (1, 1, 1, 1, 1, 2, 2, 2, 2),
-        (1, 1, 2, 2, 2, 3, 3, 3, 4),
-        (1, 1, 2, 2, 3, 3, 4, 4, 4),
-        (1, 1, 2, 3, 3, 4, 5, 5, 6),
-        (1, 2, 3, 3, 4, 5, 5, 6, 7),
-        (1, 2, 3, 4, 5, 5, 7, 8, 8),
-        (2, 2, 4, 5, 5, 6, 8, 8, 9),
-        (2, 3, 4, 5, 6, 7, 8, 9, 11),
-        (2, 3, 4, 6, 7, 8, 9, 11, 12),
-        (2, 3, 5, 6, 7, 9, 10, 11, 13),
-        (2, 4, 5, 7, 8, 10, 11, 13, 14),
-        (3, 4, 6, 7, 9, 10, 12, 14, 15),
-        (3, 4, 6, 8, 9, 11, 13, 15, 16),
-        (3, 5, 7, 8, 10, 12, 14, 16, 18),
-    ),
-)
+_PART_ONE_PACK_BY_FAMILY = {pack.family: pack for pack in _PART_ONE_PACKS}
+_PART_TWO_SET_BY_FAMILY = {card_set.family: card_set for card_set in _PART_TWO_CARD_SETS}
+_PART_ONE_TITLE_TO_FAMILY = {pack.table.title: pack.family for pack in _PART_ONE_PACKS}
+_PART_TWO_TITLES_TO_FAMILY = {
+    (card_set.index_table.title, card_set.correction_table.title): card_set.family
+    for card_set in _PART_TWO_CARD_SETS
+}
+
+
+def table_reading_family_for_payload(payload: TableReadingPayload) -> str:
+    if payload.part is TableReadingPart.PART_ONE:
+        return _PART_ONE_TITLE_TO_FAMILY.get(payload.primary_table.title, "unknown")
+    secondary_title = payload.secondary_table.title if payload.secondary_table is not None else ""
+    return _PART_TWO_TITLES_TO_FAMILY.get((payload.primary_table.title, secondary_title), "unknown")
 
 
 class TableReadingScorer(AnswerScorer):
@@ -141,39 +390,65 @@ class TableReadingScorer(AnswerScorer):
 
 
 class TableReadingGenerator:
-    """Deterministic generator for table scanning and cross-reference tasks."""
+    """Deterministic generator for single-table and chained-table reading tasks."""
 
     def __init__(self, *, seed: int) -> None:
         self._rng = SeededRng(seed)
 
+    @staticmethod
+    def supported_part_one_families() -> tuple[str, ...]:
+        return tuple(pack.family for pack in _PART_ONE_PACKS)
+
+    @staticmethod
+    def supported_part_two_families() -> tuple[str, ...]:
+        return tuple(card_set.family for card_set in _PART_TWO_CARD_SETS)
+
     def next_problem(self, *, difficulty: float) -> Problem:
+        return self.next_problem_for_selection(difficulty=difficulty)
+
+    def next_problem_for_selection(
+        self,
+        *,
+        difficulty: float,
+        part: TableReadingPart | None = None,
+        family: str | None = None,
+        profile: str = "default",
+    ) -> Problem:
         d = clamp01(difficulty)
-        part_two_probability = 0.55 + (0.35 * d)
-        if self._rng.random() < part_two_probability:
-            return self._part_two_problem(d)
-        return self._part_one_problem(d)
+        active_part = part
+        if active_part is None:
+            part_two_probability = 0.55 + (0.35 * d)
+            active_part = (
+                TableReadingPart.PART_TWO
+                if self._rng.random() < part_two_probability
+                else TableReadingPart.PART_ONE
+            )
+        if active_part is TableReadingPart.PART_ONE:
+            return self._part_one_problem(d, family=family, profile=profile)
+        return self._part_two_problem(d, family=family, profile=profile)
 
-    def _part_one_problem(self, difficulty: float) -> Problem:
-        row_idx = self._rng.randint(0, len(_PART_ONE_TABLE.row_labels) - 1)
-        col_idx = self._rng.randint(0, len(_PART_ONE_TABLE.column_labels) - 1)
+    def _part_one_problem(self, difficulty: float, *, family: str | None, profile: str) -> Problem:
+        pack = self._select_part_one_pack(family)
+        row_idx, col_idx = self._select_part_one_indices(pack.table, profile=profile)
 
-        row_label = _PART_ONE_TABLE.row_labels[row_idx]
-        col_label = _PART_ONE_TABLE.column_labels[col_idx]
-        correct_value = int(_PART_ONE_TABLE.values[row_idx][col_idx])
-
-        option_step = lerp_int(6, 2, difficulty)
+        row_label = pack.table.row_labels[row_idx]
+        col_label = pack.table.column_labels[col_idx]
+        correct_value = int(pack.table.values[row_idx][col_idx])
+        option_step = self._part_one_option_step(difficulty=difficulty, profile=profile)
         options, correct_code, tolerance = self._build_options(
             correct_value=correct_value,
             option_step=option_step,
         )
 
-        stem = f"Part 1: Using Card A, find the value at {row_label} and {col_label}."
+        stem = (
+            f"Part 1: Using {pack.table.title}, find the value at "
+            f"{pack.table.row_header} {row_label} and {pack.table.column_header} {col_label}."
+        )
         prompt = self._prompt_from(stem=stem, options=options)
-
         payload = TableReadingPayload(
             part=TableReadingPart.PART_ONE,
             stem=stem,
-            primary_table=_PART_ONE_TABLE,
+            primary_table=pack.table,
             secondary_table=None,
             primary_row_label=row_label,
             primary_column_label=col_label,
@@ -186,37 +461,36 @@ class TableReadingGenerator:
         )
         return Problem(prompt=prompt, answer=correct_value, payload=payload)
 
-    def _part_two_problem(self, difficulty: float) -> Problem:
-        speed_idx = self._rng.randint(0, len(_PART_TWO_INDEX_TABLE.row_labels) - 1)
-        wind_idx = self._rng.randint(0, len(_PART_TWO_INDEX_TABLE.column_labels) - 1)
-        angle_idx = self._rng.randint(0, len(_PART_TWO_CORRECTION_TABLE.column_labels) - 1)
+    def _part_two_problem(self, difficulty: float, *, family: str | None, profile: str) -> Problem:
+        card_set = self._select_part_two_set(family)
+        speed_idx, wind_idx, angle_idx = self._select_part_two_indices(card_set, profile=profile)
 
-        speed_label = _PART_TWO_INDEX_TABLE.row_labels[speed_idx]
-        wind_label = _PART_TWO_INDEX_TABLE.column_labels[wind_idx]
-        angle_label = _PART_TWO_CORRECTION_TABLE.column_labels[angle_idx]
+        speed_label = card_set.index_table.row_labels[speed_idx]
+        wind_label = card_set.index_table.column_labels[wind_idx]
+        angle_label = card_set.correction_table.column_labels[angle_idx]
 
-        drift_index = int(_PART_TWO_INDEX_TABLE.values[speed_idx][wind_idx])
-        correction_row_idx = _PART_TWO_CORRECTION_TABLE.row_labels.index(str(drift_index))
-        correct_value = int(_PART_TWO_CORRECTION_TABLE.values[correction_row_idx][angle_idx])
-
-        option_step = lerp_int(2, 1, difficulty)
+        drift_index = int(card_set.index_table.values[speed_idx][wind_idx])
+        correction_row_idx = card_set.correction_table.row_labels.index(str(drift_index))
+        correct_value = int(card_set.correction_table.values[correction_row_idx][angle_idx])
+        option_step = self._part_two_option_step(difficulty=difficulty, profile=profile)
         options, correct_code, tolerance = self._build_options(
             correct_value=correct_value,
             option_step=option_step,
         )
 
         stem = (
-            "Part 2: Use Card B then Card C. "
-            f"Air Speed={speed_label}, Wind Velocity={wind_label}, Wind Angle={angle_label}. "
-            "What is the drift correction?"
+            f"Part 2: Use {card_set.index_table.title} then {card_set.correction_table.title}. "
+            f"{card_set.index_table.row_header}={speed_label}, "
+            f"{card_set.index_table.column_header}={wind_label}, "
+            f"{card_set.correction_table.column_header}={angle_label}. "
+            "What is the final correction?"
         )
         prompt = self._prompt_from(stem=stem, options=options)
-
         payload = TableReadingPayload(
             part=TableReadingPart.PART_TWO,
             stem=stem,
-            primary_table=_PART_TWO_INDEX_TABLE,
-            secondary_table=_PART_TWO_CORRECTION_TABLE,
+            primary_table=card_set.index_table,
+            secondary_table=card_set.correction_table,
             primary_row_label=speed_label,
             primary_column_label=wind_label,
             secondary_row_label=str(drift_index),
@@ -227,6 +501,82 @@ class TableReadingGenerator:
             estimate_tolerance=tolerance,
         )
         return Problem(prompt=prompt, answer=correct_value, payload=payload)
+
+    def _select_part_one_pack(self, family: str | None) -> _PartOneCardPack:
+        if family is None:
+            return _PART_ONE_PACKS[self._rng.randint(0, len(_PART_ONE_PACKS) - 1)]
+        token = str(family).strip().lower()
+        if token not in _PART_ONE_PACK_BY_FAMILY:
+            raise ValueError(f"Unknown Table Reading Part 1 family: {family}")
+        return _PART_ONE_PACK_BY_FAMILY[token]
+
+    def _select_part_two_set(self, family: str | None) -> _PartTwoCardSet:
+        if family is None:
+            return _PART_TWO_CARD_SETS[self._rng.randint(0, len(_PART_TWO_CARD_SETS) - 1)]
+        token = str(family).strip().lower()
+        if token not in _PART_TWO_SET_BY_FAMILY:
+            raise ValueError(f"Unknown Table Reading Part 2 family: {family}")
+        return _PART_TWO_SET_BY_FAMILY[token]
+
+    def _select_part_one_indices(
+        self,
+        table: TableReadingTable,
+        *,
+        profile: str,
+    ) -> tuple[int, int]:
+        row_idx = self._rng.randint(0, len(table.row_labels) - 1)
+        col_idx = self._rng.randint(0, len(table.column_labels) - 1)
+        normalized = str(profile).strip().lower()
+        if normalized in {"scan", "pressure"} and len(table.row_labels) >= 6 and len(table.column_labels) >= 6:
+            row_half = len(table.row_labels) // 2
+            col_half = len(table.column_labels) // 2
+            if self._rng.randint(0, 1) == 0:
+                row_idx = self._rng.randint(0, max(0, row_half - 1))
+                col_idx = self._rng.randint(col_half, len(table.column_labels) - 1)
+            else:
+                row_idx = self._rng.randint(row_half, len(table.row_labels) - 1)
+                col_idx = self._rng.randint(0, max(0, col_half - 1))
+        return row_idx, col_idx
+
+    def _select_part_two_indices(
+        self,
+        card_set: _PartTwoCardSet,
+        *,
+        profile: str,
+    ) -> tuple[int, int, int]:
+        normalized = str(profile).strip().lower()
+        if normalized == "prime":
+            speed_limit = max(1, (len(card_set.index_table.row_labels) * 3) // 5)
+            wind_limit = max(1, (len(card_set.index_table.column_labels) * 3) // 5)
+            angle_limit = max(1, len(card_set.correction_table.column_labels) // 2)
+            return (
+                self._rng.randint(0, speed_limit - 1),
+                self._rng.randint(0, wind_limit - 1),
+                self._rng.randint(0, angle_limit - 1),
+            )
+        return (
+            self._rng.randint(0, len(card_set.index_table.row_labels) - 1),
+            self._rng.randint(0, len(card_set.index_table.column_labels) - 1),
+            self._rng.randint(0, len(card_set.correction_table.column_labels) - 1),
+        )
+
+    def _part_one_option_step(self, *, difficulty: float, profile: str) -> int:
+        normalized = str(profile).strip().lower()
+        if normalized == "anchor":
+            return lerp_int(12, 5, difficulty)
+        if normalized == "scan":
+            return lerp_int(7, 2, difficulty)
+        if normalized == "pressure":
+            return lerp_int(5, 1, difficulty)
+        return lerp_int(8, 3, difficulty)
+
+    def _part_two_option_step(self, *, difficulty: float, profile: str) -> int:
+        normalized = str(profile).strip().lower()
+        if normalized == "prime":
+            return lerp_int(4, 2, difficulty)
+        if normalized == "pressure":
+            return lerp_int(2, 1, difficulty)
+        return lerp_int(3, 1, difficulty)
 
     def _build_options(
         self,
@@ -284,9 +634,9 @@ def build_table_reading_test(
     instructions = [
         "Table Reading Test",
         "",
-        "Work quickly and accurately by scanning and cross-referencing lookup tables.",
-        "Part 1: use one table (Card A) to find row/column values.",
-        "Part 2: use Card B and Card C in sequence to compute drift correction.",
+        "Work quickly and accurately by scanning and cross-referencing lookup cards.",
+        "Part 1: use one table card to find a row/column value.",
+        "Part 2: use an index card and a correction card in sequence to find the final answer.",
         "",
         "Controls:",
         "- Press A, S, D, F, or G to choose an option",

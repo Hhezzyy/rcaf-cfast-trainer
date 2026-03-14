@@ -21,12 +21,27 @@ from .cognitive_core import (
 class InstrumentComprehensionConfig:
     # Candidate guide indicates ~26 minutes total including instructions.
     scored_duration_s: float = 22.0 * 60.0
-    practice_questions: int = 2
+    practice_questions: int = 1
 
 
 class InstrumentComprehensionTrialKind(StrEnum):
     INSTRUMENTS_TO_DESCRIPTION = "instruments_to_description"
     INSTRUMENTS_TO_AIRCRAFT = "instruments_to_aircraft"
+    AIRCRAFT_TO_INSTRUMENTS = "aircraft_to_instruments"
+
+
+class InstrumentAircraftViewPreset(StrEnum):
+    FRONT_LEFT = "front_left"
+    FRONT_RIGHT = "front_right"
+    PROFILE_LEFT = "profile_left"
+    PROFILE_RIGHT = "profile_right"
+    TOP_OBLIQUE = "top_oblique"
+
+
+class InstrumentOptionRenderMode(StrEnum):
+    AIRCRAFT = "aircraft"
+    INSTRUMENT_PANEL = "instrument_panel"
+    DESCRIPTION = "description"
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,6 +60,7 @@ class InstrumentOption:
     code: int
     state: InstrumentState
     description: str
+    view_preset: InstrumentAircraftViewPreset | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,12 +72,28 @@ class InstrumentComprehensionPayload:
     option_errors: tuple[int, ...]
     full_credit_error: int
     zero_credit_error: int
+    prompt_view_preset: InstrumentAircraftViewPreset | None = None
+    option_render_mode: InstrumentOptionRenderMode = InstrumentOptionRenderMode.DESCRIPTION
 
 
 _PART_ORDER = (
     InstrumentComprehensionTrialKind.INSTRUMENTS_TO_AIRCRAFT,
+    InstrumentComprehensionTrialKind.AIRCRAFT_TO_INSTRUMENTS,
     InstrumentComprehensionTrialKind.INSTRUMENTS_TO_DESCRIPTION,
 )
+
+_PART1_VIEW_PRESETS: tuple[InstrumentAircraftViewPreset, ...] = (
+    InstrumentAircraftViewPreset.FRONT_LEFT,
+    InstrumentAircraftViewPreset.FRONT_RIGHT,
+    InstrumentAircraftViewPreset.PROFILE_LEFT,
+    InstrumentAircraftViewPreset.PROFILE_RIGHT,
+    InstrumentAircraftViewPreset.TOP_OBLIQUE,
+)
+
+
+def instrument_aircraft_view_preset_for_code(code: int) -> InstrumentAircraftViewPreset:
+    idx = max(0, min(len(_PART1_VIEW_PRESETS) - 1, int(code) - 1))
+    return _PART1_VIEW_PRESETS[idx]
 
 
 def _norm_heading(deg: int) -> int:
@@ -206,12 +238,22 @@ class InstrumentComprehensionGenerator:
                 code=code,
                 state=candidate_state,
                 description=_describe_state(candidate_state),
+                view_preset=(
+                    instrument_aircraft_view_preset_for_code(code)
+                    if kind is InstrumentComprehensionTrialKind.INSTRUMENTS_TO_AIRCRAFT
+                    else None
+                ),
             )
             options.append(option)
             option_errors.append(_state_error(true_state, candidate_state))
             if idx == 0:
                 correct_code = code
 
+        option_render_mode = {
+            InstrumentComprehensionTrialKind.INSTRUMENTS_TO_AIRCRAFT: InstrumentOptionRenderMode.AIRCRAFT,
+            InstrumentComprehensionTrialKind.AIRCRAFT_TO_INSTRUMENTS: InstrumentOptionRenderMode.INSTRUMENT_PANEL,
+            InstrumentComprehensionTrialKind.INSTRUMENTS_TO_DESCRIPTION: InstrumentOptionRenderMode.DESCRIPTION,
+        }[kind]
         payload = InstrumentComprehensionPayload(
             kind=kind,
             prompt_state=true_state,
@@ -220,6 +262,12 @@ class InstrumentComprehensionGenerator:
             option_errors=tuple(option_errors),
             full_credit_error=0,
             zero_credit_error=lerp_int(130, 70, d),
+            prompt_view_preset=(
+                InstrumentAircraftViewPreset(self._rng.choice(_PART1_VIEW_PRESETS))
+                if kind is InstrumentComprehensionTrialKind.AIRCRAFT_TO_INSTRUMENTS
+                else None
+            ),
+            option_render_mode=option_render_mode,
         )
         return Problem(
             prompt=self._prompt_for(kind=kind),
@@ -230,6 +278,8 @@ class InstrumentComprehensionGenerator:
     def _prompt_for(self, *, kind: InstrumentComprehensionTrialKind) -> str:
         if kind is InstrumentComprehensionTrialKind.INSTRUMENTS_TO_AIRCRAFT:
             return "Read the instruments and choose the matching aircraft image (A/S/D/F/G)."
+        if kind is InstrumentComprehensionTrialKind.AIRCRAFT_TO_INSTRUMENTS:
+            return "Read the aircraft image and choose the matching instrument panel (A/S/D/F/G)."
         return (
             "Read the instrument panel and choose the best matching "
             "flight description (A/S/D/F/G)."
@@ -284,7 +334,10 @@ class InstrumentComprehensionGenerator:
         altitude_delta = lerp_int(1600, 400, difficulty)
         vs_delta = lerp_int(900, 300, difficulty)
 
-        if kind is InstrumentComprehensionTrialKind.INSTRUMENTS_TO_AIRCRAFT:
+        if kind in (
+            InstrumentComprehensionTrialKind.INSTRUMENTS_TO_AIRCRAFT,
+            InstrumentComprehensionTrialKind.AIRCRAFT_TO_INSTRUMENTS,
+        ):
             s1 = replace(state, heading_deg=_norm_heading(state.heading_deg + near_heading))
             s2 = replace(state, bank_deg=-state.bank_deg)
             s3 = replace(state, pitch_deg=-state.pitch_deg)
@@ -330,10 +383,11 @@ class InstrumentComprehensionGenerator:
 
 
 class InstrumentComprehensionEngine:
-    """Two-part guide-style instrument comprehension engine.
+    """Three-part guide-style instrument comprehension engine.
 
     Part 1: instruments -> aircraft orientation image
-    Part 2: instruments -> flight description
+    Part 2: aircraft image -> instrument panel
+    Part 3: instruments -> flight description
     """
 
     def __init__(
@@ -356,7 +410,9 @@ class InstrumentComprehensionEngine:
             "",
             "Part 1: read the attitude and heading instruments, "
             "then choose the matching aircraft image.",
-            "Part 2: read the full instrument panel, "
+            "Part 2: read the aircraft image, "
+            "then choose the matching full instrument panel.",
+            "Part 3: read the full instrument panel, "
             "then choose the matching flight description.",
             "",
             "Controls:",
@@ -606,7 +662,7 @@ class InstrumentComprehensionEngine:
             title="Instrument Comprehension",
             phase=self._phase,
             prompt=self.current_prompt(),
-            input_hint="Use A, S, D, F, or G then Enter",
+            input_hint="Use A/S/D/F/G or 1-5 then Enter",
             time_remaining_s=self.time_remaining_s(),
             attempted_scored=self._scored_attempted,
             correct_scored=self._scored_correct,

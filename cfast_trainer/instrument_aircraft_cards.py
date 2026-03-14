@@ -8,11 +8,17 @@ from pathlib import Path
 
 import pygame
 
-from .instrument_comprehension import InstrumentState
+from .aircraft_art import (
+    build_panda_palette,
+    build_panda3d_fixed_wing_model,
+    draw_fixed_wing_pygame,
+    instrument_card_pygame_palette,
+)
+from .instrument_comprehension import InstrumentAircraftViewPreset, InstrumentState
 from .panda3d_assets import Panda3DAssetCatalog
 
 _CANONICAL_CARD_SIZE = (448, 280)
-_CARD_SPRITE_VERSION = "v2"
+_CARD_SPRITE_VERSION = "v19"
 
 
 def panda3d_card_rendering_available() -> bool:
@@ -38,22 +44,134 @@ class InstrumentAircraftCardKey:
     heading_deg: int
     pitch_deg: int
     bank_deg: int
+    view_preset: InstrumentAircraftViewPreset
 
     @classmethod
-    def from_state(cls, state: InstrumentState) -> InstrumentAircraftCardKey:
+    def from_state(
+        cls,
+        state: InstrumentState,
+        *,
+        view_preset: InstrumentAircraftViewPreset = InstrumentAircraftViewPreset.FRONT_LEFT,
+    ) -> InstrumentAircraftCardKey:
         return cls(
             heading_deg=int(state.heading_deg) % 360,
             pitch_deg=max(-20, min(20, int(round(state.pitch_deg)))),
             bank_deg=max(-45, min(45, int(round(state.bank_deg)))),
+            view_preset=view_preset,
         )
 
     def filename(self) -> str:
         return (
             f"{_CARD_SPRITE_VERSION}_"
+            f"{self.view_preset}_"
             f"h{self.heading_deg:03d}_p{self.pitch_deg:+03d}_b{self.bank_deg:+03d}.png"
             .replace("+", "p")
             .replace("-", "m")
         )
+
+
+@dataclass(frozen=True, slots=True)
+class InstrumentAircraftCardViewProjection:
+    view_yaw_deg: float
+    view_pitch_deg: float
+    view_roll_deg: float = 0.0
+    scale: float = 16.0
+    offset_x: float = 0.0
+    offset_y: float = 0.0
+
+
+@dataclass(frozen=True, slots=True)
+class _InstrumentAircraftCardCameraSpec:
+    camera_pos: tuple[float, float, float]
+    look_at: tuple[float, float, float]
+    fov_deg: float
+
+
+def instrument_aircraft_card_view_projection(
+    preset: InstrumentAircraftViewPreset,
+) -> InstrumentAircraftCardViewProjection:
+    if preset is InstrumentAircraftViewPreset.FRONT_RIGHT:
+        return InstrumentAircraftCardViewProjection(
+            view_yaw_deg=-28.0,
+            view_pitch_deg=9.0,
+            scale=12.8,
+            offset_y=1.0,
+        )
+    if preset is InstrumentAircraftViewPreset.PROFILE_LEFT:
+        return InstrumentAircraftCardViewProjection(
+            view_yaw_deg=78.0,
+            view_pitch_deg=7.0,
+            scale=12.1,
+            offset_y=0.0,
+        )
+    if preset is InstrumentAircraftViewPreset.PROFILE_RIGHT:
+        return InstrumentAircraftCardViewProjection(
+            view_yaw_deg=-78.0,
+            view_pitch_deg=7.0,
+            scale=12.1,
+            offset_y=0.0,
+        )
+    if preset is InstrumentAircraftViewPreset.TOP_OBLIQUE:
+        return InstrumentAircraftCardViewProjection(
+            view_yaw_deg=-40.0,
+            view_pitch_deg=32.0,
+            scale=11.8,
+            offset_y=0.0,
+        )
+    return InstrumentAircraftCardViewProjection(
+        view_yaw_deg=28.0,
+        view_pitch_deg=9.0,
+        scale=12.8,
+        offset_y=1.0,
+    )
+
+
+def _camera_spec_for_preset(
+    preset: InstrumentAircraftViewPreset,
+) -> _InstrumentAircraftCardCameraSpec:
+    if preset is InstrumentAircraftViewPreset.FRONT_RIGHT:
+        return _InstrumentAircraftCardCameraSpec(
+            camera_pos=(2.55, 8.70, 1.18),
+            look_at=(0.0, 1.58, 0.30),
+            fov_deg=22.5,
+        )
+    if preset is InstrumentAircraftViewPreset.PROFILE_LEFT:
+        return _InstrumentAircraftCardCameraSpec(
+            camera_pos=(-10.6, 1.75, 0.92),
+            look_at=(0.0, 1.62, 0.28),
+            fov_deg=19.5,
+        )
+    if preset is InstrumentAircraftViewPreset.PROFILE_RIGHT:
+        return _InstrumentAircraftCardCameraSpec(
+            camera_pos=(10.6, 1.75, 0.92),
+            look_at=(0.0, 1.62, 0.28),
+            fov_deg=19.5,
+        )
+    if preset is InstrumentAircraftViewPreset.TOP_OBLIQUE:
+        return _InstrumentAircraftCardCameraSpec(
+            camera_pos=(5.2, 6.4, 5.1),
+            look_at=(0.0, 1.60, 0.22),
+            fov_deg=18.0,
+        )
+    return _InstrumentAircraftCardCameraSpec(
+        camera_pos=(-2.55, 8.70, 1.18),
+        look_at=(0.0, 1.58, 0.30),
+        fov_deg=22.5,
+    )
+
+
+def _view_root_offset_for_preset(
+    preset: InstrumentAircraftViewPreset,
+) -> tuple[float, float, float]:
+    if preset is InstrumentAircraftViewPreset.FRONT_RIGHT:
+        return (-1.40, 0.0, 0.0)
+    if preset is InstrumentAircraftViewPreset.PROFILE_RIGHT:
+        return (-1.10, 0.0, 0.0)
+    if preset is InstrumentAircraftViewPreset.TOP_OBLIQUE:
+        return (-1.60, 0.0, 0.12)
+    if preset is InstrumentAircraftViewPreset.FRONT_LEFT:
+        return (-0.70, 0.0, 0.0)
+    return (-0.35, 0.0, 0.0)
 
 
 class InstrumentAircraftCardSpriteBank:
@@ -77,51 +195,70 @@ class InstrumentAircraftCardSpriteBank:
         *,
         state: InstrumentState,
         size: tuple[int, int],
+        view_preset: InstrumentAircraftViewPreset = InstrumentAircraftViewPreset.FRONT_LEFT,
     ) -> pygame.Surface | None:
-        key = InstrumentAircraftCardKey.from_state(state)
+        key = InstrumentAircraftCardKey.from_state(state, view_preset=view_preset)
         cache_key = (key, int(size[0]), int(size[1]))
         cached = self._scaled_cache.get(cache_key)
         if cached is not None:
             return cached
 
-        source = self.get_surface(state=state)
+        source = self.get_surface(state=state, view_preset=view_preset)
         if source is None:
             return None
         scaled = pygame.transform.smoothscale(source, size)
         self._scaled_cache[cache_key] = scaled
         return scaled
 
-    def get_surface(self, *, state: InstrumentState) -> pygame.Surface | None:
-        key = InstrumentAircraftCardKey.from_state(state)
+    def get_surface(
+        self,
+        *,
+        state: InstrumentState,
+        view_preset: InstrumentAircraftViewPreset = InstrumentAircraftViewPreset.FRONT_LEFT,
+    ) -> pygame.Surface | None:
+        key = InstrumentAircraftCardKey.from_state(state, view_preset=view_preset)
         cached = self._surface_cache.get(key)
         if cached is not None:
             return cached
 
         cache_path = self._cache_dir / key.filename()
         if cache_path.exists():
-            loaded = self._load_surface(cache_path)
+            loaded = self._normalize_surface(self._load_surface(cache_path))
             self._surface_cache[key] = loaded
             return loaded
 
         if not self._allow_generation or self._generation_failed:
             return None
-        if not panda3d_card_rendering_available():
-            self._generation_failed = True
-            return None
 
         try:
             self._cache_dir.mkdir(parents=True, exist_ok=True)
-            renderer = self._get_renderer()
-            renderer.render_card(key=key, destination=cache_path)
-            loaded = self._load_surface(cache_path)
+            loaded: pygame.Surface | None = None
+            if panda3d_card_rendering_available():
+                try:
+                    renderer = self._get_renderer()
+                    renderer.render_card(key=key, destination=cache_path)
+                    loaded = self._normalize_surface(self._load_surface(cache_path))
+                except Exception:
+                    loaded = None
+            if loaded is None:
+                loaded = self._normalize_surface(self._render_pygame_fallback_card(key))
+                pygame.image.save(loaded, str(cache_path))
             self._surface_cache[key] = loaded
             return loaded
         except Exception:
             self._generation_failed = True
             return None
 
-    def cache_path_for(self, *, state: InstrumentState) -> Path:
-        return self._cache_dir / InstrumentAircraftCardKey.from_state(state).filename()
+    def cache_path_for(
+        self,
+        *,
+        state: InstrumentState,
+        view_preset: InstrumentAircraftViewPreset = InstrumentAircraftViewPreset.FRONT_LEFT,
+    ) -> Path:
+        return self._cache_dir / InstrumentAircraftCardKey.from_state(
+            state,
+            view_preset=view_preset,
+        ).filename()
 
     def _get_renderer(self) -> _Panda3DInstrumentCardRenderer:
         if self._renderer is None:
@@ -134,6 +271,125 @@ class InstrumentAircraftCardSpriteBank:
         if pygame.display.get_init() and pygame.display.get_surface() is not None:
             return loaded.convert_alpha()
         return loaded.copy()
+
+    @staticmethod
+    def _aircraft_bounds(surface: pygame.Surface) -> tuple[int, int, int, int] | None:
+        min_x = surface.get_width()
+        min_y = surface.get_height()
+        max_x = -1
+        max_y = -1
+        for y in range(surface.get_height()):
+            for x in range(surface.get_width()):
+                color = surface.get_at((x, y))
+                if color.a <= 0:
+                    continue
+                if color.r <= 120 or color.r <= color.g + 20 or color.r <= color.b + 20:
+                    continue
+                min_x = min(min_x, x)
+                min_y = min(min_y, y)
+                max_x = max(max_x, x)
+                max_y = max(max_y, y)
+        if max_x < min_x or max_y < min_y:
+            return None
+        return (min_x, min_y, max_x, max_y)
+
+    def _normalize_surface(self, surface: pygame.Surface) -> pygame.Surface:
+        bounds = self._aircraft_bounds(surface)
+        if bounds is None:
+            return surface
+
+        min_x, min_y, max_x, max_y = bounds
+        width = max_x - min_x + 1
+        height = max_y - min_y + 1
+        inset = 28
+        target_w = max(1, surface.get_width() - inset * 2)
+        target_h = max(1, surface.get_height() - inset * 2)
+        scale = min(1.0, target_w / float(width), target_h / float(height))
+        if scale >= 0.995 and min_x >= inset and min_y >= inset and max_x <= surface.get_width() - inset and max_y <= surface.get_height() - inset:
+            return surface
+
+        scaled_size = (
+            max(1, int(round(surface.get_width() * scale))),
+            max(1, int(round(surface.get_height() * scale))),
+        )
+        if surface.get_bitsize() in (24, 32):
+            scaled = pygame.transform.smoothscale(surface, scaled_size)
+        else:
+            scaled = pygame.transform.scale(surface, scaled_size)
+        scaled_bounds = self._aircraft_bounds(scaled)
+        result = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
+        self._paint_card_background(result)
+        if scaled_bounds is None:
+            result.blit(scaled, scaled.get_rect(center=surface.get_rect().center))
+            pygame.draw.rect(result, (170, 184, 212), result.get_rect(), 1)
+            return result
+
+        s_min_x, s_min_y, s_max_x, s_max_y = scaled_bounds
+        bounds_w = s_max_x - s_min_x + 1
+        bounds_h = s_max_y - s_min_y + 1
+        dest_x = ((result.get_width() - bounds_w) // 2) - s_min_x
+        dest_y = ((result.get_height() - bounds_h) // 2) - s_min_y
+        result.blit(scaled, (dest_x, dest_y))
+        pygame.draw.rect(result, (170, 184, 212), result.get_rect(), 1)
+        return result
+
+    @staticmethod
+    def _paint_card_background(surface: pygame.Surface) -> None:
+        rect = surface.get_rect()
+        for y in range(rect.height):
+            t = y / max(1, rect.height - 1)
+            shade = int(round(232 - (t * 46)))
+            pygame.draw.line(surface, (shade, shade, shade), (0, y), (rect.width, y))
+
+        vignette = pygame.Surface(rect.size, pygame.SRCALPHA)
+        for ring in range(4):
+            alpha = 26 + ring * 12
+            inset = ring * max(6, rect.width // 22)
+            pygame.draw.rect(
+                vignette,
+                (24, 28, 36, alpha),
+                pygame.Rect(
+                    inset,
+                    inset,
+                    max(4, rect.width - inset * 2),
+                    max(4, rect.height - inset * 2),
+                ),
+                0,
+            )
+        surface.blit(vignette, (0, 0), special_flags=pygame.BLEND_RGBA_SUB)
+
+        floor_y = rect.bottom - max(10, rect.height // 9)
+        pygame.draw.line(surface, (84, 88, 96), (rect.x, floor_y), (rect.right, floor_y), 2)
+        for step in (0.2, 0.4, 0.6, 0.8):
+            y = int(round(floor_y + ((rect.bottom - floor_y) * step)))
+            shade = 124 - int(round(step * 24))
+            pygame.draw.line(surface, (shade, shade, shade), (rect.x, y), (rect.right, y), 1)
+        for lane in range(1, 5):
+            x = rect.centerx + int(round((lane - 2.5) * (rect.w / 7.5)))
+            pygame.draw.line(surface, (132, 136, 144), (x, floor_y), (rect.centerx, rect.bottom), 1)
+
+    @classmethod
+    def _render_pygame_fallback_card(cls, key: InstrumentAircraftCardKey) -> pygame.Surface:
+        surface = pygame.Surface(_CANONICAL_CARD_SIZE, pygame.SRCALPHA)
+        rect = surface.get_rect()
+        cls._paint_card_background(surface)
+
+        projection = instrument_aircraft_card_view_projection(key.view_preset)
+        draw_fixed_wing_pygame(
+            surface,
+            heading_deg=float(key.heading_deg),
+            pitch_deg=float(key.pitch_deg),
+            bank_deg=float(key.bank_deg),
+            cx=rect.centerx + int(round(projection.offset_x)),
+            cy=rect.centery + int(round(projection.offset_y)),
+            scale=max(10.5, float(min(rect.w, rect.h)) * (projection.scale / 100.0)),
+            palette=instrument_card_pygame_palette(),
+            view_yaw_deg=projection.view_yaw_deg,
+            view_pitch_deg=projection.view_pitch_deg,
+            view_roll_deg=projection.view_roll_deg,
+        )
+        pygame.draw.rect(surface, (170, 184, 212), rect, 1)
+        return surface
 
 
 class _Panda3DInstrumentCardRenderer:
@@ -151,31 +407,53 @@ class _Panda3DInstrumentCardRenderer:
 
         self._base = ShowBase()
         self._base.disableMouse()
-        self._base.setBackgroundColor(0.84, 0.85, 0.87, 1.0)
-        self._base.cam.setPos(0.0, -10.4, 0.7)
-        self._base.cam.lookAt(0.0, 0.0, 0.4)
+        self._base.setBackgroundColor(0.83, 0.85, 0.89, 1.0)
+        self._base.camLens.setFov(22.8)
+        self._base.cam.setPos(0.0, -18.7, 1.46)
+        self._base.cam.lookAt(0.0, 1.64, 0.46)
 
         ambient = AmbientLight("ambient")
-        ambient.setColor(Vec4(0.56, 0.58, 0.62, 1.0))
+        ambient.setColor(Vec4(0.34, 0.36, 0.39, 1.0))
         ambient_np = self._base.render.attachNewNode(ambient)
         self._base.render.setLight(ambient_np)
 
-        sun = DirectionalLight("sun")
-        sun.setColor(Vec4(0.96, 0.94, 0.90, 1.0))
-        sun_np = self._base.render.attachNewNode(sun)
-        sun_np.setHpr(25.0, -32.0, 0.0)
-        self._base.render.setLight(sun_np)
+        key_light = DirectionalLight("key-light")
+        key_light.setColor(Vec4(1.10, 1.02, 0.96, 1.0))
+        key_light_np = self._base.render.attachNewNode(key_light)
+        key_light_np.setHpr(22.0, -34.0, 0.0)
+        self._base.render.setLight(key_light_np)
 
-        self._build_room()
-        self._plane_root = self._base.render.attachNewNode("instrument-plane-root")
+        fill_light = DirectionalLight("fill-light")
+        fill_light.setColor(Vec4(0.38, 0.46, 0.58, 1.0))
+        fill_light_np = self._base.render.attachNewNode(fill_light)
+        fill_light_np.setHpr(-118.0, -16.0, 0.0)
+        self._base.render.setLight(fill_light_np)
+
+        rim_light = DirectionalLight("rim-light")
+        rim_light.setColor(Vec4(0.56, 0.54, 0.60, 1.0))
+        rim_light_np = self._base.render.attachNewNode(rim_light)
+        rim_light_np.setHpr(164.0, -8.0, 0.0)
+        self._base.render.setLight(rim_light_np)
+
+        floor_z = self._build_room()
+        self._view_root = self._base.render.attachNewNode("instrument-plane-view-root")
+        self._plane_root = self._view_root.attachNewNode("instrument-plane-root")
+        self._add_plane_shadow(floor_z=floor_z)
         plane = self._load_plane_asset()
         plane.reparentTo(self._plane_root)
-        plane.setScale(1.2)
-        plane.setPos(0.0, 0.0, 0.10)
+        plane.setScale(0.52)
+        plane.setPos(-0.78, 1.60, 0.34)
 
     def render_card(self, *, key: InstrumentAircraftCardKey, destination: Path) -> None:
         from panda3d.core import PNMImage
 
+        projection = instrument_aircraft_card_view_projection(key.view_preset)
+        self._view_root.setPos(*_view_root_offset_for_preset(key.view_preset))
+        self._view_root.setHpr(
+            float(projection.view_yaw_deg),
+            float(projection.view_pitch_deg),
+            float(projection.view_roll_deg),
+        )
         self._plane_root.setHpr(-float(key.heading_deg), float(key.pitch_deg), -float(key.bank_deg))
 
         for _ in range(3):
@@ -188,10 +466,11 @@ class _Panda3DInstrumentCardRenderer:
         destination.parent.mkdir(parents=True, exist_ok=True)
         image.write(str(destination))
 
-    def _build_room(self) -> None:
-        room = self._make_open_room()
+    def _build_room(self) -> float:
+        room, floor_z = self._make_open_room()
         room.reparentTo(self._base.render)
-        room.setPos(0.0, 2.8, 0.0)
+        room.setPos(0.0, 1.75, 0.0)
+        return float(floor_z)
 
     def _load_plane_asset(self):
         asset_path = self._asset_catalog.resolve_path("plane_red")
@@ -206,6 +485,19 @@ class _Panda3DInstrumentCardRenderer:
             if not node.isEmpty():
                 return node
         return self._build_fallback_plane()
+
+    def _add_plane_shadow(self, *, floor_z: float) -> None:
+        from panda3d.core import CardMaker, TransparencyAttrib
+
+        shadow = CardMaker("instrument-plane-shadow")
+        shadow.setFrame(-1.85, 1.85, -0.84, 0.84)
+        shadow_np = self._plane_root.attachNewNode(shadow.generate())
+        shadow_np.setPos(0.0, 1.60, float(floor_z) + 0.02)
+        shadow_np.setHpr(0.0, -90.0, 0.0)
+        shadow_np.setColor(0.05, 0.05, 0.06, 0.24)
+        shadow_np.setTransparency(TransparencyAttrib.MAlpha)
+        shadow_np.setScale(1.0, 1.0, 0.62)
+        shadow_np.setTwoSided(True)
 
     def _make_open_room(self):
         from panda3d.core import CardMaker, NodePath
@@ -228,47 +520,27 @@ class _Panda3DInstrumentCardRenderer:
             node.setColor(*color)
             node.setTwoSided(True)
 
-        depth = 5.8
-        width = 7.2
-        height = 4.2
+        depth = 11.0
+        width = 26.0
+        height = 6.4
         add_panel(
             "back",
             frame=(-width / 2.0, width / 2.0, -height / 2.0, height / 2.0),
             pos=(0.0, depth, 0.0),
             hpr=(180.0, 0.0, 0.0),
-            color=(0.76, 0.77, 0.79, 1.0),
+            color=(0.84, 0.85, 0.87, 1.0),
         )
+        floor_z = -height / 2.0
         add_panel(
             "floor",
             frame=(-width / 2.0, width / 2.0, -depth / 2.0, depth / 2.0),
-            pos=(0.0, depth / 2.0, -height / 2.0),
+            pos=(0.0, depth / 2.0, floor_z),
             hpr=(0.0, 90.0, 0.0),
-            color=(0.64, 0.64, 0.66, 1.0),
-        )
-        add_panel(
-            "ceiling",
-            frame=(-width / 2.0, width / 2.0, -depth / 2.0, depth / 2.0),
-            pos=(0.0, depth / 2.0, height / 2.0),
-            hpr=(0.0, -90.0, 0.0),
-            color=(0.88, 0.88, 0.90, 1.0),
-        )
-        add_panel(
-            "left",
-            frame=(-depth / 2.0, depth / 2.0, -height / 2.0, height / 2.0),
-            pos=(-width / 2.0, depth / 2.0, 0.0),
-            hpr=(90.0, 0.0, 0.0),
-            color=(0.72, 0.72, 0.74, 1.0),
-        )
-        add_panel(
-            "right",
-            frame=(-depth / 2.0, depth / 2.0, -height / 2.0, height / 2.0),
-            pos=(width / 2.0, depth / 2.0, 0.0),
-            hpr=(-90.0, 0.0, 0.0),
-            color=(0.70, 0.70, 0.72, 1.0),
+            color=(0.66, 0.68, 0.71, 1.0),
         )
 
-        self._add_floor_guides(root=root, width=width, depth=depth, floor_z=-(height / 2.0) + 0.002)
-        return root
+        self._add_floor_guides(root=root, width=width, depth=depth, floor_z=floor_z + 0.002)
+        return root, floor_z
 
     def _add_floor_guides(self, *, root, width: float, depth: float, floor_z: float) -> None:
         from panda3d.core import LineSegs
@@ -288,86 +560,13 @@ class _Panda3DInstrumentCardRenderer:
         root.attachNewNode(guides.create())
 
     def _build_fallback_plane(self):
-        from panda3d.core import NodePath
-
-        root = NodePath("plane")
-        plane_red = (0.84, 0.18, 0.16, 1.0)
-        plane_dark = (0.48, 0.05, 0.06, 1.0)
-        canopy = (0.72, 0.88, 0.94, 0.92)
-
-        fuselage_main = self._make_box(size=(0.72, 2.28, 0.60), color=plane_red)
-        fuselage_mid = self._make_box(size=(0.64, 1.10, 0.56), color=plane_red)
-        nose = self._make_box(size=(0.48, 0.92, 0.46), color=(0.92, 0.36, 0.32, 1.0))
-        nose_tip = self._make_box(size=(0.26, 0.42, 0.24), color=(0.96, 0.44, 0.40, 1.0))
-        tail_boom = self._make_box(size=(0.48, 1.12, 0.42), color=plane_red)
-        tail_tip = self._make_box(size=(0.24, 0.36, 0.22), color=plane_dark)
-
-        wing_center = self._make_box(size=(2.10, 0.40, 0.12), color=plane_red)
-        wing_left = self._make_box(size=(1.56, 0.42, 0.10), color=plane_red)
-        wing_right = self._make_box(size=(1.56, 0.42, 0.10), color=plane_red)
-        wing_tip_l = self._make_box(size=(0.16, 0.40, 0.08), color=plane_dark)
-        wing_tip_r = self._make_box(size=(0.16, 0.40, 0.08), color=plane_dark)
-
-        tail_center = self._make_box(size=(0.86, 0.22, 0.08), color=plane_red)
-        tail_left = self._make_box(size=(0.62, 0.20, 0.06), color=plane_red)
-        tail_right = self._make_box(size=(0.62, 0.20, 0.06), color=plane_red)
-        fin = self._make_box(size=(0.10, 0.42, 0.72), color=plane_dark)
-        canopy_node = self._make_box(size=(0.32, 0.86, 0.28), color=canopy)
-        engine_l = self._make_box(size=(0.26, 0.62, 0.24), color=plane_dark)
-        engine_r = self._make_box(size=(0.26, 0.62, 0.24), color=plane_dark)
-
-        fuselage_mid.setY(1.46)
-        nose.setY(2.44)
-        nose_tip.setY(3.06)
-        tail_boom.setY(-1.70)
-        tail_tip.setY(-2.42)
-
-        wing_center.setY(0.54)
-        wing_center.setZ(0.02)
-        wing_left.setPos(-1.74, 0.64, 0.04)
-        wing_right.setPos(1.74, 0.64, 0.04)
-        wing_left.setHpr(-12.0, 0.0, 2.0)
-        wing_right.setHpr(12.0, 0.0, -2.0)
-        wing_tip_l.setPos(-2.66, 0.48, 0.06)
-        wing_tip_r.setPos(2.66, 0.48, 0.06)
-        wing_tip_l.setHpr(-18.0, 0.0, 3.0)
-        wing_tip_r.setHpr(18.0, 0.0, -3.0)
-
-        tail_center.setPos(0.0, -2.00, 0.16)
-        tail_left.setPos(-0.70, -2.04, 0.18)
-        tail_right.setPos(0.70, -2.04, 0.18)
-        tail_left.setHpr(-10.0, 0.0, 0.0)
-        tail_right.setHpr(10.0, 0.0, 0.0)
-        fin.setY(-2.12)
-        fin.setZ(0.50)
-
-        canopy_node.setY(1.06)
-        canopy_node.setZ(0.28)
-        engine_l.setPos(-0.84, 0.82, -0.10)
-        engine_r.setPos(0.84, 0.82, -0.10)
-
-        for node in (
-            fuselage_main,
-            fuselage_mid,
-            nose,
-            nose_tip,
-            tail_boom,
-            tail_tip,
-            wing_center,
-            wing_left,
-            wing_right,
-            wing_tip_l,
-            wing_tip_r,
-            tail_center,
-            tail_left,
-            tail_right,
-            fin,
-            canopy_node,
-            engine_l,
-            engine_r,
-        ):
-            node.reparentTo(root)
-        return root
+        palette = build_panda_palette(
+            body_color=(0.84, 0.18, 0.16, 1.0),
+            accent_color=(0.50, 0.05, 0.06, 1.0),
+            canopy_color=(0.74, 0.88, 0.95, 0.92),
+            engine_color=(0.44, 0.04, 0.05, 1.0),
+        )
+        return build_panda3d_fixed_wing_model(palette=palette, name="instrument-plane")
 
     @staticmethod
     def _make_box(*, size: tuple[float, float, float], color: tuple[float, float, float, float]):

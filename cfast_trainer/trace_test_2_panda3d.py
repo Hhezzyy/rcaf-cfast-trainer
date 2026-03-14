@@ -6,6 +6,11 @@ import os
 
 import pygame
 
+from .aircraft_art import (
+    build_panda_palette,
+    build_panda3d_fixed_wing_model,
+    panda3d_fixed_wing_hpr_from_tangent,
+)
 from .trace_test_2 import (
     TraceTest2AircraftTrack,
     TraceTest2Payload,
@@ -183,25 +188,38 @@ class TraceTest2Panda3DRenderer:
                 sample_step=(0.03 if active_motion else 0.018),
             )
             if tangent is None:
-                heading_deg, pitch_deg, bank_deg = self._aircraft_orientation_by_code.get(
+                hpr = self._aircraft_orientation_by_code.get(
                     int(track.code),
                     (0.0, 0.0, 0.0),
                 )
             else:
-                dx, dy, dz = tangent
-                horiz = max(1e-6, math.sqrt((dx * dx) + (dy * dy)))
-                heading_deg = math.degrees(math.atan2(dx, dy))
-                pitch_deg = -math.degrees(math.atan2(dz, horiz))
-                bank_deg = _clamp((dx / horiz) * 34.0, -40.0, 40.0)
-                self._aircraft_orientation_by_code[int(track.code)] = (
-                    float(heading_deg),
-                    float(pitch_deg),
-                    float(bank_deg),
+                hpr = self._aircraft_hpr_from_tangent(
+                    tangent=tangent,
+                    default_hpr=self._aircraft_orientation_by_code.get(
+                        int(track.code),
+                        (0.0, 0.0, 0.0),
+                    ),
                 )
+                self._aircraft_orientation_by_code[int(track.code)] = hpr
 
             node.setPos(float(pos.x), float(pos.y), float(pos.z))
-            node.setHpr(float(heading_deg), float(pitch_deg), float(bank_deg))
+            node.setHpr(*hpr)
             node.setScale(1.10)
+
+    @staticmethod
+    def _aircraft_hpr_from_tangent(
+        *,
+        tangent: tuple[float, float, float],
+        default_hpr: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    ) -> tuple[float, float, float]:
+        dx, dy, _dz = tangent
+        horiz = max(1e-6, math.sqrt((dx * dx) + (dy * dy)))
+        bank_deg = _clamp((dx / horiz) * 34.0, -40.0, 40.0)
+        return panda3d_fixed_wing_hpr_from_tangent(
+            tangent=tangent,
+            bank_deg=bank_deg,
+            default_hpr=default_hpr,
+        )
 
     @staticmethod
     def _track_tangent(
@@ -308,32 +326,11 @@ class TraceTest2Panda3DRenderer:
         return root
 
     def _build_aircraft_model(self, *, color_rgb: tuple[int, int, int]):
-        from panda3d.core import NodePath
-
         body = tuple(channel / 255.0 for channel in color_rgb) + (1.0,)
-        canopy = (0.94, 0.96, 1.0, 1.0)
-        root = NodePath("trace2-aircraft")
-        fuselage = self._make_box(size=(1.0, 6.6, 0.8), color=body)
-        wing = self._make_box(size=(8.4, 1.0, 0.18), color=body)
-        tail_plane = self._make_box(size=(2.8, 0.7, 0.16), color=body)
-        fin = self._make_box(size=(0.16, 0.9, 0.95), color=body)
-        canopy_np = self._make_box(size=(0.60, 1.25, 0.42), color=canopy)
-        nose = self._make_box(size=(0.62, 0.58, 0.54), color=canopy)
-
-        wing.setY(-0.15)
-        wing.setZ(0.04)
-        tail_plane.setY(-2.35)
-        tail_plane.setZ(0.24)
-        fin.setY(-2.55)
-        fin.setZ(0.66)
-        canopy_np.setY(1.45)
-        canopy_np.setZ(0.34)
-        nose.setY(3.2)
-        nose.setZ(0.10)
-
-        for child in (fuselage, wing, tail_plane, fin, canopy_np, nose):
-            child.reparentTo(root)
-        return root
+        return build_panda3d_fixed_wing_model(
+            palette=build_panda_palette(body_color=body),
+            name="trace2-aircraft",
+        )
 
     def _make_box(
         self,

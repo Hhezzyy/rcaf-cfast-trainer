@@ -12,6 +12,7 @@ from cfast_trainer.table_reading import (
     TableReadingPayload,
     TableReadingScorer,
     build_table_reading_test,
+    table_reading_family_for_payload,
 )
 
 
@@ -26,13 +27,15 @@ class FakeClock:
         self.t += dt
 
 
-def _signature(payload: TableReadingPayload) -> tuple[str, str, str, str, str, int, int]:
+def _signature(payload: TableReadingPayload) -> tuple[str, str, str, str, str, str, int, int]:
     return (
         payload.part.value,
+        payload.primary_table.title,
         payload.primary_row_label,
         payload.primary_column_label,
         payload.secondary_row_label or "",
         payload.secondary_column_label or "",
+        table_reading_family_for_payload(payload),
         payload.correct_code,
         payload.correct_value,
     )
@@ -76,6 +79,64 @@ def test_generator_emits_both_parts() -> None:
         parts.add(payload.part)
 
     assert parts == {TableReadingPart.PART_ONE, TableReadingPart.PART_TWO}
+
+
+def test_generator_exposes_multiple_card_families_for_both_parts() -> None:
+    assert TableReadingGenerator.supported_part_one_families() == ("lookup", "station", "sector")
+    assert TableReadingGenerator.supported_part_two_families() == ("wind", "crosswind", "offset")
+
+
+def test_generator_selection_hook_is_deterministic_for_same_family_and_part() -> None:
+    gen_a = TableReadingGenerator(seed=404)
+    gen_b = TableReadingGenerator(seed=404)
+
+    problems_a = tuple(
+        _signature(
+            cast(
+                TableReadingPayload,
+                gen_a.next_problem_for_selection(
+                    difficulty=0.6,
+                    part=TableReadingPart.PART_TWO,
+                    family="crosswind",
+                    profile="prime",
+                ).payload,
+            )
+        )
+        for _ in range(4)
+    )
+    problems_b = tuple(
+        _signature(
+            cast(
+                TableReadingPayload,
+                gen_b.next_problem_for_selection(
+                    difficulty=0.6,
+                    part=TableReadingPart.PART_TWO,
+                    family="crosswind",
+                    profile="prime",
+                ).payload,
+            )
+        )
+        for _ in range(4)
+    )
+
+    assert problems_a == problems_b
+
+
+def test_default_generator_rotates_across_multiple_part_one_and_part_two_card_families() -> None:
+    gen = TableReadingGenerator(seed=909)
+    part_one_families: set[str] = set()
+    part_two_families: set[str] = set()
+
+    for _ in range(80):
+        payload = cast(TableReadingPayload, gen.next_problem(difficulty=0.7).payload)
+        family = table_reading_family_for_payload(payload)
+        if payload.part is TableReadingPart.PART_ONE:
+            part_one_families.add(family)
+        else:
+            part_two_families.add(family)
+
+    assert part_one_families == {"lookup", "station", "sector"}
+    assert part_two_families == {"wind", "crosswind", "offset"}
 
 
 def test_scorer_exact_and_estimation_behaviour() -> None:

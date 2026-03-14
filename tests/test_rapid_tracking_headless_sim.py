@@ -79,3 +79,5 @@ def test_headless_scripted_run_produces_expected_summary() -> None:
     assert summary.capture_points == 0
     assert summary.capture_hits == 0
     assert summary.capture_attempts == 0
+    assert summary.capture_max_points == 0
+    assert summary.capture_score_ratio == pytest.approx(0.0)

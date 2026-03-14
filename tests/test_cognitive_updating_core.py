@@ -11,6 +11,7 @@ from cfast_trainer.cognitive_updating import (
     CognitiveUpdatingPayload,
     CognitiveUpdatingRuntime,
     CognitiveUpdatingScorer,
+    CognitiveUpdatingTrainingProfile,
     build_cognitive_updating_test,
     decode_cognitive_updating_submission_raw,
 )
@@ -516,3 +517,53 @@ def test_timer_boundary_transitions_to_results_and_rejects_late_submit() -> None
     summary = engine.scored_summary()
     assert summary.attempted == 0
     assert summary.correct == 0
+
+
+def test_training_profile_payload_exposes_active_domains_family_and_focus() -> None:
+    profile = CognitiveUpdatingTrainingProfile(
+        active_domains=("navigation", "state_code"),
+        scenario_family="compressed",
+        focus_label="Navigation",
+        starting_upper_tab_index=3,
+        starting_lower_tab_index=1,
+    )
+    problem = CognitiveUpdatingGenerator(seed=604).next_problem_for_selection(
+        difficulty=0.5,
+        training_profile=profile,
+        scenario_family=profile.scenario_family,
+    )
+    payload = cast(CognitiveUpdatingPayload, problem.payload)
+
+    assert payload.active_domains == ("navigation", "state_code")
+    assert payload.scenario_family == "compressed"
+    assert payload.focus_label == "Navigation"
+    assert payload.starting_upper_tab_index == 3
+    assert payload.starting_lower_tab_index == 1
+
+
+def test_inactive_domains_are_neutralized_for_focused_training_profiles() -> None:
+    clock = FakeClock()
+    payload = cast(
+        CognitiveUpdatingPayload,
+        CognitiveUpdatingGenerator(seed=605).next_problem_for_selection(
+            difficulty=0.5,
+            training_profile=CognitiveUpdatingTrainingProfile(
+                active_domains=("controls", "state_code"),
+                focus_label="Controls",
+            ),
+            scenario_family="baseline",
+        ).payload,
+    )
+    runtime = CognitiveUpdatingRuntime(payload=payload, clock=clock)
+
+    clock.advance(30.0)
+    snap = runtime.snapshot()
+
+    assert snap.navigation_score == 100
+    assert snap.engine_score == 100
+    assert snap.sensors_score == 100
+    assert snap.objectives_score == 100
+    assert "Air Speed Warning" not in snap.warning_lines
+    assert "Engine Panel" not in snap.warning_lines
+    assert "Sensor Panel" not in snap.warning_lines
+    assert "Objective Warning" not in snap.warning_lines

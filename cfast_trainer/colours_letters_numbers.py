@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 
 from .clock import Clock
 from .cognitive_core import AttemptSummary, Phase, SeededRng, TestSnapshot, clamp01, lerp_int
+from .numerical_operations import NumericalOperationsGenerator, NumericalOperationsProblemProfile
 
 
 @dataclass(frozen=True, slots=True)
@@ -14,7 +15,7 @@ class ColoursLettersNumbersConfig:
     practice_rounds: int = 3
     # Memory channel answer window after the recall pause opens.
     round_duration_s: float = 9.0
-    sequence_show_s: float = 2.0
+    sequence_show_s: float = 3.5
     memory_recall_delay_s: float = 5.0
     memory_recall_delay_max_s: float = 60.0
     diamond_spawn_interval_s: float = 1.30
@@ -27,6 +28,12 @@ class ColoursLettersNumbersConfig:
 class ColoursLettersNumbersQuestionKind(StrEnum):
     MEMORY_SEQUENCE = "memory_sequence"
     MATH = "math"
+
+
+class ColoursLettersNumbersMemoryMode(StrEnum):
+    VISIBLE_COPY = "visible_copy"
+    DELAYED_CHOICE = "delayed_choice"
+    DELAYED_EXACT = "delayed_exact"
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +60,24 @@ class ColoursLettersNumbersTrial:
 
 
 @dataclass(frozen=True, slots=True)
+class ColoursLettersNumbersMemoryChallenge:
+    target_sequence: str
+    options: tuple[ColoursLettersNumbersOption, ...]
+    expected_option_code: int
+
+
+@dataclass(frozen=True, slots=True)
+class ColoursLettersNumbersGenerationProfile:
+    sequence_min_easy: int = 5
+    sequence_min_hard: int = 5
+    sequence_max_easy: int = 6
+    sequence_max_hard: int = 6
+    option_style: str = "default"
+    math_profile: NumericalOperationsProblemProfile | None = None
+    math_difficulty_offset: float = 0.0
+
+
+@dataclass(frozen=True, slots=True)
 class ColoursLettersNumbersPayload:
     target_sequence: str | None
     options: tuple[ColoursLettersNumbersOption, ...]
@@ -67,6 +92,36 @@ class ColoursLettersNumbersPayload:
     missed_diamonds: int
     cleared_diamonds: int
     points: float
+
+
+@dataclass(frozen=True, slots=True)
+class ColoursLettersNumbersTrainingPayload:
+    target_sequence: str | None
+    options: tuple[ColoursLettersNumbersOption, ...]
+    options_active: bool
+    memory_answered: bool
+    math_answered: bool
+    math_prompt: str
+    lane_colors: tuple[str, ...]
+    lane_start_norm: float
+    lane_end_norm: float
+    diamonds: tuple[ColoursLettersNumbersDiamond, ...]
+    missed_diamonds: int
+    cleared_diamonds: int
+    points: float
+    memory_input_active: bool = False
+    memory_input_max_length: int = 0
+    input_label: str = "Math Answer"
+    show_text_entry: bool = True
+    static_text: str = "--"
+    control_hint: str = ""
+    top_hint_override: str | None = None
+    colour_active: bool = True
+    math_active: bool = True
+    memory_active: bool = True
+
+
+ColoursLettersNumbersRuntimePayload = ColoursLettersNumbersPayload | ColoursLettersNumbersTrainingPayload
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,39 +144,70 @@ class _LiveDiamond:
 
 
 class ColoursLettersNumbersGenerator:
-    def __init__(self, rng: SeededRng):
+    def __init__(
+        self,
+        rng: SeededRng,
+        *,
+        profile: ColoursLettersNumbersGenerationProfile | None = None,
+    ):
         self._rng = rng
+        self._profile = profile or ColoursLettersNumbersGenerationProfile()
+        self._math_generator = (
+            None
+            if self._profile.math_profile is None
+            else NumericalOperationsGenerator(
+                seed=int(self._rng.randint(1, 2_147_483_647)),
+                profile=self._profile.math_profile,
+            )
+        )
 
     def next_trial(self, *, difficulty: float) -> ColoursLettersNumbersTrial:
         difficulty = 0.0 if difficulty <= 0.0 else 1.0 if difficulty >= 1.0 else float(difficulty)
-        sequence = self._build_sequence(difficulty=difficulty)
-        options = self._build_options(sequence)
-        expected_option_code = next((o.code for o in options if o.label == sequence), 1)
-        math_prompt, math_answer = self._build_math(difficulty=difficulty)
+        memory = self.next_memory_challenge(difficulty=difficulty)
+        math_prompt, math_answer = self.next_math_challenge(difficulty=difficulty)
         return ColoursLettersNumbersTrial(
-            target_sequence=sequence,
-            options=options,
-            expected_option_code=expected_option_code,
+            target_sequence=memory.target_sequence,
+            options=memory.options,
+            expected_option_code=memory.expected_option_code,
             math_prompt=math_prompt,
             math_answer=math_answer,
         )
 
+    def next_memory_challenge(self, *, difficulty: float) -> ColoursLettersNumbersMemoryChallenge:
+        difficulty = 0.0 if difficulty <= 0.0 else 1.0 if difficulty >= 1.0 else float(difficulty)
+        sequence = self._build_sequence(difficulty=difficulty)
+        options = self._build_options(sequence, difficulty=difficulty)
+        expected_option_code = next((o.code for o in options if o.label == sequence), 1)
+        return ColoursLettersNumbersMemoryChallenge(
+            target_sequence=sequence,
+            options=options,
+            expected_option_code=expected_option_code,
+        )
+
+    def next_math_challenge(self, *, difficulty: float) -> tuple[str, int]:
+        difficulty = 0.0 if difficulty <= 0.0 else 1.0 if difficulty >= 1.0 else float(difficulty)
+        if self._math_generator is None:
+            return self._build_math(difficulty=difficulty)
+        local = clamp01(difficulty + float(self._profile.math_difficulty_offset))
+        problem = self._math_generator.next_problem(difficulty=local)
+        return str(problem.prompt), int(problem.answer)
+
     def _build_sequence(self, *, difficulty: float) -> str:
         alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ"
-        n = lerp_int(5, 6, difficulty)
+        n = self._sequence_length(difficulty)
         chars = [alphabet[self._rng.randint(0, len(alphabet) - 1)] for _ in range(n)]
         return "".join(chars)
 
-    def _build_options(self, sequence: str) -> tuple[ColoursLettersNumbersOption, ...]:
+    def _build_options(
+        self,
+        sequence: str,
+        *,
+        difficulty: float,
+    ) -> tuple[ColoursLettersNumbersOption, ...]:
         variants = [sequence]
         seen = {sequence}
         while len(variants) < 5:
-            idx = int(self._rng.randint(0, len(sequence) - 1))
-            alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ"
-            replacement = sequence[idx]
-            while replacement == sequence[idx]:
-                replacement = alphabet[self._rng.randint(0, len(alphabet) - 1)]
-            candidate = f"{sequence[:idx]}{replacement}{sequence[idx + 1 :]}"
+            candidate = self._build_option_variant(sequence=sequence, difficulty=difficulty)
             if candidate in seen:
                 continue
             variants.append(candidate)
@@ -134,6 +220,40 @@ class ColoursLettersNumbersGenerator:
         return tuple(
             ColoursLettersNumbersOption(code=i + 1, label=s) for i, s in enumerate(variants)
         )
+
+    def _sequence_length(self, difficulty: float) -> int:
+        lo = lerp_int(self._profile.sequence_min_easy, self._profile.sequence_min_hard, difficulty)
+        hi = lerp_int(self._profile.sequence_max_easy, self._profile.sequence_max_hard, difficulty)
+        return max(1, int(self._rng.randint(lo, hi)))
+
+    def _build_option_variant(self, *, sequence: str, difficulty: float) -> str:
+        alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ"
+        style = str(self._profile.option_style).strip().lower()
+        if style == "scaffold" and difficulty < 0.55 and len(sequence) >= 2:
+            indices = self._rng.sample(range(len(sequence)), k=min(2, len(sequence)))
+            chars = list(sequence)
+            for idx in indices:
+                replacement = chars[idx]
+                while replacement == chars[idx]:
+                    replacement = alphabet[self._rng.randint(0, len(alphabet) - 1)]
+                chars[idx] = replacement
+            return "".join(chars)
+        if style == "tight" or difficulty >= 0.75:
+            if len(sequence) >= 2 and self._rng.random() < 0.45:
+                idx = int(self._rng.randint(0, len(sequence) - 2))
+                chars = list(sequence)
+                chars[idx], chars[idx + 1] = chars[idx + 1], chars[idx]
+                return "".join(chars)
+            if len(sequence) >= 3 and self._rng.random() < 0.25:
+                idx = int(self._rng.randint(0, len(sequence) - 2))
+                chars = list(sequence)
+                chars[idx] = chars[idx + 1]
+                return "".join(chars)
+        idx = int(self._rng.randint(0, len(sequence) - 1))
+        replacement = sequence[idx]
+        while replacement == sequence[idx]:
+            replacement = alphabet[self._rng.randint(0, len(alphabet) - 1)]
+        return f"{sequence[:idx]}{replacement}{sequence[idx + 1 :]}"
 
     def _build_math(self, *, difficulty: float) -> tuple[str, int]:
         lo = lerp_int(2, 4, difficulty)

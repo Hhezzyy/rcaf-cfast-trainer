@@ -9,6 +9,7 @@ from cfast_trainer.visual_search import (
     VisualSearchConfig,
     VisualSearchGenerator,
     VisualSearchPayload,
+    VisualSearchProfile,
     VisualSearchScorer,
     VisualSearchTaskKind,
     build_visual_search_test,
@@ -67,6 +68,62 @@ def test_block_numbers_move_between_questions() -> None:
     assert sorted(first_payload.cell_codes) == list(range(10, 22))
     assert sorted(second_payload.cell_codes) == list(range(10, 22))
     assert first_payload.cell_codes != second_payload.cell_codes
+
+
+def test_profile_restricts_generator_to_selected_family() -> None:
+    gen = VisualSearchGenerator(
+        seed=987,
+        profile=VisualSearchProfile(allowed_kinds=(VisualSearchTaskKind.ALPHANUMERIC,)),
+    )
+
+    payloads = [gen.next_problem(difficulty=0.7).payload for _ in range(12)]
+
+    assert all(isinstance(payload, VisualSearchPayload) for payload in payloads)
+    assert {
+        payload.kind
+        for payload in payloads
+        if isinstance(payload, VisualSearchPayload)
+    } == {VisualSearchTaskKind.ALPHANUMERIC}
+
+
+def test_harder_difficulty_uses_more_confusable_distractors() -> None:
+    letter_clusters = (
+        ("E", "F", "H", "K", "L"),
+        ("A", "M", "R"),
+        ("B", "G", "P", "R", "S"),
+    )
+    symbol_clusters = (
+        ("X_MARK", "DOUBLE_CROSS", "STAR", "BOLT"),
+        ("L_HOOK", "PIN", "FORK"),
+        ("BOX", "TRIANGLE", "RING_SPOKE"),
+        ("S_BEND", "LOLLIPOP"),
+    )
+
+    def confusable_share(problem_payload: VisualSearchPayload) -> float:
+        if problem_payload.kind is VisualSearchTaskKind.ALPHANUMERIC:
+            clusters = letter_clusters
+        else:
+            clusters = symbol_clusters
+        confusable: set[str] = set()
+        for cluster in clusters:
+            if problem_payload.target in cluster:
+                confusable.update(token for token in cluster if token != problem_payload.target)
+        distractors = [token for token in problem_payload.cells if token != problem_payload.target]
+        if not distractors:
+            return 0.0
+        return sum(1 for token in distractors if token in confusable) / float(len(distractors))
+
+    low_gen = VisualSearchGenerator(seed=4321)
+    high_gen = VisualSearchGenerator(seed=4321)
+
+    low_share = sum(
+        confusable_share(low_gen.next_problem(difficulty=0.1).payload) for _ in range(40)
+    ) / 40.0
+    high_share = sum(
+        confusable_share(high_gen.next_problem(difficulty=0.9).payload) for _ in range(40)
+    ) / 40.0
+
+    assert high_share > low_share
 
 
 def test_scoring_exact_and_estimation_behavior() -> None:

@@ -5,6 +5,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+def _float3(value: object, *, default: tuple[float, float, float]) -> tuple[float, float, float]:
+    if isinstance(value, list | tuple) and len(value) >= 3:
+        return (float(value[0]), float(value[1]), float(value[2]))
+    return default
+
+
 def _repo_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
@@ -20,6 +26,8 @@ class Panda3DAssetEntry:
     fallback: str
     scale: float
     candidates: tuple[str, ...]
+    hpr_offset_deg: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    pos_offset: tuple[float, float, float] = (0.0, 0.0, 0.0)
 
     def resolved_path(self, *, asset_root: Path) -> Path | None:
         for rel in self.candidates:
@@ -27,6 +35,26 @@ class Panda3DAssetEntry:
             if path.exists():
                 return path
         return None
+
+    def apply_loaded_model_transform(
+        self,
+        node,
+        *,
+        pos: tuple[float, float, float],
+        hpr: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        scale: float = 1.0,
+    ) -> None:
+        node.setPos(
+            float(pos[0]) + self.pos_offset[0],
+            float(pos[1]) + self.pos_offset[1],
+            float(pos[2]) + self.pos_offset[2],
+        )
+        node.setHpr(
+            float(hpr[0]) + self.hpr_offset_deg[0],
+            float(hpr[1]) + self.hpr_offset_deg[1],
+            float(hpr[2]) + self.hpr_offset_deg[2],
+        )
+        node.setScale(float(scale) * self.scale)
 
 
 class Panda3DAssetCatalog:
@@ -54,6 +82,14 @@ class Panda3DAssetCatalog:
                 fallback=str(item.get("fallback", "box")),
                 scale=float(item.get("scale", 1.0)),
                 candidates=tuple(str(v) for v in item.get("candidates", ())),
+                hpr_offset_deg=_float3(
+                    item.get("hpr_offset_deg"),
+                    default=(0.0, 0.0, 0.0),
+                ),
+                pos_offset=_float3(
+                    item.get("pos_offset"),
+                    default=(0.0, 0.0, 0.0),
+                ),
             )
         return entries
 

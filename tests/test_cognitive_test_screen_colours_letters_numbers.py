@@ -13,17 +13,20 @@ from cfast_trainer.cognitive_core import TestSnapshot as SnapshotModel
 from cfast_trainer.colours_letters_numbers import (
     ColoursLettersNumbersOption,
     ColoursLettersNumbersPayload,
+    ColoursLettersNumbersRuntimePayload,
+    ColoursLettersNumbersTrainingPayload,
 )
 
 
 class _FakeClnEngine:
-    def __init__(self, payload: ColoursLettersNumbersPayload) -> None:
+    def __init__(self, payload: ColoursLettersNumbersRuntimePayload, *, title: str) -> None:
         self._payload = payload
+        self._title = str(title)
         self.answers: list[str] = []
 
     def snapshot(self) -> SnapshotModel:
         return SnapshotModel(
-            title="Colours, Letters and Numbers",
+            title=self._title,
             phase=Phase.PRACTICE,
             prompt="",
             input_hint="",
@@ -51,7 +54,9 @@ class _FakeClnEngine:
 
 
 def _build_screen(
-    payload: ColoursLettersNumbersPayload,
+    payload: ColoursLettersNumbersRuntimePayload,
+    *,
+    title: str = "Colours, Letters and Numbers",
 ) -> tuple[App, CognitiveTestScreen, _FakeClnEngine]:
     pygame.init()
     surface = pygame.display.set_mode((960, 540))
@@ -59,7 +64,7 @@ def _build_screen(
     app = App(surface=surface, font=font)
     root = MenuScreen(app, "Main Menu", [MenuItem("Quit", app.quit)], is_root=True)
     app.push(root)
-    engine = _FakeClnEngine(payload)
+    engine = _FakeClnEngine(payload, title=title)
     screen = CognitiveTestScreen(app, engine_factory=lambda: engine)
     app.push(screen)
     return app, screen, engine
@@ -86,6 +91,34 @@ def _build_payload(*, options_active: bool = True) -> ColoursLettersNumbersPaylo
         missed_diamonds=0,
         cleared_diamonds=0,
         points=0.0,
+    )
+
+
+def _build_training_payload() -> ColoursLettersNumbersTrainingPayload:
+    return ColoursLettersNumbersTrainingPayload(
+        target_sequence="ABCDE",
+        options=(),
+        options_active=False,
+        memory_answered=False,
+        math_answered=False,
+        math_prompt="Type the full sequence and press Enter.",
+        lane_colors=("RED", "YELLOW", "GREEN", "BLUE"),
+        lane_start_norm=0.54,
+        lane_end_norm=0.98,
+        diamonds=(),
+        missed_diamonds=0,
+        cleared_diamonds=0,
+        points=0.0,
+        memory_input_active=True,
+        memory_input_max_length=8,
+        input_label="Sequence Entry",
+        show_text_entry=True,
+        static_text="--",
+        control_hint="Type letters then Enter",
+        top_hint_override="Type the full sequence while it remains visible.",
+        colour_active=False,
+        math_active=False,
+        memory_active=True,
     )
 
 
@@ -140,5 +173,35 @@ def test_cln_color_keys_use_qwer_mapping() -> None:
                 pygame.event.Event(pygame.KEYDOWN, {"key": key, "mod": 0, "unicode": ""})
             )
             assert engine.answers[-1] == expected
+    finally:
+        pygame.quit()
+
+
+def test_cln_training_payload_accepts_typed_sequence_input_under_drill_title() -> None:
+    _app, screen, engine = _build_screen(
+        _build_training_payload(),
+        title="Colours, Letters and Numbers: Sequence Copy",
+    )
+    try:
+        surface = pygame.display.get_surface()
+        assert surface is not None
+        screen.render(surface)
+
+        for key, ch in (
+            (pygame.K_a, "a"),
+            (pygame.K_b, "b"),
+            (pygame.K_c, "c"),
+            (pygame.K_d, "d"),
+            (pygame.K_e, "e"),
+        ):
+            screen.handle_event(
+                pygame.event.Event(pygame.KEYDOWN, {"key": key, "mod": 0, "unicode": ch})
+            )
+
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "mod": 0, "unicode": ""})
+        )
+
+        assert engine.answers == ["MEMSEQ:ABCDE"]
     finally:
         pygame.quit()

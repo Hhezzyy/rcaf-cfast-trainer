@@ -8,6 +8,10 @@ import pytest
 from cfast_trainer.rapid_tracking import (
     RapidTrackingConfig,
     RapidTrackingDriftGenerator,
+    RapidTrackingPayload,
+    RapidTrackingTrainingProfile,
+    RapidTrackingTrainingSegment,
+    build_rapid_tracking_compound_layout,
     build_rapid_tracking_test,
     score_window,
 )
@@ -103,6 +107,65 @@ def test_engine_determinism_same_seed_same_control_script() -> None:
     s1 = e1.scored_summary()
     s2 = e2.scored_summary()
     assert s1 == s2
+    assert e1.snapshot().payload == e2.snapshot().payload
+
+
+def test_camera_yaw_keeps_advancing_under_sustained_horizontal_input() -> None:
+    clock = FakeClock()
+    engine = build_rapid_tracking_test(
+        clock=clock,
+        seed=552,
+        difficulty=0.63,
+        config=RapidTrackingConfig(
+            practice_duration_s=0.0,
+            scored_duration_s=5.0,
+            tick_hz=120.0,
+        ),
+    )
+    engine.start_scored()
+
+    yaw_values: list[float] = []
+    compat_x_values: list[float] = []
+    for _ in range(6):
+        engine.set_control(horizontal=1.0, vertical=0.0)
+        clock.advance(0.25)
+        engine.update()
+        payload = engine.snapshot().payload
+        assert payload is not None
+        yaw_values.append(float(payload.camera_yaw_deg))
+        compat_x_values.append(float(payload.camera_x))
+
+    first_delta = ((yaw_values[2] - yaw_values[0] + 180.0) % 360.0) - 180.0
+    late_delta = ((yaw_values[-1] - yaw_values[2] + 180.0) % 360.0) - 180.0
+    assert abs(first_delta) > 8.0
+    assert abs(late_delta) > 8.0
+    assert abs(compat_x_values[-1]) > 5.2
+
+
+def test_camera_pitch_keeps_advancing_under_sustained_vertical_input() -> None:
+    clock = FakeClock()
+    engine = build_rapid_tracking_test(
+        clock=clock,
+        seed=553,
+        difficulty=0.63,
+        config=RapidTrackingConfig(
+            practice_duration_s=0.0,
+            scored_duration_s=5.0,
+            tick_hz=120.0,
+        ),
+    )
+    engine.start_scored()
+
+    pitch_values: list[float] = []
+    for _ in range(5):
+        engine.set_control(horizontal=0.0, vertical=-1.0)
+        clock.advance(0.25)
+        engine.update()
+        payload = engine.snapshot().payload
+        assert payload is not None
+        pitch_values.append(float(payload.camera_pitch_deg))
+
+    assert pitch_values[0] < pitch_values[2] < pitch_values[-1]
 
 
 def test_trigger_capture_scores_when_target_inside_camera_box() -> None:
@@ -121,11 +184,10 @@ def test_trigger_capture_scores_when_target_inside_camera_box() -> None:
     engine.start_scored()
     engine._target_x = 0.0
     engine._target_y = 0.0
-    engine._camera_x = 0.0
-    engine._camera_y = 0.0
     engine._target_kind = "jet"
     engine._target_is_moving = True
     engine._target_terrain_occluded = False
+    engine._reset_camera_pose_to_target()
 
     assert engine.submit_answer("CAPTURE") is True
 
@@ -136,7 +198,10 @@ def test_trigger_capture_scores_when_target_inside_camera_box() -> None:
     assert payload.capture_hits == 1
     assert payload.capture_attempts == 1
     assert payload.capture_points == 2
-    assert engine.scored_summary().capture_points == 2
+    summary = engine.scored_summary()
+    assert summary.capture_points == 2
+    assert summary.capture_max_points == 2
+    assert summary.capture_score_ratio == pytest.approx(1.0)
 
 
 def test_trigger_capture_respects_cooldown() -> None:
@@ -155,11 +220,10 @@ def test_trigger_capture_respects_cooldown() -> None:
     engine.start_scored()
     engine._target_x = 0.0
     engine._target_y = 0.0
-    engine._camera_x = 0.0
-    engine._camera_y = 0.0
     engine._target_kind = "truck"
     engine._target_is_moving = False
     engine._target_terrain_occluded = False
+    engine._reset_camera_pose_to_target()
 
     assert engine.submit_answer("CAPTURE") is True
     assert engine.submit_answer("CAPTURE") is False
@@ -167,6 +231,48 @@ def test_trigger_capture_respects_cooldown() -> None:
     summary = engine.scored_summary()
     assert summary.capture_attempts == 1
     assert summary.capture_hits == 1
+
+
+def test_training_segment_payload_metadata_and_filtered_kinds_are_exposed() -> None:
+    clock = FakeClock()
+    engine = build_rapid_tracking_test(
+        clock=clock,
+        seed=101,
+        difficulty=0.5,
+        config=RapidTrackingConfig(
+            practice_duration_s=0.0,
+            scored_duration_s=30.0,
+            tick_hz=120.0,
+        ),
+        title="Rapid Tracking: Lock Anchor",
+        scored_segments=(
+            RapidTrackingTrainingSegment(
+                label="Lock Anchor",
+                duration_s=30.0,
+                focus_label="Stable lock quality",
+                active_target_kinds=("soldier", "truck"),
+                active_challenges=("lock_quality",),
+                profile=RapidTrackingTrainingProfile(
+                    target_kinds=("soldier", "truck"),
+                    cover_modes=("open",),
+                    handoff_modes=("smooth",),
+                ),
+            ),
+        ),
+    )
+
+    engine.start_scored()
+    snap = engine.snapshot()
+    payload = snap.payload
+    assert isinstance(payload, RapidTrackingPayload)
+    assert snap.title == "Rapid Tracking: Lock Anchor"
+    assert payload.focus_label == "Stable lock quality"
+    assert payload.segment_label == "Lock Anchor"
+    assert payload.active_target_kinds == ("soldier", "truck")
+    assert payload.active_challenges == ("lock_quality",)
+    assert {segment.kind for segment in engine._active_training_script} <= {"soldier", "truck"}
+    assert {segment.cover_mode for segment in engine._active_training_script} <= {"open"}
+    assert {segment.handoff for segment in engine._active_training_script} <= {"smooth"}
 
 
 def test_scene_script_covers_requested_target_types_and_handoffs() -> None:
@@ -186,18 +292,15 @@ def test_scene_script_covers_requested_target_types_and_handoffs() -> None:
     payload = engine.snapshot().payload
     assert payload is not None
 
-    seen_kinds = {payload.target_kind}
-    seen_handoffs = {payload.target_handoff_mode}
+    profile = engine._difficulty_profile()
+    seen_kinds = {segment.kind for segment in profile.scene_script}
+    seen_handoffs = {segment.handoff for segment in profile.scene_script}
+    seen_cover_modes = {segment.cover_mode for segment in profile.scene_script}
 
-    for _ in range(len(engine._SCENE_SCRIPT) - 1):
-        engine._start_scene_segment(initial=False)
-        payload = engine.snapshot().payload
-        assert payload is not None
-        seen_kinds.add(payload.target_kind)
-        seen_handoffs.add(payload.target_handoff_mode)
-
+    assert payload.session_seed == 311
     assert {"soldier", "building", "truck", "helicopter", "jet"} <= seen_kinds
     assert {"smooth", "jump"} <= seen_handoffs
+    assert {"open", "building", "terrain"} <= seen_cover_modes
 
 
 def test_target_speed_order_matches_brief() -> None:
@@ -216,7 +319,8 @@ def test_target_speed_order_matches_brief() -> None:
     engine.start_scored()
 
     def sampled_speed(kind: str) -> float:
-        for idx, segment in enumerate(engine._SCENE_SCRIPT):
+        speeds: list[float] = []
+        for idx, segment in enumerate(engine._difficulty_profile().scene_script):
             if segment.kind != kind:
                 continue
             if idx == 0:
@@ -226,8 +330,10 @@ def test_target_speed_order_matches_brief() -> None:
                 engine._start_scene_segment(initial=False)
             engine._sim_elapsed_s = engine._segment_started_s + (engine._segment_duration_s * 0.5)
             engine._advance_target()
-            return math.hypot(engine._target_vx, engine._target_vy)
-        raise AssertionError(f"missing segment for {kind}")
+            speeds.append(math.hypot(engine._target_vx, engine._target_vy))
+        if not speeds:
+            raise AssertionError(f"missing segment for {kind}")
+        return sum(speeds) / len(speeds)
 
     soldier_speed = sampled_speed("soldier")
     building_speed = sampled_speed("building")
@@ -237,6 +343,32 @@ def test_target_speed_order_matches_brief() -> None:
 
     assert building_speed == pytest.approx(0.0)
     assert soldier_speed < truck_speed < helicopter_speed < jet_speed
+
+
+def test_truck_segments_bind_to_seeded_road_anchors() -> None:
+    clock = FakeClock()
+    engine = build_rapid_tracking_test(
+        clock=clock,
+        seed=903,
+        difficulty=0.52,
+        config=RapidTrackingConfig(
+            practice_duration_s=0.0,
+            scored_duration_s=10.0,
+            tick_hz=120.0,
+        ),
+    )
+
+    road_anchor_ids = {anchor.anchor_id for anchor in engine._compound_layout.road_anchors}
+    truck_segments = [
+        segment
+        for segment in engine._difficulty_profile().scene_script
+        if segment.kind == "truck"
+    ]
+
+    assert truck_segments
+    assert all(segment.route_kind == "road_run" for segment in truck_segments)
+    assert all(segment.start_anchor_id in road_anchor_ids for segment in truck_segments)
+    assert all(segment.end_anchor_id in road_anchor_ids for segment in truck_segments)
 
 
 def test_truck_motion_stays_axis_aligned_without_diagonal_drift() -> None:
@@ -254,15 +386,23 @@ def test_truck_motion_stays_axis_aligned_without_diagonal_drift() -> None:
 
     engine.start_scored()
 
-    truck_segment = next(segment for segment in engine._SCENE_SCRIPT if segment.kind == "truck")
+    truck_segment = next(
+        segment
+        for segment in engine._difficulty_profile().scene_script
+        if segment.kind == "truck" and segment.cover_mode == "open"
+    )
     truck_index = next(
-        idx for idx, segment in enumerate(engine._SCENE_SCRIPT) if segment.kind == "truck"
+        idx
+        for idx, segment in enumerate(engine._difficulty_profile().scene_script)
+        if segment.kind == "truck" and segment.cover_mode == "open"
     )
     engine._script_index = truck_index - 1
     engine._start_scene_segment(initial=False)
 
-    dominant_axis_x = abs(truck_segment.end_x - truck_segment.start_x) >= abs(
-        truck_segment.end_y - truck_segment.start_y
+    start_anchor = engine._anchor_lookup[truck_segment.start_anchor_id]
+    end_anchor = engine._anchor_lookup[truck_segment.end_anchor_id]
+    dominant_axis_x = abs(end_anchor.x - start_anchor.x) >= abs(
+        end_anchor.y - start_anchor.y
     )
 
     sampled_positions: list[tuple[float, float]] = []
@@ -310,6 +450,101 @@ def test_ground_targets_are_not_marked_obscured_too_early() -> None:
         target_rel_y=ridge + 0.18,
         target_kind="soldier",
     ) is True
+
+
+def test_same_seed_shares_layout_between_practice_and_scored_but_different_phase_scripts() -> None:
+    clock = FakeClock()
+    engine = build_rapid_tracking_test(
+        clock=clock,
+        seed=801,
+        difficulty=0.58,
+        config=RapidTrackingConfig(
+            practice_duration_s=10.0,
+            scored_duration_s=10.0,
+            tick_hz=120.0,
+        ),
+    )
+
+    profile = engine._difficulty_profile()
+    assert engine._scenario.layout == engine._compound_layout
+    assert profile.practice_script != profile.scene_script
+    assert engine._scenario.layout.seed == 801
+
+
+def test_different_seed_changes_compound_layout_and_schedule() -> None:
+    clock = FakeClock()
+    a = build_rapid_tracking_test(clock=clock, seed=901, difficulty=0.58)
+    b = build_rapid_tracking_test(clock=clock, seed=902, difficulty=0.58)
+
+    assert a._compound_layout != b._compound_layout
+    assert a._difficulty_profile().scene_script != b._difficulty_profile().scene_script
+
+
+def test_compound_layout_includes_seeded_foliage_clusters() -> None:
+    same_a = build_rapid_tracking_compound_layout(seed=431)
+    same_b = build_rapid_tracking_compound_layout(seed=431)
+    other = build_rapid_tracking_compound_layout(seed=432)
+
+    assert same_a.compound_center_x == pytest.approx(same_b.compound_center_x)
+    assert same_a.compound_center_y == pytest.approx(same_b.compound_center_y)
+    assert same_a.shrub_clusters == same_b.shrub_clusters
+    assert same_a.tree_clusters == same_b.tree_clusters
+    assert same_a.forest_clusters == same_b.forest_clusters
+
+    assert same_a.shrub_clusters
+    assert same_a.tree_clusters
+    assert same_a.forest_clusters
+    assert {cluster.asset_id for cluster in same_a.shrub_clusters} == {"shrubs_low_cluster"}
+    assert {cluster.asset_id for cluster in same_a.tree_clusters} == {"trees_field_cluster"}
+    assert {cluster.asset_id for cluster in same_a.forest_clusters} == {"forest_canopy_patch"}
+
+    assert (
+        same_a.compound_center_x != other.compound_center_x
+        or same_a.compound_center_y != other.compound_center_y
+        or same_a.shrub_clusters != other.shrub_clusters
+        or same_a.tree_clusters != other.tree_clusters
+        or same_a.forest_clusters != other.forest_clusters
+    )
+
+
+def test_building_handoff_segments_bind_to_real_building_anchors() -> None:
+    clock = FakeClock()
+    engine = build_rapid_tracking_test(clock=clock, seed=777, difficulty=0.58)
+
+    building_segments = [
+        segment for segment in engine._difficulty_profile().scene_script if segment.cover_mode == "building"
+    ]
+    building_anchor_ids = {anchor.anchor_id for anchor in engine._compound_layout.building_anchors}
+
+    assert building_segments
+    for segment in building_segments:
+        assert segment.kind == "building"
+        assert segment.focus_anchor_id in building_anchor_ids
+        assert segment.start_anchor_id in building_anchor_ids
+        assert segment.end_anchor_id in building_anchor_ids
+
+
+def test_terrain_cover_segments_hide_target_without_changing_kind_identity() -> None:
+    clock = FakeClock()
+    engine = build_rapid_tracking_test(clock=clock, seed=778, difficulty=0.58)
+    terrain_index = next(
+        idx
+        for idx, segment in enumerate(engine._difficulty_profile().scene_script)
+        if segment.cover_mode == "terrain"
+    )
+
+    engine.start_scored()
+    engine._script_index = terrain_index - 1
+    engine._start_scene_segment(initial=False)
+    engine._sim_elapsed_s = engine._segment_started_s + (engine._segment_duration_s * 0.5)
+    engine._advance_target()
+    engine._step(0.0)
+
+    payload = engine.snapshot().payload
+    assert payload is not None
+    assert payload.target_kind in {"soldier", "truck", "helicopter"}
+    assert payload.target_cover_state == "terrain"
+    assert payload.target_visible is False
 
 
 def test_low_difficulty_limits_handoffs_to_ground_targets_and_enables_assist() -> None:

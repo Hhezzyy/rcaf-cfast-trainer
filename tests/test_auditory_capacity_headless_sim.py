@@ -7,6 +7,7 @@ import pytest
 from cfast_trainer.auditory_capacity import (
     AuditoryCapacityCommandType,
     AuditoryCapacityConfig,
+    AuditoryCapacityGateDirective,
     AuditoryCapacityInstructionEvent,
     AuditoryCapacityPayload,
     _LiveGate,
@@ -32,7 +33,7 @@ def _event(
     at_s: float,
     call_sign: str,
     command_type: AuditoryCapacityCommandType,
-    payload: str | int | None,
+    payload: str | int | AuditoryCapacityGateDirective | None,
     expires_at_s: float,
     is_distractor: bool = False,
 ) -> AuditoryCapacityInstructionEvent:
@@ -48,7 +49,7 @@ def _event(
     )
 
 
-def test_headless_scripted_run_covers_active_command_filtering_recall_and_gate_rules() -> None:
+def test_headless_scripted_run_covers_next_gate_directive_digit_group_and_beep() -> None:
     clock = FakeClock()
     engine = build_auditory_capacity_test(
         clock=clock,
@@ -57,8 +58,8 @@ def test_headless_scripted_run_covers_active_command_filtering_recall_and_gate_r
         config=AuditoryCapacityConfig(
             practice_enabled=False,
             practice_duration_s=0.0,
-            scored_duration_s=3.2,
-            run_duration_seconds=3.2,
+            scored_duration_s=4.2,
+            run_duration_seconds=4.2,
             tick_hz=120.0,
             gate_spawn_rate=0.20,
             command_rate=0.50,
@@ -73,10 +74,15 @@ def test_headless_scripted_run_covers_active_command_filtering_recall_and_gate_r
     engine.start_scored()
     engine._assigned_callsigns = ("EAGLE", "RAVEN", "VIPER")
     engine._active_callsign = "ALL ASSIGNED"
+    engine._briefing_duration_s = 0.0
     engine._dist_x = 0.0
     engine._dist_y = 0.0
     engine._dist_until_s = 9999.0
     engine._next_gate_at_s = 9999.0
+    engine._next_state_command_at_s = 9999.0
+    engine._next_gate_directive_at_s = 9999.0
+    engine._next_digit_sequence_at_s = 9999.0
+    engine._next_beep_at_s = 9999.0
     engine._instruction_script = (
         _event(
             event_id=1,
@@ -88,52 +94,39 @@ def test_headless_scripted_run_covers_active_command_filtering_recall_and_gate_r
         ),
         _event(
             event_id=2,
-            at_s=0.34,
-            call_sign="COBRA",
+            at_s=0.32,
+            call_sign="VIPER",
             command_type=AuditoryCapacityCommandType.CHANGE_NUMBER,
-            payload=7,
-            expires_at_s=1.05,
-            is_distractor=True,
+            payload=4,
+            expires_at_s=1.08,
         ),
         _event(
             event_id=3,
             at_s=0.56,
-            call_sign="VIPER",
-            command_type=AuditoryCapacityCommandType.CHANGE_NUMBER,
-            payload=4,
-            expires_at_s=1.22,
+            call_sign="EAGLE",
+            command_type=AuditoryCapacityCommandType.DIGIT_SEQUENCE,
+            payload="47218",
+            expires_at_s=2.05,
         ),
         _event(
             event_id=4,
-            at_s=0.84,
+            at_s=0.94,
             call_sign="RAVEN",
-            command_type=AuditoryCapacityCommandType.DIGIT_APPEND,
-            payload="4",
-            expires_at_s=1.20,
-        ),
-        _event(
-            event_id=5,
-            at_s=1.02,
-            call_sign="VIPER",
-            command_type=AuditoryCapacityCommandType.DIGIT_APPEND,
-            payload="7",
-            expires_at_s=1.38,
-        ),
-        _event(
-            event_id=6,
-            at_s=1.18,
-            call_sign="EAGLE",
-            command_type=AuditoryCapacityCommandType.SET_FORBIDDEN_GATE_SHAPE,
-            payload="TRIANGLE",
+            command_type=AuditoryCapacityCommandType.GATE_DIRECTIVE,
+            payload=AuditoryCapacityGateDirective(
+                action="AVOID",
+                match_kind="SHAPE",
+                match_value="TRIANGLE",
+            ),
             expires_at_s=1.80,
         ),
         _event(
-            event_id=7,
-            at_s=1.42,
-            call_sign="EAGLE",
-            command_type=AuditoryCapacityCommandType.RECALL_DIGITS,
-            payload=None,
-            expires_at_s=2.55,
+            event_id=5,
+            at_s=1.28,
+            call_sign="ALL ASSIGNED",
+            command_type=AuditoryCapacityCommandType.PRESS_TRIGGER,
+            payload="beep",
+            expires_at_s=2.13,
         ),
     )
     engine._next_instruction_index = 0
@@ -141,9 +134,10 @@ def test_headless_scripted_run_covers_active_command_filtering_recall_and_gate_r
     remembered_digits = ""
     handled_instruction_ids: set[int] = set()
     recalled_for_uid: set[int] = set()
+    beep_answered = False
     gate_inserted = False
 
-    for _ in range(480):
+    for _ in range(540):
         clock.advance(1.0 / 60.0)
         engine.update()
         snap = engine.snapshot()
@@ -163,22 +157,23 @@ def test_headless_scripted_run_covers_active_command_filtering_recall_and_gate_r
                 engine.set_number(payload.number_command)
                 handled_instruction_ids.add(payload.instruction_uid)
             elif payload.callsign_cue in payload.assigned_callsigns and payload.sequence_display is not None:
-                remembered_digits += payload.sequence_display
-                handled_instruction_ids.add(payload.instruction_uid)
-            elif payload.sequence_display is not None:
+                remembered_digits = payload.sequence_display
                 handled_instruction_ids.add(payload.instruction_uid)
 
         if payload.sequence_response_open and payload.instruction_uid is not None:
             if payload.instruction_uid not in recalled_for_uid:
                 engine.submit_digit_recall(remembered_digits)
                 recalled_for_uid.add(payload.instruction_uid)
-                remembered_digits = ""
 
-        if not gate_inserted and payload.forbidden_gate_shape == "TRIANGLE":
+        if payload.beep_active and not beep_answered:
+            engine.submit_answer("SPACE")
+            beep_answered = True
+
+        if not gate_inserted and payload.target_gate_action == "AVOID":
             engine._gates.append(
                 _LiveGate(
                     gate_id=77,
-                    x_norm=0.18,
+                    x_norm=0.22,
                     y_norm=0.0,
                     color="RED",
                     shape="TRIANGLE",
@@ -186,6 +181,7 @@ def test_headless_scripted_run_covers_active_command_filtering_recall_and_gate_r
                     scored=False,
                 )
             )
+            engine._bind_gate_directive_to_next_match()
             gate_inserted = True
 
         lead_gate = next((gate for gate in payload.gates if gate.gate_id == 77), None)
@@ -196,29 +192,22 @@ def test_headless_scripted_run_covers_active_command_filtering_recall_and_gate_r
 
     assert engine.phase is Phase.RESULTS
 
-    payload = engine.snapshot().payload
-    assert payload is None
-
-    summary = engine.scored_summary()
-    assert summary.attempted >= 4
-    assert summary.correct >= 3
-
     scored_events = [evt for evt in engine.events() if evt.phase is Phase.SCORED]
     recall_events = [evt for evt in scored_events if evt.kind.value == "digit_recall"]
     gate_events = [evt for evt in scored_events if evt.kind.value == "gate"]
+    trigger_events = [evt for evt in scored_events if evt.kind.value == "trigger"]
 
-    assert recall_events
-    assert recall_events[-1].is_correct is True
-    assert gate_events
-    assert gate_events[-1].is_correct is True
+    assert recall_events and recall_events[-1].is_correct is True
+    assert gate_events and gate_events[-1].is_correct is True
+    assert trigger_events and trigger_events[-1].is_correct is True
 
-    final_snapshot_payload = engine._build_payload()
-    assert final_snapshot_payload.active_callsign == "ALL ASSIGNED"
-    assert final_snapshot_payload.assigned_callsigns == ("EAGLE", "RAVEN", "VIPER")
-    assert final_snapshot_payload.ball_color == "GREEN"
-    assert final_snapshot_payload.ball_number == 4
-    assert final_snapshot_payload.correct_command_executions == 2
-    assert final_snapshot_payload.false_responses_to_distractors == 0
-    assert final_snapshot_payload.digit_recall_attempts == 1
-    assert final_snapshot_payload.digit_recall_accuracy == pytest.approx(1.0)
-    assert final_snapshot_payload.forbidden_gate_hits == 0
+    summary = engine.scored_summary()
+    assert summary.attempted >= 5
+    assert summary.correct >= 5
+
+    final_payload = engine._build_payload()
+    assert final_payload.ball_color == "GREEN"
+    assert final_payload.ball_number == 4
+    assert final_payload.digit_recall_attempts == 1
+    assert final_payload.digit_recall_accuracy == pytest.approx(1.0)
+    assert final_payload.forbidden_gate_hits == 0

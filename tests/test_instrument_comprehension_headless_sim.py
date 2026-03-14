@@ -72,7 +72,7 @@ def test_headless_scripted_run_produces_expected_summary_and_partial_scores() ->
     assert engine.phase is Phase.PRACTICE
 
     p_practice_2 = mirror.next_problem_for_kind(
-        kind=InstrumentComprehensionTrialKind.INSTRUMENTS_TO_DESCRIPTION,
+        kind=InstrumentComprehensionTrialKind.AIRCRAFT_TO_INSTRUMENTS,
         difficulty=difficulty,
     )
     clock.advance(0.2)
@@ -83,7 +83,7 @@ def test_headless_scripted_run_produces_expected_summary_and_partial_scores() ->
     assert engine.phase is Phase.SCORED
 
     p2 = mirror.next_problem_for_kind(
-        kind=InstrumentComprehensionTrialKind.INSTRUMENTS_TO_DESCRIPTION,
+        kind=InstrumentComprehensionTrialKind.AIRCRAFT_TO_INSTRUMENTS,
         difficulty=difficulty,
     )
     assert isinstance(p2.payload, InstrumentComprehensionPayload)
@@ -97,6 +97,28 @@ def test_headless_scripted_run_produces_expected_summary_and_partial_scores() ->
     )[0]
     clock.advance(0.5)
     assert engine.submit_answer(str(near_option)) is True
+
+    mirror.next_problem_for_kind(
+        kind=InstrumentComprehensionTrialKind.AIRCRAFT_TO_INSTRUMENTS,
+        difficulty=difficulty,
+    )
+    clock.advance(3.0)
+    engine.update()
+    assert engine.phase is Phase.PRACTICE_DONE
+
+    engine.start_scored()
+    assert engine.phase is Phase.PRACTICE
+
+    p_practice_3 = mirror.next_problem_for_kind(
+        kind=InstrumentComprehensionTrialKind.INSTRUMENTS_TO_DESCRIPTION,
+        difficulty=difficulty,
+    )
+    clock.advance(0.2)
+    assert engine.submit_answer(str(p_practice_3.answer)) is True
+    assert engine.phase is Phase.PRACTICE_DONE
+
+    engine.start_scored()
+    assert engine.phase is Phase.SCORED
 
     p3 = mirror.next_problem_for_kind(
         kind=InstrumentComprehensionTrialKind.INSTRUMENTS_TO_DESCRIPTION,

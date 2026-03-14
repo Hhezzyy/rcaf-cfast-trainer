@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -32,6 +33,11 @@ class AnglesBearingsOption:
     value_deg: int
 
 
+class AnglesBearingsAnswerMode(StrEnum):
+    MULTIPLE_CHOICE = "multiple_choice"
+    TYPED = "typed"
+
+
 @dataclass(frozen=True, slots=True)
 class AnglesBearingsDegreesPayload:
     kind: AnglesBearingsQuestionKind
@@ -43,20 +49,79 @@ class AnglesBearingsDegreesPayload:
     options: tuple[AnglesBearingsOption, ...]
     correct_code: int
     correct_value_deg: int
+    marker_radius_ratio: float = 0.84
+    answer_mode: AnglesBearingsAnswerMode = AnglesBearingsAnswerMode.MULTIPLE_CHOICE
+
+
+@dataclass(frozen=True, slots=True)
+class AnglesBearingsTrainingPayload:
+    kind: AnglesBearingsQuestionKind
+    stem: str
+    reference_bearing_deg: int
+    target_bearing_deg: int
+    angle_measure: str | None
+    object_label: str
+    rounded_value_deg: int
+    exact_value_deg: int
+    display_answer_text: str
+    input_digits: int = 3
+    answer_digits: int = 3
+    allow_north_360_alias: bool = False
+    base_cap_s: float | None = None
+    marker_radius_ratio: float = 0.84
+    answer_mode: AnglesBearingsAnswerMode = AnglesBearingsAnswerMode.TYPED
+
+
+AnglesBearingsRuntimePayload = AnglesBearingsDegreesPayload | AnglesBearingsTrainingPayload
+
+
+def format_angles_bearings_value(
+    *,
+    kind: AnglesBearingsQuestionKind,
+    value: int,
+    north_alias: bool = False,
+) -> str:
+    if kind is AnglesBearingsQuestionKind.BEARING_FROM_REFERENCE:
+        normalized = int(value) % 360
+        if north_alias and normalized == 0:
+            return "000/360"
+        return f"{normalized:03d}"
+    return str(int(value))
 
 
 class AnglesBearingsDegreesGenerator:
     """Deterministic generator for angle and bearing estimation trials."""
 
-    def __init__(self, *, seed: int) -> None:
+    def __init__(
+        self,
+        *,
+        seed: int,
+        allowed_kinds: Sequence[AnglesBearingsQuestionKind] | None = None,
+    ) -> None:
         self._rng = SeededRng(seed)
         self._labels = tuple("ABCDEF")
+        if allowed_kinds is None:
+            self._allowed_kinds = (
+                AnglesBearingsQuestionKind.ANGLE_BETWEEN_LINES,
+                AnglesBearingsQuestionKind.BEARING_FROM_REFERENCE,
+            )
+        else:
+            unique = tuple(dict.fromkeys(allowed_kinds))
+            if not unique:
+                raise ValueError("allowed_kinds must not be empty")
+            self._allowed_kinds = tuple(unique)
 
     def next_problem(self, *, difficulty: float) -> Problem:
         d = clamp01(difficulty)
-        if self._rng.random() < 0.5:
+        kind = self._pick_kind()
+        if kind is AnglesBearingsQuestionKind.ANGLE_BETWEEN_LINES:
             return self._make_angle_problem(d)
         return self._make_bearing_problem(d)
+
+    def _pick_kind(self) -> AnglesBearingsQuestionKind:
+        if len(self._allowed_kinds) == 1:
+            return self._allowed_kinds[0]
+        return AnglesBearingsQuestionKind(str(self._rng.choice(self._allowed_kinds)))
 
     def _make_angle_problem(self, difficulty: float) -> Problem:
         reference_bearing = self._rng.randint(0, 359)
@@ -89,7 +154,7 @@ class AnglesBearingsDegreesGenerator:
         )
 
     def _make_bearing_problem(self, difficulty: float) -> Problem:
-        quant_step = lerp_int(15, 1, difficulty)
+        quant_step = 90 if difficulty < 0.4 else 45
         bearing = self._sample_quantized(0, 359, quant_step)
         label = str(self._rng.choice(self._labels))
         stem = f"Estimate the bearing of point {label} from the center (000-359)."
@@ -107,6 +172,7 @@ class AnglesBearingsDegreesGenerator:
             angle_measure=None,
             object_label=label,
             distractors=distractors,
+            marker_radius_ratio=self._bearing_marker_radius_ratio(difficulty),
         )
 
     def _multiple_choice_problem(
@@ -120,6 +186,7 @@ class AnglesBearingsDegreesGenerator:
         angle_measure: str | None,
         object_label: str,
         distractors: tuple[int, int, int],
+        marker_radius_ratio: float = 0.84,
     ) -> Problem:
         values: list[int] = [self._normalize_value(kind=kind, value=correct_value)]
         for distractor in distractors:
@@ -167,6 +234,7 @@ class AnglesBearingsDegreesGenerator:
             options=options,
             correct_code=int(correct_code),
             correct_value_deg=int(correct_value),
+            marker_radius_ratio=float(marker_radius_ratio),
         )
         return Problem(
             prompt=prompt,
@@ -184,7 +252,7 @@ class AnglesBearingsDegreesGenerator:
 
     def _fallback_distractor(self, *, kind: AnglesBearingsQuestionKind, correct_value: int) -> int:
         if kind is AnglesBearingsQuestionKind.BEARING_FROM_REFERENCE:
-            delta = self._rng.choice((10, 20, 30, 40, 50))
+            delta = self._rng.choice((45, 90, 135))
             direction = -1 if self._rng.random() < 0.5 else 1
             return (int(correct_value) + (direction * delta)) % 360
 
@@ -215,6 +283,16 @@ class AnglesBearingsDegreesGenerator:
         if value > hi:
             value -= step
         return int(max(lo, min(hi, value)))
+
+    def _bearing_marker_radius_ratio(self, difficulty: float) -> float:
+        d = clamp01(difficulty)
+        if d < 0.35:
+            choices = (0.86, 0.80, 0.74)
+        elif d < 0.7:
+            choices = (0.74, 0.66, 0.58)
+        else:
+            choices = (0.62, 0.54, 0.46, 0.38)
+        return float(self._rng.choice(choices))
 
 
 def build_angles_bearings_degrees_test(

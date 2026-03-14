@@ -591,6 +591,7 @@ class AntInfoGrabberGenerator:
             answer_label="Route Distance",
             answer_unit_label=scenario.distance_unit,
             answer_digits=4,
+            input_digits=8,
         )
         return Problem(
             prompt=spec.render_prompt(),
@@ -616,6 +617,7 @@ class AntInfoGrabberGenerator:
             answer_label="Recall",
             answer_unit_label="HHMM",
             answer_digits=4,
+            input_digits=8,
         )
         return Problem(prompt=spec.render_prompt(), answer=int(spec.target_digits), payload=updated)
 
@@ -637,6 +639,7 @@ class AntInfoGrabberGenerator:
             answer_label="Recall",
             answer_unit_label="HHMM",
             answer_digits=4,
+            input_digits=8,
         )
         return Problem(prompt=spec.render_prompt(), answer=int(spec.target_digits), payload=updated)
 
@@ -660,6 +663,7 @@ class AntInfoGrabberGenerator:
             answer_label="Recall Speed",
             answer_unit_label=scenario.speed_unit,
             answer_digits=4,
+            input_digits=8,
         )
         return Problem(prompt=spec.render_prompt(), answer=int(spec.target_digits), payload=updated)
 
@@ -683,6 +687,7 @@ class AntInfoGrabberGenerator:
             answer_label="Recall Burn",
             answer_unit_label=scenario.fuel_unit.split("/")[0],
             answer_digits=4,
+            input_digits=8,
         )
         return Problem(prompt=spec.render_prompt(), answer=int(spec.target_digits), payload=updated)
 
@@ -868,6 +873,7 @@ class TimedCapDrill:
         base_caps_by_level: Sequence[float],
         adaptive_config: AntAdaptiveDifficultyConfig | None = None,
         scorer: AnswerScorer | None = None,
+        immediate_feedback_override: bool | None = None,
     ) -> None:
         self._title = str(title)
         self._instructions = list(instructions)
@@ -883,6 +889,11 @@ class TimedCapDrill:
         self._adaptive_config = adaptive_config or AntAdaptiveDifficultyConfig()
         self._base_caps_by_level = tuple(float(v) for v in base_caps_by_level)
         self._scorer = scorer
+        self._immediate_feedback_override = (
+            None
+            if immediate_feedback_override is None
+            else bool(immediate_feedback_override)
+        )
 
         self._phase = Phase.INSTRUCTIONS
         self._current: Problem | None = None
@@ -1200,7 +1211,10 @@ class TimedCapDrill:
         score_value: float,
         adaptive_note: str | None,
     ) -> str:
-        if not self._mode_profile.immediate_feedback:
+        immediate_feedback = self._mode_profile.immediate_feedback
+        if self._immediate_feedback_override is not None:
+            immediate_feedback = self._immediate_feedback_override
+        if not immediate_feedback:
             return ""
         if is_timeout:
             text = f"Timeout. Correct answer: {correct_answer}"
@@ -1370,6 +1384,10 @@ class TimedCapDrill:
 
     @staticmethod
     def _display_answer(problem: Problem) -> str:
+        payload = problem.payload
+        display = getattr(payload, "display_answer_text", None)
+        if isinstance(display, str) and display.strip() != "":
+            return display
         return expected_digits_for_problem(problem)
 
 

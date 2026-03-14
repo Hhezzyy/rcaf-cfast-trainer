@@ -4,6 +4,8 @@
       "category": "aircraft",
       "fallback": "plane",
       "scale": 1.0,
+      "hpr_offset_deg": [0.0, 0.0, 0.0],
+      "pos_offset": [0.0, 0.0, 0.0],
       "candidates": [
         "aircraft/plane_red.glb",
         "aircraft/plane_red.gltf",
@@ -14,6 +16,8 @@
       "category": "aircraft",
       "fallback": "plane",
       "scale": 1.0,
+      "hpr_offset_deg": [0.0, 0.0, 0.0],
+      "pos_offset": [0.0, 0.0, 0.0],
       "candidates": [
         "aircraft/plane_blue.glb",
         "aircraft/plane_blue.gltf",
@@ -24,6 +28,8 @@
       "category": "aircraft",
       "fallback": "plane",
       "scale": 1.0,
+      "hpr_offset_deg": [0.0, 0.0, 0.0],
+      "pos_offset": [0.0, 0.0, 0.0],
       "candidates": [
         "aircraft/plane_green.glb",
         "aircraft/plane_green.gltf",
@@ -34,6 +40,8 @@
       "category": "aircraft",
       "fallback": "plane",
       "scale": 1.0,
+      "hpr_offset_deg": [0.0, 0.0, 0.0],
+      "pos_offset": [0.0, 0.0, 0.0],
       "candidates": [
         "aircraft/plane_yellow.glb",
         "aircraft/plane_yellow.gltf",
@@ -44,6 +52,8 @@
       "category": "helicopter",
       "fallback": "helicopter",
       "scale": 1.0,
+      "hpr_offset_deg": [0.0, 0.0, 0.0],
+      "pos_offset": [0.0, 0.0, 0.0],
       "candidates": [
         "helicopters/helicopter_green.glb",
         "helicopters/helicopter_green.gltf",
@@ -54,6 +64,8 @@
       "category": "vehicle",
       "fallback": "truck",
       "scale": 1.0,
+      "hpr_offset_deg": [0.0, 0.0, 0.0],
+      "pos_offset": [0.0, 0.0, 0.0],
       "candidates": [
         "vehicles/truck_olive.glb",
         "vehicles/truck_olive.gltf",
@@ -64,6 +76,8 @@
       "category": "scenery",
       "fallback": "hangar",
       "scale": 1.0,
+      "hpr_offset_deg": [0.0, 0.0, 0.0],
+      "pos_offset": [0.0, 0.0, 0.0],
       "candidates": [
         "scenery/building_hangar.glb",
         "scenery/building_hangar.gltf",
@@ -74,6 +88,8 @@
       "category": "scenery",
       "fallback": "tower",
       "scale": 1.0,
+      "hpr_offset_deg": [0.0, 0.0, 0.0],
+      "pos_offset": [0.0, 0.0, 0.0],
       "candidates": [
         "scenery/building_tower.glb",
         "scenery/building_tower.gltf",
@@ -84,20 +100,84 @@
       "category": "scenery",
       "fallback": "trees",
       "scale": 1.0,
+      "hpr_offset_deg": [0.0, 0.0, 0.0],
+      "pos_offset": [0.0, 0.0, 0.0],
       "candidates": [
         "scenery/trees_pine_cluster.glb",
         "scenery/trees_pine_cluster.gltf",
         "scenery/trees_pine_cluster.obj"
       ]
     },
+    "shrubs_low_cluster": {
+      "category": "scenery",
+      "fallback": "shrub",
+      "scale": 1.0,
+      "hpr_offset_deg": [0.0, 0.0, 0.0],
+      "pos_offset": [0.0, 0.0, 0.0],
+      "candidates": [
+        "scenery/shrubs_low_cluster.obj"
+      ]
+    },
+    "trees_field_cluster": {
+      "category": "scenery",
+      "fallback": "trees",
+      "scale": 1.0,
+      "hpr_offset_deg": [0.0, 0.0, 0.0],
+      "pos_offset": [0.0, 0.0, 0.0],
+      "candidates": [
+        "scenery/trees_field_cluster.obj"
+      ]
+    },
+    "forest_canopy_patch": {
+      "category": "scenery",
+      "fallback": "forest",
+      "scale": 1.0,
+      "hpr_offset_deg": [0.0, 0.0, 0.0],
+      "pos_offset": [0.0, 0.0, 0.0],
+      "candidates": [
+        "scenery/forest_canopy_patch.obj"
+      ]
+    },
     "soldiers_patrol": {
       "category": "personnel",
       "fallback": "soldiers",
       "scale": 1.0,
+      "hpr_offset_deg": [0.0, 0.0, 0.0],
+      "pos_offset": [0.0, 0.0, 0.0],
       "candidates": [
         "personnel/soldiers_patrol.glb",
         "personnel/soldiers_patrol.gltf",
         "personnel/soldiers_patrol.obj"
+      ]
+    },
+    "auditory_ball": {
+      "category": "auditory",
+      "fallback": "ball",
+      "scale": 1.0,
+      "hpr_offset_deg": [0.0, 0.0, 0.0],
+      "pos_offset": [0.0, 0.0, 0.0],
+      "candidates": [
+        "auditory/auditory_ball.obj"
+      ]
+    },
+    "auditory_tunnel_segment": {
+      "category": "auditory",
+      "fallback": "tunnel_segment",
+      "scale": 1.0,
+      "hpr_offset_deg": [0.0, 0.0, 0.0],
+      "pos_offset": [0.0, 0.0, 0.0],
+      "candidates": [
+        "auditory/auditory_tunnel_segment.obj"
+      ]
+    },
+    "auditory_tunnel_rib": {
+      "category": "auditory",
+      "fallback": "tunnel_rib",
+      "scale": 1.0,
+      "hpr_offset_deg": [0.0, 0.0, 0.0],
+      "pos_offset": [0.0, 0.0, 0.0],
+      "candidates": [
+        "auditory/auditory_tunnel_rib.obj"
       ]
     }
   }

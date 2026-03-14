@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import pygame
 import pytest
 
+from cfast_trainer.app import App, AntWorkoutScreen, MenuItem, MenuScreen
 from cfast_trainer.ant_drills import AntDrillMode
 from cfast_trainer.ant_workouts import (
     AntWorkoutBlockPlan,
@@ -120,6 +122,22 @@ def _complete_small_workout(clock: FakeClock) -> AntWorkoutSession:
     return session
 
 
+def _build_app_and_workout_screen(
+    *,
+    clock: FakeClock,
+    session: AntWorkoutSession,
+) -> tuple[App, AntWorkoutScreen]:
+    pygame.init()
+    surface = pygame.display.set_mode((960, 540))
+    font = pygame.font.Font(None, 36)
+    app = App(surface=surface, font=font)
+    root = MenuScreen(app, "Main Menu", [MenuItem("Quit", app.quit)], is_root=True)
+    app.push(root)
+    screen = AntWorkoutScreen(app, session=session, test_code="airborne_numerical_workout")
+    app.push(screen)
+    return app, screen
+
+
 def test_airborne_numerical_workout_session_runs_reflections_setups_blocks_and_results() -> None:
     clock = FakeClock()
     session = _complete_small_workout(clock)
@@ -187,3 +205,160 @@ def test_real_airborne_numerical_workout_matches_standard_90_minute_structure() 
         "Fuel-burn solving",
         "Full-question solving",
     }.issubset(set(plan.focus_skills))
+
+
+def test_workout_dev_skip_hotkeys_advance_shell_skip_block_and_finish(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CFAST_ENABLE_DEV_TOOLS", "1")
+    clock = FakeClock()
+    session = AntWorkoutSession(
+        clock=clock,
+        seed=123,
+        plan=_build_small_workout_plan(),
+        starting_level=5,
+    )
+    _app, screen = _build_app_and_workout_screen(clock=clock, session=session)
+    try:
+        for _ in range(4):
+            screen.handle_event(
+                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_F10, "unicode": ""})
+            )
+
+        assert session.stage is AntWorkoutStage.BLOCK
+
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_F11, "unicode": ""})
+        )
+        assert session.stage is AntWorkoutStage.BLOCK_SETUP
+
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_F10, "unicode": ""})
+        )
+        assert session.stage is AntWorkoutStage.BLOCK
+
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_F8, "unicode": ""})
+        )
+        assert session.stage is AntWorkoutStage.RESULTS
+        assert session.scored_summary().completed_blocks == 2
+    finally:
+        pygame.quit()
+
+
+def test_workout_pause_menu_shows_visible_skip_entry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CFAST_ENABLE_DEV_TOOLS", "1")
+    clock = FakeClock()
+    session = AntWorkoutSession(
+        clock=clock,
+        seed=123,
+        plan=_build_small_workout_plan(),
+        starting_level=5,
+    )
+    _app, screen = _build_app_and_workout_screen(clock=clock, session=session)
+    try:
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_ESCAPE, "unicode": ""})
+        )
+
+        assert "Skip Stage" in screen._pause_menu_options()
+        assert "Skip Workout" not in screen._pause_menu_options()
+    finally:
+        pygame.quit()
+
+
+def test_workout_pause_menu_hides_skip_entry_without_dev_tools() -> None:
+    clock = FakeClock()
+    session = AntWorkoutSession(
+        clock=clock,
+        seed=123,
+        plan=_build_small_workout_plan(),
+        starting_level=5,
+    )
+    _app, screen = _build_app_and_workout_screen(clock=clock, session=session)
+    try:
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_ESCAPE, "unicode": ""})
+        )
+
+        assert "Skip Stage" not in screen._pause_menu_options()
+    finally:
+        pygame.quit()
+
+
+def test_workout_pause_freezes_block_timer() -> None:
+    clock = FakeClock()
+    session = AntWorkoutSession(
+        clock=clock,
+        seed=123,
+        plan=_build_small_workout_plan(),
+        starting_level=5,
+    )
+    _app, screen = _build_app_and_workout_screen(clock=clock, session=session)
+    surface = screen._app.surface
+    try:
+        session.activate()
+        session.append_text("Need better tempo")
+        session.activate()
+        session.append_text("Move on after misses")
+        session.activate()
+        session.activate()
+
+        assert session.stage is AntWorkoutStage.BLOCK
+        screen.render(surface)
+        before = session.snapshot().block_time_remaining_s
+        assert before is not None
+
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_ESCAPE, "unicode": ""})
+        )
+        clock.advance(5.0)
+        screen.render(surface)
+        paused = session.snapshot().block_time_remaining_s
+
+        assert paused == pytest.approx(before)
+
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_ESCAPE, "unicode": ""})
+        )
+        clock.advance(2.0)
+        screen.render(surface)
+        resumed = session.snapshot().block_time_remaining_s
+
+        assert resumed == pytest.approx(before - 2.0)
+    finally:
+        pygame.quit()
+
+
+def test_workout_dev_skip_does_not_persist_attempt(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CFAST_ENABLE_DEV_TOOLS", "1")
+    clock = FakeClock()
+    session = AntWorkoutSession(
+        clock=clock,
+        seed=123,
+        plan=_build_small_workout_plan(),
+        starting_level=5,
+    )
+    pygame.init()
+    surface = pygame.display.set_mode((960, 540))
+    font = pygame.font.Font(None, 36)
+    store = ResultsStore(tmp_path / "results.sqlite3")
+    app = App(surface=surface, font=font, results_store=store)
+    app.push(MenuScreen(app, "Main Menu", [MenuItem("Quit", app.quit)], is_root=True))
+    screen = AntWorkoutScreen(app, session=session, test_code="airborne_numerical_workout")
+    app.push(screen)
+    try:
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_F8, "unicode": ""})
+        )
+        screen.render(surface)
+
+        assert store.session_summary() is None
+        assert screen._results_persistence_lines == ["Local save skipped in dev mode."]
+    finally:
+        pygame.quit()

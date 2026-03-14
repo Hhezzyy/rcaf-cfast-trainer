@@ -7,9 +7,13 @@ import pytest
 from cfast_trainer.auditory_capacity import (
     AuditoryCapacityCommandType,
     AuditoryCapacityConfig,
+    AuditoryCapacityGateDirective,
     AuditoryCapacityInstructionEvent,
     AuditoryCapacityScenarioGenerator,
+    AuditoryCapacityTrainingProfile,
+    AuditoryCapacityTrainingSegment,
     _LiveGate,
+    _PendingStateCommand,
     build_auditory_capacity_test,
     project_inside_tube,
     score_sequence_answer,
@@ -114,6 +118,18 @@ def test_generator_determinism_same_seed_same_sequence() -> None:
     assert [evt.command_type for evt in script_1]
 
 
+def test_payload_exposes_session_seed_and_phase_elapsed() -> None:
+    clock, engine = _build_engine()
+
+    clock.advance(0.25)
+    engine.update()
+
+    payload = engine.snapshot().payload
+    assert payload is not None
+    assert payload.session_seed == 17
+    assert payload.phase_elapsed_s == pytest.approx(0.25, abs=0.02)
+
+
 def test_sequence_scoring_exact_partial_and_zero() -> None:
     assert score_sequence_answer("12345", "12345") == 1.0
     assert score_sequence_answer("12345", "12335") == pytest.approx(0.8)
@@ -143,6 +159,320 @@ def test_curved_tube_helpers_project_diagonal_points_back_to_ellipse() -> None:
         tube_half_width=0.84,
         tube_half_height=0.50,
     ) == pytest.approx(0.995, rel=1e-3)
+
+
+def test_circle_gate_reduces_ball_control_speed_vs_square_gate() -> None:
+    clock_circle, circle_engine = _build_engine()
+    clock_square, square_engine = _build_engine()
+
+    circle_engine._gates = [
+        _LiveGate(
+            gate_id=11,
+            x_norm=0.28,
+            y_norm=0.0,
+            color="RED",
+            shape="CIRCLE",
+            aperture_norm=0.18,
+        )
+    ]
+    square_engine._gates = [
+        _LiveGate(
+            gate_id=12,
+            x_norm=0.28,
+            y_norm=0.0,
+            color="RED",
+            shape="SQUARE",
+            aperture_norm=0.18,
+        )
+    ]
+    circle_engine.set_control(horizontal=1.0, vertical=0.0)
+    square_engine.set_control(horizontal=1.0, vertical=0.0)
+
+    clock_circle.advance(0.25)
+    clock_square.advance(0.25)
+    circle_engine.update()
+    square_engine.update()
+
+    circle_payload = circle_engine.snapshot().payload
+    square_payload = square_engine.snapshot().payload
+    assert circle_payload is not None
+    assert square_payload is not None
+    assert abs(circle_payload.ball_x) < abs(square_payload.ball_x)
+
+
+def test_briefing_starts_quiet_before_distractors_ramp_up() -> None:
+    clock = FakeClock()
+    engine = build_auditory_capacity_test(
+        clock=clock,
+        seed=31,
+        difficulty=0.5,
+        config=AuditoryCapacityConfig(
+            practice_enabled=True,
+            practice_duration_s=20.0,
+            scored_duration_s=20.0,
+            run_duration_seconds=20.0,
+        ),
+    )
+    engine.start_practice()
+
+    clock.advance(0.5)
+    engine.update()
+    early = engine.snapshot().payload
+    assert early is not None
+    assert early.briefing_active is True
+    assert early.background_noise_level == pytest.approx(0.0)
+    assert early.beep_active is False
+
+    for _ in range(10):
+        clock.advance(0.5)
+        engine.update()
+    later = engine.snapshot().payload
+    assert later is not None
+    assert later.briefing_active is False
+    assert later.background_noise_level > 0.0
+
+
+def test_custom_scored_segments_expose_active_channel_focus_and_metadata() -> None:
+    clock = FakeClock()
+    engine = build_auditory_capacity_test(
+        clock=clock,
+        seed=57,
+        difficulty=0.5,
+        config=AuditoryCapacityConfig(
+            practice_enabled=False,
+            practice_duration_s=0.0,
+            scored_duration_s=1.2,
+            run_duration_seconds=1.2,
+        ),
+        scored_segments=(
+            AuditoryCapacityTrainingSegment(
+                label="Gate Flight",
+                duration_s=1.2,
+                active_channels=("gates",),
+                profile=AuditoryCapacityTrainingProfile(
+                    enable_state_commands=False,
+                    enable_gate_directives=False,
+                    enable_digit_sequences=False,
+                    enable_trigger_cues=False,
+                    enable_distractors=False,
+                    noise_level_scale=0.0,
+                    distortion_level_scale=0.0,
+                ),
+            ),
+        ),
+    )
+    engine.start_practice()
+    engine.start_scored()
+
+    for _ in range(4):
+        clock.advance(0.25)
+        engine.update()
+
+    payload = engine.snapshot().payload
+    assert payload is not None
+    assert payload.active_channels == ("gates",)
+    assert payload.segment_label == "Gate Flight"
+    assert payload.segment_index == 1
+    assert payload.segment_total == 1
+    assert payload.color_command is None
+    assert payload.number_command is None
+    assert payload.sequence_display is None
+    assert payload.sequence_response_open is False
+    assert payload.beep_active is False
+    assert payload.next_color_in_s is None
+    assert payload.next_sequence_in_s is None
+    assert payload.next_beep_in_s is None
+    assert payload.background_noise_level == pytest.approx(0.0)
+
+
+def test_custom_scored_segments_advance_metadata_as_segments_change() -> None:
+    clock = FakeClock()
+    engine = build_auditory_capacity_test(
+        clock=clock,
+        seed=58,
+        difficulty=0.5,
+        config=AuditoryCapacityConfig(
+            practice_enabled=False,
+            practice_duration_s=0.0,
+            scored_duration_s=1.0,
+            run_duration_seconds=1.0,
+        ),
+        scored_segments=(
+            AuditoryCapacityTrainingSegment(
+                label="Gate Flight",
+                duration_s=0.4,
+                active_channels=("gates",),
+            ),
+            AuditoryCapacityTrainingSegment(
+                label="Digit Recall",
+                duration_s=0.6,
+                active_channels=("gates", "digit_recall"),
+            ),
+        ),
+    )
+    engine.start_practice()
+    engine.start_scored()
+
+    first = engine.snapshot().payload
+    assert first is not None
+    assert first.segment_label == "Gate Flight"
+    assert first.segment_index == 1
+    assert first.segment_total == 2
+
+    clock.advance(0.55)
+    engine.update()
+    second = engine.snapshot().payload
+    assert second is not None
+    assert second.segment_label == "Digit Recall"
+    assert second.segment_index == 2
+    assert second.segment_total == 2
+    assert second.active_channels == ("gates", "digit_recall")
+
+
+def test_runtime_digit_sequences_are_grouped_to_five_or_six_digits() -> None:
+    clock = FakeClock()
+    engine = build_auditory_capacity_test(
+        clock=clock,
+        seed=41,
+        difficulty=0.62,
+        config=AuditoryCapacityConfig(
+            practice_enabled=False,
+            practice_duration_s=0.0,
+            scored_duration_s=10.0,
+            run_duration_seconds=10.0,
+        ),
+    )
+    engine.start_practice()
+    engine.start_scored()
+
+    for _ in range(20):
+        evt = engine._build_runtime_digit_sequence_event(timestamp_s=1.0 + _)
+        digits = "".join(ch for ch in str(evt.payload) if ch.isdigit())
+        assert len(digits) in (5, 6)
+
+
+def test_next_gate_directive_binds_replaces_and_clears_after_resolution() -> None:
+    _, engine = _build_engine()
+    engine._gates = [
+        _LiveGate(
+            gate_id=11,
+            x_norm=0.48,
+            y_norm=0.0,
+            color="GREEN",
+            shape="SQUARE",
+            aperture_norm=0.18,
+        ),
+        _LiveGate(
+            gate_id=12,
+            x_norm=0.24,
+            y_norm=0.0,
+            color="RED",
+            shape="TRIANGLE",
+            aperture_norm=0.18,
+        ),
+    ]
+
+    avoid_triangle = AuditoryCapacityInstructionEvent(
+        event_id=10,
+        timestamp_s=0.1,
+        addressed_call_sign="RAVEN",
+        speaker_id="lead",
+        command_type=AuditoryCapacityCommandType.GATE_DIRECTIVE,
+        payload=AuditoryCapacityGateDirective(
+            action="AVOID",
+            match_kind="SHAPE",
+            match_value="TRIANGLE",
+        ),
+        expires_at_s=1.0,
+        is_distractor=False,
+    )
+    engine._activate_instruction(avoid_triangle)
+    assert engine._active_gate_directive is not None
+    assert engine._active_gate_directive.target_gate_id == 12
+
+    pass_green = AuditoryCapacityInstructionEvent(
+        event_id=11,
+        timestamp_s=0.2,
+        addressed_call_sign="EAGLE",
+        speaker_id="lead",
+        command_type=AuditoryCapacityCommandType.GATE_DIRECTIVE,
+        payload=AuditoryCapacityGateDirective(
+            action="PASS",
+            match_kind="COLOR",
+            match_value="GREEN",
+        ),
+        expires_at_s=1.2,
+        is_distractor=False,
+    )
+    engine._activate_instruction(pass_green)
+    assert engine._active_gate_directive is not None
+    assert engine._active_gate_directive.target_gate_id == 11
+
+    engine._ball_y = 0.0
+    engine._outside_tube = False
+    engine._gates = [
+        _LiveGate(
+            gate_id=11,
+            x_norm=0.0,
+            y_norm=0.0,
+            color="GREEN",
+            shape="SQUARE",
+            aperture_norm=0.18,
+            scored=False,
+        )
+    ]
+    engine._update_gates(0.0)
+
+    assert engine._active_gate_directive is None
+
+
+def test_beep_task_accepts_one_press_and_rejects_early_late_and_extra() -> None:
+    _, engine = _build_engine()
+
+    assert engine.submit_answer("SPACE") is True
+    assert engine.events()[-1].kind.value == "false_response"
+
+    beep = AuditoryCapacityInstructionEvent(
+        event_id=99,
+        timestamp_s=0.4,
+        addressed_call_sign="ALL ASSIGNED",
+        speaker_id="lead",
+        command_type=AuditoryCapacityCommandType.PRESS_TRIGGER,
+        payload="beep",
+        expires_at_s=1.25,
+        is_distractor=False,
+    )
+    engine._activate_instruction(beep)
+    engine._sim_elapsed_s = 0.52
+    assert engine.submit_answer("SPACE") is True
+    assert engine.events()[-1].kind.value == "trigger"
+    assert engine.events()[-1].is_correct is True
+
+    assert engine.submit_answer("SPACE") is True
+    assert engine.events()[-1].kind.value == "false_response"
+
+    engine._activate_instruction(beep)
+    engine._sim_elapsed_s = 1.40
+    engine._update_instruction_channel()
+    assert engine.events()[-1].kind.value == "trigger"
+    assert engine.events()[-1].is_correct is False
+
+
+def test_distractor_envelope_falls_faster_than_it_rises() -> None:
+    _, engine = _build_engine(scored_duration_s=12.0)
+    engine._phase_duration_s = 12.0
+    engine._briefing_duration_s = 3.0
+
+    engine._sim_elapsed_s = 4.5
+    rising = engine._distractor_envelope()
+    engine._sim_elapsed_s = 8.4
+    peak = engine._distractor_envelope()
+    engine._sim_elapsed_s = 10.8
+    falling = engine._distractor_envelope()
+
+    assert 0.0 < rising < peak
+    assert 0.0 < falling < peak
+    assert (peak - falling) > (rising - 0.0)
 
 
 def test_timer_boundary_transitions_to_results_and_rejects_submit() -> None:
@@ -234,6 +564,64 @@ def test_assigned_callsign_commands_update_state_and_external_distractor_is_scor
     assert payload.assigned_callsigns == ("EAGLE", "RAVEN", "VIPER")
     assert payload.correct_command_executions == 2
     assert payload.false_responses_to_distractors == 1
+
+
+def test_logical_colour_persists_while_visual_colour_flash_returns_to_white() -> None:
+    _, engine = _build_engine()
+    engine._pending_state_command = _PendingStateCommand(
+        event=_event(
+            event_id=41,
+            at_s=0.1,
+            call_sign="RAVEN",
+            command_type=AuditoryCapacityCommandType.CHANGE_COLOUR,
+            payload="GREEN",
+            expires_at_s=1.0,
+        ),
+        expected_color="GREEN",
+        expected_number=None,
+    )
+
+    assert engine.set_colour("GREEN") is True
+    payload = engine.snapshot().payload
+    assert payload is not None
+    assert payload.ball_color == "GREEN"
+    assert payload.ball_visual_color == "GREEN"
+    assert payload.ball_visual_strength > 0.9
+
+    engine._sim_elapsed_s += 0.35
+    payload = engine.snapshot().payload
+    assert payload is not None
+    assert payload.ball_color == "GREEN"
+    assert payload.ball_visual_color == "WHITE"
+    assert payload.ball_visual_strength == pytest.approx(0.0)
+
+
+def test_ball_visual_feedback_flashes_green_on_points_and_red_on_errors() -> None:
+    _, engine = _build_engine()
+    engine._pending_state_command = _PendingStateCommand(
+        event=_event(
+            event_id=51,
+            at_s=0.1,
+            call_sign="VIPER",
+            command_type=AuditoryCapacityCommandType.CHANGE_NUMBER,
+            payload=4,
+            expires_at_s=1.0,
+        ),
+        expected_color=None,
+        expected_number=4,
+    )
+
+    assert engine.set_number(4) is True
+    payload = engine.snapshot().payload
+    assert payload is not None
+    assert payload.ball_visual_color == "GREEN"
+    assert payload.ball_visual_strength > 0.9
+
+    assert engine.submit_answer("BLUE") is True
+    payload = engine.snapshot().payload
+    assert payload is not None
+    assert payload.ball_visual_color == "RED"
+    assert payload.ball_visual_strength > 0.9
 
 
 def test_digit_accumulation_and_delayed_recall_scores_exact() -> None:
@@ -352,4 +740,40 @@ def test_forbidden_gate_rule_changes_gate_scoring() -> None:
     assert payload.gate_hits == 1
     assert payload.gate_misses == 1
     assert payload.forbidden_gate_hits == 1
+    assert payload.gates == ()
+
+
+def test_gate_scoring_plane_does_not_move_with_ball_horizontal_offset() -> None:
+    _, engine = _build_engine()
+    engine._ball_x = 0.72
+    engine._ball_y = 0.0
+    engine._outside_tube = False
+    engine._gates = [
+        _LiveGate(
+            gate_id=9,
+            x_norm=0.12,
+            y_norm=0.0,
+            color="GREEN",
+            shape="SQUARE",
+            aperture_norm=0.20,
+            scored=False,
+        )
+    ]
+
+    engine._update_gates(0.0)
+
+    payload = engine.snapshot().payload
+    assert payload is not None
+    assert payload.gate_hits == 0
+    assert payload.gate_misses == 0
+    assert len(payload.gates) == 1
+    assert payload.gates[0].gate_id == 9
+
+    engine._gates[0].x_norm = 0.0
+    engine._update_gates(0.0)
+
+    payload = engine.snapshot().payload
+    assert payload is not None
+    assert payload.gate_hits == 1
+    assert payload.gate_misses == 0
     assert payload.gates == ()

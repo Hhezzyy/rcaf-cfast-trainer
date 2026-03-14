@@ -33,6 +33,12 @@ def test_generator_is_deterministic_for_same_seed() -> None:
     assert seq1 == seq2
 
 
+def test_default_test_profile_shows_sequence_longer_than_legacy_two_seconds() -> None:
+    cfg = ColoursLettersNumbersConfig()
+
+    assert cfg.sequence_show_s > 2.0
+
+
 def test_sequence_is_shown_first_then_corner_options_activate() -> None:
     clock = FakeClock()
     cfg = ColoursLettersNumbersConfig(

@@ -17,9 +17,9 @@ class LookupRetainPromptSpec:
         return max(1, len(self.target_digits))
 
     def render_prompt(self) -> str:
-        lines = [f"Target: {self.target_label}"]
+        lines = [f"Find the {self.target_label.lower()} and enter it."]
         lines.extend(step for step in self.steps if str(step).strip())
-        lines.append("Enter the original target using exact digits.")
+        lines.append("Enter the original value using exact digits.")
         return "\n".join(lines)
 
 

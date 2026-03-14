@@ -58,6 +58,10 @@ class TargetRecognitionPayload:
     system_step_interval_s: float
     full_credit_error: int
     zero_credit_error: int
+    active_panels: tuple[str, ...] = ("scene", "light", "scan", "system")
+    light_interval_range_s: tuple[float, float] = (5.0, 10.0)
+    scan_interval_range_s: tuple[float, float] = (5.0, 10.0)
+    scan_repeat_range: tuple[int, int] = (2, 4)
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,6 +178,10 @@ class TargetRecognitionGenerator:
             system_step_interval_s=system_step_interval_s,
             full_credit_error=0,
             zero_credit_error=3,
+            active_panels=("scene", "light", "scan", "system"),
+            light_interval_range_s=(5.0, 10.0),
+            scan_interval_range_s=(5.0, 10.0),
+            scan_repeat_range=(2, 4),
         )
 
         return Problem(

@@ -93,6 +93,7 @@ class AirborneScenario:
     answer_label: str
     answer_unit_label: str
     answer_digits: int
+    input_digits: int = 4
 
     # convenience aliases (keeps older UI code working)
     @property

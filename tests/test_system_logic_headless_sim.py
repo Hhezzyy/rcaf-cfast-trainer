@@ -1,16 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import cast
 
 import pytest
 
-from cfast_trainer.system_logic import (
-    SystemLogicConfig,
-    SystemLogicGenerator,
-    SystemLogicPayload,
-    build_system_logic_test,
-)
+from cfast_trainer.system_logic import SystemLogicConfig, SystemLogicGenerator, build_system_logic_test
 
 
 @dataclass
@@ -54,16 +48,13 @@ def test_headless_scripted_run_produces_expected_summary() -> None:
     assert engine.submit_answer(str(p1.answer)) is True
 
     p2 = gen.next_problem(difficulty=difficulty)
-    p2_payload = cast(SystemLogicPayload, p2.payload)
-    near_answer = int(p2.answer) + max(1, p2_payload.estimate_tolerance)
+    wrong_answer = 1 if p2.answer != 1 else 2
     clock.advance(0.5)
-    assert engine.submit_answer(str(near_answer)) is True
+    assert engine.submit_answer(str(wrong_answer)) is True
 
     p3 = gen.next_problem(difficulty=difficulty)
-    p3_payload = cast(SystemLogicPayload, p3.payload)
-    far_answer = int(p3.answer) + max(3, p3_payload.estimate_tolerance * 3)
     clock.advance(0.5)
-    assert engine.submit_answer(str(far_answer)) is True
+    assert engine.submit_answer(str(p3.answer)) is True
 
     clock.advance(6.0)
     engine.update()
@@ -71,10 +62,10 @@ def test_headless_scripted_run_produces_expected_summary() -> None:
 
     summary = engine.scored_summary()
     assert summary.attempted == 3
-    assert summary.correct == 1
-    assert summary.accuracy == pytest.approx(1 / 3)
+    assert summary.correct == 2
+    assert summary.accuracy == pytest.approx(2 / 3)
     assert summary.throughput_per_min == pytest.approx(30.0)
     assert summary.mean_response_time_s == pytest.approx(0.5)
-    assert summary.total_score == pytest.approx(1.5)
+    assert summary.total_score == pytest.approx(2.0)
     assert summary.max_score == pytest.approx(3.0)
-    assert summary.score_ratio == pytest.approx(0.5)
+    assert summary.score_ratio == pytest.approx(2 / 3)

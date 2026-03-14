@@ -6,6 +6,7 @@ import math
 from dataclasses import dataclass
 from pathlib import Path
 
+from .aircraft_art import build_panda_palette, build_panda3d_fixed_wing_model
 from .panda3d_assets import Panda3DAssetCatalog
 from .panda3d_protocol import Panda3DRequest, Panda3DResult, Panda3DScene
 
@@ -205,17 +206,15 @@ class _RuntimeApp:
         entry = self._catalog.entry(asset_id)
         resolved = self._catalog.resolve_path(asset_id)
         node: NodePath
-        if resolved is not None:
+        fallback_kind = entry.fallback if entry is not None else fallback
+        if resolved is not None and fallback_kind != "plane":
             node = self._load_model(resolved)
             self._stats = _SceneStats(
                 frames=self._stats.frames,
                 loaded_assets=self._stats.loaded_assets + 1,
                 fallback_assets=self._stats.fallback_assets,
             )
-            if entry is not None:
-                scale *= entry.scale
         else:
-            fallback_kind = entry.fallback if entry is not None else fallback
             node = self._build_fallback_model(kind=fallback_kind, color=color)
             self._stats = _SceneStats(
                 frames=self._stats.frames,
@@ -223,9 +222,12 @@ class _RuntimeApp:
                 fallback_assets=self._stats.fallback_assets + 1,
             )
         node.reparentTo(self._base.render)
-        node.setPos(*pos)
-        node.setHpr(*hpr)
-        node.setScale(scale)
+        if resolved is not None and entry is not None and fallback_kind != "plane":
+            entry.apply_loaded_model_transform(node, pos=pos, hpr=hpr, scale=scale)
+        else:
+            node.setPos(*pos)
+            node.setHpr(*hpr)
+            node.setScale(scale)
         return node
 
     def _load_model(self, path: Path):
@@ -241,17 +243,10 @@ class _RuntimeApp:
 
         root = NodePath(kind)
         if kind == "plane":
-            fuselage = self._make_box(size=(0.7, 3.2, 0.55), color=color)
-            wing = self._make_box(size=(3.8, 0.55, 0.10), color=color)
-            tail = self._make_box(size=(1.4, 0.36, 0.10), color=color)
-            fin = self._make_box(size=(0.10, 0.55, 0.55), color=(0.88, 0.88, 0.90, 1.0))
-            wing.setZ(0.04)
-            tail.setY(-1.28)
-            tail.setZ(0.18)
-            fin.setY(-1.35)
-            fin.setZ(0.42)
-            for child in (fuselage, wing, tail, fin):
-                child.reparentTo(root)
+            return build_panda3d_fixed_wing_model(
+                palette=build_panda_palette(body_color=color),
+                name="runtime-plane",
+            )
         elif kind == "helicopter":
             body = self._make_box(size=(0.9, 1.8, 0.8), color=color)
             tail = self._make_box(size=(0.14, 1.5, 0.14), color=color)

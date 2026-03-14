@@ -6,6 +6,11 @@ import os
 
 import pygame
 
+from .aircraft_art import (
+    build_panda_palette,
+    build_panda3d_fixed_wing_model,
+    panda3d_fixed_wing_hpr,
+)
 from .trace_test_1 import TraceTest1Attitude, TraceTest1SceneFrame, trace_test_1_scene_frames
 
 
@@ -227,19 +232,18 @@ class TraceTest1Panda3DRenderer:
         scale: float,
     ) -> None:
         _ = viewpoint_bearing_deg
-        attitude = frame.attitude
-        heading_rad = math.radians(float(frame.travel_heading_deg))
         anchor.setPos(*frame.position)
         anchor.setScale(scale)
-        anchor.lookAt(
-            frame.position[0] + math.sin(heading_rad),
-            frame.position[1] + math.cos(heading_rad),
-            frame.position[2],
+        anchor.setHpr(*self._aircraft_hpr_for_frame(frame))
+
+    @staticmethod
+    def _aircraft_hpr_for_frame(frame: TraceTest1SceneFrame) -> tuple[float, float, float]:
+        attitude = frame.attitude
+        return panda3d_fixed_wing_hpr(
+            heading_deg=float(frame.travel_heading_deg),
+            pitch_deg=float(attitude.pitch_deg),
+            roll_deg=float(attitude.roll_deg),
         )
-        # Keep pitch sign consistent with trace attitude semantics:
-        # positive pitch = pull-up, negative pitch = push-down.
-        anchor.setP(anchor.getP() + float(attitude.pitch_deg))
-        anchor.setR(float(attitude.roll_deg))
 
     def _build_cloud(self, *, scale: float):
         from panda3d.core import CardMaker, NodePath
@@ -262,30 +266,13 @@ class TraceTest1Panda3DRenderer:
         body_color: tuple[float, float, float, float],
         canopy_color: tuple[float, float, float, float],
     ):
-        from panda3d.core import NodePath
-
-        root = NodePath("trace-aircraft-model")
-        fuselage = self._make_box(size=(0.9, 6.4, 0.8), color=body_color)
-        wing = self._make_box(size=(8.2, 1.0, 0.18), color=body_color)
-        tail_plane = self._make_box(size=(2.8, 0.7, 0.16), color=body_color)
-        fin = self._make_box(size=(0.16, 0.85, 0.95), color=body_color)
-        canopy = self._make_box(size=(0.56, 1.25, 0.42), color=canopy_color)
-        nose = self._make_box(size=(0.62, 0.58, 0.54), color=canopy_color)
-
-        wing.setY(-0.2)
-        wing.setZ(0.04)
-        tail_plane.setY(-2.25)
-        tail_plane.setZ(0.24)
-        fin.setY(-2.45)
-        fin.setZ(0.66)
-        canopy.setY(1.45)
-        canopy.setZ(0.36)
-        nose.setY(3.2)
-        nose.setZ(0.10)
-
-        for child in (fuselage, wing, tail_plane, fin, canopy, nose):
-            child.reparentTo(root)
-        return root
+        return build_panda3d_fixed_wing_model(
+            palette=build_panda_palette(
+                body_color=body_color,
+                canopy_color=canopy_color,
+            ),
+            name="trace-aircraft-model",
+        )
 
     def _make_box(
         self,

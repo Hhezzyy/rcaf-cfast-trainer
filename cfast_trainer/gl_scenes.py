@@ -1,0 +1,71 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import pygame
+
+from .auditory_capacity import AuditoryCapacityPayload
+from .rapid_tracking import RapidTrackingPayload
+from .spatial_integration import SpatialIntegrationPayload
+from .trace_test_1 import TraceTest1Attitude
+from .trace_test_2 import TraceTest2Payload
+
+
+@dataclass(frozen=True, slots=True)
+class AuditoryGlScene:
+    world: pygame.Rect
+    payload: AuditoryCapacityPayload | None
+    time_remaining_s: float | None
+    time_fill_ratio: float | None
+
+
+@dataclass(frozen=True, slots=True)
+class RapidTrackingGlScene:
+    world: pygame.Rect
+    payload: RapidTrackingPayload | None
+    active_phase: bool
+
+
+@dataclass(frozen=True, slots=True)
+class SpatialIntegrationGlScene:
+    world: pygame.Rect
+    payload: SpatialIntegrationPayload | None
+
+
+@dataclass(frozen=True, slots=True)
+class TraceTest1GlScene:
+    world: pygame.Rect
+    reference: TraceTest1Attitude
+    candidate: TraceTest1Attitude
+    correct_code: int
+    viewpoint_bearing_deg: int
+    scene_turn_index: int
+    animate: bool
+    progress: float | None
+
+
+@dataclass(frozen=True, slots=True)
+class TraceTest2GlScene:
+    world: pygame.Rect
+    payload: TraceTest2Payload | None
+
+
+GlScene = (
+    AuditoryGlScene
+    | RapidTrackingGlScene
+    | SpatialIntegrationGlScene
+    | TraceTest1GlScene
+    | TraceTest2GlScene
+)
+
+
+def gl_scene_name(scene: GlScene) -> str:
+    if isinstance(scene, AuditoryGlScene):
+        return "auditory"
+    if isinstance(scene, RapidTrackingGlScene):
+        return "rapid_tracking"
+    if isinstance(scene, SpatialIntegrationGlScene):
+        return "spatial_integration"
+    if isinstance(scene, TraceTest1GlScene):
+        return "trace_test_1"
+    return "trace_test_2"
