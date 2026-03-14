@@ -21437,6 +21437,8 @@ class CognitiveTestScreen:
 
         if payload.trial_stage is SpatialIntegrationTrialStage.STUDY:
             active_view = payload.active_reference_view or (payload.reference_views[0] if payload.reference_views else None)
+            view_heading_deg = 0 if active_view is None else int(active_view.heading_deg)
+            compass_north_deg = (int(payload.north_arrow_deg) - view_heading_deg) % 360
             left = pygame.Rect(body.x, body.y, int(body.w * 0.72), body.h)
             right = pygame.Rect(left.right + 10, body.y, body.right - left.right - 10, body.h)
 
@@ -21444,7 +21446,7 @@ class CognitiveTestScreen:
                 surface,
                 left,
                 payload=payload,
-                heading_deg_override=0 if active_view is None else int(active_view.heading_deg),
+                heading_deg_override=view_heading_deg,
                 scene_view_override=None if active_view is None else active_view.scene_view,
                 title_override=(
                     f"{active_view.label}  ({payload.study_view_index}/{payload.study_views_in_scene})"
@@ -21455,12 +21457,13 @@ class CognitiveTestScreen:
             )
             pygame.draw.rect(surface, card_bg, right)
             pygame.draw.rect(surface, border, right, 1)
-            self._draw_spatial_compass(surface, right, north_deg=payload.north_arrow_deg)
+            self._draw_spatial_compass(surface, right, north_deg=compass_north_deg)
             info = (
                 f"{part_name}\n"
                 f"View {payload.study_view_index}/{payload.study_views_in_scene}\n\n"
                 "Study this single angle only.\n"
-                "The next views will replace it one at a time.\n"
+                "The next views show the same scene from new angles.\n"
+                "The compass shows where north sits in this view.\n"
                 "After the third view, the memory / integration questions begin."
             )
             self._draw_wrapped_text(
@@ -21497,11 +21500,11 @@ class CognitiveTestScreen:
 
             pygame.draw.rect(surface, card_bg, right)
             pygame.draw.rect(surface, border, right, 1)
-            self._draw_spatial_compass(surface, right, north_deg=payload.north_arrow_deg)
+            self._draw_spatial_compass(surface, right, north_deg=int(payload.north_arrow_deg) % 360)
             info = (
                 f"{part_name}\n{payload.query_label}\n\n"
                 "Click a cell or type a token like B4.\n"
-                "North is fixed on both study and answer screens."
+                "The answer map is north-up."
             )
             self._draw_wrapped_text(surface, info, pygame.Rect(right.x + 14, right.y + 64, right.w - 28, 120), color=text_main, font=self._small_font, max_lines=7)
             entry_card = pygame.Rect(right.x + 12, right.bottom - 58, right.w - 24, 46)
@@ -21555,14 +21558,32 @@ class CognitiveTestScreen:
         *,
         north_deg: int,
     ) -> None:
+        north_deg = int(north_deg) % 360
         dial = pygame.Rect(rect.right - 66, rect.y + 10, 56, 56)
         pygame.draw.ellipse(surface, (14, 22, 54), dial)
         pygame.draw.ellipse(surface, (214, 222, 236), dial, 1)
         center = dial.center
-        pygame.draw.line(surface, (228, 86, 72), center, (center[0], center[1] - 18), 3)
-        pygame.draw.line(surface, (228, 86, 72), center, (center[0], center[1] + 16), 2)
+        ang = math.radians(float(north_deg))
+        tip = (
+            center[0] + int(round(math.sin(ang) * 18.0)),
+            center[1] - int(round(math.cos(ang) * 18.0)),
+        )
+        tail = (
+            center[0] - int(round(math.sin(ang) * 16.0)),
+            center[1] + int(round(math.cos(ang) * 16.0)),
+        )
+        pygame.draw.line(surface, (228, 86, 72), center, tip, 3)
+        pygame.draw.line(surface, (228, 86, 72), center, tail, 2)
         n = self._tiny_font.render("N", True, (236, 244, 255))
-        surface.blit(n, n.get_rect(center=(center[0], center[1] - 23)))
+        surface.blit(
+            n,
+            n.get_rect(
+                center=(
+                    center[0] + int(round(math.sin(ang) * 23.0)),
+                    center[1] - int(round(math.cos(ang) * 23.0)),
+                )
+            ),
+        )
         label = self._tiny_font.render(f"N {north_deg}°", True, (236, 244, 255))
         surface.blit(label, (dial.x - 4, dial.bottom + 2))
 
@@ -21917,19 +21938,15 @@ class CognitiveTestScreen:
             )
             pygame.draw.line(surface, color, (view.x, view.y + i), (view.right, view.y + i))
 
-        seed = self._spatial_scene_seed(payload=payload) ^ ((view_heading_deg & 0xFFFF) << 7)
+        seed = self._spatial_scene_seed(payload=payload)
         rng = random.Random(seed)
-        anim_s = float(pygame.time.get_ticks()) / 1000.0
 
-        # Gentle cloud drift to make the scene continuously alive.
         cloud_count = 6
         cloud_lane = max(12, int((horizon - view.y) * 0.18))
         for idx in range(cloud_count):
             lane_y = view.y + 10 + ((idx % 3) * cloud_lane)
-            wobble = int(round(3.0 * math.sin((anim_s * 0.42) + (idx * 1.3))))
-            drift = int(round((anim_s * (12.0 + (idx * 1.7))) + (idx * 93)))
-            cx = view.x + ((drift + (idx * 71)) % (view.w + 120)) - 60
-            cy = lane_y + wobble
+            cx = view.x + int(round(((idx + 1) / (cloud_count + 1)) * view.w)) + rng.randint(-42, 42)
+            cy = lane_y + rng.randint(-3, 3)
             cw = 32 + (idx * 5)
             ch = 10 + (idx % 3) * 3
             alpha = max(58, min(110, 90 - (idx * 4)))
@@ -22142,7 +22159,7 @@ class CognitiveTestScreen:
                 wz=wz,
                 scale=scale,
                 heading_deg=heading,
-                anim_s=anim_s,
+                anim_s=0.0,
                 anim_phase=anim_phase,
                 anim_rate=anim_rate,
             )
@@ -22216,25 +22233,6 @@ class CognitiveTestScreen:
                     grid_rows=grid_rows,
                     alt_levels=alt_levels,
                 )
-                future_wx = now_wx + (now_wx - prev_wx)
-                future_wy = now_wy + (now_wy - prev_wy)
-                future_wz = now_wz + (now_wz - prev_wz)
-                motion_phase = (anim_s * 0.32 + ((seed % 997) / 997.0)) % 1.0
-                if motion_phase < 0.333:
-                    t = motion_phase / 0.333
-                    live_wx = prev_wx + ((now_wx - prev_wx) * t)
-                    live_wy = prev_wy + ((now_wy - prev_wy) * t)
-                    live_wz = prev_wz + ((now_wz - prev_wz) * t)
-                elif motion_phase < 0.666:
-                    t = (motion_phase - 0.333) / 0.333
-                    live_wx = now_wx + ((future_wx - now_wx) * t)
-                    live_wy = now_wy + ((future_wy - now_wy) * t)
-                    live_wz = now_wz + ((future_wz - now_wz) * t)
-                else:
-                    t = (motion_phase - 0.666) / 0.334
-                    live_wx = future_wx + ((now_wx - future_wx) * t)
-                    live_wy = future_wy + ((now_wy - future_wy) * t)
-                    live_wz = future_wz + ((now_wz - future_wz) * t)
 
             live_terrain = self._spatial_terrain_height(wx=live_wx, wy=live_wy)
             now_screen = self._spatial_project_point(
@@ -22255,8 +22253,7 @@ class CognitiveTestScreen:
                 wy=live_wy,
                 wz=live_terrain + 0.02,
             )
-            craft_bob = int(round(2.0 * math.sin((anim_s * 3.1) + (seed * 0.0007))))
-            now_screen_vis = (now_screen[0], now_screen[1] + craft_bob)
+            now_screen_vis = now_screen
 
             if show_motion:
                 prev_screen = self._spatial_project_point(
@@ -22328,7 +22325,7 @@ class CognitiveTestScreen:
         if wy <= 0.01:
             return
 
-        phase = (float(anim_s) * max(0.10, float(anim_rate))) + float(anim_phase)
+        phase = float(anim_phase)
         wx_anim = float(wx)
         wy_anim = max(0.35, float(wy))
         wz_anim = float(wz)

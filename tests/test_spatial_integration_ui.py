@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from dataclasses import dataclass
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
@@ -105,6 +106,28 @@ def _payload_for(*, part: SpatialIntegrationPart, study: bool, question_index: i
     raise AssertionError("Could not build requested payload")
 
 
+def _study_scene_content_rect(*, size: tuple[int, int]) -> pygame.Rect:
+    w, h = size
+    margin = max(10, min(18, w // 42))
+    frame = pygame.Rect(margin, margin, w - margin * 2, h - margin * 2)
+    header_h = max(30, min(38, h // 15))
+    header = pygame.Rect(frame.x + 2, frame.y + 2, frame.w - 4, header_h)
+    work = pygame.Rect(
+        frame.x + 8,
+        header.bottom + 8,
+        frame.w - 16,
+        frame.bottom - header.bottom - 16,
+    )
+    panel = work.inflate(-12, -12)
+    banner = pygame.Rect(panel.x, panel.y, panel.w, 56)
+    body = pygame.Rect(panel.x, banner.bottom + 10, panel.w, panel.h - banner.h - 10)
+    left = pygame.Rect(body.x, body.y, int(body.w * 0.72), body.h)
+    crop = left.inflate(-24, -24)
+    crop.y += 36
+    crop.h -= 44
+    return crop
+
+
 def test_study_screen_renders_three_reference_panes_without_answer_hitboxes() -> None:
     payload = _payload_for(part=SpatialIntegrationPart.STATIC, study=True, question_index=1)
     _app, screen = _build_screen(_FakeSpatialEngine(payload))
@@ -116,6 +139,70 @@ def test_study_screen_renders_three_reference_panes_without_answer_hitboxes() ->
         assert screen._spatial_grid_hitboxes == {}
         assert screen._spatial_option_hitboxes == {}
         assert pygame.transform.average_color(surface)[:3] != (0, 0, 0)
+    finally:
+        pygame.quit()
+
+
+def test_study_scene_is_static_across_renders(monkeypatch) -> None:
+    payload = _payload_for(part=SpatialIntegrationPart.STATIC, study=True, question_index=1)
+    _app, screen = _build_screen(_FakeSpatialEngine(payload))
+    try:
+        surface = pygame.display.get_surface()
+        assert surface is not None
+        crop = _study_scene_content_rect(size=surface.get_size())
+
+        monkeypatch.setattr(pygame.time, "get_ticks", lambda: 1000)
+        screen.render(surface)
+        first = pygame.image.tobytes(surface.subsurface(crop).copy(), "RGBA")
+
+        monkeypatch.setattr(pygame.time, "get_ticks", lambda: 6000)
+        screen.render(surface)
+        second = pygame.image.tobytes(surface.subsurface(crop).copy(), "RGBA")
+
+        assert second == first
+    finally:
+        pygame.quit()
+
+
+def test_study_scene_uses_same_scene_with_different_reference_view_heading() -> None:
+    payload = _payload_for(part=SpatialIntegrationPart.STATIC, study=True, question_index=1)
+    assert len(payload.reference_views) >= 2
+    second_view_payload = replace(
+        payload,
+        study_view_index=2,
+        active_reference_view=payload.reference_views[1],
+    )
+
+    _app, screen = _build_screen(_FakeSpatialEngine(second_view_payload))
+    captured: dict[str, int] = {}
+    try:
+        surface = pygame.display.get_surface()
+        assert surface is not None
+        original_scene = screen._draw_spatial_terrain_scene
+        original_compass = screen._draw_spatial_compass
+
+        def wrapped_scene(surface, rect, *, payload, heading_deg_override=None, scene_view_override=None, title_override=None, allow_external_3d=True):
+            captured["heading"] = 0 if heading_deg_override is None else int(heading_deg_override)
+            return original_scene(
+                surface,
+                rect,
+                payload=payload,
+                heading_deg_override=heading_deg_override,
+                scene_view_override=scene_view_override,
+                title_override=title_override,
+                allow_external_3d=allow_external_3d,
+            )
+
+        def wrapped_compass(surface, rect, *, north_deg):
+            captured["north"] = int(north_deg)
+            return original_compass(surface, rect, north_deg=north_deg)
+
+        screen._draw_spatial_terrain_scene = wrapped_scene  # type: ignore[method-assign]
+        screen._draw_spatial_compass = wrapped_compass  # type: ignore[method-assign]
+        screen.render(surface)
+
+        assert captured["heading"] == int(payload.reference_views[1].heading_deg)
+        assert captured["north"] == (-int(payload.reference_views[1].heading_deg)) % 360
     finally:
         pygame.quit()
 
