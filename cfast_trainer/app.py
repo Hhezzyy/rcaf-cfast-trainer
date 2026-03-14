@@ -21492,7 +21492,7 @@ class CognitiveTestScreen:
                 left,
                 payload,
                 landmarks=payload.answer_map_landmarks,
-                route_points=payload.route_points if payload.part is SpatialIntegrationPart.AIRCRAFT else (),
+                route_points=payload.answer_map_route_points,
                 aircraft_point=None,
                 interactive=True,
                 title="Answer Map",

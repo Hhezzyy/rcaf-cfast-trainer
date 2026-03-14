@@ -146,6 +146,7 @@ class SpatialIntegrationPayload:
     correct_code: int
     correct_point: SpatialIntegrationPoint
     correct_answer_token: str
+    answer_map_route_points: tuple[SpatialIntegrationPoint, ...] = ()
 
 
 def _clamp(v: int, lo: int, hi: int) -> int:
@@ -221,6 +222,7 @@ class _SpatialIntegrationQuestion:
     correct_answer_token: str
     options: tuple[SpatialIntegrationOption, ...]
     answer_map_landmarks: tuple[SpatialIntegrationLandmark, ...]
+    answer_map_route_points: tuple[SpatialIntegrationPoint, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -315,7 +317,6 @@ class SpatialIntegrationGenerator:
         scene_id: int,
         difficulty: float,
     ) -> _SpatialIntegrationSceneCluster:
-        _ = difficulty
         grid_cols = 8
         grid_rows = 8
         hills = self._sample_hills()
@@ -344,7 +345,12 @@ class SpatialIntegrationGenerator:
                 correct_point=SpatialIntegrationPoint(primary_targets[0].x, primary_targets[0].y, 0),
                 correct_answer_token=_grid_cell_token(primary_targets[0].x, primary_targets[0].y),
                 options=(),
-                answer_map_landmarks=(),
+                answer_map_landmarks=self._grid_context_landmarks(
+                    landmarks=landmarks,
+                    anchor_point=SpatialIntegrationPoint(primary_targets[0].x, primary_targets[0].y, 0),
+                    difficulty=difficulty,
+                    omit_label=primary_targets[0].label,
+                ),
             ),
             _SpatialIntegrationQuestion(
                 kind=SpatialIntegrationQuestionKind.LANDMARK_GRID,
@@ -355,7 +361,12 @@ class SpatialIntegrationGenerator:
                 correct_point=SpatialIntegrationPoint(primary_targets[1].x, primary_targets[1].y, 0),
                 correct_answer_token=_grid_cell_token(primary_targets[1].x, primary_targets[1].y),
                 options=(),
-                answer_map_landmarks=(),
+                answer_map_landmarks=self._grid_context_landmarks(
+                    landmarks=landmarks,
+                    anchor_point=SpatialIntegrationPoint(primary_targets[1].x, primary_targets[1].y, 0),
+                    difficulty=difficulty,
+                    omit_label=primary_targets[1].label,
+                ),
             ),
             _SpatialIntegrationQuestion(
                 kind=SpatialIntegrationQuestionKind.SCENE_RECONSTRUCTION,
@@ -400,7 +411,6 @@ class SpatialIntegrationGenerator:
         scene_id: int,
         difficulty: float,
     ) -> _SpatialIntegrationSceneCluster:
-        _ = difficulty
         grid_cols = 8
         grid_rows = 8
         hills = self._sample_hills()
@@ -473,7 +483,16 @@ class SpatialIntegrationGenerator:
                 correct_point=aircraft_now,
                 correct_answer_token=_grid_cell_token(aircraft_now.x, aircraft_now.y),
                 options=(),
-                answer_map_landmarks=landmarks,
+                answer_map_landmarks=self._grid_context_landmarks(
+                    landmarks=landmarks,
+                    anchor_point=aircraft_now,
+                    difficulty=difficulty,
+                ),
+                answer_map_route_points=self._grid_context_route_points(
+                    route_points=route,
+                    focus_index=route_current_index,
+                    difficulty=difficulty,
+                ),
             ),
         )
 
@@ -556,6 +575,62 @@ class SpatialIntegrationGenerator:
             SpatialIntegrationLandmark(label=str(label), x=int(pt[0]), y=int(pt[1]), kind=str(kind))
             for (label, kind), pt in zip(chosen_specs, points, strict=True)
         )
+
+    def _grid_context_landmarks(
+        self,
+        *,
+        landmarks: tuple[SpatialIntegrationLandmark, ...],
+        anchor_point: SpatialIntegrationPoint,
+        difficulty: float,
+        omit_label: str | None = None,
+    ) -> tuple[SpatialIntegrationLandmark, ...]:
+        filtered = tuple(
+            landmark
+            for landmark in landmarks
+            if omit_label is None or str(landmark.label).upper() != str(omit_label).upper()
+        )
+        if not filtered:
+            return ()
+        keep_fraction = max(0.0, 1.0 - clamp01(difficulty))
+        keep_count = max(0, min(len(filtered), int(round(len(filtered) * keep_fraction))))
+        if keep_count >= len(filtered):
+            return filtered
+        if keep_count <= 0:
+            return ()
+
+        ranked = sorted(
+            filtered,
+            key=lambda landmark: (
+                abs(int(landmark.x) - int(anchor_point.x)) + abs(int(landmark.y) - int(anchor_point.y)),
+                str(landmark.label),
+            ),
+        )
+        selected = set(ranked[:keep_count])
+        return tuple(landmark for landmark in filtered if landmark in selected)
+
+    def _grid_context_route_points(
+        self,
+        *,
+        route_points: tuple[SpatialIntegrationPoint, ...],
+        focus_index: int,
+        difficulty: float,
+    ) -> tuple[SpatialIntegrationPoint, ...]:
+        if not route_points:
+            return ()
+        keep_fraction = max(0.0, 1.0 - clamp01(difficulty))
+        keep_count = max(0, min(len(route_points), int(round(len(route_points) * keep_fraction))))
+        if keep_count >= len(route_points):
+            return route_points
+        if keep_count < 2:
+            return ()
+
+        center = max(0, min(len(route_points) - 1, int(focus_index)))
+        start = max(0, center - ((keep_count - 1) // 2))
+        end = start + keep_count
+        if end > len(route_points):
+            end = len(route_points)
+            start = end - keep_count
+        return route_points[start:end]
 
     def _build_static_reconstruction_options(
         self,
@@ -1114,6 +1189,7 @@ class SpatialIntegrationEngine:
             correct_code=int(question.correct_code),
             correct_point=question.correct_point,
             correct_answer_token=str(question.correct_answer_token),
+            answer_map_route_points=question.answer_map_route_points,
         )
         return Problem(
             prompt=question.stem,

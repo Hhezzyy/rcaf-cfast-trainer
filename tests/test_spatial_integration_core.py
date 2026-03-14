@@ -91,6 +91,43 @@ def test_aircraft_scene_cluster_has_expected_question_mix() -> None:
     assert len(scene.questions[1].options) == 4
 
 
+def test_grid_question_context_scales_from_full_context_to_terrain_only() -> None:
+    static_easy = SpatialIntegrationGenerator(seed=131).next_scene_cluster(
+        part=SpatialIntegrationPart.STATIC,
+        difficulty=0.0,
+    )
+    static_hard = SpatialIntegrationGenerator(seed=131).next_scene_cluster(
+        part=SpatialIntegrationPart.STATIC,
+        difficulty=1.0,
+    )
+
+    static_easy_question = static_easy.questions[0]
+    static_hard_question = static_hard.questions[0]
+
+    assert len(static_easy_question.answer_map_landmarks) == len(static_easy.landmarks) - 1
+    assert static_easy_question.query_label not in {
+        landmark.label for landmark in static_easy_question.answer_map_landmarks
+    }
+    assert static_hard_question.answer_map_landmarks == ()
+
+    aircraft_easy = SpatialIntegrationGenerator(seed=132).next_scene_cluster(
+        part=SpatialIntegrationPart.AIRCRAFT,
+        difficulty=0.0,
+    )
+    aircraft_hard = SpatialIntegrationGenerator(seed=132).next_scene_cluster(
+        part=SpatialIntegrationPart.AIRCRAFT,
+        difficulty=1.0,
+    )
+
+    aircraft_easy_question = aircraft_easy.questions[2]
+    aircraft_hard_question = aircraft_hard.questions[2]
+
+    assert aircraft_easy_question.answer_map_landmarks == aircraft_easy.landmarks
+    assert aircraft_easy_question.answer_map_route_points == aircraft_easy.route_points
+    assert aircraft_hard_question.answer_map_landmarks == ()
+    assert aircraft_hard_question.answer_map_route_points == ()
+
+
 def test_generator_supports_multiple_objects_in_one_grid_cell() -> None:
     gen = SpatialIntegrationGenerator(seed=77)
     scenes = [gen.next_scene_cluster(part=SpatialIntegrationPart.STATIC, difficulty=0.6) for _ in range(12)]
