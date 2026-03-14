@@ -40,8 +40,6 @@ class SpatialIntegrationPanda3DRenderer:
         width = max(320, int(size[0]))
         height = max(220, int(size[1]))
         self._size = (width, height)
-        self._elapsed_s = 0.0
-        self._last_render_ms = pygame.time.get_ticks()
         self._grid_signature = (0, 0)
         self._grid_node = None
         self._landmark_nodes: list[tuple[object, object]] = []
@@ -103,11 +101,6 @@ class SpatialIntegrationPanda3DRenderer:
             pass
 
     def render(self, *, payload: SpatialIntegrationPayload | None) -> pygame.Surface:
-        now_ms = pygame.time.get_ticks()
-        dt_s = max(0.0, min(0.05, (now_ms - self._last_render_ms) / 1000.0))
-        self._last_render_ms = now_ms
-        self._elapsed_s += dt_s
-
         if payload is None:
             scene_view = SpatialIntegrationSceneView.OBLIQUE
             grid_cols = 5
@@ -192,9 +185,13 @@ class SpatialIntegrationPanda3DRenderer:
         runway.reparentTo(self._terrain_root)
 
         self._clouds = [self._build_cloud(scale=s) for s in (0.95, 1.22, 0.84, 1.08, 0.90)]
-        for idx, cloud in enumerate(self._clouds):
+        self._cloud_positions = tuple(
+            (-80.0 + (idx * 38.0), 34.0 + (idx * 18.0), 66.0 + (idx * 3.0))
+            for idx in range(len(self._clouds))
+        )
+        for cloud, (x, y, z) in zip(self._clouds, self._cloud_positions):
             cloud.reparentTo(self._cloud_root)
-            cloud.setPos(-80.0 + (idx * 38.0), 34.0 + (idx * 18.0), 66.0 + (idx * 3.0))
+            cloud.setPos(x, y, z)
 
     def _update_grid(self, *, grid_cols: int, grid_rows: int, alt_levels: int) -> None:
         _ = alt_levels
@@ -327,21 +324,6 @@ class SpatialIntegrationPanda3DRenderer:
         live_y = now_wy
         live_z = now_wz
         if show_motion:
-            phase = (self._elapsed_s * 0.32) % 1.0
-            future_x = now_wx + (now_wx - prev_wx)
-            future_y = now_wy + (now_wy - prev_wy)
-            future_z = now_wz + (now_wz - prev_wz)
-            if phase < 0.5:
-                t = phase / 0.5
-                live_x = prev_wx + ((now_wx - prev_wx) * t)
-                live_y = prev_wy + ((now_wy - prev_wy) * t)
-                live_z = prev_wz + ((now_wz - prev_wz) * t)
-            else:
-                t = (phase - 0.5) / 0.5
-                live_x = now_wx + ((future_x - now_wx) * t)
-                live_y = now_wy + ((future_y - now_wy) * t)
-                live_z = now_wz + ((future_z - now_wz) * t)
-
             self._aircraft_prev.show()
             self._aircraft_prev.setPos(prev_wx, prev_wy, prev_wz)
             self._aircraft_pred.show()
@@ -366,8 +348,7 @@ class SpatialIntegrationPanda3DRenderer:
             pitch_deg = 0.0
             bank_deg = 0.0
 
-        bob = 0.32 * math.sin(self._elapsed_s * 3.1)
-        self._aircraft.setPos(live_x, live_y, live_z + bob)
+        self._aircraft.setPos(live_x, live_y, live_z)
         self._aircraft.setHpr(self._aircraft_heading_deg, pitch_deg, bank_deg)
         self._aircraft.setScale(1.24)
         return (live_x, live_y, live_z)
@@ -389,9 +370,8 @@ class SpatialIntegrationPanda3DRenderer:
         self._base.cam.lookAt(fx * 0.35, fy + 34.0, max(8.0, fz + 8.0))
 
     def _update_clouds(self) -> None:
-        for idx, cloud in enumerate(self._clouds):
-            drift = (self._elapsed_s * (4.0 + (idx * 0.7))) % 240.0
-            cloud.setPos(-120.0 + drift, 28.0 + (idx * 20.0), 64.0 + (idx * 2.8))
+        for cloud, (x, y, z) in zip(self._clouds, self._cloud_positions):
+            cloud.setPos(x, y, z)
 
     def _grid_to_world(
         self,
