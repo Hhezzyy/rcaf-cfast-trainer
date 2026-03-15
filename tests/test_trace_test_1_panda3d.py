@@ -56,6 +56,8 @@ def test_trace_test_1_screen_prefers_panda3d_runtime() -> None:
     assert probe["gl_scene_type"] is None
     assert probe["renderer_size"][0] > 0
     assert probe["renderer_size"][1] > 0
-    assert probe["distractor_count"] == 3
-    assert len(probe["target_hpr"]) == 3
+    assert probe["aircraft_count"] >= 2
+    assert probe["blue_count"] >= 1
+    assert len(probe["red_hpr"]) == 3
+    assert probe["blue_hpr_count"] == probe["blue_count"]
     assert sum(probe["avg_color"]) > 60

@@ -499,3 +499,175 @@ def test_ui_smoke_navigate_to_workouts_and_open_rapid_tracking_workout() -> None
             )
 
     assert run(max_frames=114, event_injector=inject) == 0
+
+
+def test_ui_smoke_navigate_to_workouts_and_open_spatial_integration_workout() -> None:
+    os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+    os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+
+    import pygame
+
+    from cfast_trainer.app import run
+
+    def inject(frame: int) -> None:
+        if frame == 1:
+            pygame.event.post(
+                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""})
+            )
+        elif frame in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18):
+            pygame.event.post(
+                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_DOWN, "unicode": ""})
+            )
+        elif frame == 19:
+            pygame.event.post(
+                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""})
+            )
+        elif frame in (23, 24, 25, 26):
+            pygame.event.post(
+                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_F10, "unicode": ""})
+            )
+
+    assert run(max_frames=120, event_injector=inject) == 0
+
+
+def test_ui_smoke_navigate_to_workouts_and_open_trace_test_1_workout() -> None:
+    os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+    os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+
+    import pygame
+
+    from cfast_trainer.app import run
+
+    def inject(frame: int) -> None:
+        if frame == 1:
+            pygame.event.post(
+                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""})
+            )
+        elif 2 <= frame <= 19:
+            pygame.event.post(
+                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_DOWN, "unicode": ""})
+            )
+        elif frame == 20:
+            pygame.event.post(
+                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""})
+            )
+        elif frame == 24:
+            pygame.event.post(
+                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RIGHT, "unicode": ""})
+            )
+        elif frame == 25:
+            pygame.event.post(
+                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""})
+            )
+        elif frame in (26, 27, 28):
+            ch = "aim"[frame - 26]
+            pygame.event.post(
+                pygame.event.Event(pygame.KEYDOWN, {"key": ord(ch), "unicode": ch})
+            )
+        elif frame == 29:
+            pygame.event.post(
+                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""})
+            )
+        elif frame in (30, 31, 32, 33):
+            ch = "flow"[frame - 30]
+            pygame.event.post(
+                pygame.event.Event(pygame.KEYDOWN, {"key": ord(ch), "unicode": ch})
+            )
+        elif frame == 34:
+            pygame.event.post(
+                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""})
+            )
+        elif frame == 35:
+            pygame.event.post(
+                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""})
+            )
+
+    assert run(max_frames=100, event_injector=inject) == 0
+
+
+def test_ui_smoke_navigate_to_workouts_and_open_trace_test_2_workout() -> None:
+    os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+    os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+
+    import pygame
+
+    from cfast_trainer.app import run
+
+    def inject(frame: int) -> None:
+        if frame == 1:
+            pygame.event.post(
+                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""})
+            )
+        elif 2 <= frame <= 20:
+            pygame.event.post(
+                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_DOWN, "unicode": ""})
+            )
+        elif frame == 21:
+            pygame.event.post(
+                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""})
+            )
+        elif frame == 25:
+            pygame.event.post(
+                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RIGHT, "unicode": ""})
+            )
+        elif frame == 26:
+            pygame.event.post(
+                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""})
+            )
+        elif frame in (27, 28, 29):
+            ch = "aim"[frame - 27]
+            pygame.event.post(
+                pygame.event.Event(pygame.KEYDOWN, {"key": ord(ch), "unicode": ch})
+            )
+        elif frame == 30:
+            pygame.event.post(
+                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""})
+            )
+        elif frame in (31, 32, 33, 34):
+            ch = "flow"[frame - 31]
+            pygame.event.post(
+                pygame.event.Event(pygame.KEYDOWN, {"key": ord(ch), "unicode": ch})
+            )
+        elif frame == 35:
+            pygame.event.post(
+                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""})
+            )
+        elif frame == 36:
+            pygame.event.post(
+                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""})
+            )
+
+    assert run(max_frames=102, event_injector=inject) == 0
+
+
+def test_ui_smoke_navigate_to_workouts_and_open_vigilance_workout() -> None:
+    os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+    os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+
+    import pygame
+
+    from cfast_trainer.app import run
+
+    def inject(frame: int) -> None:
+        if frame == 1:
+            pygame.event.post(
+                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""})
+            )
+        elif 2 <= frame <= 40:
+            pygame.event.post(
+                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_DOWN, "unicode": ""})
+            )
+        elif frame == 41:
+            pygame.event.post(
+                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_UP, "unicode": ""})
+            )
+        elif frame == 42:
+            pygame.event.post(
+                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""})
+            )
+        elif frame in (48, 49, 50, 51):
+            pygame.event.post(
+                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_F10, "unicode": ""})
+            )
+
+    assert run(max_frames=110, event_injector=inject) == 0

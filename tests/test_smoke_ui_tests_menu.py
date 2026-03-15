@@ -973,7 +973,7 @@ def test_ui_smoke_navigate_to_tests_and_open_spatial_integration() -> None:
     assert run(max_frames=108, event_injector=inject) == 0
 
 
-def test_ui_smoke_navigate_to_tests_and_open_trace_test_1() -> None:
+def test_ui_smoke_navigate_to_tests_and_complete_trace_test_1_practice() -> None:
     os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
     os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 
@@ -1005,6 +1005,7 @@ def test_ui_smoke_navigate_to_tests_and_open_trace_test_1() -> None:
         # Main Menu: DOWN, DOWN -> Tests, ENTER
         # Tests menu: DOWN x17 -> Trace Test 1, ENTER
         # Instructions: ENTER to begin practice
+        # Practice: wait through the lead-in, then submit one arrow-key answer.
         if frame == 1:
             pygame.event.post(
                 pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_DOWN, "unicode": ""})
@@ -1029,11 +1030,15 @@ def test_ui_smoke_navigate_to_tests_and_open_trace_test_1() -> None:
             pygame.event.post(
                 pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""})
             )
+        elif 325 <= frame <= 380:
+            pygame.event.post(
+                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_LEFT, "unicode": ""})
+            )
 
-    assert run(max_frames=112, event_injector=inject) == 0
+    assert run(max_frames=430, event_injector=inject) == 0
 
 
-def test_ui_smoke_navigate_to_tests_and_open_trace_test_2() -> None:
+def test_ui_smoke_navigate_to_tests_and_complete_trace_test_2_practice() -> None:
     os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
     os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 
@@ -1066,6 +1071,7 @@ def test_ui_smoke_navigate_to_tests_and_open_trace_test_2() -> None:
         # Main Menu: DOWN, DOWN -> Tests, ENTER
         # Tests menu: DOWN x18 -> Trace Test 2, ENTER
         # Instructions: ENTER to begin practice
+        # Practice: wait for the observe clip to finish, then answer with A.
         if frame == 1:
             pygame.event.post(
                 pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_DOWN, "unicode": ""})
@@ -1090,8 +1096,12 @@ def test_ui_smoke_navigate_to_tests_and_open_trace_test_2() -> None:
             pygame.event.post(
                 pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""})
             )
+        elif 350 <= frame <= 420:
+            pygame.event.post(
+                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_a, "unicode": "a"})
+            )
 
-    assert run(max_frames=116, event_injector=inject) == 0
+    assert run(max_frames=470, event_injector=inject) == 0
 
 
 def test_ui_smoke_target_recognition_mouse_select_and_submit() -> None:

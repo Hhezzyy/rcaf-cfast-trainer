@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from cfast_trainer.aircraft_art import (
     build_fixed_wing_mesh,
+    fixed_wing_heading_from_screen_heading,
     instrument_card_pygame_palette,
     project_fixed_wing_faces,
 )
@@ -66,3 +67,10 @@ def test_instrument_palette_keeps_distinct_aircraft_roles() -> None:
 
     assert palette.body != palette.canopy
     assert palette.body != palette.engine
+
+
+def test_fixed_wing_heading_from_screen_heading_preserves_cardinal_motion() -> None:
+    assert fixed_wing_heading_from_screen_heading(-90.0) == 0.0
+    assert fixed_wing_heading_from_screen_heading(0.0) == 90.0
+    assert fixed_wing_heading_from_screen_heading(90.0) == 180.0
+    assert fixed_wing_heading_from_screen_heading(180.0) == 270.0

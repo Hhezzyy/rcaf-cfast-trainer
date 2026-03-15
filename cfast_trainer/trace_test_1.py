@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from enum import StrEnum
 
 from .clock import Clock
@@ -13,19 +13,37 @@ from .cognitive_core import (
     SeededRng,
     TestSnapshot,
     clamp01,
-    lerp_int,
 )
 
 _STAGE_EPSILON_S = 1e-6
+_VIEWPOINT_BEARING_DEG = 180
+_RED_SAFE_BOX_MIN = 0.15
+_RED_SAFE_BOX_MAX = 0.85
+_BLUE_MARGIN = 0.20
+_WORLD_X_NORMALIZER = 48.0
+_WORLD_Z_SCREEN_CENTER = 12.0
+_WORLD_Z_SCREEN_NORMALIZER = 36.0
+_RED_ALTITUDE_BAND = (6.0, 22.0)
+_RED_DEPTH_BAND = (4.0, 48.0)
+_BLUE_DEPTH_BAND = (-18.0, 70.0)
+_RED_RECOVERY_DISTANCE = 3.5
+_TURN_HOLD_FRACTION = 0.14
+_BLUE_OUTLINE_COLORS: tuple[tuple[int, int, int], ...] = (
+    (220, 232, 246),
+    (202, 226, 250),
+    (188, 214, 244),
+    (176, 206, 242),
+)
 
 
 @dataclass(frozen=True, slots=True)
 class TraceTest1Config:
-    # Candidate guide indicates ~9 minutes total including instructions.
+    # Candidate guide indicates about 9 minutes total including instructions.
     scored_duration_s: float = 7.5 * 60.0
     practice_questions: int = 3
     practice_observe_s: float = 5.0
     scored_observe_s: float = 4.3
+    allowed_commands: tuple["TraceTest1Command", ...] | None = None
 
 
 class TraceTest1Command(StrEnum):
@@ -51,20 +69,7 @@ class TraceTest1Option:
 
 class TraceTest1TrialStage(StrEnum):
     OBSERVE = "observe"
-    QUESTION = "question"
-
-
-@dataclass(frozen=True, slots=True)
-class TraceTest1Payload:
-    trial_stage: TraceTest1TrialStage
-    stage_time_remaining_s: float | None
-    observe_progress: float
-    scene_turn_index: int
-    reference: TraceTest1Attitude
-    candidate: TraceTest1Attitude
-    viewpoint_bearing_deg: int
-    options: tuple[TraceTest1Option, ...]
-    correct_code: int
+    ANSWER_OPEN = "answer_open"
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,6 +79,59 @@ class TraceTest1SceneFrame:
     travel_heading_deg: float
 
 
+@dataclass(frozen=True, slots=True)
+class TraceTest1SceneSnapshot:
+    red_frame: TraceTest1SceneFrame
+    blue_frames: tuple[TraceTest1SceneFrame, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class TraceTest1DifficultyTier:
+    blue_count: int
+    speed_multiplier: float
+    answer_open_progress: float
+
+
+@dataclass(frozen=True, slots=True)
+class TraceTest1AircraftState:
+    position: tuple[float, float, float]
+    heading_deg: float
+
+
+@dataclass(frozen=True, slots=True)
+class TraceTest1AircraftPlan:
+    start_state: TraceTest1AircraftState
+    command: TraceTest1Command
+    lead_distance: float
+    maneuver_distance: float
+    altitude_delta: float
+
+
+@dataclass(frozen=True, slots=True)
+class TraceTest1PromptPlan:
+    prompt_index: int
+    answer_open_progress: float
+    speed_multiplier: float
+    red_plan: TraceTest1AircraftPlan
+    blue_plans: tuple[TraceTest1AircraftPlan, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class TraceTest1Payload:
+    trial_stage: TraceTest1TrialStage
+    stage_time_remaining_s: float | None
+    observe_progress: float
+    prompt_index: int
+    active_command: TraceTest1Command
+    scene: TraceTest1SceneSnapshot
+    options: tuple[TraceTest1Option, ...]
+    correct_code: int
+    prompt_window_s: float
+    answer_open_progress: float
+    speed_multiplier: float
+    viewpoint_bearing_deg: int
+
+
 _COMMAND_TO_CODE = {
     TraceTest1Command.LEFT: 1,
     TraceTest1Command.RIGHT: 2,
@@ -81,72 +139,6 @@ _COMMAND_TO_CODE = {
     TraceTest1Command.PULL: 4,
 }
 _CODE_TO_COMMAND = {code: command for command, code in _COMMAND_TO_CODE.items()}
-_LANE_HEADING_DEG = 0.0
-_TARGET_COMMAND_SCRIPT: tuple[TraceTest1Command, ...] = (
-    TraceTest1Command.LEFT,
-    TraceTest1Command.PUSH,
-    TraceTest1Command.RIGHT,
-    TraceTest1Command.PULL,
-    TraceTest1Command.LEFT,
-    TraceTest1Command.RIGHT,
-    TraceTest1Command.PUSH,
-    TraceTest1Command.PULL,
-    TraceTest1Command.RIGHT,
-    TraceTest1Command.LEFT,
-    TraceTest1Command.PULL,
-    TraceTest1Command.PUSH,
-)
-_DISTRACTOR_COMMAND_SCRIPTS: tuple[tuple[TraceTest1Command, ...], ...] = (
-    (
-        TraceTest1Command.PULL,
-        TraceTest1Command.RIGHT,
-        TraceTest1Command.LEFT,
-        TraceTest1Command.PUSH,
-        TraceTest1Command.RIGHT,
-        TraceTest1Command.PULL,
-        TraceTest1Command.LEFT,
-        TraceTest1Command.RIGHT,
-        TraceTest1Command.PUSH,
-        TraceTest1Command.PULL,
-        TraceTest1Command.LEFT,
-        TraceTest1Command.RIGHT,
-    ),
-    (
-        TraceTest1Command.PUSH,
-        TraceTest1Command.LEFT,
-        TraceTest1Command.PULL,
-        TraceTest1Command.RIGHT,
-        TraceTest1Command.LEFT,
-        TraceTest1Command.PUSH,
-        TraceTest1Command.RIGHT,
-        TraceTest1Command.LEFT,
-        TraceTest1Command.PULL,
-        TraceTest1Command.RIGHT,
-        TraceTest1Command.PUSH,
-        TraceTest1Command.LEFT,
-    ),
-    (
-        TraceTest1Command.RIGHT,
-        TraceTest1Command.PULL,
-        TraceTest1Command.PUSH,
-        TraceTest1Command.LEFT,
-        TraceTest1Command.PULL,
-        TraceTest1Command.LEFT,
-        TraceTest1Command.RIGHT,
-        TraceTest1Command.PUSH,
-        TraceTest1Command.LEFT,
-        TraceTest1Command.RIGHT,
-        TraceTest1Command.PULL,
-        TraceTest1Command.PUSH,
-    ),
-)
-_SLOT_STAGE_SPLITS: tuple[tuple[float, float], ...] = (
-    (0.42, 0.66),
-    (0.35, 0.58),
-    (0.46, 0.70),
-    (0.39, 0.62),
-)
-_PITCH_COMMAND_DISPLAY_DEG = 90.0
 
 
 def _wrap_heading(deg: float) -> float:
@@ -162,18 +154,14 @@ def _clamp(v: float, lo: float, hi: float) -> float:
     return float(v)
 
 
-def _lerp(a: float, b: float, t: float) -> float:
-    return float(a + ((b - a) * t))
-
-
-def _smoothstep(t: float) -> float:
-    u = _clamp(float(t), 0.0, 1.0)
-    return float(u * u * (3.0 - (2.0 * u)))
-
-
 def _heading_vector_xy(heading_deg: float) -> tuple[float, float]:
     radians = math.radians(float(heading_deg))
     return (math.sin(radians), math.cos(radians))
+
+
+def _cardinal_heading(heading_deg: float) -> float:
+    wrapped = _wrap_heading(heading_deg)
+    return float((round(wrapped / 90.0) * 90) % 360)
 
 
 def _move_point(
@@ -191,171 +179,29 @@ def _move_point(
     )
 
 
-def _move_forward(
-    point: tuple[float, float, float],
-    *,
-    heading_deg: float,
-    pitch_deg: float,
-    distance: float,
-) -> tuple[float, float, float]:
-    heading_rad = math.radians(float(heading_deg))
-    pitch_rad = math.radians(float(pitch_deg))
-    horiz = float(math.cos(pitch_rad) * distance)
-    return (
-        float(point[0] + (math.sin(heading_rad) * horiz)),
-        float(point[1] + (math.cos(heading_rad) * horiz)),
-        float(point[2] + (math.sin(pitch_rad) * distance)),
-    )
-
-
-def _yawing_forward_point(
-    *,
-    start: tuple[float, float, float],
-    heading_deg: float,
-    turn_deg: float,
-    distance: float,
-    progress: float,
-) -> tuple[tuple[float, float, float], float]:
-    u = _clamp(progress, 0.0, 1.0)
-    if u <= 0.0 or abs(distance) <= 1e-6:
-        return start, _wrap_heading(heading_deg)
-    total_turn = float(turn_deg) * u
-    total_dist = float(distance) * u
-    steps = max(1, int(round(18.0 * u)))
-    step_turn = total_turn / steps
-    step_dist = total_dist / steps
-    pos = start
-    heading = float(heading_deg)
-    for _ in range(steps):
-        mid_heading = heading + (step_turn * 0.5)
-        pos = _move_point(pos, heading_deg=mid_heading, distance=step_dist)
-        heading += step_turn
-    return pos, _wrap_heading(heading)
-
-
-def _polyline_point(
-    waypoints: tuple[tuple[float, float, float], ...],
-    *,
-    progress: float,
-) -> tuple[float, float, float]:
-    if len(waypoints) <= 1:
-        return waypoints[0]
-    t = _clamp(progress, 0.0, 1.0)
-    lengths: list[float] = []
-    total = 0.0
-    for start, end in zip(waypoints, waypoints[1:], strict=False):
-        seg = math.dist(start, end)
-        lengths.append(seg)
-        total += seg
-    if total <= 1e-6:
-        return waypoints[-1]
-    remaining = total * t
-    for idx, seg in enumerate(lengths):
-        if remaining <= seg or idx == len(lengths) - 1:
-            local = 0.0 if seg <= 1e-6 else remaining / seg
-            start = waypoints[idx]
-            end = waypoints[idx + 1]
-            return tuple(
-                _lerp(a, b, local) for a, b in zip(start, end, strict=False)
-            )
-        remaining -= seg
-    return waypoints[-1]
-
-
-def _trace_test_1_path(
-    *,
-    slot: int,
-    command: TraceTest1Command,
-) -> tuple[tuple[float, float, float], ...]:
-    lane_specs = (
-        ((-24.0, 72.0, 8.0), 0.0, 18.0, 16.0, 10.0),
-        ((34.0, 78.0, 16.0), 0.0, 18.0, 20.0, 8.0),
-        ((-36.0, 62.0, 0.0), 0.0, 20.0, 24.0, 9.0),
-        ((30.0, 56.0, 12.0), 0.0, 16.0, 18.0, 7.0),
-    )
-    start, base_heading, leg1, leg2, climb_mag = lane_specs[slot]
-    inward = _move_point(start, heading_deg=base_heading, distance=leg1 * 0.64)
-    corner = _move_point(start, heading_deg=base_heading, distance=leg1)
-
-    if command is TraceTest1Command.LEFT:
-        exit_heading = base_heading - 90.0
-        arc = (
-            corner[0] + ((_heading_vector_xy(base_heading)[0] + _heading_vector_xy(exit_heading)[0]) * 3.6),
-            corner[1] + ((_heading_vector_xy(base_heading)[1] + _heading_vector_xy(exit_heading)[1]) * 3.6),
-            corner[2],
-        )
-        end = _move_point(corner, heading_deg=exit_heading, distance=leg2)
-        return (start, inward, arc, end)
-
-    if command is TraceTest1Command.RIGHT:
-        exit_heading = base_heading + 90.0
-        arc = (
-            corner[0] + ((_heading_vector_xy(base_heading)[0] + _heading_vector_xy(exit_heading)[0]) * 3.6),
-            corner[1] + ((_heading_vector_xy(base_heading)[1] + _heading_vector_xy(exit_heading)[1]) * 3.6),
-            corner[2],
-        )
-        end = _move_point(corner, heading_deg=exit_heading, distance=leg2)
-        return (start, inward, arc, end)
-
-    if command is TraceTest1Command.PUSH:
-        dip = _move_point(corner, heading_deg=base_heading, distance=leg2 * 0.35, climb=-(climb_mag * 0.72))
-        end = _move_point(dip, heading_deg=base_heading, distance=leg2 * 0.65, climb=-(climb_mag * 0.28))
-        return (start, inward, dip, end)
-
-    lift = _move_point(corner, heading_deg=base_heading, distance=leg2 * 0.35, climb=(climb_mag * 0.72))
-    end = _move_point(lift, heading_deg=base_heading, distance=leg2 * 0.65, climb=(climb_mag * 0.28))
-    return (start, inward, lift, end)
-
-
-def _lerp_attitude(
-    start: TraceTest1Attitude,
-    end: TraceTest1Attitude,
-    *,
-    t: float,
-) -> TraceTest1Attitude:
-    u = _smoothstep(t)
-    yaw_delta = _wrap_heading(end.yaw_deg - start.yaw_deg)
-    if yaw_delta > 180.0:
-        yaw_delta -= 360.0
-    return TraceTest1Attitude(
-        roll_deg=_lerp(start.roll_deg, end.roll_deg, u),
-        pitch_deg=_lerp(start.pitch_deg, end.pitch_deg, u),
-        yaw_deg=_wrap_heading(start.yaw_deg + (yaw_delta * u)),
-    )
-
-
 def trace_test_1_command_from_code(code: int) -> TraceTest1Command:
     return _CODE_TO_COMMAND.get(int(code), TraceTest1Command.LEFT)
 
 
-def trace_test_1_apply_command(
-    *,
-    start: TraceTest1Attitude,
-    command: TraceTest1Command,
-) -> TraceTest1Attitude:
-    if command is TraceTest1Command.LEFT:
-        return TraceTest1Attitude(
-            roll_deg=-58.0,
-            pitch_deg=start.pitch_deg,
-            yaw_deg=start.yaw_deg,
-        )
-    if command is TraceTest1Command.RIGHT:
-        return TraceTest1Attitude(
-            roll_deg=58.0,
-            pitch_deg=start.pitch_deg,
-            yaw_deg=start.yaw_deg,
-        )
-    if command is TraceTest1Command.PUSH:
-        return TraceTest1Attitude(
-            roll_deg=start.roll_deg,
-            pitch_deg=-_PITCH_COMMAND_DISPLAY_DEG,
-            yaw_deg=start.yaw_deg,
-        )
-    return TraceTest1Attitude(
-        roll_deg=start.roll_deg,
-        pitch_deg=_PITCH_COMMAND_DISPLAY_DEG,
-        yaw_deg=start.yaw_deg,
-    )
+def _normalize_allowed_commands(
+    commands: tuple[TraceTest1Command, ...] | None,
+) -> tuple[TraceTest1Command, ...]:
+    if commands is None:
+        return tuple(TraceTest1Command)
+    normalized: list[TraceTest1Command] = []
+    seen: set[TraceTest1Command] = set()
+    for raw in commands:
+        try:
+            command = raw if isinstance(raw, TraceTest1Command) else TraceTest1Command(str(raw))
+        except ValueError as exc:
+            raise ValueError(f"Unknown Trace Test 1 command: {raw}") from exc
+        if command in seen:
+            continue
+        seen.add(command)
+        normalized.append(command)
+    if not normalized:
+        raise ValueError("allowed_commands must not be empty")
+    return tuple(normalized)
 
 
 def trace_test_1_answer_code(raw: object) -> int | None:
@@ -378,307 +224,151 @@ def trace_test_1_answer_code(raw: object) -> int | None:
     }.get(value)
 
 
-def trace_test_1_distractor_attitudes(
-    *,
-    reference: TraceTest1Attitude,
-    target: TraceTest1Attitude,
-) -> tuple[TraceTest1Attitude, ...]:
+def trace_test_1_difficulty_tier(*, difficulty: float) -> TraceTest1DifficultyTier:
+    d = clamp01(difficulty)
+    if d < 0.34:
+        return TraceTest1DifficultyTier(blue_count=1, speed_multiplier=1.00, answer_open_progress=0.42)
+    if d < 0.67:
+        return TraceTest1DifficultyTier(blue_count=2, speed_multiplier=1.15, answer_open_progress=0.36)
+    if d < 0.89:
+        return TraceTest1DifficultyTier(blue_count=3, speed_multiplier=1.30, answer_open_progress=0.31)
+    return TraceTest1DifficultyTier(blue_count=4, speed_multiplier=1.45, answer_open_progress=0.27)
+
+
+def trace_test_1_normalized_position(
+    position: tuple[float, float, float],
+) -> tuple[float, float]:
+    world_x, _world_y, world_z = position
     return (
-        reference,
-        TraceTest1Attitude(
-            roll_deg=_clamp((target.roll_deg * -0.55) + 18.0, -80.0, 80.0),
-            pitch_deg=_clamp((reference.pitch_deg * 0.65) - 8.0, -40.0, 40.0),
-            yaw_deg=_wrap_heading(reference.yaw_deg + 68.0),
+        float(0.5 + (world_x / _WORLD_X_NORMALIZER)),
+        float(0.64 - ((world_z - _WORLD_Z_SCREEN_CENTER) / _WORLD_Z_SCREEN_NORMALIZER)),
+    )
+
+
+def _scene_frame_for_plan(
+    *,
+    plan: TraceTest1AircraftPlan,
+    answer_open_progress: float,
+    progress: float,
+) -> TraceTest1SceneFrame:
+    t = _clamp(progress, 0.0, 1.0)
+    split = _clamp(answer_open_progress, 0.12, 0.88)
+    lead_t = 1.0 if t >= split else _clamp(t / max(0.001, split), 0.0, 1.0)
+    answer_t = 0.0 if t <= split else _clamp((t - split) / max(0.001, 1.0 - split), 0.0, 1.0)
+
+    start = plan.start_state.position
+    start_heading = _cardinal_heading(plan.start_state.heading_deg)
+    corner = _move_point(start, heading_deg=start_heading, distance=plan.lead_distance)
+    lead_position = _move_point(start, heading_deg=start_heading, distance=plan.lead_distance * lead_t)
+    position = lead_position
+    travel_heading = start_heading
+    roll_deg = 0.0
+    pitch_deg = 0.0
+
+    if answer_t > 0.0:
+        if plan.command is TraceTest1Command.LEFT:
+            travel_heading = _cardinal_heading(start_heading - 90.0)
+            move_t = 0.0 if answer_t <= _TURN_HOLD_FRACTION else _clamp(
+                (answer_t - _TURN_HOLD_FRACTION) / max(0.001, 1.0 - _TURN_HOLD_FRACTION),
+                0.0,
+                1.0,
+            )
+            position = _move_point(corner, heading_deg=travel_heading, distance=plan.maneuver_distance * move_t)
+        elif plan.command is TraceTest1Command.RIGHT:
+            travel_heading = _cardinal_heading(start_heading + 90.0)
+            move_t = 0.0 if answer_t <= _TURN_HOLD_FRACTION else _clamp(
+                (answer_t - _TURN_HOLD_FRACTION) / max(0.001, 1.0 - _TURN_HOLD_FRACTION),
+                0.0,
+                1.0,
+            )
+            position = _move_point(corner, heading_deg=travel_heading, distance=plan.maneuver_distance * move_t)
+        else:
+            position = _move_point(
+                corner,
+                heading_deg=start_heading,
+                distance=plan.maneuver_distance * answer_t,
+                climb=plan.altitude_delta * answer_t,
+            )
+            travel_heading = start_heading
+            pitch_deg = -34.0 if plan.command is TraceTest1Command.PUSH else 34.0
+
+    return TraceTest1SceneFrame(
+        position=position,
+        attitude=TraceTest1Attitude(
+            roll_deg=roll_deg,
+            pitch_deg=pitch_deg,
+            yaw_deg=float(travel_heading),
         ),
-        TraceTest1Attitude(
-            roll_deg=_clamp((reference.roll_deg * 0.42) - 20.0, -80.0, 80.0),
-            pitch_deg=_clamp((target.pitch_deg * -0.35) + 12.0, -40.0, 40.0),
-            yaw_deg=_wrap_heading(target.yaw_deg - 84.0),
-        ),
+        travel_heading_deg=float(travel_heading),
     )
 
 
 def trace_test_1_scene_frames(
     *,
-    reference: TraceTest1Attitude,
-    candidate: TraceTest1Attitude,
-    correct_code: int,
+    prompt: TraceTest1PromptPlan,
     progress: float,
-    scene_turn_index: int = 0,
-) -> tuple[TraceTest1SceneFrame, tuple[TraceTest1SceneFrame, ...]]:
-    target_command = trace_test_1_command_from_code(correct_code)
-    target = _trace_test_1_motion_frame(
-        start=reference,
-        end=candidate,
-        command=target_command,
-        progress=progress,
-        slot=0,
-        scene_turn_index=scene_turn_index,
-    )
-
-    distractors: list[TraceTest1SceneFrame] = []
-    for idx in range(1, 4):
-        command = _slot_command_for_turn(slot=idx, turn_index=scene_turn_index)
-        start_attitude = _trace_test_1_distractor_start(reference=reference, index=idx)
-        end_attitude = trace_test_1_apply_command(start=start_attitude, command=command)
-        distractors.append(
-            _trace_test_1_motion_frame(
-                start=start_attitude,
-                end=end_attitude,
-                command=command,
+) -> TraceTest1SceneSnapshot:
+    return TraceTest1SceneSnapshot(
+        red_frame=_scene_frame_for_plan(
+            plan=prompt.red_plan,
+            answer_open_progress=prompt.answer_open_progress,
+            progress=progress,
+        ),
+        blue_frames=tuple(
+            _scene_frame_for_plan(
+                plan=blue_plan,
+                answer_open_progress=prompt.answer_open_progress,
                 progress=progress,
-                slot=idx,
-                scene_turn_index=scene_turn_index,
             )
-        )
-    return target, tuple(distractors)
-
-
-def _slot_command_for_turn(*, slot: int, turn_index: int) -> TraceTest1Command:
-    script_idx = int(turn_index % len(_TARGET_COMMAND_SCRIPT))
-    if slot == 0:
-        return _TARGET_COMMAND_SCRIPT[script_idx]
-    distractor_script = _DISTRACTOR_COMMAND_SCRIPTS[slot - 1]
-    return distractor_script[int(turn_index % len(distractor_script))]
-
-
-def _slot_specs(
-    *,
-    slot: int,
-) -> tuple[tuple[float, float, float], float, float, float, float]:
-    lane_specs = (
-        ((-18.0, 66.0, 8.0), 0.0, 14.0, 12.0, 6.0),
-        ((36.0, 71.0, 16.0), 0.0, 16.0, 18.0, 7.0),
-        ((-36.0, 58.0, 2.0), 0.0, 17.0, 20.0, 8.0),
-        ((32.0, 54.0, 12.0), 0.0, 15.0, 19.0, 6.0),
+            for blue_plan in prompt.blue_plans
+        ),
     )
-    return lane_specs[slot]
 
 
-def _advance_slot_state(
-    *,
+def _aircraft_state_from_frame(frame: TraceTest1SceneFrame) -> TraceTest1AircraftState:
+    return TraceTest1AircraftState(
+        position=frame.position,
+        heading_deg=_wrap_heading(frame.travel_heading_deg),
+    )
+
+
+def _prompt_end_heading(plan: TraceTest1AircraftPlan) -> float:
+    start_heading = _cardinal_heading(plan.start_state.heading_deg)
+    if plan.command is TraceTest1Command.LEFT:
+        return _cardinal_heading(start_heading - 90.0)
+    if plan.command is TraceTest1Command.RIGHT:
+        return _cardinal_heading(start_heading + 90.0)
+    return start_heading
+
+
+def _projected_safe(
     position: tuple[float, float, float],
-    heading_deg: float,
-    command: TraceTest1Command,
-    translate_leg: float,
-    exit_leg: float,
-    climb_mag: float,
-) -> tuple[tuple[float, float, float], float]:
-    corner = _move_point(position, heading_deg=heading_deg, distance=translate_leg)
-    rotate_forward_leg = min(6.0, max(3.0, translate_leg * 0.28))
-    if command is TraceTest1Command.LEFT:
-        rotate_end, new_heading = _yawing_forward_point(
-            start=corner,
-            heading_deg=heading_deg,
-            turn_deg=-90.0,
-            distance=rotate_forward_leg,
-            progress=1.0,
-        )
-        end_pos = _move_point(rotate_end, heading_deg=new_heading, distance=exit_leg)
-        return end_pos, new_heading
-    if command is TraceTest1Command.RIGHT:
-        rotate_end, new_heading = _yawing_forward_point(
-            start=corner,
-            heading_deg=heading_deg,
-            turn_deg=90.0,
-            distance=rotate_forward_leg,
-            progress=1.0,
-        )
-        end_pos = _move_point(rotate_end, heading_deg=new_heading, distance=exit_leg)
-        return end_pos, new_heading
-    vertical_sign = -1.0 if command is TraceTest1Command.PUSH else 1.0
-    end_pos = (
-        float(corner[0]),
-        float(corner[1]),
-        float(corner[2] + (vertical_sign * exit_leg)),
+) -> bool:
+    nx, ny = trace_test_1_normalized_position(position)
+    return (
+        _RED_SAFE_BOX_MIN <= nx <= _RED_SAFE_BOX_MAX
+        and _RED_SAFE_BOX_MIN <= ny <= _RED_SAFE_BOX_MAX
+        and _RED_DEPTH_BAND[0] <= position[1] <= _RED_DEPTH_BAND[1]
+        and _RED_ALTITUDE_BAND[0] <= position[2] <= _RED_ALTITUDE_BAND[1]
     )
-    return end_pos, _wrap_heading(heading_deg)
 
 
-def _slot_state_at_turn(
-    *,
-    slot: int,
-    turn_index: int,
-) -> tuple[tuple[float, float, float], float]:
-    position, heading_deg, translate_leg, exit_leg, climb_mag = _slot_specs(slot=slot)
-    current_pos = position
-    current_heading = float(heading_deg)
-    for idx in range(max(0, int(turn_index))):
-        command = _slot_command_for_turn(slot=slot, turn_index=idx)
-        current_pos, current_heading = _advance_slot_state(
-            position=current_pos,
-            heading_deg=current_heading,
-            command=command,
-            translate_leg=translate_leg,
-            exit_leg=exit_leg,
-            climb_mag=climb_mag,
-        )
-    return current_pos, current_heading
-
-
-def _trace_test_1_distractor_start(
-    *,
-    reference: TraceTest1Attitude,
-    index: int,
-) -> TraceTest1Attitude:
-    starts = (
-        TraceTest1Attitude(roll_deg=0.0, pitch_deg=0.0, yaw_deg=0.0),
-        TraceTest1Attitude(roll_deg=0.0, pitch_deg=0.0, yaw_deg=0.0),
-        TraceTest1Attitude(roll_deg=0.0, pitch_deg=0.0, yaw_deg=0.0),
-    )
-    return starts[index - 1]
-
-
-def _trace_test_1_motion_frame(
-    *,
-    start: TraceTest1Attitude,
-    end: TraceTest1Attitude,
-    command: TraceTest1Command,
-    progress: float,
-    slot: int,
-    scene_turn_index: int = 0,
-) -> TraceTest1SceneFrame:
-    _ = start, end
-    t = _clamp(progress, 0.0, 1.0)
-    start_pos, base_heading = _slot_state_at_turn(
-        slot=slot,
-        turn_index=scene_turn_index,
-    )
-    _, _, translate_leg, exit_leg, climb_mag = _slot_specs(slot=slot)
-    _ = climb_mag
-    corner = _move_point(start_pos, heading_deg=base_heading, distance=translate_leg)
-    rotate_forward_leg = min(6.0, max(3.0, translate_leg * 0.28))
-    push_pull_display_pitch = (
-        -_PITCH_COMMAND_DISPLAY_DEG
-        if command is TraceTest1Command.PUSH
-        else _PITCH_COMMAND_DISPLAY_DEG
-    )
-    push_pull_vertical_sign = -1.0 if command is TraceTest1Command.PUSH else 1.0
-    push_pull_rotate_vertical = min(
-        exit_leg * 0.36,
-        max(1.4, rotate_forward_leg * 0.55),
-    )
-    turn_end_heading = _wrap_heading(base_heading)
-    if command is TraceTest1Command.LEFT:
-        rotate_end, turn_end_heading = _yawing_forward_point(
-            start=corner,
-            heading_deg=base_heading,
-            turn_deg=-90.0,
-            distance=rotate_forward_leg,
-            progress=1.0,
-        )
-    elif command is TraceTest1Command.RIGHT:
-        rotate_end, turn_end_heading = _yawing_forward_point(
-            start=corner,
-            heading_deg=base_heading,
-            turn_deg=90.0,
-            distance=rotate_forward_leg,
-            progress=1.0,
-        )
-    elif command in (TraceTest1Command.PUSH, TraceTest1Command.PULL):
-        # Pitch commands rotate while moving vertically so motion stays continuous.
-        rotate_end = (
-            float(corner[0]),
-            float(corner[1]),
-            float(corner[2] + (push_pull_vertical_sign * push_pull_rotate_vertical)),
-        )
-    else:
-        rotate_end = _move_point(corner, heading_deg=base_heading, distance=rotate_forward_leg)
-    stage_translate_end, stage_rotate_end = _SLOT_STAGE_SPLITS[slot]
-
-    if t <= stage_translate_end:
-        u = _clamp(t / stage_translate_end, 0.0, 1.0)
-        pos = _move_point(start_pos, heading_deg=base_heading, distance=translate_leg * u)
-        travel_heading_deg = _wrap_heading(base_heading)
-        roll_deg = 0.0
-        pitch_deg = 0.0
-    elif t <= stage_rotate_end:
-        u = _clamp((t - stage_translate_end) / (stage_rotate_end - stage_translate_end), 0.0, 1.0)
-        if command is TraceTest1Command.LEFT:
-            pos, travel_heading_deg = _yawing_forward_point(
-                start=corner,
-                heading_deg=base_heading,
-                turn_deg=-90.0,
-                distance=rotate_forward_leg,
-                progress=u,
-            )
-            roll_deg = 0.0
-            pitch_deg = 0.0
-        elif command is TraceTest1Command.RIGHT:
-            pos, travel_heading_deg = _yawing_forward_point(
-                start=corner,
-                heading_deg=base_heading,
-                turn_deg=90.0,
-                distance=rotate_forward_leg,
-                progress=u,
-            )
-            roll_deg = 0.0
-            pitch_deg = 0.0
-        elif command is TraceTest1Command.PUSH:
-            travel_heading_deg = _wrap_heading(base_heading)
-            roll_deg = 0.0
-            pitch_deg = push_pull_display_pitch * u
-            pos = (
-                float(corner[0]),
-                float(corner[1]),
-                float(corner[2] + (push_pull_vertical_sign * push_pull_rotate_vertical * u)),
-            )
-        else:
-            travel_heading_deg = _wrap_heading(base_heading)
-            roll_deg = 0.0
-            pitch_deg = push_pull_display_pitch * u
-            pos = (
-                float(corner[0]),
-                float(corner[1]),
-                float(corner[2] + (push_pull_vertical_sign * push_pull_rotate_vertical * u)),
-            )
-    else:
-        u = _clamp((t - stage_rotate_end) / (1.0 - stage_rotate_end), 0.0, 1.0)
-        if command is TraceTest1Command.LEFT:
-            travel_heading_deg = turn_end_heading
-            roll_deg = 0.0
-            pitch_deg = 0.0
-            pos = _move_point(rotate_end, heading_deg=travel_heading_deg, distance=exit_leg * u)
-        elif command is TraceTest1Command.RIGHT:
-            travel_heading_deg = turn_end_heading
-            roll_deg = 0.0
-            pitch_deg = 0.0
-            pos = _move_point(rotate_end, heading_deg=travel_heading_deg, distance=exit_leg * u)
-        elif command is TraceTest1Command.PUSH:
-            travel_heading_deg = _wrap_heading(base_heading)
-            roll_deg = 0.0
-            pitch_deg = push_pull_display_pitch
-            vertical_exit_leg = max(0.0, exit_leg - push_pull_rotate_vertical)
-            pos = (
-                float(rotate_end[0]),
-                float(rotate_end[1]),
-                float(rotate_end[2] + (push_pull_vertical_sign * vertical_exit_leg * u)),
-            )
-        else:
-            travel_heading_deg = _wrap_heading(base_heading)
-            roll_deg = 0.0
-            pitch_deg = push_pull_display_pitch
-            vertical_exit_leg = max(0.0, exit_leg - push_pull_rotate_vertical)
-            pos = (
-                float(rotate_end[0]),
-                float(rotate_end[1]),
-                float(rotate_end[2] + (push_pull_vertical_sign * vertical_exit_leg * u)),
-            )
-
-    attitude = TraceTest1Attitude(
-        roll_deg=roll_deg,
-        pitch_deg=pitch_deg,
-        yaw_deg=float(travel_heading_deg),
-    )
-    return TraceTest1SceneFrame(
-        position=pos,
-        attitude=attitude,
-        travel_heading_deg=float(travel_heading_deg),
+def _offscreen_blue(
+    position: tuple[float, float, float],
+) -> bool:
+    nx, ny = trace_test_1_normalized_position(position)
+    return (
+        nx < -_BLUE_MARGIN
+        or nx > 1.0 + _BLUE_MARGIN
+        or ny < -_BLUE_MARGIN
+        or ny > 1.0 + _BLUE_MARGIN
+        or position[1] < _BLUE_DEPTH_BAND[0]
+        or position[1] > _BLUE_DEPTH_BAND[1]
     )
 
 
 class TraceTest1Generator:
-    """Deterministic aircraft trace task with right-angle motion changes."""
+    """Deterministic continuous TT1 world stream."""
 
     _OPTIONS: tuple[TraceTest1Option, ...] = (
         TraceTest1Option(code=1, label="Left", command=TraceTest1Command.LEFT),
@@ -687,46 +377,251 @@ class TraceTest1Generator:
         TraceTest1Option(code=4, label="Pull", command=TraceTest1Command.PULL),
     )
 
-    def __init__(self, *, seed: int) -> None:
+    def __init__(
+        self,
+        *,
+        seed: int,
+        allowed_commands: tuple[TraceTest1Command, ...] | None = None,
+    ) -> None:
         self._rng = SeededRng(seed)
-        self._scene_turn_index = 0
+        self._allowed_commands = _normalize_allowed_commands(allowed_commands)
+        self._prompt_index = 0
+        self._last_red_command: TraceTest1Command | None = None
+        self._tier: TraceTest1DifficultyTier | None = None
+        self._red_state = TraceTest1AircraftState(position=(0.0, 8.0, 12.0), heading_deg=0.0)
+        self._blue_states: tuple[TraceTest1AircraftState, ...] = ()
+        self._pending_prompt: TraceTest1PromptPlan | None = None
 
     def next_problem(self, *, difficulty: float) -> Problem:
-        _ = difficulty
-        viewpoint_bearing_deg = 180
-        reference = TraceTest1Attitude(
-            roll_deg=0.0,
-            pitch_deg=0.0,
-            yaw_deg=_LANE_HEADING_DEG,
+        tier = trace_test_1_difficulty_tier(difficulty=difficulty)
+        self._ensure_tier_initialized(tier=tier)
+        if self._pending_prompt is not None:
+            self.commit_prompt(prompt=self._pending_prompt, progress=1.0)
+
+        red_plan = self._build_red_plan(tier=tier)
+        blue_plans = tuple(self._build_blue_plan(state=state, tier=tier) for state in self._blue_states)
+        prompt = TraceTest1PromptPlan(
+            prompt_index=int(self._prompt_index),
+            answer_open_progress=float(tier.answer_open_progress),
+            speed_multiplier=float(tier.speed_multiplier),
+            red_plan=red_plan,
+            blue_plans=blue_plans,
         )
-
-        command = _slot_command_for_turn(slot=0, turn_index=self._scene_turn_index)
-
-        candidate = trace_test_1_apply_command(start=reference, command=command)
-
-        correct_code = int(_COMMAND_TO_CODE[command])
-
-        payload = TraceTest1Payload(
-            trial_stage=TraceTest1TrialStage.QUESTION,
-            stage_time_remaining_s=None,
-            observe_progress=1.0,
-            scene_turn_index=int(self._scene_turn_index),
-            reference=reference,
-            candidate=candidate,
-            viewpoint_bearing_deg=viewpoint_bearing_deg,
-            options=self._OPTIONS,
-            correct_code=correct_code,
-        )
-        self._scene_turn_index += 1
-
+        self._pending_prompt = prompt
+        self._prompt_index += 1
+        correct_code = int(_COMMAND_TO_CODE[red_plan.command])
         return Problem(
-            prompt=(
-                "Which way did the stick move for the red aircraft?\n\n"
-                "Use the arrow keys: Left, Right, Up (Push), or Down (Pull)."
-            ),
+            prompt=f"Trace Test 1 {red_plan.command.value}",
             answer=correct_code,
-            payload=payload,
+            payload=prompt,
         )
+
+    def commit_prompt(
+        self,
+        *,
+        prompt: TraceTest1PromptPlan,
+        progress: float,
+    ) -> None:
+        scene = trace_test_1_scene_frames(prompt=prompt, progress=progress)
+        self._red_state = _aircraft_state_from_frame(scene.red_frame)
+        self._blue_states = tuple(
+            self._advance_blue_state(frame=frame, tier=self._tier)
+            for frame in scene.blue_frames
+        )
+        self._pending_prompt = None
+
+    def _ensure_tier_initialized(self, *, tier: TraceTest1DifficultyTier) -> None:
+        if self._tier == tier and len(self._blue_states) == tier.blue_count:
+            return
+        self._tier = tier
+        if not self._blue_states:
+            self._blue_states = tuple(self._spawn_initial_blue(index=idx) for idx in range(tier.blue_count))
+            return
+        current = list(self._blue_states[: tier.blue_count])
+        while len(current) < tier.blue_count:
+            current.append(self._spawn_initial_blue(index=len(current)))
+        self._blue_states = tuple(current)
+
+    def _spawn_initial_blue(self, *, index: int) -> TraceTest1AircraftState:
+        heading = (0.0, 90.0, 270.0, 180.0)[index % 4]
+        if heading == 0.0:
+            position = (
+                float(-18.0 + self._rng.uniform(-4.0, 4.0) + (index * 7.0)),
+                float(-10.0 + self._rng.uniform(-6.0, 4.0)),
+                float(9.0 + self._rng.uniform(-2.0, 4.0)),
+            )
+        elif heading == 90.0:
+            position = (
+                float(-34.0 + self._rng.uniform(-4.0, 0.0)),
+                float(16.0 + self._rng.uniform(0.0, 28.0)),
+                float(10.0 + self._rng.uniform(-2.0, 5.0)),
+            )
+        elif heading == 270.0:
+            position = (
+                float(34.0 + self._rng.uniform(0.0, 4.0)),
+                float(14.0 + self._rng.uniform(0.0, 28.0)),
+                float(10.0 + self._rng.uniform(-2.0, 5.0)),
+            )
+        else:
+            position = (
+                float(-16.0 + self._rng.uniform(-8.0, 8.0)),
+                float(58.0 + self._rng.uniform(-6.0, 10.0)),
+                float(10.0 + self._rng.uniform(-2.0, 5.0)),
+            )
+        return TraceTest1AircraftState(position=position, heading_deg=heading)
+
+    def _prompt_distances(self, *, tier: TraceTest1DifficultyTier) -> tuple[float, float, float]:
+        speed = float(tier.speed_multiplier)
+        return (4.8 * speed, 4.1 * speed, 2.2 * speed)
+
+    def _build_red_plan(self, *, tier: TraceTest1DifficultyTier) -> TraceTest1AircraftPlan:
+        lead_distance, maneuver_distance, altitude_delta = self._prompt_distances(tier=tier)
+        for _ in range(5):
+            candidates = [
+                command for command in self._allowed_commands if command is not self._last_red_command
+            ]
+            if not candidates:
+                candidates = list(self._allowed_commands)
+            for command in self._rng.sample(candidates, k=len(candidates)):
+                plan = TraceTest1AircraftPlan(
+                    start_state=self._red_state,
+                    command=command,
+                    lead_distance=lead_distance,
+                    maneuver_distance=maneuver_distance,
+                    altitude_delta=altitude_delta if command is TraceTest1Command.PULL else -altitude_delta,
+                )
+                if self._red_plan_is_safe(plan=plan, tier=tier):
+                    self._last_red_command = command
+                    return plan
+            self._red_state = self._advance_red_recovery()
+
+        fallback_command = next(
+            (
+                command
+                for command in self._allowed_commands
+                if command is not self._last_red_command
+            ),
+            self._allowed_commands[0],
+        )
+        fallback = TraceTest1AircraftPlan(
+            start_state=self._red_state,
+            command=fallback_command,
+            lead_distance=lead_distance,
+            maneuver_distance=maneuver_distance,
+            altitude_delta=altitude_delta if fallback_command is TraceTest1Command.PULL else -altitude_delta,
+        )
+        self._last_red_command = fallback.command
+        return fallback
+
+    def _red_plan_is_safe(self, *, plan: TraceTest1AircraftPlan, tier: TraceTest1DifficultyTier) -> bool:
+        end_heading = _prompt_end_heading(plan)
+        if int(round(end_heading)) % 360 == 180:
+            return False
+        split = float(tier.answer_open_progress)
+        checkpoints = (
+            0.0,
+            max(0.0, split * 0.5),
+            split,
+            min(1.0, split + ((1.0 - split) * 0.5)),
+            1.0,
+        )
+        scene_points = [
+            trace_test_1_scene_frames(
+                prompt=TraceTest1PromptPlan(
+                    prompt_index=self._prompt_index,
+                    answer_open_progress=split,
+                    speed_multiplier=tier.speed_multiplier,
+                    red_plan=plan,
+                    blue_plans=(),
+                ),
+                progress=checkpoint,
+            ).red_frame.position
+            for checkpoint in checkpoints
+        ]
+        return all(_projected_safe(position) for position in scene_points)
+
+    def _advance_red_recovery(self) -> TraceTest1AircraftState:
+        x, y, z = self._red_state.position
+        if y > (_RED_DEPTH_BAND[1] - 3.0):
+            if x > 0.5:
+                heading = 270.0
+            elif x < -0.5:
+                heading = 90.0
+            else:
+                heading = self._rng.choice((90.0, 270.0))
+        elif x > 8.0:
+            heading = 270.0
+        elif x < -8.0:
+            heading = 90.0
+        else:
+            heading = 0.0
+        position = _move_point(
+            (x, y, z),
+            heading_deg=heading,
+            distance=_RED_RECOVERY_DISTANCE,
+            climb=_clamp(12.0 - z, -1.4, 1.4),
+        )
+        return TraceTest1AircraftState(
+            position=(
+                float(_clamp(position[0], -20.0, 20.0)),
+                float(_clamp(position[1], _RED_DEPTH_BAND[0], _RED_DEPTH_BAND[1])),
+                float(_clamp(position[2], _RED_ALTITUDE_BAND[0], _RED_ALTITUDE_BAND[1])),
+            ),
+            heading_deg=heading,
+        )
+
+    def _build_blue_plan(
+        self,
+        *,
+        state: TraceTest1AircraftState,
+        tier: TraceTest1DifficultyTier,
+    ) -> TraceTest1AircraftPlan:
+        lead_distance, maneuver_distance, altitude_delta = self._prompt_distances(tier=tier)
+        command = self._rng.choice(tuple(TraceTest1Command))
+        return TraceTest1AircraftPlan(
+            start_state=state,
+            command=command,
+            lead_distance=lead_distance,
+            maneuver_distance=maneuver_distance,
+            altitude_delta=altitude_delta if command is TraceTest1Command.PULL else -altitude_delta,
+        )
+
+    def _advance_blue_state(
+        self,
+        *,
+        frame: TraceTest1SceneFrame,
+        tier: TraceTest1DifficultyTier | None,
+    ) -> TraceTest1AircraftState:
+        state = _aircraft_state_from_frame(frame)
+        if not _offscreen_blue(frame.position):
+            return state
+        heading = _wrap_heading(state.heading_deg)
+        altitude = float(_clamp(frame.position[2], 7.0, 24.0))
+        if heading == 0.0:
+            position = (
+                float(self._rng.uniform(-22.0, 22.0)),
+                float(-14.0 + self._rng.uniform(-4.0, 3.0)),
+                altitude,
+            )
+        elif heading == 180.0:
+            position = (
+                float(self._rng.uniform(-22.0, 22.0)),
+                float(66.0 + self._rng.uniform(0.0, 8.0)),
+                altitude,
+            )
+        elif heading == 90.0:
+            position = (
+                float(-34.0 + self._rng.uniform(-5.0, -1.0)),
+                float(self._rng.uniform(6.0, 54.0)),
+                altitude,
+            )
+        else:
+            position = (
+                float(34.0 + self._rng.uniform(1.0, 5.0)),
+                float(self._rng.uniform(6.0, 54.0)),
+                altitude,
+            )
+        return TraceTest1AircraftState(position=position, heading_deg=heading)
 
 
 def build_trace_test_1_test(
@@ -765,13 +660,13 @@ class TraceTest1Engine:
         self._seed = int(seed)
         self._difficulty = clamp01(difficulty)
         self._cfg = cfg
-        self._generator = TraceTest1Generator(seed=self._seed)
+        allowed_commands = _normalize_allowed_commands(self._cfg.allowed_commands)
+        self._generator = TraceTest1Generator(seed=self._seed, allowed_commands=allowed_commands)
 
         self._phase = Phase.INSTRUCTIONS
-        self._current: Problem | None = None
-        self._current_payload: TraceTest1Payload | None = None
-        self._observe_started_at_s: float | None = None
-        self._question_started_at_s: float | None = None
+        self._current_problem: Problem | None = None
+        self._current_prompt: TraceTest1PromptPlan | None = None
+        self._trial_started_at_s: float | None = None
         self._practice_answered = 0
         self._scored_started_at_s: float | None = None
         self._events: list[QuestionEvent] = []
@@ -817,10 +712,12 @@ class TraceTest1Engine:
         if self._phase is Phase.SCORED and self.time_remaining_s() == 0.0:
             self._finish()
             return
-        # Keep the current question active until the user answers.
-        # The maneuver animation may finish (observe_progress reaches 1.0),
-        # but we no longer auto-advance to the next trial on timeout.
-        _ = self._observe_time_remaining_s()
+        if self._current_prompt is None:
+            return
+        if self._elapsed_in_prompt_s() + _STAGE_EPSILON_S < self._prompt_duration_s():
+            return
+        self._record_auto_miss()
+        self._advance_to_next_prompt(progress=1.0)
 
     def time_remaining_s(self) -> float | None:
         if self._phase is not Phase.SCORED or self._scored_started_at_s is None:
@@ -830,55 +727,46 @@ class TraceTest1Engine:
 
     def current_prompt(self) -> str:
         if self._phase is Phase.INSTRUCTIONS:
-            return "Watch the red aircraft, ignore the distractors, then answer with the arrow keys."
+            return (
+                "Watch the continuous red stream.\n\n"
+                "Answer with the arrow keys when the red aircraft changes:\n"
+                "Left, Right, Up for Push, and Down for Pull."
+            )
         if self._phase is Phase.PRACTICE_DONE:
             return "Practice complete. Press Enter to start the timed test."
         if self._phase is Phase.RESULTS:
-            s = self.scored_summary()
-            acc_pct = int(round(s.accuracy * 100))
-            rt = "n/a" if s.mean_response_time_s is None else f"{s.mean_response_time_s:.2f}s"
+            summary = self.scored_summary()
+            acc_pct = int(round(summary.accuracy * 100))
+            rt = "n/a" if summary.mean_response_time_s is None else f"{summary.mean_response_time_s:.2f}s"
             return (
-                f"Results\nAttempted: {s.attempted}\nCorrect: {s.correct}\n"
-                f"Accuracy: {acc_pct}%\nMean RT: {rt}\nThroughput: {s.throughput_per_min:.1f}/min"
+                f"Results\nAttempted: {summary.attempted}\nCorrect: {summary.correct}\n"
+                f"Accuracy: {acc_pct}%\nMean RT: {rt}\n"
+                f"Throughput: {summary.throughput_per_min:.1f}/min"
             )
-        payload = self._current_payload
-        if payload is None or self._current is None:
-            return ""
-        return self._current.prompt
+        return ""
 
     def submit_answer(self, raw: object) -> bool:
         if self._phase not in (Phase.PRACTICE, Phase.SCORED):
             return False
-        payload = self._current_payload
-        if payload is None:
-            return False
-        remaining = self._observe_time_remaining_s()
-        if remaining is not None:
-            duration = max(0.001, self._observe_duration_s())
-            progress = 1.0 - _clamp(remaining / duration, 0.0, 1.0)
-            turn_starts_at = float(_SLOT_STAGE_SPLITS[0][0])
-            if progress + _STAGE_EPSILON_S < turn_starts_at:
-                return False
-        if remaining is not None and remaining < 0.0:
+        payload = self._snapshot_payload()
+        if payload is None or payload.trial_stage is not TraceTest1TrialStage.ANSWER_OPEN:
             return False
         user_answer = trace_test_1_answer_code(raw)
-        if user_answer is None:
+        if user_answer is None or self._current_problem is None or self._current_prompt is None:
             return False
-
-        assert self._current is not None
-        assert self._question_started_at_s is not None
         answered_at_s = self._clock.now()
-        response_time_s = max(0.0, answered_at_s - self._question_started_at_s)
-        is_correct = int(user_answer) == int(self._current.answer)
+        presented_at_s = self._trial_started_at_s + self._answer_open_at_s()  # type: ignore[operator]
+        response_time_s = max(0.0, answered_at_s - presented_at_s)
+        is_correct = int(user_answer) == int(self._current_problem.answer)
         self._events.append(
             QuestionEvent(
                 index=len(self._events),
                 phase=self._phase,
-                prompt=self._current.prompt,
-                correct_answer=int(self._current.answer),
+                prompt=self._current_problem.prompt,
+                correct_answer=int(self._current_problem.answer),
                 user_answer=int(user_answer),
                 is_correct=bool(is_correct),
-                presented_at_s=float(self._question_started_at_s),
+                presented_at_s=float(presented_at_s),
                 answered_at_s=float(answered_at_s),
                 response_time_s=float(response_time_s),
                 raw=str(raw),
@@ -896,16 +784,7 @@ class TraceTest1Engine:
         else:
             self._practice_answered += 1
 
-        if self._phase is Phase.PRACTICE and self._practice_answered >= self._cfg.practice_questions:
-            self._phase = Phase.PRACTICE_DONE
-            self._clear_current()
-            return True
-
-        if self._phase is Phase.SCORED and self.time_remaining_s() == 0.0:
-            self._finish()
-            return True
-
-        self._deal_new_problem()
+        self._advance_to_next_prompt(progress=self._current_progress())
         return True
 
     def scored_summary(self) -> AttemptSummary:
@@ -914,7 +793,7 @@ class TraceTest1Engine:
         correct = int(self._scored_correct)
         accuracy = 0.0 if attempted == 0 else correct / attempted
         throughput = (attempted / duration_s) * 60.0
-        rts = [e.response_time_s for e in self._events if e.phase is Phase.SCORED]
+        rts = [event.response_time_s for event in self._events if event.phase is Phase.SCORED]
         mean_rt = None if not rts else sum(rts) / len(rts)
         total_score = float(self._scored_total_score)
         max_score = float(self._scored_max_score)
@@ -931,172 +810,127 @@ class TraceTest1Engine:
             score_ratio=float(score_ratio),
         )
 
+    def events(self) -> list[QuestionEvent]:
+        return list(self._events)
+
     def snapshot(self) -> TestSnapshot:
-        payload = self._snapshot_payload()
         return TestSnapshot(
             title="Trace Test 1",
             phase=self._phase,
             prompt=self.current_prompt(),
-            input_hint="Answer with arrow keys. Up = Push, Down = Pull.",
+            input_hint="Arrow keys answer immediately once the red maneuver begins.",
             time_remaining_s=self.time_remaining_s(),
             attempted_scored=self._scored_attempted,
             correct_scored=self._scored_correct,
-            payload=payload,
+            payload=self._snapshot_payload(),
         )
 
-    def _observe_duration_s(self) -> float:
+    def _prompt_duration_s(self) -> float:
         return (
             float(self._cfg.practice_observe_s)
             if self._phase is Phase.PRACTICE
             else float(self._cfg.scored_observe_s)
         )
 
-    def _observe_time_remaining_s(self) -> float | None:
-        if self._observe_started_at_s is None:
-            return None
-        duration = max(0.001, self._observe_duration_s())
-        elapsed = max(0.0, self._clock.now() - self._observe_started_at_s)
-        remaining = duration - elapsed
-        if remaining <= _STAGE_EPSILON_S:
+    def _elapsed_in_prompt_s(self) -> float:
+        if self._trial_started_at_s is None:
             return 0.0
-        return float(remaining)
+        return max(0.0, self._clock.now() - self._trial_started_at_s)
+
+    def _current_progress(self) -> float:
+        duration = max(0.001, self._prompt_duration_s())
+        return _clamp(self._elapsed_in_prompt_s() / duration, 0.0, 1.0)
+
+    def _answer_open_at_s(self) -> float:
+        if self._current_prompt is None:
+            return 0.0
+        return float(self._prompt_duration_s() * self._current_prompt.answer_open_progress)
 
     def _snapshot_payload(self) -> TraceTest1Payload | None:
-        payload = self._current_payload
-        if payload is None:
+        if self._current_problem is None or self._current_prompt is None:
             return None
-        duration = max(0.001, self._observe_duration_s())
-        remaining = self._observe_time_remaining_s()
-        if remaining is None:
-            remaining = duration
-        progress = 1.0 - _clamp(remaining / duration, 0.0, 1.0)
-        return replace(
-            payload,
-            trial_stage=TraceTest1TrialStage.QUESTION,
-            stage_time_remaining_s=float(remaining),
+        progress = self._current_progress()
+        elapsed = self._elapsed_in_prompt_s()
+        duration = self._prompt_duration_s()
+        answer_open_at_s = self._answer_open_at_s()
+        if progress + _STAGE_EPSILON_S < self._current_prompt.answer_open_progress:
+            stage = TraceTest1TrialStage.OBSERVE
+            stage_time_remaining_s = max(0.0, answer_open_at_s - elapsed)
+        else:
+            stage = TraceTest1TrialStage.ANSWER_OPEN
+            stage_time_remaining_s = max(0.0, duration - elapsed)
+        scene = trace_test_1_scene_frames(prompt=self._current_prompt, progress=progress)
+        return TraceTest1Payload(
+            trial_stage=stage,
+            stage_time_remaining_s=float(stage_time_remaining_s),
             observe_progress=float(progress),
+            prompt_index=int(self._current_prompt.prompt_index),
+            active_command=self._current_prompt.red_plan.command,
+            scene=scene,
+            options=TraceTest1Generator._OPTIONS,
+            correct_code=int(self._current_problem.answer),
+            prompt_window_s=float(duration),
+            answer_open_progress=float(self._current_prompt.answer_open_progress),
+            speed_multiplier=float(self._current_prompt.speed_multiplier),
+            viewpoint_bearing_deg=_VIEWPOINT_BEARING_DEG,
         )
 
     def _deal_new_problem(self) -> None:
-        self._current = self._generator.next_problem(difficulty=self._difficulty)
-        base_payload = self._current.payload
-        assert isinstance(base_payload, TraceTest1Payload)
-        now_s = self._clock.now()
-        self._current_payload = replace(
-            base_payload,
-            trial_stage=TraceTest1TrialStage.QUESTION,
-            stage_time_remaining_s=float(self._observe_duration_s()),
-            observe_progress=0.0,
-        )
-        self._observe_started_at_s = now_s
-        self._question_started_at_s = now_s
+        self._current_problem = self._generator.next_problem(difficulty=self._difficulty)
+        prompt = self._current_problem.payload
+        assert isinstance(prompt, TraceTest1PromptPlan)
+        self._current_prompt = prompt
+        self._trial_started_at_s = self._clock.now()
 
-    def _expire_current_problem(self) -> None:
-        if self._current is None or self._question_started_at_s is None:
+    def _advance_to_next_prompt(self, *, progress: float) -> None:
+        if self._current_prompt is not None:
+            self._generator.commit_prompt(prompt=self._current_prompt, progress=progress)
+        if self._phase is Phase.PRACTICE and self._practice_answered >= self._cfg.practice_questions:
+            self._phase = Phase.PRACTICE_DONE
+            self._clear_current()
             return
-        answered_at_s = self._clock.now()
-        response_time_s = max(0.0, answered_at_s - self._question_started_at_s)
+        if self._phase is Phase.SCORED and self.time_remaining_s() == 0.0:
+            self._finish()
+            return
+        self._deal_new_problem()
+
+    def _record_auto_miss(self) -> None:
+        if self._current_problem is None or self._current_prompt is None:
+            return
+        presented_at_s = self._trial_started_at_s + self._answer_open_at_s()  # type: ignore[operator]
+        answered_at_s = self._trial_started_at_s + self._prompt_duration_s()  # type: ignore[operator]
+        response_time_s = max(0.0, answered_at_s - presented_at_s)
         self._events.append(
             QuestionEvent(
                 index=len(self._events),
                 phase=self._phase,
-                prompt=self._current.prompt,
-                correct_answer=int(self._current.answer),
+                prompt=self._current_problem.prompt,
+                correct_answer=int(self._current_problem.answer),
                 user_answer=0,
                 is_correct=False,
-                presented_at_s=float(self._question_started_at_s),
+                presented_at_s=float(presented_at_s),
                 answered_at_s=float(answered_at_s),
                 response_time_s=float(response_time_s),
-                raw="TIMEOUT",
+                raw="",
                 score=0.0,
                 max_score=1.0,
             )
         )
-
         if self._phase is Phase.SCORED:
             self._scored_attempted += 1
             self._scored_max_score += 1.0
         else:
             self._practice_answered += 1
 
-        if self._phase is Phase.PRACTICE and self._practice_answered >= self._cfg.practice_questions:
-            self._phase = Phase.PRACTICE_DONE
-            self._clear_current()
-            return
-
-        if self._phase is Phase.SCORED and self.time_remaining_s() == 0.0:
-            self._finish()
-            return
-
-        self._deal_new_problem()
-
-    def _set_trial_stage(self, stage: TraceTest1TrialStage) -> None:
-        if self._current_payload is None:
-            return
-        self._current_payload = replace(
-            self._current_payload,
-            trial_stage=stage,
-            stage_time_remaining_s=None if stage is TraceTest1TrialStage.QUESTION else self._observe_duration_s(),
-            observe_progress=1.0 if stage is TraceTest1TrialStage.QUESTION else 0.0,
-        )
-        if stage is TraceTest1TrialStage.QUESTION:
-            self._question_started_at_s = self._clock.now()
-
     def _clear_current(self) -> None:
-        self._current = None
-        self._current_payload = None
-        self._observe_started_at_s = None
-        self._question_started_at_s = None
+        self._current_problem = None
+        self._current_prompt = None
+        self._trial_started_at_s = None
 
     def _finish(self) -> None:
         self._phase = Phase.RESULTS
         self._clear_current()
 
 
-def trace_test_1_aircraft_marker_offsets(
-    *,
-    attitude: TraceTest1Attitude,
-    viewpoint_bearing_deg: int,
-    scale: float = 1.0,
-) -> tuple[tuple[float, float], tuple[float, float], tuple[float, float], tuple[float, float]]:
-    """Returns projected offsets for (nose, left_wing, right_wing, tail)."""
-
-    roll = math.radians(float(attitude.roll_deg))
-    pitch = _clamp(float(attitude.pitch_deg), -45.0, 45.0)
-    yaw_relative = math.radians(
-        _wrap_heading(float(attitude.yaw_deg) - float(viewpoint_bearing_deg))
-    )
-
-    pitch_squash = 1.0 - (abs(pitch) / 150.0)
-    yaw_shear = math.sin(yaw_relative) * 0.25
-    yaw_vertical = math.cos(yaw_relative) * 0.14
-
-    points = (
-        (0.0, -26.0),  # nose
-        (-24.0, 0.0),  # left wing
-        (24.0, 0.0),  # right wing
-        (0.0, 19.0),  # tail
-    )
-
-    projected: list[tuple[float, float]] = []
-    for x, y in points:
-        xr = (x * math.cos(roll)) - (y * math.sin(roll))
-        yr = (x * math.sin(roll)) + (y * math.cos(roll))
-        yr *= pitch_squash
-
-        xr += y * yaw_shear
-        yr += x * yaw_vertical
-
-        if y < 0.0:
-            yr -= pitch * 0.40
-        elif y > 0.0:
-            yr += pitch * 0.40
-
-        projected.append((xr * scale, yr * scale))
-
-    return (
-        projected[0],
-        projected[1],
-        projected[2],
-        projected[3],
-    )
+def build_trace_test_1_final_attitude(*, prompt: TraceTest1PromptPlan) -> TraceTest1Attitude:
+    return trace_test_1_scene_frames(prompt=prompt, progress=1.0).red_frame.attitude

@@ -20,11 +20,12 @@ _STAGE_EPSILON_S = 1e-6
 
 @dataclass(frozen=True, slots=True)
 class TraceTest2Config:
-    # Candidate guide indicates ~9 minutes total including instructions.
+    # Candidate guide indicates about 9 minutes total including instructions.
     scored_duration_s: float = 7.5 * 60.0
     practice_questions: int = 2
     practice_observe_s: float = 5.5
     scored_observe_s: float = 4.8
+    allowed_question_kinds: tuple["TraceTest2QuestionKind", ...] | None = None
 
 
 class TraceTest2TrialStage(StrEnum):
@@ -33,11 +34,18 @@ class TraceTest2TrialStage(StrEnum):
 
 
 class TraceTest2QuestionKind(StrEnum):
-    STILL_VISIBLE_AT_END = "still_visible_at_end"
-    ENDED_MOST_LEFT = "ended_most_left"
-    STARTED_LOWEST = "started_lowest"
-    LEAST_TIME_ON_SCREEN = "least_time_on_screen"
-    RED_LEFT_TURNS = "red_left_turns"
+    NO_DIRECTION_CHANGE = "no_direction_change"
+    TURNED_LEFT = "turned_left"
+    TURNED_RIGHT = "turned_right"
+    ENDED_LEFTMOST = "ended_leftmost"
+    ENDED_HIGHEST = "ended_highest"
+
+
+class TraceTest2MotionKind(StrEnum):
+    STRAIGHT = "straight"
+    LEFT = "left"
+    RIGHT = "right"
+    CLIMB = "climb"
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,11 +61,10 @@ class TraceTest2AircraftTrack:
     color_name: str
     color_rgb: tuple[int, int, int]
     waypoints: tuple[TraceTest2Point3, ...]
-    left_turns: int
-    visible_fraction: float
-    visible_at_end: bool
-    started_screen_y: float
+    motion_kind: TraceTest2MotionKind
+    direction_changed: bool
     ended_screen_x: float
+    ended_altitude_z: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,11 +95,6 @@ def _clamp(v: float, lo: float, hi: float) -> float:
     return float(lo if v < lo else hi if v > hi else v)
 
 
-def _smoothstep(t: float) -> float:
-    x = _clamp(float(t), 0.0, 1.0)
-    return float(x * x * (3.0 - (2.0 * x)))
-
-
 def _lerp(a: float, b: float, t: float) -> float:
     return float(a + ((b - a) * t))
 
@@ -105,37 +107,47 @@ def _point_lerp(a: TraceTest2Point3, b: TraceTest2Point3, t: float) -> TraceTest
     )
 
 
-def _turn_heading_deg(a: TraceTest2Point3, b: TraceTest2Point3) -> float:
-    dx = float(b.x - a.x)
-    dy = float(b.y - a.y)
-    if abs(dx) < 1e-6 and abs(dy) < 1e-6:
-        return 0.0
-    return float(math.degrees(math.atan2(dx, dy)) % 360.0)
+def _direction_changed(waypoints: tuple[TraceTest2Point3, ...]) -> bool:
+    if len(waypoints) < 3:
+        return False
+    prev = waypoints[1]
+    start = waypoints[0]
+    end = waypoints[2]
+    first = (prev.x - start.x, prev.y - start.y, prev.z - start.z)
+    second = (end.x - prev.x, end.y - prev.y, end.z - prev.z)
+    delta = math.dist(first, second)
+    return delta > 0.5
 
 
 def _screen_metric(point: TraceTest2Point3) -> tuple[float, float]:
-    screen_x = float(point.x)
-    screen_y = float(((116.0 - point.y) * 1.18) - ((point.z - 8.0) * 2.05))
+    screen_x = float(point.x * 1.1)
+    screen_y = float(((128.0 - point.y) * 1.26) - ((point.z - 8.0) * 2.1))
     return screen_x, screen_y
 
 
-def _point_visible(point: TraceTest2Point3) -> bool:
-    screen_x, screen_y = _screen_metric(point)
-    return -28.0 <= screen_x <= 28.0 and -28.0 <= screen_y <= 28.0
-
-
-def _count_left_turns(waypoints: tuple[TraceTest2Point3, ...]) -> int:
-    headings: list[float] = []
-    for start, end in zip(waypoints, waypoints[1:], strict=False):
-        heading = _turn_heading_deg(start, end)
-        if math.dist((start.x, start.y), (end.x, end.y)) > 1e-6:
-            headings.append(heading)
-    turns = 0
-    for prev, nxt in zip(headings, headings[1:], strict=False):
-        delta = ((nxt - prev) + 540.0) % 360.0 - 180.0
-        if delta < -35.0:
-            turns += 1
-    return int(turns)
+def _normalize_allowed_question_kinds(
+    question_kinds: tuple[TraceTest2QuestionKind, ...] | None,
+) -> tuple[TraceTest2QuestionKind, ...]:
+    if question_kinds is None:
+        return tuple(TraceTest2QuestionKind)
+    normalized: list[TraceTest2QuestionKind] = []
+    seen: set[TraceTest2QuestionKind] = set()
+    for raw in question_kinds:
+        try:
+            kind = (
+                raw
+                if isinstance(raw, TraceTest2QuestionKind)
+                else TraceTest2QuestionKind(str(raw))
+            )
+        except ValueError as exc:
+            raise ValueError(f"Unknown Trace Test 2 question kind: {raw}") from exc
+        if kind in seen:
+            continue
+        seen.add(kind)
+        normalized.append(kind)
+    if not normalized:
+        raise ValueError("allowed_question_kinds must not be empty")
+    return tuple(normalized)
 
 
 def trace_test_2_track_position(
@@ -145,7 +157,7 @@ def trace_test_2_track_position(
 ) -> TraceTest2Point3:
     if len(track.waypoints) == 1:
         return track.waypoints[0]
-    t = _smoothstep(progress)
+    t = _clamp(progress, 0.0, 1.0)
     seg_lengths: list[float] = []
     total = 0.0
     for start, end in zip(track.waypoints, track.waypoints[1:], strict=False):
@@ -163,45 +175,8 @@ def trace_test_2_track_position(
     return track.waypoints[-1]
 
 
-def _trace_test_2_track_stats(
-    waypoints: tuple[TraceTest2Point3, ...],
-) -> tuple[int, float, bool, float, float]:
-    visible_samples = 0
-    total_samples = 33
-    for sample_idx in range(total_samples):
-        progress = sample_idx / max(1, total_samples - 1)
-        point = trace_test_2_track_position(
-            track=TraceTest2AircraftTrack(
-                code=0,
-                color_name="",
-                color_rgb=(0, 0, 0),
-                waypoints=waypoints,
-                left_turns=0,
-                visible_fraction=0.0,
-                visible_at_end=False,
-                started_screen_y=0.0,
-                ended_screen_x=0.0,
-            ),
-            progress=progress,
-        )
-        if _point_visible(point):
-            visible_samples += 1
-    left_turns = _count_left_turns(waypoints)
-    visible_fraction = visible_samples / total_samples
-    visible_at_end = _point_visible(waypoints[-1])
-    _, started_screen_y = _screen_metric(waypoints[0])
-    ended_screen_x, _ = _screen_metric(waypoints[-1])
-    return (
-        left_turns,
-        float(visible_fraction),
-        bool(visible_at_end),
-        float(started_screen_y),
-        float(ended_screen_x),
-    )
-
-
 class TraceTest2Generator:
-    """Deterministic scene-memory clips built from 3-D aircraft paths."""
+    """Deterministic guide-style movement-memory clips."""
 
     _COLOR_SPECS: tuple[tuple[str, tuple[int, int, int]], ...] = (
         ("Red", (228, 54, 56)),
@@ -209,38 +184,43 @@ class TraceTest2Generator:
         ("Silver", (202, 208, 222)),
         ("Yellow", (236, 210, 92)),
     )
+    _ROLE_KEYS: tuple[str, ...] = ("steady", "left", "right", "climb")
     _QUESTION_KINDS: tuple[TraceTest2QuestionKind, ...] = (
-        TraceTest2QuestionKind.STILL_VISIBLE_AT_END,
-        TraceTest2QuestionKind.ENDED_MOST_LEFT,
-        TraceTest2QuestionKind.STARTED_LOWEST,
-        TraceTest2QuestionKind.LEAST_TIME_ON_SCREEN,
-        TraceTest2QuestionKind.RED_LEFT_TURNS,
+        TraceTest2QuestionKind.NO_DIRECTION_CHANGE,
+        TraceTest2QuestionKind.TURNED_LEFT,
+        TraceTest2QuestionKind.TURNED_RIGHT,
+        TraceTest2QuestionKind.ENDED_LEFTMOST,
+        TraceTest2QuestionKind.ENDED_HIGHEST,
     )
 
-    def __init__(self, *, seed: int) -> None:
+    def __init__(
+        self,
+        *,
+        seed: int,
+        allowed_question_kinds: tuple[TraceTest2QuestionKind, ...] | None = None,
+    ) -> None:
         self._rng = SeededRng(seed)
+        self._allowed_question_kinds = _normalize_allowed_question_kinds(
+            allowed_question_kinds
+        )
 
     def next_problem(self, *, difficulty: float) -> Problem:
         d = clamp01(difficulty)
-        question_kind = self._rng.choice(self._QUESTION_KINDS)
-        role_order = self._rng.sample(("alpha", "bravo", "charlie", "delta"), k=4)
-        variant = int(self._rng.randint(0, 2))
-
-        aircraft = tuple(
+        question_kind = self._rng.choice(self._allowed_question_kinds)
+        role_order = self._rng.sample(self._ROLE_KEYS, k=len(self._ROLE_KEYS))
+        tracks = tuple(
             self._build_track(
                 code=idx + 1,
                 color_name=color_name,
                 color_rgb=color_rgb,
                 role_key=role_order[idx],
                 difficulty=d,
-                variant=variant,
             )
             for idx, (color_name, color_rgb) in enumerate(self._COLOR_SPECS)
         )
-
         options, correct_code = self._options_and_answer(
             question_kind=question_kind,
-            aircraft=aircraft,
+            tracks=tracks,
         )
         stem = self._stem_for(question_kind)
         payload = TraceTest2Payload(
@@ -253,11 +233,10 @@ class TraceTest2Generator:
             question_kind=question_kind,
             stem=stem,
             viewpoint_bearing_deg=0,
-            aircraft=aircraft,
+            aircraft=tracks,
             options=options,
             correct_code=correct_code,
         )
-
         prompt_lines = [stem, ""]
         prompt_lines.extend(f"{option.code}) {option.label}" for option in options)
         return Problem(
@@ -274,79 +253,84 @@ class TraceTest2Generator:
         color_rgb: tuple[int, int, int],
         role_key: str,
         difficulty: float,
-        variant: int,
     ) -> TraceTest2AircraftTrack:
-        lateral_bias = (-1.4, 0.0, 1.4)[variant]
-        altitude_bias = (-0.7, 0.0, 0.9)[variant]
-        speed_bias = 2.0 + (difficulty * 3.0)
-
-        role_waypoints = {
-            "alpha": (
-                TraceTest2Point3(-34.0 + lateral_bias, 84.0, 14.0 + altitude_bias),
-                TraceTest2Point3(-10.0 + lateral_bias, 84.0, 14.0 + altitude_bias),
-                TraceTest2Point3(-10.0 + lateral_bias, 102.0 + speed_bias, 14.0 + altitude_bias),
-                TraceTest2Point3(-32.0 + lateral_bias, 102.0 + speed_bias, 13.0 + altitude_bias),
+        d = clamp01(difficulty)
+        lateral_scale = 1.0 - (0.18 * d)
+        altitude_scale = 1.0 - (0.12 * d)
+        shift_x = self._rng.uniform(-2.0, 2.0)
+        shift_y = self._rng.uniform(-3.0, 3.0)
+        shift_z = self._rng.uniform(-0.8, 0.8)
+        templates: dict[str, tuple[TraceTest2MotionKind, tuple[TraceTest2Point3, ...]]] = {
+            "steady": (
+                TraceTest2MotionKind.STRAIGHT,
+                (
+                    TraceTest2Point3(-14.0, 66.0, 11.0),
+                    TraceTest2Point3(-14.0, 92.0, 11.0),
+                    TraceTest2Point3(-14.0, 118.0, 11.0),
+                ),
             ),
-            "bravo": (
-                TraceTest2Point3(-10.0 + lateral_bias, 58.0, 1.5 + altitude_bias),
-                TraceTest2Point3(12.0 + lateral_bias, 58.0, 1.5 + altitude_bias),
-                TraceTest2Point3(34.0 + lateral_bias, 58.0, 4.0 + altitude_bias),
+            "left": (
+                TraceTest2MotionKind.LEFT,
+                (
+                    TraceTest2Point3(24.0, 68.0, 14.0),
+                    TraceTest2Point3(24.0, 94.0, 14.0),
+                    TraceTest2Point3(-36.0, 94.0, 14.0),
+                ),
             ),
-            "charlie": (
-                TraceTest2Point3(-38.0 + lateral_bias, 98.0, 20.0 + altitude_bias),
-                TraceTest2Point3(-18.0 + lateral_bias, 98.0, 20.0 + altitude_bias),
-                TraceTest2Point3(-18.0 + lateral_bias, 114.0 + (speed_bias * 0.7), 18.0 + altitude_bias),
+            "right": (
+                TraceTest2MotionKind.RIGHT,
+                (
+                    TraceTest2Point3(-24.0, 62.0, 7.0),
+                    TraceTest2Point3(-24.0, 88.0, 7.0),
+                    TraceTest2Point3(30.0, 88.0, 7.0),
+                ),
             ),
-            "delta": (
-                TraceTest2Point3(32.0 + lateral_bias, 92.0, 10.0 + altitude_bias),
-                TraceTest2Point3(14.0 + lateral_bias, 92.0, 10.0 + altitude_bias),
-                TraceTest2Point3(34.0 + lateral_bias, 106.0 + (speed_bias * 0.35), 12.0 + altitude_bias),
+            "climb": (
+                TraceTest2MotionKind.CLIMB,
+                (
+                    TraceTest2Point3(12.0, 70.0, 4.0),
+                    TraceTest2Point3(12.0, 96.0, 4.0),
+                    TraceTest2Point3(12.0, 96.0, 24.0),
+                ),
             ),
         }
-        waypoints = role_waypoints[role_key]
-        left_turns, visible_fraction, visible_at_end, started_screen_y, ended_screen_x = (
-            _trace_test_2_track_stats(waypoints)
+        motion_kind, base_waypoints = templates[role_key]
+        waypoints = tuple(
+            TraceTest2Point3(
+                x=(point.x * lateral_scale) + shift_x,
+                y=point.y + shift_y,
+                z=(point.z * altitude_scale) + shift_z,
+            )
+            for point in base_waypoints
         )
+        ended_screen_x, _ = _screen_metric(waypoints[-1])
         return TraceTest2AircraftTrack(
             code=code,
             color_name=color_name,
             color_rgb=color_rgb,
             waypoints=waypoints,
-            left_turns=left_turns,
-            visible_fraction=visible_fraction,
-            visible_at_end=visible_at_end,
-            started_screen_y=started_screen_y,
-            ended_screen_x=ended_screen_x,
+            motion_kind=motion_kind,
+            direction_changed=_direction_changed(waypoints),
+            ended_screen_x=float(ended_screen_x),
+            ended_altitude_z=float(waypoints[-1].z),
         )
 
     @staticmethod
     def _stem_for(question_kind: TraceTest2QuestionKind) -> str:
-        if question_kind is TraceTest2QuestionKind.STILL_VISIBLE_AT_END:
-            return "Which aircraft was still on screen at the end?"
-        if question_kind is TraceTest2QuestionKind.ENDED_MOST_LEFT:
-            return "Which aircraft ended furthest left?"
-        if question_kind is TraceTest2QuestionKind.STARTED_LOWEST:
-            return "Which aircraft started lowest on the screen?"
-        if question_kind is TraceTest2QuestionKind.LEAST_TIME_ON_SCREEN:
-            return "Which aircraft spent the least time on screen?"
-        return "How many left turns did the red aircraft make?"
+        return {
+            TraceTest2QuestionKind.NO_DIRECTION_CHANGE: "Which aircraft did not change direction?",
+            TraceTest2QuestionKind.TURNED_LEFT: "Which aircraft turned left?",
+            TraceTest2QuestionKind.TURNED_RIGHT: "Which aircraft turned right?",
+            TraceTest2QuestionKind.ENDED_LEFTMOST: "Which aircraft ended furthest left?",
+            TraceTest2QuestionKind.ENDED_HIGHEST: "Which aircraft ended highest?",
+        }[question_kind]
 
     def _options_and_answer(
         self,
         *,
         question_kind: TraceTest2QuestionKind,
-        aircraft: tuple[TraceTest2AircraftTrack, ...],
+        tracks: tuple[TraceTest2AircraftTrack, ...],
     ) -> tuple[tuple[TraceTest2Option, ...], int]:
-        if question_kind is TraceTest2QuestionKind.RED_LEFT_TURNS:
-            red = next(track for track in aircraft if track.color_name == "Red")
-            options = (
-                TraceTest2Option(code=1, label="0"),
-                TraceTest2Option(code=2, label="1"),
-                TraceTest2Option(code=3, label="2"),
-                TraceTest2Option(code=4, label="3"),
-            )
-            return options, int(_clamp(red.left_turns, 0, 3) + 1)
-
         options = tuple(
             TraceTest2Option(
                 code=track.code,
@@ -354,18 +338,21 @@ class TraceTest2Generator:
                 color_name=track.color_name,
                 color_rgb=track.color_rgb,
             )
-            for track in aircraft
+            for track in tracks
         )
-        if question_kind is TraceTest2QuestionKind.STILL_VISIBLE_AT_END:
-            answer = next(track.code for track in aircraft if track.visible_at_end)
+        if question_kind is TraceTest2QuestionKind.NO_DIRECTION_CHANGE:
+            answer = next(track.code for track in tracks if not track.direction_changed)
             return options, int(answer)
-        if question_kind is TraceTest2QuestionKind.ENDED_MOST_LEFT:
-            answer = min(aircraft, key=lambda track: track.ended_screen_x).code
+        if question_kind is TraceTest2QuestionKind.TURNED_LEFT:
+            answer = next(track.code for track in tracks if track.motion_kind is TraceTest2MotionKind.LEFT)
             return options, int(answer)
-        if question_kind is TraceTest2QuestionKind.STARTED_LOWEST:
-            answer = max(aircraft, key=lambda track: track.started_screen_y).code
+        if question_kind is TraceTest2QuestionKind.TURNED_RIGHT:
+            answer = next(track.code for track in tracks if track.motion_kind is TraceTest2MotionKind.RIGHT)
             return options, int(answer)
-        answer = min(aircraft, key=lambda track: track.visible_fraction).code
+        if question_kind is TraceTest2QuestionKind.ENDED_LEFTMOST:
+            answer = min(tracks, key=lambda track: track.ended_screen_x).code
+            return options, int(answer)
+        answer = max(tracks, key=lambda track: track.ended_altitude_z).code
         return options, int(answer)
 
 
@@ -390,12 +377,18 @@ class TraceTest2Engine:
         self._seed = int(seed)
         self._difficulty = clamp01(difficulty)
         self._cfg = cfg
-        self._generator = TraceTest2Generator(seed=self._seed)
+        allowed_question_kinds = _normalize_allowed_question_kinds(
+            self._cfg.allowed_question_kinds
+        )
+        self._generator = TraceTest2Generator(
+            seed=self._seed,
+            allowed_question_kinds=allowed_question_kinds,
+        )
 
         self._phase = Phase.INSTRUCTIONS
         self._current: Problem | None = None
         self._current_payload: TraceTest2Payload | None = None
-        self._observe_started_at_s: float | None = None
+        self._trial_started_at_s: float | None = None
         self._question_started_at_s: float | None = None
         self._practice_answered = 0
         self._scored_started_at_s: float | None = None
@@ -442,10 +435,7 @@ class TraceTest2Engine:
         if self._phase is Phase.SCORED and self.time_remaining_s() == 0.0:
             self._finish()
             return
-        # Keep the current question active until the user answers.
-        # The movement animation may finish (observe_progress reaches 1.0),
-        # but the trial no longer auto-advances on a stage transition.
-        _ = self._observe_time_remaining_s()
+        self._ensure_question_open_state()
 
     def time_remaining_s(self) -> float | None:
         if self._phase is not Phase.SCORED or self._scored_started_at_s is None:
@@ -455,26 +445,34 @@ class TraceTest2Engine:
 
     def current_prompt(self) -> str:
         if self._phase is Phase.INSTRUCTIONS:
-            return "Watch the aircraft movement and answer the recall question with A/S/D/F."
+            return "Watch the aircraft clip first. When it ends, answer with A/S/D/F."
         if self._phase is Phase.PRACTICE_DONE:
             return "Practice complete. Press Enter to start the timed test."
         if self._phase is Phase.RESULTS:
-            s = self.scored_summary()
-            acc_pct = int(round(s.accuracy * 100))
-            rt = "n/a" if s.mean_response_time_s is None else f"{s.mean_response_time_s:.2f}s"
-            return (
-                f"Results\nAttempted: {s.attempted}\nCorrect: {s.correct}\n"
-                f"Accuracy: {acc_pct}%\nMean RT: {rt}\nThroughput: {s.throughput_per_min:.1f}/min"
+            summary = self.scored_summary()
+            acc_pct = int(round(summary.accuracy * 100))
+            rt = (
+                "n/a"
+                if summary.mean_response_time_s is None
+                else f"{summary.mean_response_time_s:.2f}s"
             )
-        if self._current_payload is None or self._current is None:
+            return (
+                f"Results\nAttempted: {summary.attempted}\nCorrect: {summary.correct}\n"
+                f"Accuracy: {acc_pct}%\nMean RT: {rt}\n"
+                f"Throughput: {summary.throughput_per_min:.1f}/min"
+            )
+        payload = self._snapshot_payload()
+        if payload is None or self._current is None:
             return ""
+        if payload.trial_stage is TraceTest2TrialStage.OBSERVE:
+            return "Watch the aircraft scene."
         return self._current.prompt
 
     def submit_answer(self, raw: object) -> bool:
         if self._phase not in (Phase.PRACTICE, Phase.SCORED):
             return False
-        payload = self._current_payload
-        if payload is None:
+        payload = self._snapshot_payload()
+        if payload is None or payload.trial_stage is not TraceTest2TrialStage.QUESTION:
             return False
         raw_in = raw if isinstance(raw, str) else str(raw)
         value = raw_in.strip()
@@ -484,13 +482,13 @@ class TraceTest2Engine:
             user_answer = int(value)
         except ValueError:
             return False
-
+        self._ensure_question_open_state()
         assert self._current is not None
         assert self._question_started_at_s is not None
+
         answered_at_s = self._clock.now()
         response_time_s = max(0.0, answered_at_s - self._question_started_at_s)
         is_correct = int(user_answer) == int(self._current.answer)
-
         event = QuestionEvent(
             index=len(self._events),
             phase=self._phase,
@@ -534,7 +532,7 @@ class TraceTest2Engine:
         correct = int(self._scored_correct)
         accuracy = 0.0 if attempted == 0 else correct / attempted
         throughput = (attempted / duration_s) * 60.0
-        rts = [e.response_time_s for e in self._events if e.phase is Phase.SCORED]
+        rts = [event.response_time_s for event in self._events if event.phase is Phase.SCORED]
         mean_rt = None if not rts else sum(rts) / len(rts)
         total_score = float(self._scored_total_score)
         max_score = float(self._scored_max_score)
@@ -551,17 +549,19 @@ class TraceTest2Engine:
             score_ratio=float(score_ratio),
         )
 
+    def events(self) -> list[QuestionEvent]:
+        return list(self._events)
+
     def snapshot(self) -> TestSnapshot:
-        payload = self._snapshot_payload()
         return TestSnapshot(
             title="Trace Test 2",
             phase=self._phase,
             prompt=self.current_prompt(),
-            input_hint="Answer with A/S/D/F or Up/Down and Enter.",
+            input_hint="Watch first. Then answer with A/S/D/F, or use 1-4 and Enter.",
             time_remaining_s=self.time_remaining_s(),
             attempted_scored=self._scored_attempted,
             correct_scored=self._scored_correct,
-            payload=payload,
+            payload=self._snapshot_payload(),
         )
 
     def _observe_duration_s(self) -> float:
@@ -571,29 +571,42 @@ class TraceTest2Engine:
             else float(self._cfg.scored_observe_s)
         )
 
-    def _observe_time_remaining_s(self) -> float | None:
-        if self._observe_started_at_s is None:
+    def _elapsed_in_trial_s(self) -> float | None:
+        if self._trial_started_at_s is None:
             return None
-        duration = max(0.001, self._observe_duration_s())
-        elapsed = max(0.0, self._clock.now() - self._observe_started_at_s)
-        remaining = duration - elapsed
-        if remaining <= _STAGE_EPSILON_S:
-            return 0.0
-        return float(remaining)
+        return max(0.0, self._clock.now() - self._trial_started_at_s)
+
+    def _ensure_question_open_state(self) -> None:
+        if self._question_started_at_s is not None or self._trial_started_at_s is None:
+            return
+        elapsed = self._elapsed_in_trial_s()
+        if elapsed is None:
+            return
+        observe_duration = self._observe_duration_s()
+        if elapsed + _STAGE_EPSILON_S < observe_duration:
+            return
+        self._question_started_at_s = self._trial_started_at_s + observe_duration
 
     def _snapshot_payload(self) -> TraceTest2Payload | None:
         payload = self._current_payload
         if payload is None:
             return None
         duration = max(0.001, self._observe_duration_s())
-        remaining = self._observe_time_remaining_s()
-        if remaining is None:
-            remaining = duration
-        progress = 1.0 - _clamp(remaining / duration, 0.0, 1.0)
+        elapsed = self._elapsed_in_trial_s()
+        if elapsed is None:
+            elapsed = 0.0
+        if elapsed + _STAGE_EPSILON_S < duration:
+            stage = TraceTest2TrialStage.OBSERVE
+            stage_time_remaining_s = max(0.0, duration - elapsed)
+            progress = _clamp(elapsed / duration, 0.0, 1.0)
+        else:
+            stage = TraceTest2TrialStage.QUESTION
+            stage_time_remaining_s = None
+            progress = 1.0
         return replace(
             payload,
-            trial_stage=TraceTest2TrialStage.QUESTION,
-            stage_time_remaining_s=float(remaining),
+            trial_stage=stage,
+            stage_time_remaining_s=stage_time_remaining_s,
             observe_progress=float(progress),
         )
 
@@ -603,7 +616,9 @@ class TraceTest2Engine:
         assert isinstance(base_payload, TraceTest2Payload)
         block_kind = "practice" if self._phase is Phase.PRACTICE else "scored"
         trial_index = (
-            self._practice_answered + 1 if self._phase is Phase.PRACTICE else self._scored_attempted + 1
+            self._practice_answered + 1
+            if self._phase is Phase.PRACTICE
+            else self._scored_attempted + 1
         )
         trial_total = (
             int(self._cfg.practice_questions)
@@ -613,20 +628,20 @@ class TraceTest2Engine:
         now_s = self._clock.now()
         self._current_payload = replace(
             base_payload,
-            trial_stage=TraceTest2TrialStage.QUESTION,
+            trial_stage=TraceTest2TrialStage.OBSERVE,
             stage_time_remaining_s=float(self._observe_duration_s()),
             observe_progress=0.0,
             block_kind=block_kind,
             trial_index_in_block=int(trial_index),
             trials_in_block=int(trial_total),
         )
-        self._observe_started_at_s = now_s
-        self._question_started_at_s = now_s
+        self._trial_started_at_s = now_s
+        self._question_started_at_s = None
 
     def _clear_current(self) -> None:
         self._current = None
         self._current_payload = None
-        self._observe_started_at_s = None
+        self._trial_started_at_s = None
         self._question_started_at_s = None
 
     def _finish(self) -> None:

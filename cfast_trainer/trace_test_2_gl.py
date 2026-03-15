@@ -13,13 +13,12 @@ def aircraft_hpr_from_tangent(tangent: tuple[float, float, float]) -> tuple[floa
 def project_point(point: TraceTest2Point3, *, size: tuple[int, int]) -> tuple[float, float]:
     width = max(1, int(size[0]))
     height = max(1, int(size[1]))
-    horizon = height * 0.58
-    forward_scale_x = max(2.8, width / 128.0)
-    depth_parallax_x = max(0.20, width / 520.0)
-    altitude_scale = max(2.0, height / 50.0)
+    horizon = height * 0.76
+    depth = max(24.0, float(point.y))
+    depth_factor = 1.0 / (1.0 + ((depth - 62.0) / 136.0))
     return (
-        (width * 0.5) + (((point.y - 88.0) * forward_scale_x) + (point.x * depth_parallax_x)),
-        horizon - ((point.z - 8.0) * altitude_scale),
+        (width * 0.5) + (point.x * width * 0.015 * depth_factor),
+        horizon - (point.z * height * 0.030) - ((depth - 62.0) * height * 0.010),
     )
 
 

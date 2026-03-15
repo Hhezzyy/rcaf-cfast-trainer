@@ -10,8 +10,10 @@ os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 import pygame
 
 from cfast_trainer.app import App, CognitiveTestScreen, MenuItem, MenuScreen
+from cfast_trainer.ant_drills import AntDrillMode
 from cfast_trainer.cognitive_core import Phase
 from cfast_trainer.cognitive_core import TestSnapshot as SnapshotModel
+from cfast_trainer.si_drills import SiDrillConfig, build_si_landmark_anchor_drill
 from cfast_trainer.spatial_integration import (
     SpatialIntegrationAnswerMode,
     SpatialIntegrationConfig,
@@ -265,5 +267,45 @@ def test_spatial_renderer_is_used_for_titles_with_prefix() -> None:
         screen.render(surface)
 
         assert called["value"] is True
+    finally:
+        pygame.quit()
+
+
+def test_spatial_renderer_is_used_for_real_si_drill_titles() -> None:
+    clock = _FakeClock()
+    engine = build_si_landmark_anchor_drill(
+        clock=clock,
+        seed=303,
+        difficulty=0.5,
+        mode=AntDrillMode.TEMPO,
+        config=SiDrillConfig(practice_scenes_per_part=0, scored_duration_s=24.0),
+    )
+    engine.start_practice()
+    for _ in range(240):
+        snap = engine.snapshot()
+        payload = snap.payload
+        if isinstance(payload, SpatialIntegrationPayload) and payload.trial_stage is SpatialIntegrationTrialStage.QUESTION:
+            break
+        clock.advance(0.2)
+        engine.update()
+    else:
+        raise AssertionError("Could not reach a Spatial Integration drill question stage.")
+
+    _app, screen = _build_screen(engine)
+    try:
+        surface = pygame.display.get_surface()
+        assert surface is not None
+        called = {"value": False}
+        original = screen._render_spatial_integration_screen
+
+        def wrapped(surface, snap, payload):
+            called["value"] = True
+            return original(surface, snap, payload)
+
+        screen._render_spatial_integration_screen = wrapped  # type: ignore[method-assign]
+        screen.render(surface)
+
+        assert called["value"] is True
+        assert engine.snapshot().title.startswith("Spatial Integration:")
     finally:
         pygame.quit()

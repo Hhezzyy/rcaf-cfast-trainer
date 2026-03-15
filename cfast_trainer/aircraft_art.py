@@ -108,6 +108,17 @@ def panda3d_fixed_wing_hpr(
     )
 
 
+def fixed_wing_heading_from_screen_heading(screen_heading_deg: float) -> float:
+    """Convert a 2-D screen tangent angle into the fixed-wing heading convention.
+
+    Screen headings use ``atan2(dy, dx)`` with 0 degrees pointing right and
+    -90 degrees pointing up. The fixed-wing mesh uses 0 degrees as straight
+    ahead/up on screen, 90 right, 180 down, and 270 left.
+    """
+
+    return (float(screen_heading_deg) + 90.0) % 360.0
+
+
 def panda3d_fixed_wing_hpr_from_tangent(
     tangent: Point3,
     *,

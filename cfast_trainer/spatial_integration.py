@@ -28,6 +28,8 @@ class SpatialIntegrationConfig:
     question_time_limit_s: float = 8.0
     skip_practice_for_testing: bool = False
     start_part: str = "STATIC"  # "STATIC" | "AIRCRAFT"
+    parts: tuple[str, ...] | None = None
+    allowed_question_kinds: tuple[str, ...] | None = None
 
 
 class SpatialIntegrationPart(StrEnum):
@@ -51,12 +53,31 @@ class SpatialIntegrationQuestionKind(StrEnum):
     LANDMARK_GRID = "landmark_grid"
     SCENE_RECONSTRUCTION = "scene_reconstruction"
     AIRCRAFT_ROUTE_SELECTION = "aircraft_route_selection"
+    AIRCRAFT_CONTINUATION_SELECTION = "aircraft_continuation_selection"
     AIRCRAFT_LOCATION_GRID = "aircraft_location_grid"
 
 
 class SpatialIntegrationAnswerMode(StrEnum):
     GRID_CLICK = "grid_click"
     OPTION_PICK = "option_pick"
+
+
+_SPATIAL_INTEGRATION_PART_ORDER = (
+    SpatialIntegrationPart.STATIC,
+    SpatialIntegrationPart.AIRCRAFT,
+)
+
+_SPATIAL_INTEGRATION_QUESTION_KINDS_BY_PART = {
+    SpatialIntegrationPart.STATIC: (
+        SpatialIntegrationQuestionKind.LANDMARK_GRID,
+        SpatialIntegrationQuestionKind.SCENE_RECONSTRUCTION,
+    ),
+    SpatialIntegrationPart.AIRCRAFT: (
+        SpatialIntegrationQuestionKind.AIRCRAFT_ROUTE_SELECTION,
+        SpatialIntegrationQuestionKind.AIRCRAFT_CONTINUATION_SELECTION,
+        SpatialIntegrationQuestionKind.AIRCRAFT_LOCATION_GRID,
+    ),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -198,6 +219,57 @@ def _scene_title(part: SpatialIntegrationPart) -> str:
     return "Landscape Integration" if part is SpatialIntegrationPart.STATIC else "Aircraft / Route Integration"
 
 
+def _normalize_part(raw: SpatialIntegrationPart | str) -> SpatialIntegrationPart:
+    if isinstance(raw, SpatialIntegrationPart):
+        return raw
+    token = str(raw).strip().upper()
+    if token in {"A", "STATIC", "PART1"}:
+        return SpatialIntegrationPart.STATIC
+    if token in {"B", "AIRCRAFT", "PART2", "C"}:
+        return SpatialIntegrationPart.AIRCRAFT
+    raise ValueError(f"Unknown Spatial Integration part: {raw}")
+
+
+def _normalize_question_kind(
+    raw: SpatialIntegrationQuestionKind | str,
+) -> SpatialIntegrationQuestionKind:
+    if isinstance(raw, SpatialIntegrationQuestionKind):
+        return raw
+    token = str(raw).strip().lower()
+    for kind in SpatialIntegrationQuestionKind:
+        if token in {kind.value, kind.name.lower()}:
+            return kind
+    raise ValueError(f"Unknown Spatial Integration question kind: {raw}")
+
+
+def _normalize_parts_config(parts: tuple[str, ...] | None) -> tuple[SpatialIntegrationPart, ...]:
+    if parts is None:
+        return _SPATIAL_INTEGRATION_PART_ORDER
+    normalized: list[SpatialIntegrationPart] = []
+    for raw in parts:
+        part = _normalize_part(raw)
+        if part not in normalized:
+            normalized.append(part)
+    if not normalized:
+        raise ValueError("parts must include at least one Spatial Integration part")
+    return tuple(normalized)
+
+
+def _normalize_question_kinds_config(
+    kinds: tuple[str, ...] | None,
+) -> tuple[SpatialIntegrationQuestionKind, ...] | None:
+    if kinds is None:
+        return None
+    normalized: list[SpatialIntegrationQuestionKind] = []
+    for raw in kinds:
+        kind = _normalize_question_kind(raw)
+        if kind not in normalized:
+            normalized.append(kind)
+    if not normalized:
+        raise ValueError("allowed_question_kinds must include at least one question kind")
+    return tuple(normalized)
+
+
 class SpatialIntegrationScorer(AnswerScorer):
     """Spatial Integration uses exact scoring for both grid and fixed-choice questions."""
 
@@ -304,12 +376,26 @@ class SpatialIntegrationGenerator:
         *,
         part: SpatialIntegrationPart,
         difficulty: float,
+        allowed_question_kinds: tuple[SpatialIntegrationQuestionKind, ...] | None = None,
     ) -> _SpatialIntegrationSceneCluster:
         d = clamp01(difficulty)
         self._scene_id += 1
+        scene: _SpatialIntegrationSceneCluster
         if part is SpatialIntegrationPart.STATIC:
-            return self._build_static_scene(scene_id=self._scene_id, difficulty=d)
-        return self._build_aircraft_scene(scene_id=self._scene_id, difficulty=d)
+            scene = self._build_static_scene(scene_id=self._scene_id, difficulty=d)
+        else:
+            scene = self._build_aircraft_scene(scene_id=self._scene_id, difficulty=d)
+        if allowed_question_kinds is None:
+            return scene
+        filtered_questions = tuple(
+            question for question in scene.questions if question.kind in allowed_question_kinds
+        )
+        if not filtered_questions:
+            raise ValueError(
+                f"No Spatial Integration questions available for part={part.value} "
+                f"with allowed_question_kinds={tuple(kind.value for kind in allowed_question_kinds)}"
+            )
+        return replace(scene, questions=filtered_questions)
 
     def _build_static_scene(
         self,
@@ -464,7 +550,7 @@ class SpatialIntegrationGenerator:
                 answer_map_landmarks=landmarks,
             ),
             _SpatialIntegrationQuestion(
-                kind=SpatialIntegrationQuestionKind.AIRCRAFT_ROUTE_SELECTION,
+                kind=SpatialIntegrationQuestionKind.AIRCRAFT_CONTINUATION_SELECTION,
                 answer_mode=SpatialIntegrationAnswerMode.OPTION_PICK,
                 stem="Which path continuation shows the aircraft in the correct next position?",
                 query_label="CONTINUATION",
@@ -790,11 +876,6 @@ class SpatialIntegrationGenerator:
 
 
 class SpatialIntegrationEngine:
-    _PART_ORDER = (
-        SpatialIntegrationPart.STATIC,
-        SpatialIntegrationPart.AIRCRAFT,
-    )
-
     def __init__(
         self,
         *,
@@ -815,13 +896,24 @@ class SpatialIntegrationEngine:
         if cfg.question_time_limit_s < 0.1:
             raise ValueError("question_time_limit_s must be >= 0.1")
 
-        start = str(cfg.start_part).strip().upper()
-        self._start_part = (
-            SpatialIntegrationPart.AIRCRAFT
-            if start in {"B", "AIRCRAFT", "PART2"}
-            else SpatialIntegrationPart.STATIC
-        )
-        self._part_idx = self._PART_ORDER.index(self._start_part)
+        self._part_order = _normalize_parts_config(cfg.parts)
+        self._start_part = _normalize_part(cfg.start_part)
+        if self._start_part not in self._part_order:
+            raise ValueError("start_part must be included in parts")
+        self._part_idx = self._part_order.index(self._start_part)
+        self._allowed_question_kinds = _normalize_question_kinds_config(cfg.allowed_question_kinds)
+        runnable_parts = self._part_order[self._part_idx :]
+        for part in runnable_parts:
+            if self._allowed_question_kinds is None:
+                continue
+            if any(
+                kind in self._allowed_question_kinds
+                for kind in _SPATIAL_INTEGRATION_QUESTION_KINDS_BY_PART[part]
+            ):
+                continue
+            raise ValueError(
+                f"Configured parts/question kinds produce no questions for part={part.value}"
+            )
 
         self._clock = clock
         self._seed = int(seed)
@@ -883,7 +975,7 @@ class SpatialIntegrationEngine:
     def start_practice(self) -> None:
         if self._phase is not Phase.INSTRUCTIONS:
             return
-        self._part_idx = self._PART_ORDER.index(self._start_part)
+        self._part_idx = self._part_order.index(self._start_part)
         if self._cfg.skip_practice_for_testing:
             part = self._active_part()
             self._phase = Phase.PRACTICE_DONE
@@ -903,7 +995,7 @@ class SpatialIntegrationEngine:
                 return
             if self._pending_done_action == "start_next_practice":
                 self._part_idx += 1
-                if self._part_idx >= len(self._PART_ORDER):
+                if self._part_idx >= len(self._part_order):
                     self._to_results()
                     return
                 if self._cfg.skip_practice_for_testing:
@@ -921,7 +1013,7 @@ class SpatialIntegrationEngine:
             return
 
         if self._phase is Phase.INSTRUCTIONS:
-            self._part_idx = self._PART_ORDER.index(self._start_part)
+            self._part_idx = self._part_order.index(self._start_part)
             self._begin_block(is_practice=False)
 
     def submit_answer(self, raw: str) -> bool:
@@ -1116,7 +1208,11 @@ class SpatialIntegrationEngine:
         self._block_scene_index += 1
         self._current_question_idx = 0
         self._current_study_view_idx = 0
-        self._current_scene = self._generator.next_scene_cluster(part=part, difficulty=self._difficulty)
+        self._current_scene = self._generator.next_scene_cluster(
+            part=part,
+            difficulty=self._difficulty,
+            allowed_question_kinds=self._allowed_question_kinds,
+        )
         question = self._current_scene.questions[0]
         self._current_problem = self._make_problem(
             scene=self._current_scene,
@@ -1306,8 +1402,8 @@ class SpatialIntegrationEngine:
             )
             return
 
-        if self._part_idx + 1 < len(self._PART_ORDER):
-            next_part = self._PART_ORDER[self._part_idx + 1]
+        if self._part_idx + 1 < len(self._part_order):
+            next_part = self._part_order[self._part_idx + 1]
             self._phase = Phase.PRACTICE_DONE
             self._pending_done_action = "start_next_practice"
             self._practice_done_prompt = (
@@ -1349,8 +1445,8 @@ class SpatialIntegrationEngine:
 
         if token in {"__skip_section__", "__skip_part__", "skip_section", "skip_part"}:
             part = self._active_part()
-            if self._part_idx + 1 < len(self._PART_ORDER):
-                next_part = self._PART_ORDER[self._part_idx + 1]
+            if self._part_idx + 1 < len(self._part_order):
+                next_part = self._part_order[self._part_idx + 1]
                 self._phase = Phase.PRACTICE_DONE
                 self._pending_done_action = "start_next_practice"
                 self._practice_done_prompt = (
@@ -1406,8 +1502,8 @@ class SpatialIntegrationEngine:
         )
 
     def _active_part(self) -> SpatialIntegrationPart:
-        idx = max(0, min(len(self._PART_ORDER) - 1, int(self._part_idx)))
-        return self._PART_ORDER[idx]
+        idx = max(0, min(len(self._part_order) - 1, int(self._part_idx)))
+        return self._part_order[idx]
 
     @staticmethod
     def _payload_or_none(problem: Problem) -> SpatialIntegrationPayload | None:

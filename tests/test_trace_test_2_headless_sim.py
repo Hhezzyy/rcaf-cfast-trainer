@@ -9,6 +9,7 @@ from cfast_trainer.trace_test_2 import (
     TraceTest2Config,
     TraceTest2Generator,
     TraceTest2Payload,
+    TraceTest2TrialStage,
     build_trace_test_2_test,
 )
 
@@ -49,6 +50,7 @@ def test_headless_scripted_run_produces_expected_summary() -> None:
     engine.update()
     practice_payload = engine.snapshot().payload
     assert isinstance(practice_payload, TraceTest2Payload)
+    assert practice_payload.trial_stage is TraceTest2TrialStage.QUESTION
     assert engine.submit_answer(str(practice_problem.answer)) is True
     assert engine.phase is Phase.PRACTICE_DONE
 
@@ -74,7 +76,7 @@ def test_headless_scripted_run_produces_expected_summary() -> None:
     assert summary.attempted == 2
     assert summary.correct == 1
     assert summary.accuracy == pytest.approx(0.5)
-    assert summary.mean_response_time_s == pytest.approx(0.5)
+    assert summary.mean_response_time_s == pytest.approx(0.0)
     assert summary.total_score == pytest.approx(1.0)
     assert summary.max_score == pytest.approx(2.0)
     assert summary.score_ratio == pytest.approx(0.5)

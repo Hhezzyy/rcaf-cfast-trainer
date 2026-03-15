@@ -84,11 +84,47 @@ def test_aircraft_scene_cluster_has_expected_question_mix() -> None:
     assert len(scene.route_points) >= 5
     assert scene.questions[0].kind is SpatialIntegrationQuestionKind.AIRCRAFT_ROUTE_SELECTION
     assert scene.questions[0].answer_mode is SpatialIntegrationAnswerMode.OPTION_PICK
-    assert scene.questions[1].kind is SpatialIntegrationQuestionKind.AIRCRAFT_ROUTE_SELECTION
+    assert scene.questions[1].kind is SpatialIntegrationQuestionKind.AIRCRAFT_CONTINUATION_SELECTION
     assert scene.questions[2].kind is SpatialIntegrationQuestionKind.AIRCRAFT_LOCATION_GRID
     assert scene.questions[2].answer_mode is SpatialIntegrationAnswerMode.GRID_CLICK
     assert len(scene.questions[0].options) == 4
     assert len(scene.questions[1].options) == 4
+
+
+def test_generator_filters_questions_by_kind_for_each_part() -> None:
+    gen = SpatialIntegrationGenerator(seed=91)
+
+    static_scene = gen.next_scene_cluster(
+        part=SpatialIntegrationPart.STATIC,
+        difficulty=0.5,
+        allowed_question_kinds=(SpatialIntegrationQuestionKind.SCENE_RECONSTRUCTION,),
+    )
+    assert tuple(question.kind for question in static_scene.questions) == (
+        SpatialIntegrationQuestionKind.SCENE_RECONSTRUCTION,
+    )
+
+    aircraft_scene = gen.next_scene_cluster(
+        part=SpatialIntegrationPart.AIRCRAFT,
+        difficulty=0.5,
+        allowed_question_kinds=(SpatialIntegrationQuestionKind.AIRCRAFT_CONTINUATION_SELECTION,),
+    )
+    assert tuple(question.kind for question in aircraft_scene.questions) == (
+        SpatialIntegrationQuestionKind.AIRCRAFT_CONTINUATION_SELECTION,
+    )
+
+
+def test_engine_rejects_part_question_combinations_with_no_questions() -> None:
+    clock = FakeClock()
+    with pytest.raises(ValueError, match="produce no questions"):
+        build_spatial_integration_test(
+            clock=clock,
+            seed=44,
+            difficulty=0.5,
+            config=SpatialIntegrationConfig(
+                parts=("STATIC", "AIRCRAFT"),
+                allowed_question_kinds=("aircraft_route_selection",),
+            ),
+        )
 
 
 def test_grid_question_context_scales_from_full_context_to_terrain_only() -> None:

@@ -52,6 +52,7 @@ from .abd_workouts import abd_workout_menu_entries, build_abd_workout_plan
 from .aircraft_art import (
     build_pygame_palette,
     draw_fixed_wing_pygame,
+    fixed_wing_heading_from_screen_heading,
     instrument_card_pygame_palette,
     project_fixed_wing_faces,
 )
@@ -272,6 +273,27 @@ from .sma_drills import (
     build_sma_split_horizontal_prime_drill,
 )
 from .sma_workouts import build_sma_workout_plan, sma_workout_menu_entries
+from .si_drills import (
+    build_si_aircraft_grid_run_drill,
+    build_si_continuation_prime_drill,
+    build_si_landmark_anchor_drill,
+    build_si_mixed_tempo_drill,
+    build_si_pressure_run_drill,
+    build_si_reconstruction_run_drill,
+    build_si_route_anchor_drill,
+    build_si_static_mixed_run_drill,
+)
+from .si_workouts import build_si_workout_plan, si_workout_menu_entries
+from .trace_drills import (
+    build_trace_mixed_tempo_drill,
+    build_trace_pressure_run_drill,
+    build_tt1_command_switch_run_drill,
+    build_tt1_lateral_anchor_drill,
+    build_tt1_vertical_anchor_drill,
+    build_tt2_position_recall_run_drill,
+    build_tt2_steady_anchor_drill,
+    build_tt2_turn_trace_run_drill,
+)
 from .situational_awareness import (
     SituationalAwarenessAnswerMode,
     SituationalAwarenessAnswerChoice,
@@ -347,11 +369,9 @@ from .trace_test_1 import (
     TraceTest1Payload,
     TraceTest1TrialStage,
     build_trace_test_1_test,
-    trace_test_1_scene_frames,
 )
 from .trace_test_1_gl import (
     aircraft_hpr_for_frame as trace_test_1_aircraft_hpr_for_frame,
-    build_scene_frames as build_trace_test_1_scene_frames,
     project_scene_position as trace_test_1_project_scene_position,
     screen_heading_deg as trace_test_1_screen_heading_deg,
 )
@@ -377,6 +397,20 @@ from .trace_test_2_panda3d import (
     TraceTest2Panda3DRenderer,
     panda3d_trace_test_2_rendering_available,
 )
+from .trace_workouts import (
+    build_trace_test_1_workout_plan,
+    build_trace_test_2_workout_plan,
+    trace_workout_menu_entries,
+)
+from .vig_drills import (
+    build_vig_clean_scan_drill,
+    build_vig_density_ladder_drill,
+    build_vig_entry_anchor_drill,
+    build_vig_pressure_run_drill,
+    build_vig_steady_capture_run_drill,
+    build_vig_tempo_sweep_drill,
+)
+from .vig_workouts import build_vig_workout_plan, vig_workout_menu_entries
 from .vigilance import VigilancePayload, VigilanceSymbolKind, build_vigilance_test
 from .visual_search import VisualSearchPayload, VisualSearchTaskKind, build_visual_search_test
 from .vs_drills import (
@@ -552,9 +586,35 @@ TEST_DIFFICULTY_OPTIONS: tuple[tuple[str, str], ...] = (
     ("rt_pressure_run", "Rapid Tracking: Pressure Run"),
     ("rapid_tracking_workout", "Rapid Tracking Workout"),
     ("spatial_integration", "Spatial Integration"),
+    ("si_landmark_anchor", "Spatial Integration: Landmark Anchor"),
+    ("si_reconstruction_run", "Spatial Integration: Reconstruction Run"),
+    ("si_static_mixed_run", "Spatial Integration: Static Mixed Run"),
+    ("si_route_anchor", "Spatial Integration: Route Anchor"),
+    ("si_continuation_prime", "Spatial Integration: Continuation Prime"),
+    ("si_aircraft_grid_run", "Spatial Integration: Aircraft Grid Run"),
+    ("si_mixed_tempo", "Spatial Integration: Mixed Tempo"),
+    ("si_pressure_run", "Spatial Integration: Pressure Run"),
+    ("spatial_integration_workout", "Spatial Integration Workout"),
     ("trace_test_1", "Trace Test 1"),
     ("trace_test_2", "Trace Test 2"),
     ("vigilance", "Vigilance"),
+    ("tt1_lateral_anchor", "Trace Test 1: Lateral Anchor"),
+    ("tt1_vertical_anchor", "Trace Test 1: Vertical Anchor"),
+    ("tt1_command_switch_run", "Trace Test 1: Command Switch Run"),
+    ("tt2_steady_anchor", "Trace Test 2: Steady Anchor"),
+    ("tt2_turn_trace_run", "Trace Test 2: Turn Trace Run"),
+    ("tt2_position_recall_run", "Trace Test 2: Position Recall Run"),
+    ("trace_mixed_tempo", "Trace Tests: Mixed Tempo"),
+    ("trace_pressure_run", "Trace Tests: Pressure Run"),
+    ("trace_test_1_workout", "Trace Test 1 Workout"),
+    ("trace_test_2_workout", "Trace Test 2 Workout"),
+    ("vig_entry_anchor", "Vigilance: Entry Anchor"),
+    ("vig_clean_scan", "Vigilance: Clean Scan"),
+    ("vig_steady_capture_run", "Vigilance: Steady Capture Run"),
+    ("vig_density_ladder", "Vigilance: Density Ladder"),
+    ("vig_tempo_sweep", "Vigilance: Tempo Sweep"),
+    ("vig_pressure_run", "Vigilance: Pressure Run"),
+    ("vigilance_workout", "Vigilance Workout"),
 )
 
 
@@ -2450,8 +2510,116 @@ TEST_GUIDE_BRIEFS: dict[str, TestGuideBriefing] = {
         ),
         timing="Guide time including instructions: about 28 minutes.",
         prep="Guide preparation: none required.",
-        controls="Use A/S/D/F/G to choose the answer shown on screen for each section.",
-        app_flow="Each section gets practice before scored items, so use the practice blocks to learn the viewpoint changes.",
+        controls="Click a grid cell or type a token like B4 for grid questions, and click an option or press 1-4 then Enter for option questions.",
+        app_flow="Each section gets practice before scored items, and every scene stays frozen while only the viewpoint and compass reference change.",
+    ),
+    "si_landmark_anchor": TestGuideBriefing(
+        label="Spatial Integration: Landmark Anchor",
+        assessment="Focused Spatial Integration drill for locking landmarks to terrain on the static landscape section.",
+        tasks=(
+            "Study the three frozen landscape views as one scene seen from different angles.",
+            "Answer only landmark grid-cell questions and commit to the correct cell quickly.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: use the terrain and hill layout as the anchor before hunting for the queried object.",
+        controls="Click a grid cell or type a token like B4 then Enter.",
+        app_flow="This drill keeps the normal Spatial Integration study loop but filters the questions down to static landmark placement only.",
+    ),
+    "si_reconstruction_run": TestGuideBriefing(
+        label="Spatial Integration: Reconstruction Run",
+        assessment="Focused Spatial Integration drill for rebuilding one static scene from three viewpoints.",
+        tasks=(
+            "Merge the three study views into one consistent top-down scene.",
+            "Choose the matching reconstruction card without over-reading distractors.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: think in terms of one frozen scene, not three separate pictures.",
+        controls="Click an option or press 1-4 then Enter.",
+        app_flow="This drill keeps the normal Spatial Integration presentation but serves only static reconstruction questions after study.",
+    ),
+    "si_static_mixed_run": TestGuideBriefing(
+        label="Spatial Integration: Static Mixed Run",
+        assessment="Static-only Spatial Integration drill with the full landscape question mix.",
+        tasks=(
+            "Switch between landmark grid placement and whole-scene reconstruction without losing the scene picture.",
+            "Keep the same three-view study rhythm as the live static SI part.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: arrive with a stable landmark-to-hill anchoring rule so the question-type switches do not slow you down.",
+        controls="Use grid clicks or B4-style tokens for grid items, and 1-4 or option clicks for reconstruction items.",
+        app_flow="This drill stays entirely on the static SI section and keeps the frozen-scene, multi-view study flow intact.",
+    ),
+    "si_route_anchor": TestGuideBriefing(
+        label="Spatial Integration: Route Anchor",
+        assessment="Focused Spatial Integration drill for reading the aircraft route shape from multiple frozen views.",
+        tasks=(
+            "Study the aircraft route and terrain relationship across the three viewpoints.",
+            "Answer only the route-map match questions after study.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: anchor the route shape first, then the aircraft position on that shape.",
+        controls="Click an option or press 1-4 then Enter.",
+        app_flow="This drill uses the normal aircraft SI study views and answer cards, but filters to route-match questions only.",
+    ),
+    "si_continuation_prime": TestGuideBriefing(
+        label="Spatial Integration: Continuation Prime",
+        assessment="Focused Spatial Integration drill for projecting the next aircraft position from a studied route.",
+        tasks=(
+            "Study the route from the three viewpoints, then choose the correct continuation.",
+            "Bias your answer toward forward projection rather than whole-route comparison.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: treat the aircraft heading and route progression as the deciding cues.",
+        controls="Click an option or press 1-4 then Enter.",
+        app_flow="This drill keeps the normal aircraft SI visuals and isolates the continuation question family after study.",
+    ),
+    "si_aircraft_grid_run": TestGuideBriefing(
+        label="Spatial Integration: Aircraft Grid Run",
+        assessment="Focused Spatial Integration drill for placing the aircraft in the correct grid cell after study.",
+        tasks=(
+            "Use the route, terrain, and landmarks to pin the aircraft to one map cell.",
+            "Answer only aircraft-location grid questions after the three-view study sequence.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: keep one stable map frame in mind so the aircraft location can be read off quickly.",
+        controls="Click a grid cell or type a token like B4 then Enter.",
+        app_flow="This drill uses the aircraft SI section and filters the post-study questions down to aircraft grid placement only.",
+    ),
+    "si_mixed_tempo": TestGuideBriefing(
+        label="Spatial Integration: Mixed Tempo",
+        assessment="Balanced Spatial Integration drill that runs the full static section first and the full aircraft section second.",
+        tasks=(
+            "Work through both SI parts with their real question mixes still intact.",
+            "Recover quickly when the drill switches from landscape integration to aircraft-route integration.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: know the answer flow for both grid and option items before starting.",
+        controls="Use grid clicks or B4-style tokens for grid items, and click options or press 1-4 then Enter for option items.",
+        app_flow="This drill chains the static SI part first and the aircraft SI part second while preserving the frozen-scene presentation and compass behavior.",
+    ),
+    "si_pressure_run": TestGuideBriefing(
+        label="Spatial Integration: Pressure Run",
+        assessment="Late-workout Spatial Integration drill for both SI parts under the tightest study and answer caps in this family.",
+        tasks=(
+            "Run the full static section, then the full aircraft section, without simplified prompts or surrogate layouts.",
+            "Accept misses and reset immediately when viewpoint changes cost you time.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: arrive warmed up; this drill assumes the static and aircraft anchors are already active.",
+        controls="Use the normal Spatial Integration grid and option controls throughout the block.",
+        app_flow="This drill keeps the same frozen-scene runtime and full question mix, but shortens study and answer caps through the ANT stress profile.",
+    ),
+    "spatial_integration_workout": TestGuideBriefing(
+        label="Spatial Integration Workout",
+        assessment="Chained Spatial Integration workout with static anchors, aircraft-route work, balanced mixed tempo, and a final pressure block.",
+        tasks=(
+            "Warm up static landmark and reconstruction skills, then build aircraft route, continuation, and grid placement speed before mixed blocks.",
+            "Finish by chaining the full static SI part and full aircraft SI part under one 90-minute workout structure.",
+        ),
+        timing="Workout drill time: 90 minutes, plus opening and closing reflection outside the timed blocks.",
+        prep="Guide preparation: know the grid-cell and 1-4 answer flow first so the workout can stay focused on scene reconstruction.",
+        controls="Use Left and Right to set workout or block difficulty, type reflections, then use the normal Spatial Integration grid and option controls during blocks.",
+        app_flow="Each block gets an untimed setup screen, and every timed block preserves the normal frozen-scene Spatial Integration presentation with three study views and matching compass changes.",
     ),
     "trace_test_1": TestGuideBriefing(
         label="Trace Test 1",
@@ -2462,8 +2630,8 @@ TEST_GUIDE_BRIEFS: dict[str, TestGuideBriefing] = {
         ),
         timing="Guide time including instructions: about 9 minutes.",
         prep="Guide preparation: none required.",
-        controls="Use A/S/D/F to choose, Up/Down to move, and Enter to submit.",
-        app_flow="Practice teaches the viewpoint logic before the timed block starts.",
+        controls="Watch the continuous stream, then answer with the arrow keys once the red aircraft changes.",
+        app_flow="Practice and scored play keep the same seamless square-view stream with no on-screen answer legend during the live scene.",
     ),
     "trace_test_2": TestGuideBriefing(
         label="Trace Test 2",
@@ -2474,8 +2642,128 @@ TEST_GUIDE_BRIEFS: dict[str, TestGuideBriefing] = {
         ),
         timing="Guide time including instructions: about 9 minutes.",
         prep="Guide preparation: none required.",
-        controls="Watch the scene first, then answer with A/S/D/F and Enter.",
-        app_flow="Practice lets you learn the scene-then-question rhythm before the timed block.",
+        controls="Watch the scene first, then answer with A/S/D/F, or use 1-4 and Enter.",
+        app_flow="Practice uses the same observe screen and separate recall screen as the timed block.",
+    ),
+    "tt1_lateral_anchor": TestGuideBriefing(
+        label="Trace Test 1: Lateral Anchor",
+        assessment="Timed Trace Test 1 drill for isolated left-versus-right discrimination in the continuous TT1 stream.",
+        tasks=(
+            "Watch the red aircraft and answer only Left or Right once the maneuver opens.",
+            "Use the block to clean up exact 90-degree lateral change recognition before the full TT1 command mix returns.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: know the arrow-key response mapping first.",
+        controls="Use Left for left turns and Right for right turns. No on-screen answer legend is shown during the live stream.",
+        app_flow="This drill keeps the live square TT1 viewport and seamless stream, but filters the prompts to left and right only.",
+    ),
+    "tt1_vertical_anchor": TestGuideBriefing(
+        label="Trace Test 1: Vertical Anchor",
+        assessment="Timed Trace Test 1 drill for isolated push-versus-pull discrimination in the continuous TT1 stream.",
+        tasks=(
+            "Watch the red aircraft and answer only Push or Pull once the maneuver opens.",
+            "Use it to stabilize forward-travel vertical change recognition before all four TT1 commands mix together again.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: know the arrow-key response mapping first.",
+        controls="Use Up for push and Down for pull. No on-screen answer legend is shown during the live stream.",
+        app_flow="This drill keeps the live square TT1 viewport and seamless stream, but filters the prompts to push and pull only.",
+    ),
+    "tt1_command_switch_run": TestGuideBriefing(
+        label="Trace Test 1: Command Switch Run",
+        assessment="Timed Trace Test 1 drill for switching across all four TT1 commands in the continuous stream.",
+        tasks=(
+            "Read the maneuver quickly and answer with the matching arrow as soon as the command opens.",
+            "Recover immediately after misses so the continuous stream never pulls you into stop-start pacing.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: warm up the lateral and vertical anchor blocks first if the command mapping still feels noisy.",
+        controls="Use the arrow keys only. The TT1 live screen keeps the square viewport and bottom status strip only.",
+        app_flow="This drill preserves the seamless TT1 runtime and full command family while shortening observe windows through the ANT drill mode profile.",
+    ),
+    "tt2_steady_anchor": TestGuideBriefing(
+        label="Trace Test 2: Steady Anchor",
+        assessment="Timed Trace Test 2 drill for the no-direction-change recall family.",
+        tasks=(
+            "Watch the clip first, then identify which aircraft kept the same direction.",
+            "Use it to settle into the guide-style observe-then-answer rhythm before turn and end-state prompts arrive.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: know the A/S/D/F answer mapping first.",
+        controls="During the question stage use A/S/D/F for immediate submit, or use 1-4 then Enter.",
+        app_flow="This drill keeps the same TT2 observe screen and separate question screen, but filters prompts to the steady-track family only.",
+    ),
+    "tt2_turn_trace_run": TestGuideBriefing(
+        label="Trace Test 2: Turn Trace Run",
+        assessment="Timed Trace Test 2 drill for left-turn and right-turn recall only.",
+        tasks=(
+            "Watch the clip first, then identify which aircraft turned left or which aircraft turned right.",
+            "Use it to lock in the guide-style turn-recall families before end-state prompts are mixed back in.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: be comfortable with the TT2 observe-then-answer rhythm first.",
+        controls="During the question stage use A/S/D/F for immediate submit, or use Up and Down to move the selector and Enter to submit.",
+        app_flow="This drill preserves the TT2 minimal observe screen and separate question screen, but filters the question bank to left-turn and right-turn recall.",
+    ),
+    "tt2_position_recall_run": TestGuideBriefing(
+        label="Trace Test 2: Position Recall Run",
+        assessment="Timed Trace Test 2 drill for end-state leftmost and highest recall questions.",
+        tasks=(
+            "Watch the clip first, then answer which aircraft ended furthest left or highest.",
+            "Use it to stabilize end-state recall after the turn-only blocks have already settled the motion cues.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: know the TT2 answer mapping first so the block can stay focused on recall, not controls.",
+        controls="During the question stage use A/S/D/F for immediate submit, or use 1-4 then Enter.",
+        app_flow="This drill preserves the TT2 observe and question layout, but filters the recall bank to the two end-state position families.",
+    ),
+    "trace_mixed_tempo": TestGuideBriefing(
+        label="Trace Tests: Mixed Tempo",
+        assessment="Timed mixed trace drill that runs Trace Test 1 first and Trace Test 2 second under one tempo block.",
+        tasks=(
+            "Run a live TT1 command stream first, then switch into TT2 observe-then-answer recall without a menu break.",
+            "Use the block to practise switching between the two trace-response models while keeping total exposure balanced.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: arrive warmed up on both TT1 and TT2 single-test anchors first.",
+        controls="TT1 uses arrow keys only. TT2 uses A/S/D/F or 1-4 plus Enter after the observe stage ends.",
+        app_flow="This drill chains TT1 first and TT2 second inside one block, splitting the timed duration evenly between the two trace tests.",
+    ),
+    "trace_pressure_run": TestGuideBriefing(
+        label="Trace Tests: Pressure Run",
+        assessment="Late-workout mixed trace drill that chains Trace Test 1 and Trace Test 2 under the tightest observe-window profile in this family.",
+        tasks=(
+            "Run the full TT1 command family first, then switch immediately into full TT2 recall work.",
+            "Treat misses as part of the pressure block and reset immediately so both trace tests keep moving.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: warm up both trace-test anchors first; this block assumes the control mappings are already automatic.",
+        controls="TT1 uses arrow keys only. TT2 uses A/S/D/F or 1-4 plus Enter after the observe stage ends.",
+        app_flow="This drill keeps the live TT1 stream first and the TT2 observe-question layout second, with ANT stress timing applied across the chained block.",
+    ),
+    "trace_test_1_workout": TestGuideBriefing(
+        label="Trace Test 1 Workout",
+        assessment="Standalone 90-minute Trace Test 1 workout with TT1-only anchors and full-command pressure blocks.",
+        tasks=(
+            "Warm up the TT1 lateral and vertical anchor families first, then spend the rest of the workout on full TT1 command switching under longer tempo and stress blocks.",
+            "Keep the continuous TT1 stream moving and reset immediately after misses instead of waiting for a stop screen.",
+        ),
+        timing="Workout drill time: 90 minutes, plus opening and closing reflection outside the timed blocks.",
+        prep="Guide preparation: know the TT1 arrow mapping first; this workout stays inside Trace Test 1 only.",
+        controls="Use Left and Right to set workout or block difficulty. During blocks, TT1 uses arrow keys only.",
+        app_flow="Each block gets an untimed setup screen, and every timed block stays inside the square TT1 live-stream layout with no on-screen answer legend.",
+    ),
+    "trace_test_2_workout": TestGuideBriefing(
+        label="Trace Test 2 Workout",
+        assessment="Standalone 90-minute Trace Test 2 workout with TT2-only steady, turn, and end-state recall blocks.",
+        tasks=(
+            "Warm up steady-track and turn-recall questions first, then spend the rest of the workout on faster TT2 recall blocks without chaining into TT1.",
+            "Keep the observe-then-answer rhythm intact and answer immediately when the TT2 question screen opens.",
+        ),
+        timing="Workout drill time: 90 minutes, plus opening and closing reflection outside the timed blocks.",
+        prep="Guide preparation: know the TT2 observe-first recall controls first; this workout stays inside Trace Test 2 only.",
+        controls="Use Left and Right to set workout or block difficulty. During blocks, TT2 uses A/S/D/F or 1-4 plus Enter after the observe stage ends.",
+        app_flow="Each block gets an untimed setup screen, and every timed block keeps the TT2 observe screen separate from the compact TT2 question screen.",
     ),
     "vigilance": TestGuideBriefing(
         label="Vigilance",
@@ -2488,6 +2776,90 @@ TEST_GUIDE_BRIEFS: dict[str, TestGuideBriefing] = {
         prep="Guide preparation: none required.",
         controls="Click or focus the Row and Col fields, then type digits 1-9 to capture the target coordinates.",
         app_flow="Practice teaches the matrix entry rhythm before the timed block begins.",
+    ),
+    "vig_entry_anchor": TestGuideBriefing(
+        label="Vigilance: Entry Anchor",
+        assessment="Slow full-board Vigilance drill for settling coordinate entry and early scan rhythm without changing the live task rules.",
+        tasks=(
+            "Keep the standard 9x9 board and normal symbol values, but work at the easiest stream pace in this family.",
+            "Use the block to make row-then-column entry automatic before density and pace increase later.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: none required; the goal is clean capture rhythm on the standard task.",
+        controls="Use the normal Vigilance row and column fields, then type digits 1-9 exactly as in the test.",
+        app_flow="This drill keeps the live Vigilance board intact and only adjusts the stream pace and overlap baseline.",
+    ),
+    "vig_clean_scan": TestGuideBriefing(
+        label="Vigilance: Clean Scan",
+        assessment="Full-board Vigilance drill for disciplined scan path control before the denser overlap blocks return.",
+        tasks=(
+            "Scan the whole board cleanly instead of waiting on one region or guessing coordinates.",
+            "Keep row and column entry precise while the stream runs a little faster than the entry anchor block.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: arrive ready to use one stable scan path on the real board.",
+        controls="Use the normal Vigilance row and column fields, then type digits 1-9 exactly as in the test.",
+        app_flow="This drill keeps the live Vigilance board unchanged and only shifts the stream baseline toward full-board scan discipline.",
+    ),
+    "vig_steady_capture_run": TestGuideBriefing(
+        label="Vigilance: Steady Capture Run",
+        assessment="Baseline sustained Vigilance drill that keeps the real board and score meaning while pushing steady output.",
+        tasks=(
+            "Run the normal Vigilance task at a sustained pace without changing the symbol mix or entry flow.",
+            "Build enough rhythm that points keep coming in without coordinate-entry breakdowns.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: settle your scan path first; this block assumes the basic entry rhythm is already stable.",
+        controls="Use the normal Vigilance row and column fields, then type digits 1-9 exactly as in the test.",
+        app_flow="This drill keeps the live board and input path unchanged; only the stream pace and overlap baseline move up.",
+    ),
+    "vig_density_ladder": TestGuideBriefing(
+        label="Vigilance: Density Ladder",
+        assessment="Vigilance drill for overlap management and recovery while the normal board and point values stay intact.",
+        tasks=(
+            "Hold the same row-and-column response flow even when multiple symbols are active at once.",
+            "Recover quickly after misses instead of abandoning the scan path.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: start this block only after the cleaner warm-up drills feel settled.",
+        controls="Use the normal Vigilance row and column fields, then type digits 1-9 exactly as in the test.",
+        app_flow="This drill preserves the full Vigilance task and only raises overlap pressure through denser stream settings.",
+    ),
+    "vig_tempo_sweep": TestGuideBriefing(
+        label="Vigilance: Tempo Sweep",
+        assessment="Faster sustained Vigilance block that keeps the standard board, values, and row/column input flow.",
+        tasks=(
+            "Hold the full board at a faster tempo without switching to shortcuts or guessing coordinates.",
+            "Let speed rise only as far as clean coordinate entry survives.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: treat this like a later-workout sustained block, not an entry warm-up.",
+        controls="Use the normal Vigilance row and column fields, then type digits 1-9 exactly as in the test.",
+        app_flow="This drill keeps the live task intact and raises only the stream pace and overlap baseline.",
+    ),
+    "vig_pressure_run": TestGuideBriefing(
+        label="Vigilance: Pressure Run",
+        assessment="Hardest late-workout Vigilance block with the densest and fastest full-board stream in this family.",
+        tasks=(
+            "Finish on the real Vigilance task under the tightest pace and overlap settings in the workout family.",
+            "Accept some expiries and reset immediately so the next coordinate stays clean.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: use this after the earlier warm-up and tempo blocks; it assumes the board and entry flow are already automatic.",
+        controls="Use the normal Vigilance row and column fields, then type digits 1-9 exactly as in the test.",
+        app_flow="This drill keeps the standard Vigilance screen and input path and only tightens stream pace and density for the pressure finish.",
+    ),
+    "vigilance_workout": TestGuideBriefing(
+        label="Vigilance Workout",
+        assessment="Standard 90-minute Vigilance workout with clean-entry warm-ups, denser tempo blocks, and one final pressure run.",
+        tasks=(
+            "Start with slower full-board entry and scan discipline, then build into denser and faster late blocks without changing the live task rules.",
+            "Keep the normal row/column response flow, board layout, symbol rarity, and point values across the entire workout.",
+        ),
+        timing="Workout drill time: 90 minutes, plus opening and closing reflection outside the timed blocks.",
+        prep="Guide preparation: none required beyond knowing the normal Vigilance row and column entry flow.",
+        controls="Use Left and Right to set workout or block difficulty. During blocks, keep the normal Vigilance row and column entry flow.",
+        app_flow="Each block gets an untimed setup screen, and every timed block stays on the standard Vigilance board with no layout or scoring changes.",
     ),
 }
 
@@ -5026,83 +5398,83 @@ class _OpenGLSceneRenderer:
     def _draw_trace_test_1_scene(self, *, scene: TraceTest1GlScene) -> int:
         rect = scene.world
         vw, vh = self._prepare_scene_rect(rect=rect, clear_rgba=(0.07, 0.10, 0.24, 1.0))
-        horizon = vh * 0.42
-        self._draw_quad_2d(x0=0.0, y0=horizon, x1=float(vw), y1=float(vh), color=(0.52, 0.68, 0.88, 1.0))
-        self._draw_quad_2d(x0=0.0, y0=0.0, x1=float(vw), y1=horizon, color=(0.42, 0.48, 0.54, 1.0))
-        target_frame, distractor_frames = build_trace_test_1_scene_frames(
-            reference=scene.reference,
-            candidate=scene.candidate,
-            correct_code=scene.correct_code,
-            progress=0.0 if scene.progress is None else float(scene.progress),
-            scene_turn_index=scene.scene_turn_index,
+        payload = scene.payload
+        self._draw_quad_2d(x0=0.0, y0=0.0, x1=float(vw), y1=float(vh), color=(0.56, 0.70, 0.88, 1.0))
+        self._draw_quad_2d(
+            x0=0.0,
+            y0=float(vh * 0.52),
+            x1=float(vw),
+            y1=float(vh),
+            color=(0.48, 0.60, 0.74, 1.0),
         )
-        future_target_frame, future_distractor_frames = build_trace_test_1_scene_frames(
-            reference=scene.reference,
-            candidate=scene.candidate,
-            correct_code=scene.correct_code,
-            progress=min(1.0, (0.0 if scene.progress is None else float(scene.progress)) + 0.03),
-            scene_turn_index=scene.scene_turn_index,
+        self._draw_line_2d(
+            start=(0.0, float(vh * 0.52)),
+            end=(float(vw), float(vh * 0.52)),
+            color=(0.90, 0.94, 0.98, 0.46),
         )
-        anchor = target_frame.position
-        distractor_specs = (
-            ((0.52, 0.62, 0.78, 0.94), (0.92, 0.96, 1.0, 0.86)),
-            ((0.46, 0.56, 0.70, 0.94), (0.90, 0.94, 0.98, 0.84)),
-            ((0.40, 0.54, 0.76, 0.94), (0.88, 0.94, 1.0, 0.84)),
+        if payload is None:
+            return 0
+
+        blue_colors = (
+            (0.34, 0.52, 0.90, 0.96),
+            (0.38, 0.60, 0.94, 0.96),
+            (0.42, 0.66, 0.96, 0.96),
+            (0.30, 0.46, 0.82, 0.96),
         )
-        for frame, future_frame, spec in zip(
-            distractor_frames,
-            future_distractor_frames,
-            distractor_specs,
-            strict=False,
-        ):
-            center, scale = trace_test_1_project_scene_position(frame.position, anchor=anchor, size=(vw, vh))
-            hpr = trace_test_1_aircraft_hpr_for_frame(frame)
-            heading = trace_test_1_screen_heading_deg(
-                frame,
-                future_frame,
-                anchor=anchor,
+        blue_outlines = (
+            (0.92, 0.96, 1.0, 0.88),
+            (0.90, 0.96, 1.0, 0.86),
+            (0.88, 0.94, 0.98, 0.84),
+            (0.84, 0.92, 0.98, 0.84),
+        )
+        for idx, blue_frame in enumerate(payload.scene.blue_frames):
+            blue_center, blue_scale = trace_test_1_project_scene_position(
+                blue_frame.position,
+                size=(vw, vh),
+            )
+            blue_hpr = trace_test_1_aircraft_hpr_for_frame(blue_frame)
+            blue_heading = trace_test_1_screen_heading_deg(
+                blue_frame,
                 size=(vw, vh),
             )
             self._draw_aircraft_marker_2d(
-                center=(center[0], float(vh - center[1])),
-                heading_deg=heading,
-                size=max(10.0, scale * (13.0 - (abs(hpr[1]) * 0.02))),
-                color=spec[0],
-                outline=spec[1],
-                pitch_deg=hpr[1],
-                bank_deg=hpr[2],
-                view_pitch_deg=24.0,
+                center=(blue_center[0], float(vh - blue_center[1])),
+                heading_deg=blue_heading,
+                size=max(8.6, blue_scale * 10.2),
+                color=blue_colors[idx % len(blue_colors)],
+                outline=blue_outlines[idx % len(blue_outlines)],
+                pitch_deg=blue_hpr[1],
+                bank_deg=blue_hpr[2],
+                view_pitch_deg=0.0,
             )
 
+        target_frame = payload.scene.red_frame
         target_center, target_scale = trace_test_1_project_scene_position(
             target_frame.position,
-            anchor=anchor,
             size=(vw, vh),
         )
         target_hpr = trace_test_1_aircraft_hpr_for_frame(target_frame)
         target_heading = trace_test_1_screen_heading_deg(
             target_frame,
-            future_target_frame,
-            anchor=anchor,
             size=(vw, vh),
         )
         self._draw_aircraft_marker_2d(
             center=(target_center[0], float(vh - target_center[1])),
             heading_deg=target_heading,
-            size=max(12.0, target_scale * (15.0 - (abs(target_hpr[1]) * 0.02))),
+            size=max(11.6, target_scale * 13.0),
             color=(0.92, 0.24, 0.24, 0.98),
             outline=(1.0, 0.92, 0.92, 0.90),
             pitch_deg=target_hpr[1],
             bank_deg=target_hpr[2],
-            view_pitch_deg=24.0,
+            view_pitch_deg=0.0,
         )
-        return 1 + len(distractor_frames)
+        return 1 + len(payload.scene.blue_frames)
 
     def _draw_trace_test_2_scene(self, *, scene: TraceTest2GlScene) -> int:
         rect = scene.world
         payload = scene.payload
         vw, vh = self._prepare_scene_rect(rect=rect, clear_rgba=(0.06, 0.10, 0.24, 1.0))
-        horizon = vh * 0.42
+        horizon = vh * 0.26
         self._draw_quad_2d(x0=0.0, y0=horizon, x1=float(vw), y1=float(vh), color=(0.50, 0.66, 0.86, 1.0))
         self._draw_quad_2d(x0=0.0, y0=0.0, x1=float(vw), y1=horizon, color=(0.40, 0.46, 0.52, 1.0))
         if payload is None:
@@ -5110,26 +5482,6 @@ class _OpenGLSceneRenderer:
 
         progress = float(payload.observe_progress)
         for track in payload.aircraft:
-            samples = max(3, len(track.waypoints))
-            prev: tuple[float, float] | None = None
-            for idx in range(samples):
-                sample_progress = idx / float(max(1, samples - 1))
-                pos = trace_test_2_track_position(track=track, progress=sample_progress)
-                point = trace_test_2_project_point(pos, size=(vw, vh))
-                world_point = (point[0], float(vh - point[1]))
-                if prev is not None:
-                    self._draw_line_2d(
-                        start=prev,
-                        end=world_point,
-                        color=(
-                            track.color_rgb[0] / 255.0,
-                            track.color_rgb[1] / 255.0,
-                            track.color_rgb[2] / 255.0,
-                            0.42,
-                        ),
-                    )
-                prev = world_point
-
             pos = trace_test_2_track_position(track=track, progress=progress)
             center = trace_test_2_project_point(pos, size=(vw, vh))
             heading = trace_test_2_screen_heading_deg(track=track, progress=progress, size=(vw, vh))
@@ -9585,10 +9937,13 @@ class CognitiveTestScreen:
     ) -> None:
         payload = snap.payload
         is_auditory_capacity = self._is_auditory_capacity_snapshot(snap)
+        is_trace_test_1 = self._is_trace_test_1_snapshot(snap)
+        is_trace_test_2 = self._is_trace_test_2_snapshot(snap)
         if self._app.opengl_enabled and (
             (
                 str(snap.title).startswith("Rapid Tracking")
-                or snap.title in {"Trace Test 1", "Trace Test 2"}
+                or is_trace_test_1
+                or is_trace_test_2
             )
             or is_auditory_capacity
         ):
@@ -9597,10 +9952,10 @@ class CognitiveTestScreen:
             if isinstance(payload, RapidTrackingPayload) or str(snap.title).startswith("Rapid Tracking"):
                 self._get_rapid_tracking_panda_renderer(size=surface_size)
                 return
-            if snap.title == "Trace Test 1":
+            if is_trace_test_1:
                 self._get_trace_test_1_panda_renderer(size=surface_size)
                 return
-            if snap.title == "Trace Test 2":
+            if is_trace_test_2:
                 renderer = self._get_trace_test_2_panda_renderer(size=surface_size)
                 if renderer is not None:
                     renderer.render(
@@ -10486,7 +10841,7 @@ class CognitiveTestScreen:
                     self._target_recognition_reset_light_subtask()
                     self._target_recognition_reset_scan_subtask()
                     self._target_recognition_reset_system_subtask()
-                if snap.title == "Vigilance":
+                if self._is_vigilance_snapshot(snap):
                     self._vigilance_clear_inputs()
                 self._engine.start_practice()
                 self._input = ""
@@ -10500,7 +10855,7 @@ class CognitiveTestScreen:
                 self._engine.start_scored()
                 self._input = ""
                 self._math_choice = 1
-                if snap.title == "Vigilance":
+                if self._is_vigilance_snapshot(snap):
                     self._vigilance_clear_inputs()
                 return
             if snap.phase is Phase.RESULTS:
@@ -10968,7 +11323,7 @@ class CognitiveTestScreen:
             return
 
         if trace_test_1_payload is not None:
-            if trace_test_1_payload.trial_stage is not TraceTest1TrialStage.QUESTION:
+            if trace_test_1_payload.trial_stage is not TraceTest1TrialStage.ANSWER_OPEN:
                 return
             command = {
                 pygame.K_LEFT: "LEFT",
@@ -11413,6 +11768,22 @@ class CognitiveTestScreen:
         )
 
     @staticmethod
+    def _is_trace_test_1_snapshot(snap: TestSnapshot) -> bool:
+        return isinstance(snap.payload, TraceTest1Payload) or str(snap.title).startswith(
+            "Trace Test 1"
+        )
+
+    @staticmethod
+    def _is_trace_test_2_snapshot(snap: TestSnapshot) -> bool:
+        return isinstance(snap.payload, TraceTest2Payload) or str(snap.title).startswith(
+            "Trace Test 2"
+        )
+
+    @staticmethod
+    def _is_vigilance_snapshot(snap: TestSnapshot) -> bool:
+        return isinstance(snap.payload, VigilancePayload) or str(snap.title).startswith("Vigilance")
+
+    @staticmethod
     def _step_to_ratio(step: int) -> float:
         clamped = max(0, min(10, int(step)))
         return clamped / 10.0
@@ -11783,7 +12154,7 @@ class CognitiveTestScreen:
         )
         is_angles_bearings = abd is not None or str(snap.title).startswith("Angles, Bearings and Degrees")
         is_visual_search = vs is not None or str(snap.title).startswith("Visual Search")
-        is_vigilance = snap.title == "Vigilance"
+        is_vigilance = self._is_vigilance_snapshot(snap)
         is_digit_recognition = str(snap.title).startswith("Digit Recognition")
         is_colours_letters_numbers = cln is not None or str(snap.title).startswith(
             "Colours, Letters and Numbers"
@@ -11803,8 +12174,8 @@ class CognitiveTestScreen:
         is_spatial_integration = spatial_payload is not None or str(snap.title).startswith(
             "Spatial Integration"
         )
-        is_trace_test_1 = snap.title == "Trace Test 1"
-        is_trace_test_2 = snap.title == "Trace Test 2"
+        is_trace_test_1 = self._is_trace_test_1_snapshot(snap)
+        is_trace_test_2 = self._is_trace_test_2_snapshot(snap)
         is_table_reading = table_payload is not None or str(snap.title).startswith("Table Reading")
         is_auditory_capacity = self._is_auditory_capacity_snapshot(snap)
         is_situational_awareness = sa_payload is not None or str(snap.title).startswith(
@@ -12464,7 +12835,7 @@ class CognitiveTestScreen:
             return False
         if (
             isinstance(payload, TraceTest1Payload)
-            and payload.trial_stage is not TraceTest1TrialStage.QUESTION
+            and payload.trial_stage is not TraceTest1TrialStage.ANSWER_OPEN
         ):
             return False
         if (
@@ -13370,27 +13741,13 @@ class CognitiveTestScreen:
         *,
         surface: pygame.Surface,
         world: pygame.Rect,
-        reference: TraceTest1Attitude,
-        candidate: TraceTest1Attitude,
-        correct_code: int,
-        viewpoint_bearing_deg: int,
-        scene_turn_index: int,
-        animate: bool,
-        motion_progress: float | None = None,
+        payload: TraceTest1Payload | None,
     ) -> bool:
         renderer = self._get_trace_test_1_panda_renderer(size=world.size)
         if renderer is None:
             return False
         try:
-            view = renderer.render(
-                reference=reference,
-                candidate=candidate,
-                correct_code=correct_code,
-                viewpoint_bearing_deg=viewpoint_bearing_deg,
-                scene_turn_index=scene_turn_index,
-                animate=animate,
-                progress=motion_progress,
-            )
+            view = renderer.render(payload=payload)
         except Exception:
             self._trace_test_1_panda_failed = True
             self._dispose_trace_test_1_panda_renderer()
@@ -20569,180 +20926,81 @@ class CognitiveTestScreen:
         payload: TraceTest1Payload | None,
     ) -> None:
         w, h = surface.get_size()
-        bg = (2, 10, 140)
-        frame_bg = (8, 18, 124)
-        panel_bg = (12, 20, 92)
-        border = (226, 236, 255)
+        bg = (3, 10, 148)
+        border = (216, 226, 246)
         text_main = (236, 244, 255)
-        text_muted = (176, 196, 226)
-        input_bg = (4, 10, 36)
-
         surface.fill(bg)
 
-        margin = max(10, min(18, w // 46))
-        frame = pygame.Rect(margin, margin, w - margin * 2, h - margin * 2)
-        pygame.draw.rect(surface, frame_bg, frame)
-        pygame.draw.rect(surface, border, frame, 1)
-
-        header_h = max(28, min(36, h // 17))
-        header = pygame.Rect(frame.x + 2, frame.y + 2, frame.w - 4, header_h)
-        pygame.draw.rect(surface, bg, header)
-        pygame.draw.line(
-            surface, border, (header.x, header.bottom), (header.right, header.bottom), 1
-        )
+        top_line_y = max(22, h // 18)
+        bottom_bar_h = max(18, h // 24)
+        pygame.draw.line(surface, border, (24, top_line_y), (w - 24, top_line_y), 1)
+        pygame.draw.rect(surface, (8, 8, 10), pygame.Rect(18, h - bottom_bar_h - 12, w - 36, bottom_bar_h))
 
         phase_label = {
             Phase.INSTRUCTIONS: "Instructions",
             Phase.PRACTICE: "Practice",
             Phase.PRACTICE_DONE: "Practice Complete",
-            Phase.SCORED: "Scored",
+            Phase.SCORED: "Testing",
             Phase.RESULTS: "Results",
         }.get(snap.phase, "Task")
         title = self._tiny_font.render(f"Trace Test 1 - {phase_label}", True, text_main)
-        surface.blit(title, (header.x + 10, header.y + 7))
+        surface.blit(title, title.get_rect(center=(w // 2, top_line_y - 8)))
 
-        stats = self._tiny_font.render(
-            f"Scored {snap.correct_scored}/{snap.attempted_scored}",
+        bar = pygame.Rect(18, h - bottom_bar_h - 12, w - 36, bottom_bar_h)
+        stage_text = "Observe"
+        if payload is not None and payload.trial_stage is TraceTest1TrialStage.ANSWER_OPEN:
+            stage_text = "Answer"
+        status_left = self._tiny_font.render(
+            f"{stage_text}  |  Scored {snap.correct_scored}/{snap.attempted_scored}",
             True,
-            text_muted,
+            (236, 236, 186),
         )
-        surface.blit(stats, stats.get_rect(midright=(header.right - 10, header.centery)))
-
+        surface.blit(status_left, (bar.x + 8, bar.y + 3))
         if snap.time_remaining_s is not None:
             rem = int(round(snap.time_remaining_s))
-            timer = self._small_font.render(f"{rem // 60:02d}:{rem % 60:02d}", True, text_main)
-            surface.blit(timer, timer.get_rect(topright=(frame.right - 12, header.bottom + 8)))
+            status_right = self._tiny_font.render(
+                f"Time Left {rem // 60:02d}:{rem % 60:02d}",
+                True,
+                (236, 236, 186),
+            )
+            surface.blit(status_right, status_right.get_rect(midright=(bar.right - 8, bar.centery)))
 
-        work = pygame.Rect(
-            frame.x + 8, header.bottom + 8, frame.w - 16, frame.bottom - header.bottom - 16
-        )
-        pygame.draw.rect(surface, panel_bg, work)
-        pygame.draw.rect(surface, border, work, 1)
-
+        content = pygame.Rect(28, top_line_y + 18, w - 56, h - top_line_y - bottom_bar_h - 42)
         if snap.phase not in (Phase.PRACTICE, Phase.SCORED) or payload is None:
-            info = work.inflate(-20, -20)
-            pygame.draw.rect(surface, (18, 28, 108), info)
-            pygame.draw.rect(surface, border, info, 1)
-
-            scene = pygame.Rect(info.x + 12, info.y + 12, info.w - 24, max(160, int(info.h * 0.56)))
-            self._draw_trace_test_1_scene(
-                surface,
-                scene,
-                reference=TraceTest1Attitude(roll_deg=0.0, pitch_deg=0.0, yaw_deg=0.0),
-                candidate=TraceTest1Attitude(roll_deg=0.0, pitch_deg=0.0, yaw_deg=270.0),
-                correct_code=1,
-                viewpoint_bearing_deg=180,
-                scene_turn_index=0,
-                animate=False,
-                motion_progress=0.0,
-            )
-
-            text_rect = pygame.Rect(
-                info.x + 12, scene.bottom + 10, info.w - 24, info.bottom - scene.bottom - 22
-            )
+            info = content.inflate(-10, -10)
+            pygame.draw.rect(surface, (3, 10, 148), info)
+            text_rect = pygame.Rect(info.x + 8, info.y + 8, info.w - 16, info.h - 16)
             self._draw_wrapped_text(
                 surface,
                 str(snap.prompt),
                 text_rect,
                 color=text_main,
                 font=self._small_font,
-                max_lines=12,
+                max_lines=14,
             )
             return
 
-        scene_h = int(work.h * 0.68)
-        scene = pygame.Rect(work.x + 8, work.y + 8, work.w - 16, scene_h - 12)
-        footer = pygame.Rect(work.x + 8, scene.bottom + 8, work.w - 16, work.bottom - scene.bottom - 16)
+        scene_size = min(content.h - 6, content.w - 12)
+        scene = pygame.Rect(0, 0, scene_size, scene_size)
+        scene.center = content.center
 
         self._draw_trace_test_1_scene(
             surface,
             scene,
-            reference=payload.reference,
-            candidate=payload.candidate,
-            correct_code=int(payload.correct_code),
-            viewpoint_bearing_deg=int(payload.viewpoint_bearing_deg),
-            scene_turn_index=int(payload.scene_turn_index),
-            animate=True,
-            motion_progress=float(payload.observe_progress),
+            payload=payload,
         )
-
-        tag = pygame.Rect(scene.x + 12, scene.y + 12, 148, 28)
-        pygame.draw.rect(surface, (78, 10, 18), tag)
-        pygame.draw.rect(surface, (255, 216, 220), tag, 1)
-        label = self._tiny_font.render("RED AIRCRAFT = TARGET", True, (255, 234, 236))
-        surface.blit(label, label.get_rect(center=tag.center))
-
-        pygame.draw.rect(surface, (18, 28, 108), footer)
-        pygame.draw.rect(surface, border, footer, 1)
-
-        prompt_box = pygame.Rect(footer.x + 8, footer.y + 8, footer.w - 16, 48)
-        pygame.draw.rect(surface, (14, 20, 88), prompt_box)
-        pygame.draw.rect(surface, border, prompt_box, 1)
-        self._draw_wrapped_text(
-            surface,
-            "Which way did the stick move for the red aircraft?",
-            prompt_box.inflate(-8, -8),
-            color=text_main,
-            font=self._tiny_font,
-            max_lines=2,
-        )
-
-        pad = pygame.Rect(footer.x + 8, prompt_box.bottom + 8, footer.w - 16, footer.h - 58)
-        pygame.draw.rect(surface, (14, 20, 88), pad)
-        pygame.draw.rect(surface, border, pad, 1)
-
-        card_w = max(86, min(132, pad.w // 4))
-        card_h = max(38, min(52, pad.h // 2))
-        up_rect = pygame.Rect(0, 0, card_w, card_h)
-        up_rect.midtop = (pad.centerx, pad.y + 10)
-        left_rect = pygame.Rect(0, 0, card_w, card_h)
-        left_rect.midleft = (pad.x + 14, pad.centery + 8)
-        right_rect = pygame.Rect(0, 0, card_w, card_h)
-        right_rect.midright = (pad.right - 14, pad.centery + 8)
-        down_rect = pygame.Rect(0, 0, card_w, card_h)
-        down_rect.midbottom = (pad.centerx, pad.bottom - 10)
-
-        cards = (
-            (up_rect, "UP", "Push"),
-            (left_rect, "LEFT", "Left"),
-            (right_rect, "RIGHT", "Right"),
-            (down_rect, "DOWN", "Pull"),
-        )
-        for card, key_name, label_text in cards:
-            pygame.draw.rect(surface, (28, 42, 122), card)
-            pygame.draw.rect(surface, border, card, 1)
-            key_txt = self._tiny_font.render(key_name, True, text_main)
-            label_txt = self._tiny_font.render(label_text, True, text_muted)
-            surface.blit(key_txt, key_txt.get_rect(midtop=(card.centerx, card.y + 6)))
-            surface.blit(label_txt, label_txt.get_rect(midbottom=(card.centerx, card.bottom - 6)))
-
-        entry_card = pygame.Rect(footer.x + 8, footer.bottom - 34, footer.w - 16, 26)
-        pygame.draw.rect(surface, (14, 20, 88), entry_card)
-        pygame.draw.rect(surface, border, entry_card, 1)
-        hint = self._tiny_font.render(
-            "Answer as soon as the turn starts; maneuver keeps running.",
-            True,
-            text_muted,
-        )
-        surface.blit(hint, (entry_card.x + 8, entry_card.y + 10))
 
     def _draw_trace_test_1_scene(
         self,
         surface: pygame.Surface,
         rect: pygame.Rect,
         *,
-        reference: TraceTest1Attitude,
-        candidate: TraceTest1Attitude,
-        correct_code: int,
-        viewpoint_bearing_deg: int,
-        scene_turn_index: int = 0,
-        animate: bool = True,
-        motion_progress: float | None = None,
+        payload: TraceTest1Payload | None,
     ) -> None:
-        sky_top = (82, 124, 196)
-        sky_bottom = (238, 170, 142)
-        ground_top = (136, 152, 176)
-        ground_bottom = (112, 126, 146)
+        sky_top = (92, 138, 208)
+        sky_bottom = (128, 168, 222)
+        ground_top = (118, 142, 176)
+        ground_bottom = (96, 120, 154)
         border = (208, 222, 248)
 
         if self._app.opengl_enabled:
@@ -20756,37 +21014,22 @@ class CognitiveTestScreen:
         if self._render_trace_test_1_panda_view(
             surface=surface,
             world=inner,
-            reference=reference,
-            candidate=candidate,
-            correct_code=correct_code,
-            viewpoint_bearing_deg=viewpoint_bearing_deg,
-            scene_turn_index=scene_turn_index,
-            animate=animate,
-            motion_progress=motion_progress,
+            payload=payload,
         ):
             return
         if self._app.opengl_enabled:
             self._app.queue_gl_scene(
                 TraceTest1GlScene(
                     world=pygame.Rect(inner),
-                    reference=reference,
-                    candidate=candidate,
-                    correct_code=correct_code,
-                    viewpoint_bearing_deg=viewpoint_bearing_deg,
-                    scene_turn_index=scene_turn_index,
-                    animate=animate,
-                    progress=motion_progress,
+                    payload=payload,
                 )
             )
             return
 
-        anim_s = float(pygame.time.get_ticks()) / 1000.0 if animate else 0.0
-        scene_progress = (
-            max(0.0, min(1.0, float(motion_progress)))
-            if motion_progress is not None
-            else 0.5 + (0.5 * math.sin(anim_s * 0.55))
-        )
-        horizon = inner.y + int(inner.h * 0.58)
+        if payload is None:
+            return
+        anim_s = float(pygame.time.get_ticks()) / 1000.0
+        horizon = inner.y + int(inner.h * 0.52)
         sky_h = max(1, horizon - inner.y)
         for i in range(sky_h):
             t = i / max(1, sky_h - 1)
@@ -20806,122 +21049,62 @@ class CognitiveTestScreen:
                 int(round(ground_top[2] + (ground_bottom[2] - ground_top[2]) * t)),
             )
             pygame.draw.line(surface, color, (inner.x, horizon + i), (inner.right, horizon + i))
-
-        # Keep the camera view stable; only the aircraft should move.
-        for idx in range(4):
-            cloud_w = max(26, int(inner.w * (0.12 + (idx * 0.02))))
-            cloud_h = max(10, int(cloud_w * 0.34))
-            cx = inner.x + int(inner.w * (0.08 + (idx * 0.19)))
-            cy = inner.y + int(inner.h * (0.09 + (idx * 0.08)))
-            cloud_rect = pygame.Rect(cx, cy, cloud_w, cloud_h)
-            pygame.draw.ellipse(surface, (252, 246, 238), cloud_rect)
-            pygame.draw.ellipse(surface, (218, 226, 242), cloud_rect, 1)
-
-        for idx in range(6):
-            t = idx / 5.0
-            yy = horizon + int(round((t**1.18) * max(1, inner.bottom - horizon)))
-            left_x = inner.x + int(round(inner.w * (0.02 + (t * 0.04))))
-            right_x = inner.right - int(round(inner.w * (0.02 + (t * 0.01))))
-            pygame.draw.line(surface, (182, 194, 214), (left_x, yy), (right_x, yy), 1)
-        for lane in (-2, -1, 0, 1, 2):
-            xx = inner.centerx + int(round(lane * inner.w * 0.15))
-            pygame.draw.line(surface, (168, 182, 204), (xx, horizon + 2), (xx, inner.bottom), 1)
-
-        target_frame, distractor_frames = trace_test_1_scene_frames(
-            reference=reference,
-            candidate=candidate,
-            correct_code=correct_code,
-            progress=scene_progress,
-            scene_turn_index=scene_turn_index,
+        pygame.draw.line(surface, (218, 226, 242), (inner.x, horizon), (inner.right, horizon), 1)
+        blue_colors = (
+            ((76, 136, 244), (220, 232, 246)),
+            ((92, 154, 250), (208, 228, 248)),
+            ((104, 166, 252), (196, 220, 246)),
+            ((64, 118, 220), (184, 212, 242)),
         )
-        future_target_frame, future_distractor_frames = trace_test_1_scene_frames(
-            reference=reference,
-            candidate=candidate,
-            correct_code=correct_code,
-            progress=min(1.0, scene_progress + 0.03),
-            scene_turn_index=scene_turn_index,
-        )
-        anchor_x, anchor_y, anchor_z = target_frame.position
-
-        def project_scene_frame(position: tuple[float, float, float]) -> tuple[tuple[int, int], float]:
-            x, forward_y, altitude_z = position
-            rel_x = x - anchor_x
-            rel_forward = forward_y - anchor_y
-            rel_alt = altitude_z - anchor_z
-            forward_scale_x = max(2.0, inner.w / 176.0)
-            depth_parallax_x = max(0.12, inner.w / 760.0)
-            altitude_scale = max(1.45, inner.h / 84.0)
-            center = (
-                inner.centerx
-                + int(round((rel_forward * forward_scale_x) + (rel_x * depth_parallax_x))),
-                horizon
-                - int(round(rel_alt * altitude_scale)),
+        for idx, blue_frame in enumerate(payload.scene.blue_frames):
+            blue_center_f, blue_scale = trace_test_1_project_scene_position(
+                blue_frame.position,
+                size=inner.size,
             )
-            scale = _clamp(0.82 - (rel_x / 210.0), 0.54, 1.20)
-            return center, scale
-
-        def frame_screen_heading(
-            frame: TraceTest1SceneFrame,
-            future_frame: TraceTest1SceneFrame,
-            center: tuple[int, int],
-        ) -> float:
-            _ = future_frame
-            heading_rad = math.radians(float(frame.travel_heading_deg))
-            ahead_world = (
-                frame.position[0] + (math.sin(heading_rad) * 5.4),
-                frame.position[1] + (math.cos(heading_rad) * 5.4),
-                frame.position[2],
+            blue_heading = trace_test_1_screen_heading_deg(
+                blue_frame,
+                size=inner.size,
             )
-            ahead_center, _ = project_scene_frame(ahead_world)
-            dx = float(ahead_center[0] - center[0])
-            dy = float(ahead_center[1] - center[1])
-            if abs(dx) + abs(dy) < 0.5:
-                return 0.0
-            return float(math.degrees(math.atan2(dy, dx)))
-
-        distractor_specs = (
-            ((122, 148, 184), (220, 232, 246)),
-            ((108, 132, 150), (210, 220, 232)),
-            ((96, 126, 168), (206, 220, 244)),
-        )
-        for frame, future_frame, spec in zip(
-            distractor_frames,
-            future_distractor_frames,
-            distractor_specs,
-            strict=False,
-        ):
-            color, outline = spec
-            center, scale = project_scene_frame(frame.position)
+            color, outline = blue_colors[idx % len(blue_colors)]
             self._draw_trace_test_1_aircraft(
                 surface,
-                center=center,
-                attitude=frame.attitude,
-                screen_heading_deg=frame_screen_heading(frame, future_frame, center),
+                center=(
+                    inner.x + int(round(blue_center_f[0])),
+                    inner.y + int(round(blue_center_f[1])),
+                ),
+                attitude=blue_frame.attitude,
+                screen_heading_deg=blue_heading,
                 color=color,
                 outline=outline,
-                scale=scale,
+                scale=max(0.70, min(1.02, blue_scale * 0.84)),
                 anim_s=anim_s,
             )
 
-        target_center, target_scale = project_scene_frame(target_frame.position)
+        target_frame = payload.scene.red_frame
+        target_center_f, target_scale = trace_test_1_project_scene_position(
+            target_frame.position,
+            size=inner.size,
+        )
         self._draw_trace_test_1_aircraft(
             surface,
-            center=target_center,
+            center=(
+                inner.x + int(round(target_center_f[0])),
+                inner.y + int(round(target_center_f[1])),
+            ),
             attitude=target_frame.attitude,
-            screen_heading_deg=frame_screen_heading(
+            screen_heading_deg=trace_test_1_screen_heading_deg(
                 target_frame,
-                future_target_frame,
-                target_center,
+                size=inner.size,
             ),
             color=(228, 54, 56),
             outline=(255, 210, 206),
-            scale=max(0.68, min(1.28, target_scale)),
+            scale=max(0.82, min(1.18, target_scale * 0.98)),
             anim_s=anim_s,
         )
 
     @staticmethod
     def _screen_heading_to_fixed_wing_heading(screen_heading_deg: float) -> float:
-        return (90.0 - float(screen_heading_deg)) % 360.0
+        return fixed_wing_heading_from_screen_heading(screen_heading_deg)
 
     def _draw_fixed_wing_fallback(
         self,
@@ -20975,7 +21158,7 @@ class CognitiveTestScreen:
             screen_heading_deg=screen_heading_deg,
             pitch_deg=float(attitude.pitch_deg),
             bank_deg=float(attitude.roll_deg),
-            view_pitch_deg=24.0,
+            view_pitch_deg=0.0,
         )
 
     @staticmethod
@@ -21014,55 +21197,26 @@ class CognitiveTestScreen:
         payload: TraceTest2Payload | None,
     ) -> None:
         w, h = surface.get_size()
-        bg = (2, 10, 140)
-        frame_bg = (8, 18, 124)
-        panel_bg = (12, 20, 92)
-        border = (226, 236, 255)
+        bg = (3, 10, 148)
+        border = (216, 226, 246)
         text_main = (236, 244, 255)
-        text_muted = (176, 196, 226)
-        input_bg = (4, 10, 36)
+        text_muted = (186, 198, 224)
 
         surface.fill(bg)
-
-        margin = max(10, min(18, w // 46))
-        frame = pygame.Rect(margin, margin, w - margin * 2, h - margin * 2)
-        pygame.draw.rect(surface, frame_bg, frame)
-        pygame.draw.rect(surface, border, frame, 1)
-
-        header_h = max(28, min(36, h // 17))
-        header = pygame.Rect(frame.x + 2, frame.y + 2, frame.w - 4, header_h)
-        pygame.draw.rect(surface, bg, header)
-        pygame.draw.line(
-            surface, border, (header.x, header.bottom), (header.right, header.bottom), 1
-        )
+        top_line_y = max(22, h // 18)
+        bottom_bar_h = max(18, h // 24)
+        pygame.draw.line(surface, border, (24, top_line_y), (w - 24, top_line_y), 1)
+        pygame.draw.rect(surface, (8, 8, 10), pygame.Rect(18, h - bottom_bar_h - 12, w - 36, bottom_bar_h))
 
         phase_label = {
             Phase.INSTRUCTIONS: "Instructions",
             Phase.PRACTICE: "Practice",
             Phase.PRACTICE_DONE: "Practice Complete",
-            Phase.SCORED: "Scored",
+            Phase.SCORED: "Testing",
             Phase.RESULTS: "Results",
         }.get(snap.phase, "Task")
         title = self._tiny_font.render(f"Trace Test 2 - {phase_label}", True, text_main)
-        surface.blit(title, (header.x + 10, header.y + 7))
-
-        stats = self._tiny_font.render(
-            f"Scored {snap.correct_scored}/{snap.attempted_scored}",
-            True,
-            text_muted,
-        )
-        surface.blit(stats, stats.get_rect(midright=(header.right - 10, header.centery)))
-
-        if snap.time_remaining_s is not None:
-            rem = int(round(snap.time_remaining_s))
-            timer = self._small_font.render(f"{rem // 60:02d}:{rem % 60:02d}", True, text_main)
-            surface.blit(timer, timer.get_rect(topright=(frame.right - 12, header.bottom + 8)))
-
-        work = pygame.Rect(
-            frame.x + 8, header.bottom + 8, frame.w - 16, frame.bottom - header.bottom - 16
-        )
-        pygame.draw.rect(surface, panel_bg, work)
-        pygame.draw.rect(surface, border, work, 1)
+        surface.blit(title, title.get_rect(center=(w // 2, top_line_y - 8)))
 
         def render_scene(scene_rect: pygame.Rect, scene_payload: TraceTest2Payload | None) -> None:
             if self._app.opengl_enabled:
@@ -21073,233 +21227,133 @@ class CognitiveTestScreen:
             inner = scene_rect.inflate(-8, -8)
             if inner.w <= 0 or inner.h <= 0:
                 return
-            if self._render_trace_test_2_panda_view(
-                surface=surface,
-                world=inner,
-                payload=scene_payload,
-            ):
+            if self._render_trace_test_2_panda_view(surface=surface, world=inner, payload=scene_payload):
                 return
             if self._app.opengl_enabled:
-                self._app.queue_gl_scene(
-                    TraceTest2GlScene(
-                        world=pygame.Rect(inner),
-                        payload=scene_payload,
-                    )
-                )
+                self._app.queue_gl_scene(TraceTest2GlScene(world=pygame.Rect(inner), payload=scene_payload))
                 return
 
-            sky_top = (84, 126, 198)
-            sky_bottom = (238, 172, 144)
-            ground_top = (138, 154, 176)
-            ground_bottom = (112, 126, 146)
-            horizon = inner.y + int(inner.h * 0.58)
+            horizon = inner.y + int(inner.h * 0.74)
             sky_h = max(1, horizon - inner.y)
             for i in range(sky_h):
                 t = i / max(1, sky_h - 1)
                 color = (
-                    int(round(sky_top[0] + (sky_bottom[0] - sky_top[0]) * t)),
-                    int(round(sky_top[1] + (sky_bottom[1] - sky_top[1]) * t)),
-                    int(round(sky_top[2] + (sky_bottom[2] - sky_top[2]) * t)),
+                    int(round(84 + ((238 - 84) * t))),
+                    int(round(126 + ((172 - 126) * t))),
+                    int(round(198 + ((144 - 198) * t))),
                 )
                 pygame.draw.line(surface, color, (inner.x, inner.y + i), (inner.right, inner.y + i))
             ground_h = max(1, inner.bottom - horizon)
             for i in range(ground_h):
                 t = i / max(1, ground_h - 1)
                 color = (
-                    int(round(ground_top[0] + (ground_bottom[0] - ground_top[0]) * t)),
-                    int(round(ground_top[1] + (ground_bottom[1] - ground_top[1]) * t)),
-                    int(round(ground_top[2] + (ground_bottom[2] - ground_top[2]) * t)),
+                    int(round(138 + ((112 - 138) * t))),
+                    int(round(154 + ((126 - 154) * t))),
+                    int(round(176 + ((146 - 176) * t))),
                 )
                 pygame.draw.line(surface, color, (inner.x, horizon + i), (inner.right, horizon + i))
+            pygame.draw.line(surface, (218, 226, 242), (inner.x, horizon), (inner.right, horizon), 1)
 
-            for idx in range(6):
-                t = idx / 5.0
-                yy = horizon + int(round((t**1.18) * max(1, inner.bottom - horizon)))
-                left_x = inner.x + int(round(inner.w * (0.02 + (t * 0.04))))
-                right_x = inner.right - int(round(inner.w * (0.02 + (t * 0.01))))
-                pygame.draw.line(surface, (182, 194, 214), (left_x, yy), (right_x, yy), 1)
-            for lane in (-2, -1, 0, 1, 2):
-                xx = inner.centerx + int(round(lane * inner.w * 0.15))
-                pygame.draw.line(surface, (168, 182, 204), (xx, horizon + 2), (xx, inner.bottom), 1)
-
-            tracks = scene_payload.aircraft if scene_payload is not None else ()
+            tracks = () if scene_payload is None else scene_payload.aircraft
             if not tracks:
                 return
-            progress = float(scene_payload.observe_progress) if scene_payload is not None else 0.5
-            forward_scale_x = max(2.8, inner.w / 128.0)
-            depth_parallax_x = max(0.20, inner.w / 520.0)
-            altitude_scale = max(2.0, inner.h / 50.0)
-
-            def project_point(point: TraceTest2Point3) -> tuple[float, float]:
-                return (
-                    inner.centerx
-                    + (((point.y - 88.0) * forward_scale_x) + (point.x * depth_parallax_x)),
-                    horizon - ((point.z - 8.0) * altitude_scale),
-                )
-
+            progress = 0.5 if scene_payload is None else float(scene_payload.observe_progress)
             for track in tracks:
                 pos = self._trace_test_2_track_position(track=track, progress=progress)
-                future = self._trace_test_2_track_position(
-                    track=track,
-                    progress=min(1.0, progress + 0.03),
-                )
-                dx = future.x - pos.x
-                dy = future.y - pos.y
-                dz = future.z - pos.z
-                if (dx * dx) + (dy * dy) + (dz * dz) <= 1e-8:
-                    past = self._trace_test_2_track_position(
-                        track=track,
-                        progress=max(0.0, progress - 0.03),
-                    )
-                    dx = pos.x - past.x
-                    dy = pos.y - past.y
-                    dz = pos.z - past.z
-
-                px, py = project_point(pos)
-                fx, fy = project_point(
-                    TraceTest2Point3(
-                        x=pos.x + dx,
-                        y=pos.y + dy,
-                        z=pos.z + dz,
-                    )
-                )
-                heading_deg = 0.0
-                if abs(fx - px) + abs(fy - py) >= 0.01:
-                    heading_deg = math.degrees(math.atan2(fy - py, fx - px))
-
-                screen_x = int(round(px))
-                screen_y = int(round(py))
-                bank = _clamp(dx * 2.8, -32.0, 32.0)
-                scale = max(0.50, min(1.18, 0.92 - (pos.x / 120.0)))
+                center = trace_test_2_project_point(pos, size=inner.size)
+                heading = trace_test_2_screen_heading_deg(track=track, progress=progress, size=inner.size)
+                tangent = trace_test_2_tangent_for_track(track=track, progress=progress)
+                hpr = trace_test_2_aircraft_hpr_from_tangent(tangent)
                 self._draw_trace_test_2_aircraft_fallback(
                     surface,
-                    center=(screen_x, screen_y),
+                    center=(inner.x + int(round(center[0])), inner.y + int(round(center[1]))),
                     color=track.color_rgb,
-                    scale=scale,
-                    heading_deg=heading_deg,
-                    bank_deg=bank,
+                    scale=max(0.58, 0.96 - (abs(hpr[1]) * 0.01)),
+                    heading_deg=heading,
+                    bank_deg=hpr[2],
                 )
 
+        content = pygame.Rect(28, top_line_y + 18, w - 56, h - top_line_y - bottom_bar_h - 42)
         if snap.phase not in (Phase.PRACTICE, Phase.SCORED) or payload is None:
-            info = work.inflate(-20, -20)
-            pygame.draw.rect(surface, (18, 28, 108), info)
-            pygame.draw.rect(surface, border, info, 1)
-
-            scene = pygame.Rect(info.x + 12, info.y + 12, info.w - 24, max(170, int(info.h * 0.56)))
-            render_scene(scene, None)
-            text_rect = pygame.Rect(
-                info.x + 12, scene.bottom + 10, info.w - 24, info.bottom - scene.bottom - 22
-            )
-            intro = (
-                "Watch a short 3-D aircraft scene, then answer a recall question about it.\n\n"
-                "Questions may ask which color stayed on screen, started lowest, ended left-most, "
-                "or how many left turns the red aircraft made."
-            )
-            if snap.phase is Phase.RESULTS:
-                intro = str(snap.prompt)
-            elif snap.phase is Phase.PRACTICE_DONE:
-                intro = "Practice complete. Press Enter to start the timed Trace Test 2 block."
+            text_rect = content.inflate(-20, -20)
             self._draw_wrapped_text(
                 surface,
-                intro,
+                str(snap.prompt),
                 text_rect,
                 color=text_main,
                 font=self._small_font,
-                max_lines=12,
+                max_lines=14,
             )
             return
 
-        panel = work.inflate(-20, -20)
-        pygame.draw.rect(surface, (18, 28, 108), panel)
-        pygame.draw.rect(surface, border, panel, 1)
-
-        scene = pygame.Rect(
-            panel.x + 12,
-            panel.y + 12,
-            panel.w - 24,
-            max(150, int(panel.h * 0.44)),
-        )
-        render_scene(scene, payload)
-
-        rem = 0.0 if payload.stage_time_remaining_s is None else float(payload.stage_time_remaining_s)
-        trial_text = (
-            f"{payload.block_kind.title()} {payload.trial_index_in_block}/{payload.trials_in_block}"
-        )
-        status = pygame.Rect(panel.x + 12, scene.bottom + 8, panel.w - 24, 24)
-        pygame.draw.rect(surface, (14, 20, 88), status)
-        pygame.draw.rect(surface, border, status, 1)
-        status_label = self._tiny_font.render(trial_text, True, text_main)
-        status_time = self._tiny_font.render(f"{rem:0.1f}s", True, text_main)
-        surface.blit(status_label, (status.x + 8, status.y + 6))
-        surface.blit(status_time, status_time.get_rect(midright=(status.right - 8, status.centery)))
-
-        prog_card = pygame.Rect(panel.x + 12, status.bottom + 6, panel.w - 24, 16)
-        pygame.draw.rect(surface, (10, 14, 54), prog_card, border_radius=4)
-        pygame.draw.rect(surface, border, prog_card, 1, border_radius=4)
-        fill_w = int(round((prog_card.w - 4) * max(0.0, min(1.0, float(payload.observe_progress)))))
-        if fill_w > 0:
-            fill = pygame.Rect(prog_card.x + 2, prog_card.y + 2, fill_w, prog_card.h - 4)
-            pygame.draw.rect(surface, (214, 222, 98), fill, border_radius=3)
-
-        question_top = prog_card.bottom + 8
-        question = pygame.Rect(panel.x + 12, question_top, panel.w - 24, panel.bottom - question_top - 8)
-        pygame.draw.rect(surface, (18, 28, 108), question)
-        pygame.draw.rect(surface, border, question, 1)
-
-        header_h = max(44, min(62, int(question.h * 0.28)))
-        header_box = pygame.Rect(question.x + 12, question.y + 8, question.w - 24, header_h)
-        pygame.draw.rect(surface, (14, 20, 88), header_box)
-        pygame.draw.rect(surface, border, header_box, 1)
-        self._draw_wrapped_text(
-            surface,
-            str(payload.stem),
-            header_box.inflate(-10, -8),
-            color=text_main,
-            font=self._small_font,
-            max_lines=3,
-        )
-
+        bar = pygame.Rect(18, h - bottom_bar_h - 12, w - 36, bottom_bar_h)
         selected_code = int(self._math_choice)
         raw = self._input.strip()
         if raw.isdigit():
             selected_code = int(raw)
 
-        entry_card = pygame.Rect(question.x + 12, question.bottom - 34, question.w - 24, 26)
-        options_rect = pygame.Rect(
-            question.x + 12,
-            header_box.bottom + 8,
-            question.w - 24,
-            max(36, entry_card.y - header_box.bottom - 16),
-        )
-        pygame.draw.rect(surface, (14, 20, 88), options_rect)
-        pygame.draw.rect(surface, border, options_rect, 1)
+        if payload.trial_stage is TraceTest2TrialStage.OBSERVE:
+            scene_size = min(content.h - 14, int(content.w * 0.5))
+            scene = pygame.Rect(0, 0, scene_size, scene_size)
+            scene.center = content.center
+            render_scene(scene, payload)
+            watch = self._small_font.render("Watch the aircraft scene.", True, text_main)
+            surface.blit(watch, watch.get_rect(midbottom=(scene.centerx, scene.y - 10)))
+            rem = 0.0 if payload.stage_time_remaining_s is None else float(payload.stage_time_remaining_s)
+            observe_label = self._tiny_font.render(
+                f"Observe  |  Clip {payload.trial_index_in_block}/{payload.trials_in_block}  |  {rem:0.1f}s",
+                True,
+                (236, 236, 186),
+            )
+            surface.blit(observe_label, (bar.x + 8, bar.y + 3))
+        else:
+            question_box = pygame.Rect(content.x + max(10, content.w // 8), content.y + 24, content.w - max(20, content.w // 4), max(72, content.h // 4))
+            self._draw_wrapped_text(
+                surface,
+                str(payload.stem),
+                question_box,
+                color=text_main,
+                font=self._small_font,
+                max_lines=4,
+            )
 
-        row_h = max(28, (options_rect.h - 8) // max(1, len(payload.options)))
-        y = options_rect.y + 4
-        for option in payload.options:
-            row = pygame.Rect(options_rect.x + 8, y, options_rect.w - 16, row_h - 2)
-            selected = int(option.code) == selected_code
-            row_fill = (58, 84, 154) if selected else (20, 30, 106)
-            pygame.draw.rect(surface, row_fill, row)
-            pygame.draw.rect(surface, border, row, 1)
-            swatch = pygame.Rect(row.x + 10, row.y + max(4, (row.h - 18) // 2), 18, 18)
-            swatch_color = option.color_rgb if option.color_rgb is not None else (34, 44, 124)
-            pygame.draw.rect(surface, swatch_color, swatch)
-            pygame.draw.rect(surface, (236, 244, 255), swatch, 1)
-            label = self._small_font.render(option.label, True, text_main)
-            surface.blit(label, label.get_rect(midleft=(swatch.right + 12, row.centery)))
-            code_tag = pygame.Rect(row.right - 34, row.y + 4, 24, max(14, row.h - 8))
-            pygame.draw.rect(surface, input_bg, code_tag)
-            pygame.draw.rect(surface, border, code_tag, 1)
-            code_txt = self._tiny_font.render(self._choice_key_label(option.code), True, text_main)
-            surface.blit(code_txt, code_txt.get_rect(center=code_tag.center))
-            self._draw_review_choice_overlay(surface, row, option_code=int(option.code))
-            y += row_h
+            option_w = min(190, content.w // 3)
+            option_h = 34
+            options_total_h = (option_h * len(payload.options)) + ((len(payload.options) - 1) * 8)
+            option_y = question_box.bottom + max(18, (content.bottom - question_box.bottom - options_total_h) // 3)
+            for option in payload.options:
+                row = pygame.Rect(content.centerx - (option_w // 2), option_y, option_w, option_h)
+                selected = int(option.code) == selected_code
+                pygame.draw.rect(surface, (24, 24, 28), row)
+                pygame.draw.rect(surface, (232, 210, 94) if selected else border, row, 1)
+                tag = pygame.Rect(row.x + 8, row.y + 7, 18, 18)
+                pygame.draw.rect(surface, (8, 8, 10), tag)
+                pygame.draw.rect(surface, border, tag, 1)
+                tag_txt = self._tiny_font.render(self._choice_key_label(option.code), True, text_main)
+                surface.blit(tag_txt, tag_txt.get_rect(center=tag.center))
+                swatch = pygame.Rect(tag.right + 10, row.y + 7, 18, 18)
+                swatch_color = option.color_rgb if option.color_rgb is not None else (34, 44, 124)
+                pygame.draw.rect(surface, swatch_color, swatch)
+                pygame.draw.rect(surface, (236, 244, 255), swatch, 1)
+                label = self._small_font.render(option.label, True, text_main)
+                surface.blit(label, label.get_rect(midleft=(swatch.right + 10, row.centery)))
+                self._draw_review_choice_overlay(surface, row, option_code=int(option.code))
+                option_y += option_h + 8
 
-        pygame.draw.rect(surface, (14, 20, 88), entry_card)
-        pygame.draw.rect(surface, border, entry_card, 1)
-        hint = self._tiny_font.render("A/S/D/F, Up/Down, Enter", True, text_muted)
-        surface.blit(hint, (entry_card.x + 8, entry_card.y + 7))
+            answer_label = self._choice_input_label(self._input) if self._input.strip() else ""
+            bottom_left = self._tiny_font.render("Question: 1 of 1", True, (236, 236, 186))
+            bottom_mid = self._tiny_font.render(f"Answer: {answer_label}", True, (236, 236, 186))
+            surface.blit(bottom_left, (bar.x + 8, bar.y + 3))
+            surface.blit(bottom_mid, bottom_mid.get_rect(center=bar.center))
+
+        if snap.time_remaining_s is not None:
+            rem = int(round(snap.time_remaining_s))
+            time_text = self._tiny_font.render(
+                f"Time Left {rem // 60:02d}:{rem % 60:02d}",
+                True,
+                (236, 236, 186),
+            )
+            surface.blit(time_text, time_text.get_rect(midright=(bar.right - 8, bar.centery)))
 
     def _render_spatial_integration_screen(
         self,
@@ -26052,6 +26106,14 @@ def run(
             return build_sa_workout_plan()
         if token == "rapid_tracking_workout":
             return build_rt_workout_plan()
+        if token == "spatial_integration_workout":
+            return build_si_workout_plan()
+        if token == "trace_test_1_workout":
+            return build_trace_test_1_workout_plan()
+        if token == "trace_test_2_workout":
+            return build_trace_test_2_workout_plan()
+        if token == "vigilance_workout":
+            return build_vig_workout_plan()
         raise ValueError(f"Unknown workout code: {workout_code}")
 
     def _workout_loading_detail(workout_code: str) -> str:
@@ -26086,6 +26148,14 @@ def run(
             return "Building Situational Awareness workout"
         if token == "rapid_tracking_workout":
             return "Building Rapid Tracking workout"
+        if token == "spatial_integration_workout":
+            return "Building Spatial Integration workout"
+        if token == "trace_test_1_workout":
+            return "Building Trace Test 1 workout"
+        if token == "trace_test_2_workout":
+            return "Building Trace Test 2 workout"
+        if token == "vigilance_workout":
+            return "Building Vigilance workout"
         return "Building Airborne Numerical workout"
 
     def open_workout(workout_code: str) -> None:
@@ -26744,6 +26814,73 @@ def run(
             ),
         )
 
+    def _open_vig_drill(
+        *,
+        test_code: str,
+        title: str,
+        builder: Callable[..., object],
+        mode: AntDrillMode,
+    ) -> None:
+        seed = _new_seed()
+        open_test(
+            test_code=test_code,
+            title=title,
+            engine_factory=lambda difficulty: builder(
+                clock=real_clock,
+                seed=seed,
+                difficulty=difficulty,
+                mode=mode,
+            ),
+        )
+
+    def open_vig_entry_anchor(mode: AntDrillMode) -> None:
+        _open_vig_drill(
+            test_code="vig_entry_anchor",
+            title="Vigilance: Entry Anchor",
+            builder=build_vig_entry_anchor_drill,
+            mode=mode,
+        )
+
+    def open_vig_clean_scan(mode: AntDrillMode) -> None:
+        _open_vig_drill(
+            test_code="vig_clean_scan",
+            title="Vigilance: Clean Scan",
+            builder=build_vig_clean_scan_drill,
+            mode=mode,
+        )
+
+    def open_vig_steady_capture_run(mode: AntDrillMode) -> None:
+        _open_vig_drill(
+            test_code="vig_steady_capture_run",
+            title="Vigilance: Steady Capture Run",
+            builder=build_vig_steady_capture_run_drill,
+            mode=mode,
+        )
+
+    def open_vig_density_ladder(mode: AntDrillMode) -> None:
+        _open_vig_drill(
+            test_code="vig_density_ladder",
+            title="Vigilance: Density Ladder",
+            builder=build_vig_density_ladder_drill,
+            mode=mode,
+        )
+
+    def open_vig_tempo_sweep(mode: AntDrillMode) -> None:
+        _open_vig_drill(
+            test_code="vig_tempo_sweep",
+            title="Vigilance: Tempo Sweep",
+            builder=build_vig_tempo_sweep_drill,
+            mode=mode,
+        )
+
+    def open_vig_pressure_run(mode: AntDrillMode) -> None:
+        _open_vig_drill(
+            test_code="vig_pressure_run",
+            title="Vigilance: Pressure Run",
+            builder=build_vig_pressure_run_drill,
+            mode=mode,
+        )
+
     def open_instrument_comprehension() -> None:
         seed = _new_seed()
         open_test(
@@ -27243,6 +27380,89 @@ def run(
             ),
         )
 
+    def _open_si_drill(
+        *,
+        test_code: str,
+        title: str,
+        builder: Callable[..., object],
+        mode: AntDrillMode,
+    ) -> None:
+        seed = _new_seed()
+        open_test(
+            test_code=test_code,
+            title=title,
+            engine_factory=lambda difficulty: builder(
+                clock=real_clock,
+                seed=seed,
+                difficulty=difficulty,
+                mode=mode,
+            ),
+        )
+
+    def open_si_landmark_anchor(mode: AntDrillMode) -> None:
+        _open_si_drill(
+            test_code="si_landmark_anchor",
+            title="Spatial Integration: Landmark Anchor",
+            builder=build_si_landmark_anchor_drill,
+            mode=mode,
+        )
+
+    def open_si_reconstruction_run(mode: AntDrillMode) -> None:
+        _open_si_drill(
+            test_code="si_reconstruction_run",
+            title="Spatial Integration: Reconstruction Run",
+            builder=build_si_reconstruction_run_drill,
+            mode=mode,
+        )
+
+    def open_si_static_mixed_run(mode: AntDrillMode) -> None:
+        _open_si_drill(
+            test_code="si_static_mixed_run",
+            title="Spatial Integration: Static Mixed Run",
+            builder=build_si_static_mixed_run_drill,
+            mode=mode,
+        )
+
+    def open_si_route_anchor(mode: AntDrillMode) -> None:
+        _open_si_drill(
+            test_code="si_route_anchor",
+            title="Spatial Integration: Route Anchor",
+            builder=build_si_route_anchor_drill,
+            mode=mode,
+        )
+
+    def open_si_continuation_prime(mode: AntDrillMode) -> None:
+        _open_si_drill(
+            test_code="si_continuation_prime",
+            title="Spatial Integration: Continuation Prime",
+            builder=build_si_continuation_prime_drill,
+            mode=mode,
+        )
+
+    def open_si_aircraft_grid_run(mode: AntDrillMode) -> None:
+        _open_si_drill(
+            test_code="si_aircraft_grid_run",
+            title="Spatial Integration: Aircraft Grid Run",
+            builder=build_si_aircraft_grid_run_drill,
+            mode=mode,
+        )
+
+    def open_si_mixed_tempo(mode: AntDrillMode) -> None:
+        _open_si_drill(
+            test_code="si_mixed_tempo",
+            title="Spatial Integration: Mixed Tempo",
+            builder=build_si_mixed_tempo_drill,
+            mode=mode,
+        )
+
+    def open_si_pressure_run(mode: AntDrillMode) -> None:
+        _open_si_drill(
+            test_code="si_pressure_run",
+            title="Spatial Integration: Pressure Run",
+            builder=build_si_pressure_run_drill,
+            mode=mode,
+        )
+
     def open_trace_test_1() -> None:
         seed = _new_seed()
         open_test(
@@ -27265,6 +27485,89 @@ def run(
                 seed=seed,
                 difficulty=difficulty,
             ),
+        )
+
+    def _open_trace_drill(
+        *,
+        test_code: str,
+        title: str,
+        builder: Callable[..., object],
+        mode: AntDrillMode,
+    ) -> None:
+        seed = _new_seed()
+        open_test(
+            test_code=test_code,
+            title=title,
+            engine_factory=lambda difficulty: builder(
+                clock=real_clock,
+                seed=seed,
+                difficulty=difficulty,
+                mode=mode,
+            ),
+        )
+
+    def open_tt1_lateral_anchor(mode: AntDrillMode) -> None:
+        _open_trace_drill(
+            test_code="tt1_lateral_anchor",
+            title="Trace Test 1: Lateral Anchor",
+            builder=build_tt1_lateral_anchor_drill,
+            mode=mode,
+        )
+
+    def open_tt1_vertical_anchor(mode: AntDrillMode) -> None:
+        _open_trace_drill(
+            test_code="tt1_vertical_anchor",
+            title="Trace Test 1: Vertical Anchor",
+            builder=build_tt1_vertical_anchor_drill,
+            mode=mode,
+        )
+
+    def open_tt1_command_switch_run(mode: AntDrillMode) -> None:
+        _open_trace_drill(
+            test_code="tt1_command_switch_run",
+            title="Trace Test 1: Command Switch Run",
+            builder=build_tt1_command_switch_run_drill,
+            mode=mode,
+        )
+
+    def open_tt2_steady_anchor(mode: AntDrillMode) -> None:
+        _open_trace_drill(
+            test_code="tt2_steady_anchor",
+            title="Trace Test 2: Steady Anchor",
+            builder=build_tt2_steady_anchor_drill,
+            mode=mode,
+        )
+
+    def open_tt2_turn_trace_run(mode: AntDrillMode) -> None:
+        _open_trace_drill(
+            test_code="tt2_turn_trace_run",
+            title="Trace Test 2: Turn Trace Run",
+            builder=build_tt2_turn_trace_run_drill,
+            mode=mode,
+        )
+
+    def open_tt2_position_recall_run(mode: AntDrillMode) -> None:
+        _open_trace_drill(
+            test_code="tt2_position_recall_run",
+            title="Trace Test 2: Position Recall Run",
+            builder=build_tt2_position_recall_run_drill,
+            mode=mode,
+        )
+
+    def open_trace_mixed_tempo(mode: AntDrillMode) -> None:
+        _open_trace_drill(
+            test_code="trace_mixed_tempo",
+            title="Trace Tests: Mixed Tempo",
+            builder=build_trace_mixed_tempo_drill,
+            mode=mode,
+        )
+
+    def open_trace_pressure_run(mode: AntDrillMode) -> None:
+        _open_trace_drill(
+            test_code="trace_pressure_run",
+            title="Trace Tests: Pressure Run",
+            builder=build_trace_pressure_run_drill,
+            mode=mode,
         )
 
     def _open_auditory_capacity_drill(
@@ -28305,6 +28608,82 @@ def run(
         rt_drills_items,
     )
 
+    si_drill_openers: tuple[tuple[str, Callable[[AntDrillMode], None]], ...] = (
+        ("Landmark Anchor", open_si_landmark_anchor),
+        ("Reconstruction Run", open_si_reconstruction_run),
+        ("Static Mixed Run", open_si_static_mixed_run),
+        ("Route Anchor", open_si_route_anchor),
+        ("Continuation Prime", open_si_continuation_prime),
+        ("Aircraft Grid Run", open_si_aircraft_grid_run),
+        ("Mixed Tempo", open_si_mixed_tempo),
+        ("Pressure Run", open_si_pressure_run),
+    )
+    si_drills_items: list[MenuItem] = []
+    for label, opener in si_drill_openers:
+        si_drills_items.extend(
+            (
+                MenuItem(f"{label} - Build", lambda open_fn=opener: open_fn(AntDrillMode.BUILD)),
+                MenuItem(f"{label} - Tempo", lambda open_fn=opener: open_fn(AntDrillMode.TEMPO)),
+                MenuItem(f"{label} - Stress", lambda open_fn=opener: open_fn(AntDrillMode.STRESS)),
+            )
+        )
+    si_drills_items.append(MenuItem("Back", app.pop))
+    si_drills_menu = MenuScreen(
+        app,
+        "Spatial Integration Drills",
+        si_drills_items,
+    )
+
+    trace_drill_openers: tuple[tuple[str, Callable[[AntDrillMode], None]], ...] = (
+        ("TT1 Lateral Anchor", open_tt1_lateral_anchor),
+        ("TT1 Vertical Anchor", open_tt1_vertical_anchor),
+        ("TT1 Command Switch Run", open_tt1_command_switch_run),
+        ("TT2 Steady Anchor", open_tt2_steady_anchor),
+        ("TT2 Turn Trace Run", open_tt2_turn_trace_run),
+        ("TT2 Position Recall Run", open_tt2_position_recall_run),
+        ("Mixed Tempo", open_trace_mixed_tempo),
+        ("Pressure Run", open_trace_pressure_run),
+    )
+    trace_drills_items: list[MenuItem] = []
+    for label, opener in trace_drill_openers:
+        trace_drills_items.extend(
+            (
+                MenuItem(f"{label} - Build", lambda open_fn=opener: open_fn(AntDrillMode.BUILD)),
+                MenuItem(f"{label} - Tempo", lambda open_fn=opener: open_fn(AntDrillMode.TEMPO)),
+                MenuItem(f"{label} - Stress", lambda open_fn=opener: open_fn(AntDrillMode.STRESS)),
+            )
+        )
+    trace_drills_items.append(MenuItem("Back", app.pop))
+    trace_drills_menu = MenuScreen(
+        app,
+        "Trace Drills",
+        trace_drills_items,
+    )
+
+    vig_drill_openers: tuple[tuple[str, Callable[[AntDrillMode], None]], ...] = (
+        ("Entry Anchor", open_vig_entry_anchor),
+        ("Clean Scan", open_vig_clean_scan),
+        ("Steady Capture Run", open_vig_steady_capture_run),
+        ("Density Ladder", open_vig_density_ladder),
+        ("Tempo Sweep", open_vig_tempo_sweep),
+        ("Pressure Run", open_vig_pressure_run),
+    )
+    vig_drills_items: list[MenuItem] = []
+    for label, opener in vig_drill_openers:
+        vig_drills_items.extend(
+            (
+                MenuItem(f"{label} - Build", lambda open_fn=opener: open_fn(AntDrillMode.BUILD)),
+                MenuItem(f"{label} - Tempo", lambda open_fn=opener: open_fn(AntDrillMode.TEMPO)),
+                MenuItem(f"{label} - Stress", lambda open_fn=opener: open_fn(AntDrillMode.STRESS)),
+            )
+        )
+    vig_drills_items.append(MenuItem("Back", app.pop))
+    vig_drills_menu = MenuScreen(
+        app,
+        "Vigilance Drills",
+        vig_drills_items,
+    )
+
     workout_items = [
         MenuItem(label, lambda code=code: open_workout(code))
         for code, label in (
@@ -28324,6 +28703,9 @@ def run(
             + cu_workout_menu_entries()
             + sa_workout_menu_entries()
             + rt_workout_menu_entries()
+            + si_workout_menu_entries()
+            + trace_workout_menu_entries()
+            + vig_workout_menu_entries()
         )
     ]
     workout_items.append(MenuItem("Back", app.pop))
@@ -28353,6 +28735,9 @@ def run(
             MenuItem("Situational Awareness Drills", lambda: app.push(sa_drills_menu)),
             MenuItem("Rapid Tracking Drills", lambda: app.push(rt_drills_menu)),
             MenuItem("Angles, Bearings and Degrees Drills", lambda: app.push(abd_drills_menu)),
+            MenuItem("Spatial Integration Drills", lambda: app.push(si_drills_menu)),
+            MenuItem("Trace Drills", lambda: app.push(trace_drills_menu)),
+            MenuItem("Vigilance Drills", lambda: app.push(vig_drills_menu)),
             MenuItem("Back", app.pop),
         ],
     )

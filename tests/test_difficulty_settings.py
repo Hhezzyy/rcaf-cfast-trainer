@@ -100,6 +100,35 @@ def test_difficulty_settings_screen_updates_global_and_per_test_values(tmp_path)
         pygame.quit()
 
 
+def test_difficulty_settings_screen_lists_spatial_trace_and_vigilance_drill_and_workout_codes(
+    tmp_path,
+) -> None:
+    pygame.init()
+    try:
+        surface = pygame.display.set_mode((960, 540))
+        font = pygame.font.Font(None, 36)
+        store = DifficultySettingsStore(tmp_path / "difficulty-settings.json")
+        app = App(surface=surface, font=font, difficulty_settings_store=store)
+        root = MenuScreen(app, "Main Menu", [MenuItem("Quit", app.quit)], is_root=True)
+        app.push(root)
+        screen = DifficultySettingsScreen(app)
+        app.push(screen)
+
+        row_keys = {key for key, _label, _value in screen._rows()}
+        assert "test:si_landmark_anchor" in row_keys
+        assert "test:si_pressure_run" in row_keys
+        assert "test:spatial_integration_workout" in row_keys
+        assert "test:tt1_lateral_anchor" in row_keys
+        assert "test:trace_pressure_run" in row_keys
+        assert "test:trace_test_1_workout" in row_keys
+        assert "test:trace_test_2_workout" in row_keys
+        assert "test:vig_entry_anchor" in row_keys
+        assert "test:vig_pressure_run" in row_keys
+        assert "test:vigilance_workout" in row_keys
+    finally:
+        pygame.quit()
+
+
 def test_test_seed_settings_store_persists_override_and_seed_value(tmp_path) -> None:
     path = tmp_path / "test-seed-settings.json"
     store = TestSeedSettingsStore(path)

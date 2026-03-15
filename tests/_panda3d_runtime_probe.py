@@ -273,12 +273,18 @@ def _scene_summary(
         renderer = screen._trace_test_1_panda_renderer
         if renderer is None:
             raise AssertionError("trace-test-1 Panda renderer was not created")
-        target_hpr = [round(float(value), 3) for value in renderer._target_anchor.getHpr()]
+        red_hpr = [round(float(value), 3) for value in renderer._red_anchor.getHpr()]
+        blue_hprs = [
+            [round(float(value), 3) for value in anchor.getHpr()]
+            for anchor in getattr(renderer, "_blue_anchors", ())
+        ]
         summary.update(
             renderer_type=type(renderer).__name__,
             renderer_size=list(renderer.size),
-            distractor_count=len(getattr(renderer, "_distractor_anchors", ())),
-            target_hpr=target_hpr,
+            aircraft_count=1 + len(blue_hprs),
+            blue_count=len(blue_hprs),
+            red_hpr=red_hpr,
+            blue_hpr_count=len(blue_hprs),
         )
         return summary
 

@@ -7,7 +7,7 @@ import pygame
 from .auditory_capacity import AuditoryCapacityPayload
 from .rapid_tracking import RapidTrackingPayload
 from .spatial_integration import SpatialIntegrationPayload
-from .trace_test_1 import TraceTest1Attitude
+from .trace_test_1 import TraceTest1Payload
 from .trace_test_2 import TraceTest2Payload
 
 
@@ -35,13 +35,7 @@ class SpatialIntegrationGlScene:
 @dataclass(frozen=True, slots=True)
 class TraceTest1GlScene:
     world: pygame.Rect
-    reference: TraceTest1Attitude
-    candidate: TraceTest1Attitude
-    correct_code: int
-    viewpoint_bearing_deg: int
-    scene_turn_index: int
-    animate: bool
-    progress: float | None
+    payload: TraceTest1Payload | None
 
 
 @dataclass(frozen=True, slots=True)

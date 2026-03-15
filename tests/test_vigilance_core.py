@@ -76,6 +76,7 @@ def test_symbol_stream_is_deterministic_for_same_seed_and_script() -> None:
             assert e2.submit_answer(answer) is True
 
     assert e1.scored_summary() == e2.scored_summary()
+    assert e1.events() == e2.events()
 
 
 def test_payload_legend_and_visible_symbol_shape_match_expected_grid() -> None:
@@ -145,6 +146,16 @@ def test_capture_visible_symbol_updates_scored_summary_and_payload() -> None:
     assert updated.points_total == symbol.points
     assert all(active.symbol_id != symbol.symbol_id for active in updated.symbols)
 
+    events = engine.events()
+    assert len(events) == 1
+    event = events[0]
+    assert event.correct_answer == (symbol.row * 10) + symbol.col
+    assert event.user_answer == (symbol.row * 10) + symbol.col
+    assert event.raw == f"{symbol.row},{symbol.col}"
+    assert event.is_correct is True
+    assert event.score == symbol.points
+    assert event.max_score == symbol.points
+
     summary = engine.scored_summary()
     assert summary.attempted == 1
     assert summary.correct == 1
@@ -179,12 +190,61 @@ def test_expired_symbol_counts_as_missed_in_scored_phase() -> None:
     assert updated.missed_total == 1
     assert all(active.symbol_id != symbol.symbol_id for active in updated.symbols)
 
+    events = engine.events()
+    assert len(events) == 1
+    event = events[0]
+    assert event.correct_answer == (symbol.row * 10) + symbol.col
+    assert event.user_answer == 0
+    assert event.raw == ""
+    assert event.is_correct is False
+    assert event.score == 0
+    assert event.max_score == symbol.points
+
     summary = engine.scored_summary()
     assert summary.attempted == 0
     assert summary.correct == 0
     assert summary.points == 0
     assert summary.missed == 1
     assert summary.mean_capture_time_s is None
+
+
+def test_events_are_deterministic_for_same_seed_and_script() -> None:
+    config = VigilanceConfig(
+        practice_duration_s=0.0,
+        scored_duration_s=8.0,
+        spawn_interval_s=0.8,
+        max_active_symbols=4,
+    )
+    c1 = FakeClock()
+    c2 = FakeClock()
+    e1 = build_vigilance_test(clock=c1, seed=515, difficulty=0.58, config=config)
+    e2 = build_vigilance_test(clock=c2, seed=515, difficulty=0.58, config=config)
+
+    e1.start_scored()
+    e2.start_scored()
+
+    seen_ids: set[int] = set()
+    while e1.phase.value != "results" or e2.phase.value != "results":
+        c1.advance(0.1)
+        c2.advance(0.1)
+        e1.update()
+        e2.update()
+
+        payload = e1.snapshot().payload
+        assert payload == e2.snapshot().payload
+        assert isinstance(payload, VigilancePayload)
+        for symbol in payload.symbols:
+            if symbol.symbol_id in seen_ids:
+                continue
+            seen_ids.add(symbol.symbol_id)
+            if symbol.symbol_id % 3 == 0:
+                assert e1.submit_answer(f"{symbol.row},{symbol.col}") is True
+                assert e2.submit_answer(f"{symbol.row},{symbol.col}") is True
+            break
+        if e1.phase.value == "results" and e2.phase.value == "results":
+            break
+
+    assert e1.events() == e2.events()
 
 
 def test_timer_boundary_transitions_to_results_and_rejects_late_submit() -> None:

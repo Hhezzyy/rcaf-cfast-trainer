@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from .clock import Clock
-from .cognitive_core import Phase, SeededRng, TestSnapshot, clamp01, lerp_int
+from .cognitive_core import Phase, QuestionEvent, SeededRng, TestSnapshot, clamp01, lerp_int
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,10 +123,14 @@ class VigilanceEngine:
         self._scored_points = 0
         self._scored_missed = 0
         self._scored_capture_times: list[float] = []
+        self._events: list[QuestionEvent] = []
 
     @property
     def phase(self) -> Phase:
         return self._phase
+
+    def events(self) -> list[QuestionEvent]:
+        return list(self._events)
 
     def can_exit(self) -> bool:
         return self._phase in (
@@ -186,6 +190,7 @@ class VigilanceEngine:
             return True
 
         symbol = self._active.pop(match_index)
+        self._record_capture_event(symbol=symbol, answered_at_s=now)
         if self._phase is Phase.PRACTICE:
             self._practice_points += int(symbol.points)
             return True
@@ -312,11 +317,57 @@ class VigilanceEngine:
         survivors: list[_ActiveSymbol] = []
         for symbol in self._active:
             if symbol.expires_at_s <= now:
+                self._record_expiry_event(symbol=symbol)
                 if self._phase is Phase.SCORED:
                     self._scored_missed += 1
                 continue
             survivors.append(symbol)
         self._active = survivors
+
+    def _record_capture_event(self, *, symbol: _ActiveSymbol, answered_at_s: float) -> None:
+        correct_answer = self._encode_answer(row=symbol.row, col=symbol.col)
+        prompt = f"{symbol.kind.value}:{symbol.row},{symbol.col}"
+        self._events.append(
+            QuestionEvent(
+                index=len(self._events),
+                phase=self._phase,
+                prompt=prompt,
+                correct_answer=correct_answer,
+                user_answer=correct_answer,
+                is_correct=True,
+                presented_at_s=float(symbol.spawned_at_s),
+                answered_at_s=float(answered_at_s),
+                response_time_s=max(0.0, float(answered_at_s) - float(symbol.spawned_at_s)),
+                raw=f"{symbol.row},{symbol.col}",
+                score=float(symbol.points),
+                max_score=float(symbol.points),
+            )
+        )
+
+    def _record_expiry_event(self, *, symbol: _ActiveSymbol) -> None:
+        correct_answer = self._encode_answer(row=symbol.row, col=symbol.col)
+        prompt = f"{symbol.kind.value}:{symbol.row},{symbol.col}"
+        answered_at_s = float(symbol.expires_at_s)
+        self._events.append(
+            QuestionEvent(
+                index=len(self._events),
+                phase=self._phase,
+                prompt=prompt,
+                correct_answer=correct_answer,
+                user_answer=0,
+                is_correct=False,
+                presented_at_s=float(symbol.spawned_at_s),
+                answered_at_s=answered_at_s,
+                response_time_s=max(0.0, answered_at_s - float(symbol.spawned_at_s)),
+                raw="",
+                score=0.0,
+                max_score=float(symbol.points),
+            )
+        )
+
+    @staticmethod
+    def _encode_answer(*, row: int, col: int) -> int:
+        return (int(row) * 10) + int(col)
 
     def _max_active_symbols(self) -> int:
         base = lerp_int(4, int(self._config.max_active_symbols), self._difficulty)

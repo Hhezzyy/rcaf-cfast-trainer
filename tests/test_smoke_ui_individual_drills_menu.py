@@ -418,6 +418,43 @@ def test_ui_smoke_navigate_to_individual_drills_and_open_mr_relevant_info_scan_b
     assert run(max_frames=44, event_injector=inject) == 0
 
 
+def test_ui_smoke_navigate_to_individual_drills_and_open_si_landmark_anchor_build() -> None:
+    os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+    os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+
+    import pygame
+
+    from cfast_trainer.app import run
+
+    def inject(frame: int) -> None:
+        if frame == 1:
+            pygame.event.post(
+                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_DOWN, "unicode": ""})
+            )
+        elif frame == 2:
+            pygame.event.post(
+                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""})
+            )
+        elif frame in (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18):
+            pygame.event.post(
+                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_DOWN, "unicode": ""})
+            )
+        elif frame == 19:
+            pygame.event.post(
+                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""})
+            )
+        elif frame == 20:
+            pygame.event.post(
+                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""})
+            )
+        elif frame == 21:
+            pygame.event.post(
+                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""})
+            )
+
+    assert run(max_frames=80, event_injector=inject) == 0
+
+
 def test_ui_smoke_navigate_to_individual_drills_and_open_dr_visible_copy_build() -> None:
     os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
     os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
@@ -717,3 +754,73 @@ def test_ui_smoke_navigate_to_individual_drills_and_open_sa_picture_anchor_build
             )
 
     assert run(max_frames=78, event_injector=inject) == 0
+
+
+def test_ui_smoke_navigate_to_individual_drills_and_open_trace_tt1_lateral_anchor_build() -> None:
+    os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+    os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+
+    import pygame
+
+    from cfast_trainer.app import run
+
+    def inject(frame: int) -> None:
+        if frame == 1:
+            pygame.event.post(
+                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_DOWN, "unicode": ""})
+            )
+        elif frame == 2:
+            pygame.event.post(
+                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""})
+            )
+        elif 3 <= frame <= 19:
+            pygame.event.post(
+                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_DOWN, "unicode": ""})
+            )
+        elif frame == 20:
+            pygame.event.post(
+                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""})
+            )
+        elif frame in (21, 22):
+            pygame.event.post(
+                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""})
+            )
+
+    assert run(max_frames=90, event_injector=inject) == 0
+
+
+def test_ui_smoke_navigate_to_individual_drills_and_open_vigilance_entry_anchor_build() -> None:
+    os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+    os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+
+    import pygame
+
+    from cfast_trainer.app import run
+
+    def inject(frame: int) -> None:
+        if frame == 1:
+            pygame.event.post(
+                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_DOWN, "unicode": ""})
+            )
+        elif frame == 2:
+            pygame.event.post(
+                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""})
+            )
+        elif 3 <= frame <= 30:
+            pygame.event.post(
+                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_DOWN, "unicode": ""})
+            )
+        elif frame == 31:
+            pygame.event.post(
+                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_UP, "unicode": ""})
+            )
+        elif frame == 32:
+            pygame.event.post(
+                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""})
+            )
+        elif frame in (33, 34):
+            pygame.event.post(
+                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""})
+            )
+
+    assert run(max_frames=96, event_injector=inject) == 0
