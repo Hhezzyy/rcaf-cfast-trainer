@@ -683,6 +683,7 @@ class DigitRecognitionTimedDrill:
                 raw="__timeout__",
                 score=0.0,
                 max_score=1.0,
+                is_timeout=True,
             )
         )
         if self._phase is Phase.SCORED:

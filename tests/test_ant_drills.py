@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from cfast_trainer.ant_drills import (
+    ANT_DRILL_MODE_PROFILES,
     AntAdaptiveDifficultyConfig,
     AntDistanceScanConfig,
     AntDistanceScanGenerator,
@@ -261,6 +262,87 @@ def test_ant_snap_facts_build_feedback_is_immediate_and_tempo_is_not() -> None:
 
     assert build_engine.snapshot().practice_feedback == "Correct. Commit and move."
     assert tempo_engine.snapshot().practice_feedback is None
+
+
+def test_ant_fresh_mode_disables_adaptive_even_when_requested() -> None:
+    clock = FakeClock()
+    engine = build_ant_snap_facts_sprint_drill(
+        clock=clock,
+        seed=61,
+        difficulty=0.5,
+        mode=AntDrillMode.FRESH,
+        config=AntSnapFactsSprintConfig(
+            practice_questions=0,
+            scored_duration_s=30.0,
+            adaptive=AntAdaptiveDifficultyConfig(enabled=True, window_size=3),
+        ),
+    )
+
+    engine.start_scored()
+
+    assert engine._adaptive_config.enabled is False
+    assert engine.result_metrics()["adaptive_enabled"] == "0"
+    assert engine.scored_summary().adaptive_enabled is False
+
+
+def test_ant_pressure_mode_uses_shorter_caps_and_duration_than_tempo() -> None:
+    clock = FakeClock()
+    tempo_engine = build_ant_snap_facts_sprint_drill(
+        clock=clock,
+        seed=62,
+        difficulty=0.5,
+        mode=AntDrillMode.TEMPO,
+        config=AntSnapFactsSprintConfig(practice_questions=0),
+    )
+    pressure_engine = build_ant_snap_facts_sprint_drill(
+        clock=clock,
+        seed=62,
+        difficulty=0.5,
+        mode=AntDrillMode.PRESSURE,
+        config=AntSnapFactsSprintConfig(practice_questions=0),
+    )
+
+    tempo_engine.start_scored()
+    pressure_engine.start_scored()
+
+    assert pressure_engine.scored_duration_s < tempo_engine.scored_duration_s
+    assert ANT_DRILL_MODE_PROFILES[AntDrillMode.PRESSURE].cap_scale < ANT_DRILL_MODE_PROFILES[AntDrillMode.TEMPO].cap_scale
+    assert float(pressure_engine._current_cap_s) < float(tempo_engine._current_cap_s)
+
+
+def test_ant_recovery_mode_grants_one_item_post_error_cap_grace() -> None:
+    clock = FakeClock()
+    recovery_engine = build_ant_snap_facts_sprint_drill(
+        clock=clock,
+        seed=63,
+        difficulty=0.5,
+        mode=AntDrillMode.RECOVERY,
+        config=AntSnapFactsSprintConfig(practice_questions=0, scored_duration_s=30.0),
+    )
+    control_engine = build_ant_snap_facts_sprint_drill(
+        clock=clock,
+        seed=63,
+        difficulty=0.5,
+        mode=AntDrillMode.RECOVERY,
+        config=AntSnapFactsSprintConfig(practice_questions=0, scored_duration_s=30.0),
+    )
+
+    recovery_engine.start_scored()
+    control_engine.start_scored()
+
+    assert recovery_engine.submit_answer(str(int(recovery_engine._current.answer) + 1)) is True
+    assert control_engine.submit_answer(str(control_engine._current.answer)) is True
+
+    assert recovery_engine._current.prompt == control_engine._current.prompt
+    assert recovery_engine._current.answer == control_engine._current.answer
+    assert float(recovery_engine._current_cap_s) > float(control_engine._current_cap_s)
+
+    assert recovery_engine.submit_answer(str(recovery_engine._current.answer)) is True
+    assert control_engine.submit_answer(str(control_engine._current.answer)) is True
+
+    assert recovery_engine._current.prompt == control_engine._current.prompt
+    assert recovery_engine._current.answer == control_engine._current.answer
+    assert recovery_engine._current_cap_s == control_engine._current_cap_s
 
 
 def test_ant_tempo_adaptive_difficulty_moves_up_on_clean_window() -> None:

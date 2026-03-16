@@ -226,14 +226,41 @@ def _mode_profile(
     response_window_s: int,
     update_time_scale: float = 1.0,
     pressure_scale: float = 1.0,
+    contact_ttl_s: float | None = None,
+    cue_card_ttl_s: float | None = None,
+    top_strip_ttl_s: float | None = None,
+    visual_density_scale: float = 1.0,
+    audio_density_scale: float = 1.0,
+    allow_visible_answers: bool = False,
 ) -> SituationalAwarenessTrainingProfile:
-    if mode is AntDrillMode.BUILD:
+    if mode is AntDrillMode.FRESH:
+        track_hi = max(track_min, track_max - 1)
+        query_min = int(round(query_interval_min_s * 1.24))
+        query_max = int(round(query_interval_max_s * 1.24))
+        response = int(round(response_window_s * 1.24))
+        update_scale = update_time_scale * 1.14
+        pressure = pressure_scale * 0.82
+    elif mode is AntDrillMode.BUILD:
         track_hi = max(track_min, track_max - 1)
         query_min = int(round(query_interval_min_s * 1.18))
         query_max = int(round(query_interval_max_s * 1.18))
         response = int(round(response_window_s * 1.20))
         update_scale = update_time_scale * 1.10
         pressure = pressure_scale * 0.88
+    elif mode is AntDrillMode.PRESSURE:
+        track_hi = max(track_min, track_max)
+        query_min = int(round(query_interval_min_s * 0.90))
+        query_max = int(round(query_interval_max_s * 0.90))
+        response = int(round(response_window_s * 0.94))
+        update_scale = update_time_scale * 0.94
+        pressure = pressure_scale * 1.08
+    elif mode is AntDrillMode.RECOVERY:
+        track_hi = max(track_min, track_max - 1)
+        query_min = int(round(query_interval_min_s * 1.08))
+        query_max = int(round(query_interval_max_s * 1.08))
+        response = int(round(response_window_s * 1.10))
+        update_scale = update_time_scale * 1.04
+        pressure = pressure_scale * 0.92
     elif mode is AntDrillMode.STRESS:
         track_hi = max(track_min, track_max)
         query_min = int(round(query_interval_min_s * 0.82))
@@ -256,6 +283,12 @@ def _mode_profile(
         response_window_s=max(5, int(response)),
         update_time_scale=max(0.45, float(update_scale)),
         pressure_scale=max(0.5, float(pressure)),
+        contact_ttl_s=contact_ttl_s,
+        cue_card_ttl_s=cue_card_ttl_s,
+        top_strip_ttl_s=top_strip_ttl_s,
+        visual_density_scale=max(0.5, float(visual_density_scale)),
+        audio_density_scale=max(0.5, float(audio_density_scale)),
+        allow_visible_answers=bool(allow_visible_answers),
     )
 
 
@@ -319,8 +352,8 @@ def build_sa_picture_anchor_drill(
         instructions=(
             "Situational Awareness: Picture Anchor",
             f"Mode: {profile.label}",
-            "Keep the full tactical display live, but stay on picture tracking and simple contact identification.",
-            "Watch the moving grid, hold the route picture, and answer quickly without over-reading the feed.",
+            "Work from the sparse grid and short contact flashes instead of a permanent dashboard.",
+            "Hold the current picture, then project one leg ahead before the cue fades.",
             "Press Enter to begin.",
         ),
         scored_segments=(
@@ -329,14 +362,14 @@ def build_sa_picture_anchor_drill(
                 duration_s=float(cfg.scored_duration_s or ANT_DRILL_MODE_PROFILES[normalized_mode].scored_duration_s),
                 active_channels=("pictorial", "coded", "numerical"),
                 active_query_kinds=(
-                    SituationalAwarenessQueryKind.FUTURE_POSITION.value,
-                    SituationalAwarenessQueryKind.CONTACT_IDENTIFICATION.value,
+                    SituationalAwarenessQueryKind.CURRENT_LOCATION.value,
+                    SituationalAwarenessQueryKind.FUTURE_LOCATION.value,
                 ),
                 scenario_families=(
                     SituationalAwarenessScenarioFamily.ROUTE_HANDOFF,
-                    SituationalAwarenessScenarioFamily.MERGE_CONFLICT,
+                    SituationalAwarenessScenarioFamily.CHANNEL_WAYPOINT_CHANGE,
                 ),
-                focus_label="Picture tracking + contact identification",
+                focus_label="Current + future location",
                 profile=_mode_profile(
                     normalized_mode,
                     track_min=3,
@@ -346,6 +379,12 @@ def build_sa_picture_anchor_drill(
                     response_window_s=16,
                     update_time_scale=1.05,
                     pressure_scale=0.9,
+                    contact_ttl_s=8.0,
+                    cue_card_ttl_s=8.0,
+                    top_strip_ttl_s=6.0,
+                    visual_density_scale=1.2,
+                    audio_density_scale=0.8,
+                    allow_visible_answers=True,
                 ),
             ),
         ),
@@ -373,8 +412,8 @@ def build_sa_contact_identification_prime_drill(
         instructions=(
             "Situational Awareness: Contact Identification Prime",
             f"Mode: {profile.label}",
-            "Match the live coded and pictorial state to the correct indexed track.",
-            "Use the right-side panel deliberately, but keep the moving picture in view before you answer.",
+            "Match callsigns to the correct fading contact without relying on a fully visible table.",
+            "Use the cue card and the last grid flash together, then answer before the picture clears.",
             "Press Enter to begin.",
         ),
         scored_segments=(
@@ -382,8 +421,8 @@ def build_sa_contact_identification_prime_drill(
                 label="Contact Identification",
                 duration_s=float(cfg.scored_duration_s or ANT_DRILL_MODE_PROFILES[normalized_mode].scored_duration_s),
                 active_channels=("pictorial", "coded"),
-                active_query_kinds=(SituationalAwarenessQueryKind.CONTACT_IDENTIFICATION.value,),
-                focus_label="Contact identification",
+                active_query_kinds=(SituationalAwarenessQueryKind.CURRENT_LOCATION.value,),
+                focus_label="Callsign-to-contact matching",
                 profile=_mode_profile(
                     normalized_mode,
                     track_min=4,
@@ -393,6 +432,11 @@ def build_sa_contact_identification_prime_drill(
                     response_window_s=14,
                     update_time_scale=1.0,
                     pressure_scale=0.95,
+                    contact_ttl_s=8.0,
+                    cue_card_ttl_s=7.0,
+                    top_strip_ttl_s=5.0,
+                    visual_density_scale=1.25,
+                    allow_visible_answers=True,
                 ),
             ),
         ),
@@ -420,8 +464,8 @@ def build_sa_status_recall_prime_drill(
         instructions=(
             "Situational Awareness: Status Recall Prime",
             f"Mode: {profile.label}",
-            "Focus on channel, code, altitude, and fuel/status recall from the live coded picture and announcements.",
-            "Let the track rows and recent feed do the work instead of scanning every moving marker.",
+            "Pull channel, altitude, ETA, and waypoint state from short cue-card flashes and radio calls.",
+            "Answer from memory after the coded fields fade, not from a persistent side table.",
             "Press Enter to begin.",
         ),
         scored_segments=(
@@ -429,13 +473,13 @@ def build_sa_status_recall_prime_drill(
                 label="Status Recall",
                 duration_s=float(cfg.scored_duration_s or ANT_DRILL_MODE_PROFILES[normalized_mode].scored_duration_s),
                 active_channels=("coded", "numerical", "aural"),
-                active_query_kinds=(SituationalAwarenessQueryKind.CODE_OR_STATUS_RECALL.value,),
+                active_query_kinds=(SituationalAwarenessQueryKind.STATUS_RECALL.value,),
                 scenario_families=(
-                    SituationalAwarenessScenarioFamily.CHANNEL_WAYPOINT_CHANGE,
                     SituationalAwarenessScenarioFamily.FUEL_PRIORITY,
                     SituationalAwarenessScenarioFamily.ROUTE_HANDOFF,
+                    SituationalAwarenessScenarioFamily.CHANNEL_WAYPOINT_CHANGE,
                 ),
-                focus_label="Status and code recall",
+                focus_label="Status recall",
                 profile=_mode_profile(
                     normalized_mode,
                     track_min=4,
@@ -445,6 +489,9 @@ def build_sa_status_recall_prime_drill(
                     response_window_s=13,
                     update_time_scale=0.94,
                     pressure_scale=1.0,
+                    cue_card_ttl_s=8.0,
+                    top_strip_ttl_s=6.0,
+                    audio_density_scale=1.15,
                 ),
             ),
         ),
@@ -472,8 +519,8 @@ def build_sa_future_projection_run_drill(
         instructions=(
             "Situational Awareness: Future Projection Run",
             f"Mode: {profile.label}",
-            "Project headings, waypoints, and handoff changes forward and answer with the predicted grid cell.",
-            "Keep the live route picture stable enough that you can answer before the next update steals your attention.",
+            "Project the route after the last update fades and answer with the future grid cell.",
+            "Use the radio call and the cue-card timing together; do not wait for another sweep.",
             "Press Enter to begin.",
         ),
         scored_segments=(
@@ -481,7 +528,7 @@ def build_sa_future_projection_run_drill(
                 label="Future Projection",
                 duration_s=float(cfg.scored_duration_s or ANT_DRILL_MODE_PROFILES[normalized_mode].scored_duration_s),
                 active_channels=("pictorial", "numerical", "aural"),
-                active_query_kinds=(SituationalAwarenessQueryKind.FUTURE_POSITION.value,),
+                active_query_kinds=(SituationalAwarenessQueryKind.FUTURE_LOCATION.value,),
                 scenario_families=(
                     SituationalAwarenessScenarioFamily.ROUTE_HANDOFF,
                     SituationalAwarenessScenarioFamily.MERGE_CONFLICT,
@@ -497,6 +544,11 @@ def build_sa_future_projection_run_drill(
                     response_window_s=14,
                     update_time_scale=0.92,
                     pressure_scale=1.04,
+                    contact_ttl_s=5.0,
+                    cue_card_ttl_s=6.0,
+                    top_strip_ttl_s=5.0,
+                    visual_density_scale=1.0,
+                    audio_density_scale=1.1,
                 ),
             ),
         ),
@@ -524,8 +576,8 @@ def build_sa_action_selection_run_drill(
         instructions=(
             "Situational Awareness: Action Selection Run",
             f"Mode: {profile.label}",
-            "Stay on intervention and priority selection while merge and fuel conflicts keep moving underneath you.",
-            "Answer with the best immediate action instead of delaying for perfect certainty.",
+            "Judge whether the move is safe while the picture keeps shifting under short cue windows.",
+            "Choose the right action from the hidden traffic state, not from a frozen screen.",
             "Press Enter to begin.",
         ),
         scored_segments=(
@@ -533,12 +585,12 @@ def build_sa_action_selection_run_drill(
                 label="Action Selection",
                 duration_s=float(cfg.scored_duration_s or ANT_DRILL_MODE_PROFILES[normalized_mode].scored_duration_s),
                 active_channels=SA_CHANNEL_ORDER,
-                active_query_kinds=(SituationalAwarenessQueryKind.ACTION_SELECTION.value,),
+                active_query_kinds=(SituationalAwarenessQueryKind.SAFE_TO_MOVE.value,),
                 scenario_families=(
                     SituationalAwarenessScenarioFamily.MERGE_CONFLICT,
                     SituationalAwarenessScenarioFamily.FUEL_PRIORITY,
                 ),
-                focus_label="Intervention and tactical priority",
+                focus_label="Safe-move decisions",
                 profile=_mode_profile(
                     normalized_mode,
                     track_min=4,
@@ -548,6 +600,11 @@ def build_sa_action_selection_run_drill(
                     response_window_s=12,
                     update_time_scale=0.90,
                     pressure_scale=1.15,
+                    contact_ttl_s=5.0,
+                    cue_card_ttl_s=5.0,
+                    top_strip_ttl_s=4.0,
+                    visual_density_scale=1.0,
+                    audio_density_scale=1.1,
                 ),
             ),
         ),
@@ -597,8 +654,8 @@ def build_sa_family_switch_run_drill(
         instructions=(
             "Situational Awareness: Family Switch Run",
             f"Mode: {profile.label}",
-            "Cycle through merge, fuel, route-handoff, and channel-shift scenarios in a fixed order.",
-            "The picture format stays the same; the family switch is what should stop costing you time.",
+            "Cycle conflict, status, handoff, and channel/waypoint families without resetting your map model.",
+            "The layout stays the same; the changing hidden rules are what you need to absorb cleanly.",
             "Press Enter to begin.",
         ),
         scored_segments=templates,
@@ -648,8 +705,8 @@ def build_sa_mixed_tempo_drill(
         instructions=(
             "Situational Awareness: Mixed Tempo",
             f"Mode: {profile.label}",
-            "Run the fixed four-query rhythm while scenario families keep rotating underneath it.",
-            "Reset cleanly when the query type changes; the screen stays live and continuous the whole time.",
+            "Cycle the full guide-style query mix while the world keeps updating behind fading cues.",
+            "Reset cleanly when the prompt changes, but keep the same mental picture running.",
             "Press Enter to begin.",
         ),
         scored_segments=templates,
@@ -677,8 +734,8 @@ def build_sa_pressure_run_drill(
         instructions=(
             "Situational Awareness: Pressure Run",
             f"Mode: {profile.label}",
-            "Run the full live tactical picture with every query type active, denser updates, and shorter response windows.",
-            "Recover immediately after misses and keep building the next answer from the current picture.",
+            "Run the sparse full picture at the shortest cue windows and the highest audio cadence in this family.",
+            "Recover from misses fast; the next answer still depends on the hidden state you are building right now.",
             "Press Enter to begin.",
         ),
         scored_segments=(
@@ -698,6 +755,11 @@ def build_sa_pressure_run_drill(
                     response_window_s=10,
                     update_time_scale=0.82,
                     pressure_scale=1.28,
+                    contact_ttl_s=3.0,
+                    cue_card_ttl_s=4.0,
+                    top_strip_ttl_s=3.0,
+                    visual_density_scale=1.3,
+                    audio_density_scale=1.2,
                 ),
             ),
         ),

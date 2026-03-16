@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .clock import Clock
+from .content_variants import stable_variant_id
 from .cognitive_core import (
     AnswerScorer,
     Problem,
@@ -62,6 +63,9 @@ class TargetRecognitionPayload:
     light_interval_range_s: tuple[float, float] = (5.0, 10.0)
     scan_interval_range_s: tuple[float, float] = (5.0, 10.0)
     scan_repeat_range: tuple[int, int] = (2, 4)
+    content_family: str = ""
+    variant_id: str = ""
+    content_pack: str = "target_recognition"
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,8 +99,8 @@ class TargetRecognitionGenerator:
 
     _SCENE_SHAPES = ("truck", "tank", "building")
     _SCENE_AFFILIATIONS = ("hostile", "friendly", "neutral")
-    _SCAN_TOKENS = ("<>", "<|", "|>", "[]", "{}", "()", "/\\", "\\/", "==", "=~")
-    _LIGHT_COLORS = ("G", "B", "Y", "R")
+    _SCAN_TOKENS = ("<>", "<|", "|>", "[]", "{}", "()", "/\\", "\\/", "==", "=~", "><", "||", "<>", "{|}")
+    _LIGHT_COLORS = ("G", "B", "Y", "R", "W")
     _ALNUM = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
     def __init__(self, *, seed: int) -> None:
@@ -182,6 +186,8 @@ class TargetRecognitionGenerator:
             light_interval_range_s=(5.0, 10.0),
             scan_interval_range_s=(5.0, 10.0),
             scan_repeat_range=(2, 4),
+            content_family="mixed_panel",
+            variant_id=stable_variant_id(scene_target, scan_target, system_target),
         )
 
         return Problem(

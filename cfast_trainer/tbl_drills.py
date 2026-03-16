@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from .ant_drills import (
     ANT_DRILL_MODE_PROFILES,
@@ -13,6 +13,7 @@ from .cognitive_core import Phase, Problem
 from .table_reading import (
     TableReadingGenerator,
     TableReadingPart,
+    TableReadingPayload,
     TableReadingScorer,
 )
 
@@ -223,6 +224,156 @@ class TblPressureRunGenerator(_BaseTableReadingSelectionGenerator):
             family=family,
             profile="pressure",
         )
+
+
+class TblSingleLookupAnchorGenerator(_BaseTableReadingSelectionGenerator):
+    def __init__(self, *, seed: int) -> None:
+        super().__init__(seed=seed)
+        self._family_index = 0
+
+    def next_problem(self, *, difficulty: float) -> Problem:
+        family = PART_ONE_FAMILIES[self._family_index % len(PART_ONE_FAMILIES)]
+        self._family_index += 1
+        return self._base.next_problem_for_selection(
+            difficulty=difficulty,
+            part=TableReadingPart.PART_ONE,
+            family=family,
+            profile="anchor",
+        )
+
+
+class TblTwoTableXrefGenerator(_BaseTableReadingSelectionGenerator):
+    def __init__(self, *, seed: int) -> None:
+        super().__init__(seed=seed)
+        self._family_index = 0
+
+    def next_problem(self, *, difficulty: float) -> Problem:
+        family = PART_TWO_FAMILIES[self._family_index % len(PART_TWO_FAMILIES)]
+        self._family_index += 1
+        return self._base.next_problem_for_selection(
+            difficulty=difficulty,
+            part=TableReadingPart.PART_TWO,
+            family=family,
+            profile="run",
+        )
+
+
+class TblDistractorGridGenerator(_BaseTableReadingSelectionGenerator):
+    def __init__(self, *, seed: int) -> None:
+        super().__init__(seed=seed)
+        self._family_index = 0
+
+    def next_problem(self, *, difficulty: float) -> Problem:
+        family = PART_ONE_FAMILIES[self._family_index % len(PART_ONE_FAMILIES)]
+        self._family_index += 1
+        return self._base.next_problem_for_selection(
+            difficulty=difficulty,
+            part=TableReadingPart.PART_ONE,
+            family=family,
+            profile="pressure",
+        )
+
+
+class TblLookupComputeGenerator(_BaseTableReadingSelectionGenerator):
+    def __init__(self, *, seed: int) -> None:
+        super().__init__(seed=seed)
+        self._problem_index = 0
+        self._part_one_family_index = 0
+        self._part_two_family_index = 0
+
+    def next_problem(self, *, difficulty: float) -> Problem:
+        use_part_one = self._problem_index % 2 == 0
+        self._problem_index += 1
+        if use_part_one:
+            family = PART_ONE_FAMILIES[self._part_one_family_index % len(PART_ONE_FAMILIES)]
+            self._part_one_family_index += 1
+            base_problem = self._base.next_problem_for_selection(
+                difficulty=difficulty,
+                part=TableReadingPart.PART_ONE,
+                family=family,
+                profile="scan",
+            )
+        else:
+            family = PART_TWO_FAMILIES[self._part_two_family_index % len(PART_TWO_FAMILIES)]
+            self._part_two_family_index += 1
+            base_problem = self._base.next_problem_for_selection(
+                difficulty=difficulty,
+                part=TableReadingPart.PART_TWO,
+                family=family,
+                profile="prime",
+            )
+        return _transform_lookup_problem(base_problem=base_problem, generator=self._base, difficulty=difficulty)
+
+
+class TblShrinkingCapRunGenerator(_BaseTableReadingSelectionGenerator):
+    def __init__(self, *, seed: int) -> None:
+        super().__init__(seed=seed)
+        self._problem_index = 0
+
+    def next_problem(self, *, difficulty: float) -> Problem:
+        part = TableReadingPart.PART_ONE if self._problem_index % 2 == 0 else TableReadingPart.PART_TWO
+        self._problem_index += 1
+        family = (
+            PART_ONE_FAMILIES[(self._problem_index - 1) % len(PART_ONE_FAMILIES)]
+            if part is TableReadingPart.PART_ONE
+            else PART_TWO_FAMILIES[(self._problem_index - 1) % len(PART_TWO_FAMILIES)]
+        )
+        profile = "scan" if part is TableReadingPart.PART_ONE else "run"
+        return self._base.next_problem_for_selection(
+            difficulty=difficulty,
+            part=part,
+            family=family,
+            profile=profile,
+        )
+
+    def cap_for_problem(self, *, problem: Problem, level: int) -> float:
+        base = max(10.0, 26.0 - (max(1, int(level)) * 1.1))
+        shrink = min(8.0, max(0, self._problem_index - 1) * 0.55)
+        return max(6.0, base - shrink)
+
+
+def _transform_lookup_problem(
+    *,
+    base_problem: Problem,
+    generator: TableReadingGenerator,
+    difficulty: float,
+) -> Problem:
+    payload = base_problem.payload
+    if not isinstance(payload, TableReadingPayload):
+        return base_problem
+    base_value = int(payload.correct_value)
+    if payload.part is TableReadingPart.PART_ONE:
+        transforms = (
+            ("+ 10", base_value + 10),
+            ("- 10", max(0, base_value - 10)),
+            ("+ 20", base_value + 20),
+            ("- 20", max(0, base_value - 20)),
+        )
+        option_step = generator._part_one_option_step(difficulty=difficulty, profile="scan")
+    else:
+        transforms = (
+            ("+ 2", base_value + 2),
+            ("- 2", max(0, base_value - 2)),
+            ("× 2", base_value * 2),
+            ("+ 4", base_value + 4),
+        )
+        option_step = generator._part_two_option_step(difficulty=difficulty, profile="prime")
+    transform_label, correct_value = transforms[generator._rng.randint(0, len(transforms) - 1)]
+    options, correct_code, tolerance = generator._build_options(
+        correct_value=int(correct_value),
+        option_step=max(1, int(option_step)),
+    )
+    stem = f"{payload.stem} Then apply {transform_label} to the lookup before you answer."
+    prompt = generator._prompt_from(stem=stem, options=options)
+    transformed_payload = replace(
+        payload,
+        stem=stem,
+        options=options,
+        correct_code=int(correct_code),
+        correct_value=int(correct_value),
+        estimate_tolerance=int(tolerance),
+    )
+    return Problem(prompt=prompt, answer=int(correct_value), payload=transformed_payload)
 
 
 def _build_tbl_drill(
@@ -491,4 +642,149 @@ def build_tbl_pressure_run_drill(
         mode=mode,
         config=cfg,
         base_caps_by_level=(25.0, 23.0, 21.0, 19.0, 17.0, 16.0, 15.0, 14.0, 13.0, 12.0),
+    )
+
+
+def build_tbl_single_lookup_anchor_drill(
+    *,
+    clock: Clock,
+    seed: int,
+    difficulty: float = 0.5,
+    mode: AntDrillMode | str = AntDrillMode.BUILD,
+    config: TblDrillConfig | None = None,
+) -> TableReadingTimedDrill:
+    cfg = config or TblDrillConfig()
+    profile = ANT_DRILL_MODE_PROFILES[_normalize_mode(mode)]
+    return _build_tbl_drill(
+        title_base="Table Reading: Single Lookup Anchor",
+        instructions=(
+            "Table Reading: Single Lookup Anchor",
+            f"Mode: {profile.label}",
+            "Stay on one-table row and column lookup only so the base scan rhythm is clean before cross-reference work returns.",
+            "The live table renderer and answer strip stay exactly the same as the full Table Reading task.",
+            "Press Enter to begin practice.",
+        ),
+        generator=TblSingleLookupAnchorGenerator(seed=seed),
+        clock=clock,
+        seed=seed,
+        difficulty=difficulty,
+        mode=mode,
+        config=cfg,
+        base_caps_by_level=(34.0, 31.0, 29.0, 27.0, 25.0, 23.0, 21.0, 19.0, 17.0, 15.0),
+    )
+
+
+def build_tbl_two_table_xref_drill(
+    *,
+    clock: Clock,
+    seed: int,
+    difficulty: float = 0.5,
+    mode: AntDrillMode | str = AntDrillMode.BUILD,
+    config: TblDrillConfig | None = None,
+) -> TableReadingTimedDrill:
+    cfg = config or TblDrillConfig()
+    profile = ANT_DRILL_MODE_PROFILES[_normalize_mode(mode)]
+    return _build_tbl_drill(
+        title_base="Table Reading: Two-Table Cross Reference",
+        instructions=(
+            "Table Reading: Two-Table Cross Reference",
+            f"Mode: {profile.label}",
+            "Every item requires the full index-card then correction-card chain before you answer.",
+            "Keep the first lookup and second lookup distinct so the handoff between tables stops leaking time.",
+            "Press Enter to begin practice.",
+        ),
+        generator=TblTwoTableXrefGenerator(seed=seed),
+        clock=clock,
+        seed=seed,
+        difficulty=difficulty,
+        mode=mode,
+        config=cfg,
+        base_caps_by_level=(38.0, 35.0, 33.0, 30.0, 28.0, 25.0, 23.0, 21.0, 19.0, 17.0),
+    )
+
+
+def build_tbl_distractor_grid_drill(
+    *,
+    clock: Clock,
+    seed: int,
+    difficulty: float = 0.5,
+    mode: AntDrillMode | str = AntDrillMode.TEMPO,
+    config: TblDrillConfig | None = None,
+) -> TableReadingTimedDrill:
+    cfg = config or TblDrillConfig()
+    profile = ANT_DRILL_MODE_PROFILES[_normalize_mode(mode)]
+    return _build_tbl_drill(
+        title_base="Table Reading: Distractor Grid",
+        instructions=(
+            "Table Reading: Distractor Grid",
+            f"Mode: {profile.label}",
+            "The task stays single-table, but denser row and column distractor pressure means you cannot rely on partial pattern matching.",
+            "Scan all the way to the requested row and column before you commit.",
+            "Press Enter to begin practice.",
+        ),
+        generator=TblDistractorGridGenerator(seed=seed),
+        clock=clock,
+        seed=seed,
+        difficulty=difficulty,
+        mode=mode,
+        config=cfg,
+        base_caps_by_level=(28.0, 26.0, 24.0, 22.0, 20.0, 18.0, 16.0, 15.0, 14.0, 13.0),
+    )
+
+
+def build_tbl_lookup_compute_drill(
+    *,
+    clock: Clock,
+    seed: int,
+    difficulty: float = 0.5,
+    mode: AntDrillMode | str = AntDrillMode.TEMPO,
+    config: TblDrillConfig | None = None,
+) -> TableReadingTimedDrill:
+    cfg = config or TblDrillConfig()
+    profile = ANT_DRILL_MODE_PROFILES[_normalize_mode(mode)]
+    return _build_tbl_drill(
+        title_base="Table Reading: Lookup + Compute",
+        instructions=(
+            "Table Reading: Lookup + Compute",
+            f"Mode: {profile.label}",
+            "Extract the table value first, then apply one small arithmetic transform before answering.",
+            "This is still the live Table Reading screen and the same partial-credit scoring model.",
+            "Press Enter to begin practice.",
+        ),
+        generator=TblLookupComputeGenerator(seed=seed),
+        clock=clock,
+        seed=seed,
+        difficulty=difficulty,
+        mode=mode,
+        config=cfg,
+        base_caps_by_level=(30.0, 28.0, 26.0, 24.0, 22.0, 20.0, 18.0, 17.0, 16.0, 15.0),
+    )
+
+
+def build_tbl_shrinking_cap_run_drill(
+    *,
+    clock: Clock,
+    seed: int,
+    difficulty: float = 0.5,
+    mode: AntDrillMode | str = AntDrillMode.STRESS,
+    config: TblDrillConfig | None = None,
+) -> TableReadingTimedDrill:
+    cfg = config or TblDrillConfig()
+    profile = ANT_DRILL_MODE_PROFILES[_normalize_mode(mode)]
+    return _build_tbl_drill(
+        title_base="Table Reading: Shrinking Cap Run",
+        instructions=(
+            "Table Reading: Shrinking Cap Run",
+            f"Mode: {profile.label}",
+            "The table workflow stays stable while the item cap tightens during the block.",
+            "Accept small misses and reset immediately; the next cap will not wait for you.",
+            "Press Enter to begin practice.",
+        ),
+        generator=TblShrinkingCapRunGenerator(seed=seed),
+        clock=clock,
+        seed=seed,
+        difficulty=difficulty,
+        mode=mode,
+        config=cfg,
+        base_caps_by_level=(24.0, 23.0, 22.0, 21.0, 20.0, 19.0, 18.0, 17.0, 16.0, 15.0),
     )

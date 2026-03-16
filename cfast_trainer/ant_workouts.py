@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from typing import cast
 
@@ -81,6 +81,13 @@ from .rt_drills import (
     build_rt_pressure_run_drill,
     build_rt_terrain_recovery_run_drill,
 )
+from .dtb_drills import (
+    DualTaskBridgeDrillConfig,
+    build_dtb_tracking_command_filter_drill,
+    build_dtb_tracking_filter_digit_report_drill,
+    build_dtb_tracking_interference_recovery_drill,
+    build_dtb_tracking_recall_drill,
+)
 from .si_drills import (
     SiDrillConfig,
     build_si_aircraft_grid_run_drill,
@@ -126,17 +133,24 @@ from .tr_drills import (
 from .sl_drills import (
     SlDrillConfig,
     build_sl_fault_diagnosis_prime_drill,
+    build_sl_fast_reject_drill,
     build_sl_family_run_drill,
     build_sl_flow_trace_anchor_drill,
     build_sl_graph_rule_anchor_drill,
     build_sl_index_switch_run_drill,
+    build_sl_missing_step_complete_drill,
     build_sl_mixed_tempo_drill,
+    build_sl_one_rule_identify_drill,
     build_sl_pressure_run_drill,
     build_sl_quantitative_anchor_drill,
+    build_sl_rule_match_drill,
+    build_sl_two_source_reconcile_drill,
 )
 from .tbl_drills import (
     TblDrillConfig,
     build_tbl_card_family_run_drill,
+    build_tbl_distractor_grid_drill,
+    build_tbl_lookup_compute_drill,
     build_tbl_mixed_tempo_drill,
     build_tbl_part1_anchor_drill,
     build_tbl_part1_scan_run_drill,
@@ -144,6 +158,9 @@ from .tbl_drills import (
     build_tbl_part2_prime_drill,
     build_tbl_part_switch_run_drill,
     build_tbl_pressure_run_drill,
+    build_tbl_shrinking_cap_run_drill,
+    build_tbl_single_lookup_anchor_drill,
+    build_tbl_two_table_xref_drill,
 )
 from .sma_drills import (
     SmaDrillConfig,
@@ -191,6 +208,14 @@ from .no_drills import (
     build_no_operator_ladders_drill,
     build_no_pressure_run_drill,
 )
+from .ma_drills import (
+    MaDrillConfig,
+    build_ma_fuel_endurance_drill,
+    build_ma_mixed_conversion_caps_drill,
+    build_ma_one_step_fluency_drill,
+    build_ma_percentage_snap_drill,
+    build_ma_rate_time_distance_drill,
+)
 from .vs_drills import (
     VsDrillConfig,
     build_vs_clean_scan_drill,
@@ -226,6 +251,8 @@ from .ant_drills import (
 )
 from .clock import Clock
 from .cognitive_core import Phase, Problem, QuestionEvent, SeededRng
+from .results import AttemptResult, attempt_result_from_engine
+from .training_modes import maybe_build_fatigue_probe_drill, split_half_note_fragment
 from .visual_search import VisualSearchTaskKind
 
 
@@ -236,6 +263,56 @@ def _level_to_difficulty(level: int) -> float:
 
 def _difficulty_to_level(difficulty: float) -> int:
     return max(1, min(10, int(round(max(0.0, min(1.0, float(difficulty))) * 9.0)) + 1))
+
+
+def build_workout_block_engine(
+    *,
+    clock: Clock,
+    block_seed: int,
+    difficulty_level: int,
+    block: AntWorkoutBlockPlan,
+    block_index: int = 0,
+) -> object:
+    """Instantiate a timed workout/drill engine from a block spec."""
+
+    if block.mode is AntDrillMode.FATIGUE_PROBE:
+        engine = maybe_build_fatigue_probe_drill(
+            mode=block.mode,
+            title_base=block.label,
+            clock=clock,
+            seed=block_seed,
+            difficulty=_level_to_difficulty(difficulty_level),
+            build_segment=lambda segment_mode, segment_seed, segment_duration_s: build_workout_block_engine(
+                clock=clock,
+                block_seed=segment_seed,
+                difficulty_level=difficulty_level,
+                block=replace(
+                    block,
+                    mode=AntDrillMode(str(segment_mode)),
+                    duration_min=float(segment_duration_s) / 60.0,
+                ),
+                block_index=block_index,
+            ),
+        )
+        if engine is None:
+            raise RuntimeError(f"failed to build fatigue probe block engine for {block.drill_code}")
+        engine.start_scored()
+        return engine
+
+    scratch = AntWorkoutSession.__new__(AntWorkoutSession)
+    scratch._clock = clock
+    scratch._seed = int(block_seed) - ((int(block_index) + 1) * 101)
+    scratch._current_block_index = int(block_index)
+    scratch._current_block_plan = block
+    scratch._pending_block_level = int(difficulty_level)
+    scratch._current_block_level = int(difficulty_level)
+    scratch._current_engine = None
+    scratch._stage = AntWorkoutStage.BLOCK_SETUP
+    scratch._build_current_block_engine_from_plan()
+    engine = scratch._current_engine
+    if engine is None:
+        raise RuntimeError(f"failed to build workout block engine for {block.drill_code}")
+    return engine
 
 
 class AntWorkoutStage(str, Enum):
@@ -655,6 +732,7 @@ class AntWorkoutSession:
         self._current_block_level = self._starting_level
         self._pending_block_level = self._starting_level
         self._block_results: list[AntWorkoutBlockResult] = []
+        self._block_attempt_results: list[AttemptResult] = []
         self._events: list[QuestionEvent] = []
         self._last_finished_block_level = self._starting_level
 
@@ -1009,14 +1087,21 @@ class AntWorkoutSession:
         )
 
     def _results_note_lines(self, summary: AntWorkoutSummary) -> tuple[str, ...]:
-        return (
+        lines = [
             f"Blocks completed: {summary.completed_blocks}/{summary.block_count}",
             f"Default level: {summary.difficulty_level_start}/10",
             f"Exact accuracy: {summary.accuracy * 100.0:.1f}%",
             f"Score ratio: {summary.score_ratio * 100.0:.1f}%",
             f"Focus coverage: {', '.join(self._plan.focus_skills)}",
-            "Reflections were for focus only and were not saved.",
-        )
+            "Block splits:",
+        ]
+        for result, attempt in zip(self._block_results, self._block_attempt_results, strict=False):
+            split_fragment = split_half_note_fragment(attempt.metrics)
+            if split_fragment is None:
+                continue
+            lines.append(f"{result.label}: {split_fragment}")
+        lines.append("Reflections were for focus only and were not saved.")
+        return tuple(lines)
 
     def _running_totals(self) -> tuple[int, int, float]:
         attempted = sum(result.attempted for result in self._block_results)
@@ -1044,6 +1129,7 @@ class AntWorkoutSession:
     def _start_first_block(self) -> None:
         self._current_block_index = -1
         self._block_results.clear()
+        self._block_attempt_results.clear()
         self._events.clear()
         self._prepare_next_block()
 
@@ -1062,6 +1148,20 @@ class AntWorkoutSession:
         self._stage = AntWorkoutStage.BLOCK_SETUP
 
     def _start_current_block(self) -> None:
+        block = self._current_block_plan
+        assert block is not None
+        self._stage = AntWorkoutStage.BLOCK
+        self._current_block_level = self._pending_block_level
+        block_seed = self._seed + ((self._current_block_index + 1) * 101)
+        self._current_engine = build_workout_block_engine(
+            clock=self._clock,
+            block_seed=block_seed,
+            difficulty_level=self._current_block_level,
+            block=block,
+            block_index=self._current_block_index,
+        )
+
+    def _build_current_block_engine_from_plan(self) -> None:
         block = self._current_block_plan
         assert block is not None
         self._stage = AntWorkoutStage.BLOCK
@@ -1308,6 +1408,46 @@ class AntWorkoutSession:
                     scored_duration_s=block.duration_s,
                     adaptive=AntAdaptiveDifficultyConfig(enabled=False),
                 ),
+            )
+        elif block.drill_code == "ma_one_step_fluency":
+            engine = build_ma_one_step_fluency_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=MaDrillConfig(practice_questions=0, scored_duration_s=block.duration_s),
+            )
+        elif block.drill_code == "ma_percentage_snap":
+            engine = build_ma_percentage_snap_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=MaDrillConfig(practice_questions=0, scored_duration_s=block.duration_s),
+            )
+        elif block.drill_code == "ma_rate_time_distance":
+            engine = build_ma_rate_time_distance_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=MaDrillConfig(practice_questions=0, scored_duration_s=block.duration_s),
+            )
+        elif block.drill_code == "ma_fuel_endurance":
+            engine = build_ma_fuel_endurance_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=MaDrillConfig(practice_questions=0, scored_duration_s=block.duration_s),
+            )
+        elif block.drill_code == "ma_mixed_conversion_caps":
+            engine = build_ma_mixed_conversion_caps_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=MaDrillConfig(practice_questions=0, scored_duration_s=block.duration_s),
             )
         elif block.drill_code == "mr_relevant_info_scan":
             engine = build_mr_relevant_info_scan_drill(
@@ -1769,6 +1909,46 @@ class AntWorkoutSession:
                     adaptive=AntAdaptiveDifficultyConfig(enabled=False),
                 ),
             )
+        elif block.drill_code == "sl_one_rule_identify":
+            engine = build_sl_one_rule_identify_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=SlDrillConfig(practice_questions=0, scored_duration_s=block.duration_s),
+            )
+        elif block.drill_code == "sl_missing_step_complete":
+            engine = build_sl_missing_step_complete_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=SlDrillConfig(practice_questions=0, scored_duration_s=block.duration_s),
+            )
+        elif block.drill_code == "sl_two_source_reconcile":
+            engine = build_sl_two_source_reconcile_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=SlDrillConfig(practice_questions=0, scored_duration_s=block.duration_s),
+            )
+        elif block.drill_code == "sl_rule_match":
+            engine = build_sl_rule_match_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=SlDrillConfig(practice_questions=0, scored_duration_s=block.duration_s),
+            )
+        elif block.drill_code == "sl_fast_reject":
+            engine = build_sl_fast_reject_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=SlDrillConfig(practice_questions=0, scored_duration_s=block.duration_s),
+            )
         elif block.drill_code == "tbl_part1_anchor":
             engine = build_tbl_part1_anchor_drill(
                 clock=self._clock,
@@ -1864,6 +2044,46 @@ class AntWorkoutSession:
                     scored_duration_s=block.duration_s,
                     adaptive=AntAdaptiveDifficultyConfig(enabled=False),
                 ),
+            )
+        elif block.drill_code == "tbl_single_lookup_anchor":
+            engine = build_tbl_single_lookup_anchor_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=TblDrillConfig(practice_questions=0, scored_duration_s=block.duration_s),
+            )
+        elif block.drill_code == "tbl_two_table_xref":
+            engine = build_tbl_two_table_xref_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=TblDrillConfig(practice_questions=0, scored_duration_s=block.duration_s),
+            )
+        elif block.drill_code == "tbl_distractor_grid":
+            engine = build_tbl_distractor_grid_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=TblDrillConfig(practice_questions=0, scored_duration_s=block.duration_s),
+            )
+        elif block.drill_code == "tbl_lookup_compute":
+            engine = build_tbl_lookup_compute_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=TblDrillConfig(practice_questions=0, scored_duration_s=block.duration_s),
+            )
+        elif block.drill_code == "tbl_shrinking_cap_run":
+            engine = build_tbl_shrinking_cap_run_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=TblDrillConfig(practice_questions=0, scored_duration_s=block.duration_s),
             )
         elif block.drill_code == "sma_joystick_horizontal_anchor":
             engine = build_sma_joystick_horizontal_anchor_drill(
@@ -2216,6 +2436,38 @@ class AntWorkoutSession:
                 difficulty=difficulty,
                 mode=block.mode,
                 config=RtDrillConfig(scored_duration_s=block.duration_s),
+            )
+        elif block.drill_code == "dtb_tracking_recall":
+            engine = build_dtb_tracking_recall_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=DualTaskBridgeDrillConfig(scored_duration_s=block.duration_s),
+            )
+        elif block.drill_code == "dtb_tracking_command_filter":
+            engine = build_dtb_tracking_command_filter_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=DualTaskBridgeDrillConfig(scored_duration_s=block.duration_s),
+            )
+        elif block.drill_code == "dtb_tracking_filter_digit_report":
+            engine = build_dtb_tracking_filter_digit_report_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=DualTaskBridgeDrillConfig(scored_duration_s=block.duration_s),
+            )
+        elif block.drill_code == "dtb_tracking_interference_recovery":
+            engine = build_dtb_tracking_interference_recovery_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=DualTaskBridgeDrillConfig(scored_duration_s=block.duration_s),
             )
         elif block.drill_code == "si_landmark_anchor":
             engine = build_si_landmark_anchor_drill(
@@ -2634,6 +2886,7 @@ class AntWorkoutSession:
             return
         block_plan = self._current_block_plan
         summary: AntDrillAttemptSummary = self._current_engine.scored_summary()
+        attempt_result = attempt_result_from_engine(self._current_engine, test_code=block_plan.drill_code)
         base_index = len(self._events)
         for offset, event in enumerate(self._current_engine.events()):
             self._events.append(
@@ -2672,6 +2925,7 @@ class AntWorkoutSession:
                 difficulty_change_count=summary.difficulty_change_count,
             )
         )
+        self._block_attempt_results.append(attempt_result)
         self._last_finished_block_level = self._current_block_level
 
     def _max_timeout_streak(self) -> int:

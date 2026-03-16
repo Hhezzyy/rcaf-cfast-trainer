@@ -8,6 +8,7 @@ from enum import StrEnum
 from typing import Protocol, TypeVar
 
 from .clock import Clock
+from .content_variants import content_metadata_from_payload
 
 T = TypeVar("T")
 
@@ -54,6 +55,8 @@ class QuestionEvent:
     raw: str = ""
     score: float = 0.0
     max_score: float = 1.0
+    is_timeout: bool = False
+    content_metadata: dict[str, object] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -281,6 +284,7 @@ class TimedTextInputTest:
             raw=raw_in,
             score=score,
             max_score=1.0,
+            content_metadata=content_metadata_from_payload(self._current.payload),
         )
         self._events.append(event)
 

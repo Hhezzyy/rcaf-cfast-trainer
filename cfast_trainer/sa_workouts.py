@@ -30,7 +30,7 @@ def build_sa_workout_plan(*, duration_scale: float = 1.0) -> AntWorkoutPlan:
         _block(
             "picture_anchor",
             "Picture Anchor Warm-Up",
-            "Warm up the live tactical picture first so future-position and simple contact matching settle before heavier recall starts.",
+            "Warm up the sparse grid first so current and near-future location work settles before the heavier memory blocks.",
             ("Picture tracking", "Contact stabilization"),
             "sa_picture_anchor",
             AntDrillMode.BUILD,
@@ -39,7 +39,7 @@ def build_sa_workout_plan(*, duration_scale: float = 1.0) -> AntWorkoutPlan:
         _block(
             "contact_identification",
             "Contact Identification Prime",
-            "Match described coded state to the correct indexed track until the right-side panel handoff feels clean.",
+            "Match callsigns to the correct fading contact until the cue-card and grid flashes feel automatic.",
             ("Contact identification", "Index-panel reading"),
             "sa_contact_identification_prime",
             AntDrillMode.BUILD,
@@ -48,7 +48,7 @@ def build_sa_workout_plan(*, duration_scale: float = 1.0) -> AntWorkoutPlan:
         _block(
             "status_recall",
             "Status Recall Prime",
-            "Train channel, code, altitude, and fuel/status recall from the visible and announced picture before the prediction block tightens up.",
+            "Train channel, altitude, ETA, and waypoint recall from short cue-card flashes and radio chatter before the route block tightens up.",
             ("Status recall", "Coded-state tracking"),
             "sa_status_recall_prime",
             AntDrillMode.BUILD,
@@ -57,7 +57,7 @@ def build_sa_workout_plan(*, duration_scale: float = 1.0) -> AntWorkoutPlan:
         _block(
             "future_projection",
             "Future Projection Run",
-            "Project headings and route updates forward without losing the live traffic picture.",
+            "Project route and handoff updates forward after the last cue has already faded.",
             ("Future projection", "Route forecasting"),
             "sa_future_projection_run",
             AntDrillMode.BUILD,
@@ -66,7 +66,7 @@ def build_sa_workout_plan(*, duration_scale: float = 1.0) -> AntWorkoutPlan:
         _block(
             "action_selection",
             "Action Selection Run",
-            "Bring intervention and tactical priority decisions online once the core picture-building skills are warm.",
+            "Bring safe-move judgments online once the core hidden-picture skills are warm.",
             ("Intervention selection", "Priority control"),
             "sa_action_selection_run",
             AntDrillMode.TEMPO,
@@ -75,7 +75,7 @@ def build_sa_workout_plan(*, duration_scale: float = 1.0) -> AntWorkoutPlan:
         _block(
             "family_switch",
             "Family Switch Run",
-            "Cycle merge, fuel, route-handoff, and channel-shift families so scenario switching stops costing you orientation time.",
+            "Cycle conflict, status, handoff, and channel/waypoint families so scenario switching stops costing you orientation time.",
             ("Scenario-family switching", "Context reset control"),
             "sa_family_switch_run",
             AntDrillMode.TEMPO,
@@ -84,7 +84,7 @@ def build_sa_workout_plan(*, duration_scale: float = 1.0) -> AntWorkoutPlan:
         _block(
             "mixed_tempo",
             "Mixed Tempo Run",
-            "Repeat the fixed four-query rhythm while the live tactical picture keeps evolving underneath it.",
+            "Repeat the full query rhythm while the world keeps evolving behind fading grid and cue-card flashes.",
             ("Mixed query tempo", "Full-picture continuity"),
             "sa_mixed_tempo",
             AntDrillMode.TEMPO,
@@ -93,7 +93,7 @@ def build_sa_workout_plan(*, duration_scale: float = 1.0) -> AntWorkoutPlan:
         _block(
             "pressure_run",
             "Pressure Run",
-            "Finish with all channels and all query kinds active under denser updates and shorter response windows.",
+            "Finish with all channels and all query kinds active under the shortest cue windows and fastest radio cadence.",
             ("Pressure tolerance", "Full Situational Awareness integration"),
             "sa_pressure_run",
             AntDrillMode.STRESS,
@@ -104,13 +104,13 @@ def build_sa_workout_plan(*, duration_scale: float = 1.0) -> AntWorkoutPlan:
         code="situational_awareness_workout",
         title="Situational Awareness Workout (90m)",
         description=(
-            "Standard 90-minute Situational Awareness workout with typed reflection, focused live-picture blocks, "
-            "family and query switching, and a final full-pressure run."
+            "Standard 90-minute Situational Awareness workout with typed reflection, sparse-picture anchors, "
+            "family and query switching, and a final full-pressure hidden-state run."
         ),
         notes=(
             "Typed reflections and block setup screens do not count toward the 90-minute drill clock.",
-            "Every block reuses the live continuous Situational Awareness screen with direct-response query modes.",
-            "Controls stay the live model throughout: click or type grid cells, choose track rows with 1-5, and answer action cards with click or 1-4.",
+            "Every block reuses the live continuous Situational Awareness screen with fading cues and direct-response queries.",
+            "Controls stay the live model throughout: click or type grid cells, then answer choice prompts with click or 1-4.",
         ),
         blocks=blocks,
     )

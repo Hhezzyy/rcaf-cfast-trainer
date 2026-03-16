@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import cast
 
 from .clock import Clock
+from .content_variants import stable_variant_id
 from .cognitive_core import (
     AnswerScorer,
     Problem,
@@ -93,6 +94,9 @@ class AirborneScenario:
     answer_label: str
     answer_unit_label: str
     answer_digits: int
+    content_family: str = ""
+    variant_id: str = ""
+    content_pack: str = ""
     input_digits: int = 4
 
     # convenience aliases (keeps older UI code working)
@@ -164,6 +168,26 @@ TEMPLATES: tuple[MapTemplate, ...] = (
         nodes=((0.12, 0.18), (0.40, 0.12), (0.70, 0.15), (0.20, 0.52), (0.50, 0.55), (0.82, 0.55)),
         edges=((0, 1), (1, 2), (0, 3), (3, 4), (4, 2), (4, 5)),
     ),
+    MapTemplate(
+        name="T7",
+        nodes=((0.08, 0.22), (0.28, 0.10), (0.52, 0.18), (0.80, 0.12), (0.18, 0.55), (0.44, 0.62), (0.76, 0.58)),
+        edges=((0, 1), (1, 2), (2, 3), (0, 4), (4, 5), (5, 2), (5, 6), (6, 3)),
+    ),
+    MapTemplate(
+        name="T8",
+        nodes=((0.12, 0.18), (0.34, 0.26), (0.62, 0.12), (0.86, 0.22), (0.24, 0.58), (0.54, 0.50), (0.80, 0.60)),
+        edges=((0, 1), (1, 2), (2, 3), (1, 4), (4, 5), (5, 2), (5, 6), (6, 3)),
+    ),
+    MapTemplate(
+        name="T9",
+        nodes=((0.10, 0.18), (0.32, 0.10), (0.58, 0.14), (0.84, 0.22), (0.18, 0.50), (0.44, 0.60), (0.74, 0.56)),
+        edges=((0, 1), (1, 2), (2, 3), (0, 4), (4, 5), (5, 2), (5, 6), (6, 3), (2, 6)),
+    ),
+    MapTemplate(
+        name="T10",
+        nodes=((0.08, 0.16), (0.28, 0.24), (0.52, 0.10), (0.76, 0.18), (0.16, 0.52), (0.44, 0.46), (0.68, 0.62), (0.90, 0.52)),
+        edges=((0, 1), (1, 2), (2, 3), (0, 4), (4, 5), (5, 2), (5, 6), (6, 3), (6, 7), (3, 7)),
+    ),
 )
 
 TEMPLATES_BY_NAME = {t.name: t for t in TEMPLATES}
@@ -206,6 +230,44 @@ UNIT_PROFILES: tuple[UnitProfile, ...] = (
         start_fuel_step=50,
         speed_chart_steps=(5, 10, 20, 25),
         fuel_chart_steps=(50, 100, 200, 250),
+    ),
+    UnitProfile(
+        speed_unit="km/30min",
+        distance_unit="km",
+        speed_minutes=30,
+        fuel_unit="L/30min",
+        fuel_minutes=30,
+        distance_range=(20, 110),
+        speed_max_range=(110, 240),
+        speed_floor=70,
+        speed_drop_range=(25, 70),
+        speed_neighbor_step=10,
+        fuel_base_range=(180, 520),
+        fuel_factor_range=(1.8, 3.2),
+        fuel_minimum=100,
+        start_fuel_range=(700, 3600),
+        start_fuel_step=25,
+        speed_chart_steps=(5, 10, 20),
+        fuel_chart_steps=(25, 50, 100),
+    ),
+    UnitProfile(
+        speed_unit="NM/30min",
+        distance_unit="NM",
+        speed_minutes=30,
+        fuel_unit="L/30min",
+        fuel_minutes=30,
+        distance_range=(15, 95),
+        speed_max_range=(75, 180),
+        speed_floor=50,
+        speed_drop_range=(18, 55),
+        speed_neighbor_step=5,
+        fuel_base_range=(150, 420),
+        fuel_factor_range=(1.5, 2.8),
+        fuel_minimum=80,
+        start_fuel_range=(600, 3200),
+        start_fuel_step=25,
+        speed_chart_steps=(5, 10, 20),
+        fuel_chart_steps=(20, 50, 100),
     ),
     UnitProfile(
         speed_unit="mi/min",
@@ -305,6 +367,49 @@ PRACTICE_REFERENCE_PAIRS: tuple[tuple[str, str], ...] = (
     ("table", "chart"),
     ("chart", "table"),
 )
+
+_PROMPT_VARIANTS: dict[str, tuple[str, ...]] = {
+    "arrival_time": (
+        "ARRIVAL TIME at {dest} (HHMM). Enter 4 digits:",
+        "ROUTE ARRIVAL for {dest} (HHMM). Enter 4 digits:",
+        "LANDING TIME at {dest} (HHMM). Enter 4 digits:",
+    ),
+    "takeoff_time": (
+        "TAKE OFF TIME for {dest} (HHMM). Enter 4 digits:",
+        "DEPARTURE TIME for {dest} (HHMM). Enter 4 digits:",
+        "LAUNCH TIME needed for {dest} (HHMM). Enter 4 digits:",
+    ),
+    "empty_time": (
+        "EMPTY TIME (HHMM). Enter 4 digits:",
+        "TANKS DRY at what time (HHMM)? Enter 4 digits:",
+        "FUEL EMPTY TIME (HHMM). Enter 4 digits:",
+    ),
+    "fuel_endurance": (
+        "FUEL ENDURANCE (minutes). Enter 4 digits:",
+        "USABLE ENDURANCE before dry tanks (minutes). Enter 4 digits:",
+        "MINUTES OF FUEL REMAINING. Enter 4 digits:",
+    ),
+    "fuel_burned": (
+        "FUEL BURNED to {dest} ({fuel_value_unit}). Enter 4 digits:",
+        "FUEL USED on route to {dest} ({fuel_value_unit}). Enter 4 digits:",
+        "ROUTE FUEL CONSUMPTION to {dest} ({fuel_value_unit}). Enter 4 digits:",
+    ),
+    "distance_travelled": (
+        "DISTANCE TRAVELLED to {dest} ({distance_unit}). Enter 4 digits:",
+        "ROUTE DISTANCE to {dest} ({distance_unit}). Enter 4 digits:",
+        "TOTAL DISTANCE FLOWN to {dest} ({distance_unit}). Enter 4 digits:",
+    ),
+    "parcel_weight": (
+        "PARCEL WEIGHT for {dest} (kg). Enter 4 digits:",
+        "PAYLOAD WEIGHT for {dest} (kg). Enter 4 digits:",
+        "LOAD MASS for {dest} (kg). Enter 4 digits:",
+    ),
+    "parcel_effect": (
+        "PARCEL EFFECT on speed ({speed_unit}). Enter 4 digits:",
+        "PAYLOAD SPEED LOSS ({speed_unit}). Enter 4 digits:",
+        "SPEED PENALTY from parcel load ({speed_unit}). Enter 4 digits:",
+    ),
+}
 
 
 def _clamp01(value: float) -> float:
@@ -675,6 +780,35 @@ def _weighted_choice(rng: SeededRng, options: tuple[tuple[str, float], ...]) -> 
     return options[-1][0]
 
 
+def _airborne_content_family(question_kind: str) -> str:
+    if question_kind in {"arrival_time", "takeoff_time"}:
+        return "route_time"
+    if question_kind in {"empty_time", "fuel_endurance"}:
+        return "endurance"
+    if question_kind == "fuel_burned":
+        return "fuel_burn"
+    if question_kind == "distance_travelled":
+        return "distance"
+    return "payload"
+
+
+def _airborne_prompt(
+    rng: SeededRng,
+    *,
+    question_kind: str,
+    dest: str,
+    unit_profile: UnitProfile,
+) -> str:
+    variants = _PROMPT_VARIANTS[question_kind]
+    template = str(rng.choice(variants))
+    return template.format(
+        dest=dest,
+        distance_unit=unit_profile.distance_unit,
+        speed_unit=unit_profile.speed_unit,
+        fuel_value_unit=unit_profile.fuel_unit.split("/")[0],
+    )
+
+
 def _scenario_matches_profile(
     scenario: AirborneScenario,
     profile: AirborneDifficultyProfile,
@@ -867,6 +1001,7 @@ class AirborneNumericalGenerator:
     def __init__(self, rng: SeededRng, *, scripted_diverse_problems: int = 0):
         self._rng = rng
         self._scripted_specs = self._build_scripted_specs(scripted_diverse_problems)
+        self._recent_variants: list[str] = []
 
     def generate(self, *, profile: AirborneDifficultyProfile | None = None) -> Problem:
         for _ in range(128):
@@ -1030,7 +1165,12 @@ class AirborneNumericalGenerator:
 
         if question_kind == "arrival_time":
             answer = _minutes_to_hhmm_int(start_minutes + route_travel_minutes)
-            prompt = f"ARRIVAL TIME at {dest} (HHMM). Enter 4 digits:"
+            prompt = _airborne_prompt(
+                rng,
+                question_kind=question_kind,
+                dest=dest,
+                unit_profile=unit_profile,
+            )
             given_time_label = "Time Now"
             given_time_hhmm = start_time_hhmm
             target_label = dest
@@ -1039,7 +1179,12 @@ class AirborneNumericalGenerator:
             answer_unit_label = "HHMM"
         elif question_kind == "takeoff_time":
             answer = _minutes_to_hhmm_int(start_minutes)
-            prompt = f"TAKE OFF TIME for {dest} (HHMM). Enter 4 digits:"
+            prompt = _airborne_prompt(
+                rng,
+                question_kind=question_kind,
+                dest=dest,
+                unit_profile=unit_profile,
+            )
             given_time_label = "Arrival Time"
             given_time_hhmm = arrival_time_hhmm
             target_label = dest
@@ -1048,7 +1193,12 @@ class AirborneNumericalGenerator:
             answer_unit_label = "HHMM"
         elif question_kind == "empty_time":
             answer = _minutes_to_hhmm_int(start_minutes + empty_minutes)
-            prompt = "EMPTY TIME (HHMM). Enter 4 digits:"
+            prompt = _airborne_prompt(
+                rng,
+                question_kind=question_kind,
+                dest=dest,
+                unit_profile=unit_profile,
+            )
             given_time_label = "Time Now"
             given_time_hhmm = start_time_hhmm
             target_label = "EMPTY"
@@ -1057,7 +1207,12 @@ class AirborneNumericalGenerator:
             answer_unit_label = "HHMM"
         elif question_kind == "fuel_endurance":
             answer = int(empty_minutes)
-            prompt = "FUEL ENDURANCE (minutes). Enter 4 digits:"
+            prompt = _airborne_prompt(
+                rng,
+                question_kind=question_kind,
+                dest=dest,
+                unit_profile=unit_profile,
+            )
             given_time_label = "Time Now"
             given_time_hhmm = start_time_hhmm
             target_label = "ENDURANCE"
@@ -1066,9 +1221,11 @@ class AirborneNumericalGenerator:
             answer_unit_label = "min"
         elif question_kind == "fuel_burned":
             answer = int(fuel_used_on_route)
-            prompt = (
-                f"FUEL BURNED to {dest} ({unit_profile.fuel_unit.split('/')[0]}). "
-                "Enter 4 digits:"
+            prompt = _airborne_prompt(
+                rng,
+                question_kind=question_kind,
+                dest=dest,
+                unit_profile=unit_profile,
             )
             given_time_label = "Time Now"
             given_time_hhmm = start_time_hhmm
@@ -1078,9 +1235,11 @@ class AirborneNumericalGenerator:
             answer_unit_label = unit_profile.fuel_unit.split("/")[0]
         elif question_kind == "distance_travelled":
             answer = int(route_distance_total)
-            prompt = (
-                f"DISTANCE TRAVELLED to {dest} ({unit_profile.distance_unit}). "
-                "Enter 4 digits:"
+            prompt = _airborne_prompt(
+                rng,
+                question_kind=question_kind,
+                dest=dest,
+                unit_profile=unit_profile,
             )
             given_time_label = "Time Now"
             given_time_hhmm = start_time_hhmm
@@ -1090,7 +1249,12 @@ class AirborneNumericalGenerator:
             answer_unit_label = unit_profile.distance_unit
         elif question_kind == "parcel_weight":
             answer = int(parcel_weight)
-            prompt = f"PARCEL WEIGHT for {dest} (kg). Enter 4 digits:"
+            prompt = _airborne_prompt(
+                rng,
+                question_kind=question_kind,
+                dest=dest,
+                unit_profile=unit_profile,
+            )
             given_time_label = "Arrival Time"
             given_time_hhmm = arrival_time_hhmm
             target_label = dest
@@ -1099,13 +1263,40 @@ class AirborneNumericalGenerator:
             answer_unit_label = "kg"
         else:
             answer = parcel_effect
-            prompt = f"PARCEL EFFECT on speed ({unit_profile.speed_unit}). Enter 4 digits:"
+            prompt = _airborne_prompt(
+                rng,
+                question_kind=question_kind,
+                dest=dest,
+                unit_profile=unit_profile,
+            )
             given_time_label = "Time Now"
             given_time_hhmm = start_time_hhmm
             target_label = dest
             answer_format = "number"
             answer_label = "Parcel Effect"
             answer_unit_label = unit_profile.speed_unit
+
+        content_family = _airborne_content_family(question_kind)
+        content_pack = f"{parcel_reference_format}_{fuel_reference_format}"
+        variant_id = stable_variant_id(
+            template.name,
+            question_kind,
+            content_pack,
+            len(legs_t),
+            unit_profile.speed_unit,
+            unit_profile.speed_minutes,
+            unit_profile.fuel_minutes,
+        )
+        if variant_id in self._recent_variants:
+            if forced_question_kind is None:
+                return self._build_problem(
+                    forced_unit_profile=forced_unit_profile,
+                    forced_parcel_reference_format=forced_parcel_reference_format,
+                    forced_fuel_reference_format=forced_fuel_reference_format,
+                )
+        self._recent_variants.append(variant_id)
+        if len(self._recent_variants) > 4:
+            del self._recent_variants[:-4]
 
         scenario = AirborneScenario(
             template_name=template.name,
@@ -1142,6 +1333,9 @@ class AirborneNumericalGenerator:
             answer_label=answer_label,
             answer_unit_label=answer_unit_label,
             answer_digits=4,
+            content_family=content_family,
+            variant_id=variant_id,
+            content_pack=content_pack,
         )
         return scenario, prompt, int(answer)
 

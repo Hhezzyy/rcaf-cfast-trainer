@@ -97,9 +97,10 @@ def test_headless_scripted_run_tracks_attempts_correct_and_timeouts() -> None:
     assert scored_events[0].score == pytest.approx(1.0)
     assert scored_events[1].score == pytest.approx(0.0)
     assert scored_events[2].score == pytest.approx(0.0)
+    assert scored_events[2].user_answer == 0
 
 
-def test_grid_cell_and_numeric_direct_response_modes_are_accepted() -> None:
+def test_grid_cell_and_choice_direct_response_modes_are_accepted() -> None:
     clock = FakeClock()
     engine = build_situational_awareness_test(
         clock=clock,
@@ -123,9 +124,9 @@ def test_grid_cell_and_numeric_direct_response_modes_are_accepted() -> None:
             if mode not in answered_modes:
                 assert engine.submit_answer(payload.active_query.correct_answer_token) is True
                 answered_modes.add(mode)
-                if answered_modes >= {"grid_cell", "track_index"}:
+                if answered_modes >= {"grid_cell", "choice"}:
                     break
         clock.advance(1.0)
         engine.update()
 
-    assert {"grid_cell", "track_index"} <= answered_modes
+    assert {"grid_cell", "choice"} <= answered_modes

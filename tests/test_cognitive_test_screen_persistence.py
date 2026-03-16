@@ -92,11 +92,19 @@ def test_results_screen_persists_once_and_surfaces_save_summary(tmp_path) -> Non
 
         with sqlite3.connect(store.path) as conn:
             attempt_count = conn.execute("SELECT COUNT(*) FROM attempt").fetchone()
+            activity_count = conn.execute("SELECT COUNT(*) FROM activity_session").fetchone()
+            telemetry_kinds = [
+                row[0] for row in conn.execute("SELECT kind FROM telemetry_event ORDER BY seq").fetchall()
+            ]
 
         assert attempt_count == (1,)
+        assert activity_count == (1,)
+        assert telemetry_kinds == ["activity_started", "activity_completed"]
         assert any("Saved locally." in line for line in screen._results_persistence_lines)
         session = store.session_summary()
         assert session is not None
+        assert session.activity_count == 1
+        assert session.completed_activity_count == 1
         assert session.attempt_count == 1
     finally:
         pygame.quit()

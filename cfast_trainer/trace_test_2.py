@@ -5,6 +5,7 @@ from dataclasses import dataclass, replace
 from enum import StrEnum
 
 from .clock import Clock
+from .content_variants import content_metadata_from_payload, stable_variant_id
 from .cognitive_core import (
     AttemptSummary,
     Phase,
@@ -38,7 +39,9 @@ class TraceTest2QuestionKind(StrEnum):
     TURNED_LEFT = "turned_left"
     TURNED_RIGHT = "turned_right"
     ENDED_LEFTMOST = "ended_leftmost"
+    ENDED_RIGHTMOST = "ended_rightmost"
     ENDED_HIGHEST = "ended_highest"
+    ENDED_LOWEST = "ended_lowest"
 
 
 class TraceTest2MotionKind(StrEnum):
@@ -89,6 +92,9 @@ class TraceTest2Payload:
     aircraft: tuple[TraceTest2AircraftTrack, ...]
     options: tuple[TraceTest2Option, ...]
     correct_code: int
+    content_family: str = ""
+    variant_id: str = ""
+    content_pack: str = ""
 
 
 def _clamp(v: float, lo: float, hi: float) -> float:
@@ -129,7 +135,7 @@ def _normalize_allowed_question_kinds(
     question_kinds: tuple[TraceTest2QuestionKind, ...] | None,
 ) -> tuple[TraceTest2QuestionKind, ...]:
     if question_kinds is None:
-        return tuple(TraceTest2QuestionKind)
+        return TraceTest2Generator._QUESTION_KINDS
     normalized: list[TraceTest2QuestionKind] = []
     seen: set[TraceTest2QuestionKind] = set()
     for raw in question_kinds:
@@ -236,6 +242,9 @@ class TraceTest2Generator:
             aircraft=tracks,
             options=options,
             correct_code=correct_code,
+            content_family="motion_memory",
+            variant_id=stable_variant_id(question_kind.value, role_order),
+            content_pack="trace_tt2",
         )
         prompt_lines = [stem, ""]
         prompt_lines.extend(f"{option.code}) {option.label}" for option in options)
@@ -322,7 +331,9 @@ class TraceTest2Generator:
             TraceTest2QuestionKind.TURNED_LEFT: "Which aircraft turned left?",
             TraceTest2QuestionKind.TURNED_RIGHT: "Which aircraft turned right?",
             TraceTest2QuestionKind.ENDED_LEFTMOST: "Which aircraft ended furthest left?",
+            TraceTest2QuestionKind.ENDED_RIGHTMOST: "Which aircraft ended furthest right?",
             TraceTest2QuestionKind.ENDED_HIGHEST: "Which aircraft ended highest?",
+            TraceTest2QuestionKind.ENDED_LOWEST: "Which aircraft ended lowest?",
         }[question_kind]
 
     def _options_and_answer(
@@ -352,7 +363,13 @@ class TraceTest2Generator:
         if question_kind is TraceTest2QuestionKind.ENDED_LEFTMOST:
             answer = min(tracks, key=lambda track: track.ended_screen_x).code
             return options, int(answer)
-        answer = max(tracks, key=lambda track: track.ended_altitude_z).code
+        if question_kind is TraceTest2QuestionKind.ENDED_RIGHTMOST:
+            answer = max(tracks, key=lambda track: track.ended_screen_x).code
+            return options, int(answer)
+        if question_kind is TraceTest2QuestionKind.ENDED_HIGHEST:
+            answer = max(tracks, key=lambda track: track.ended_altitude_z).code
+            return options, int(answer)
+        answer = min(tracks, key=lambda track: track.ended_altitude_z).code
         return options, int(answer)
 
 
@@ -502,6 +519,7 @@ class TraceTest2Engine:
             raw=raw_in,
             score=1.0 if is_correct else 0.0,
             max_score=1.0,
+            content_metadata=content_metadata_from_payload(payload),
         )
         self._events.append(event)
 

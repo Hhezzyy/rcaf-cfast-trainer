@@ -5,12 +5,14 @@ from dataclasses import dataclass
 
 import pytest
 
+from cfast_trainer.ant_drills import AntDifficultyChange
+from cfast_trainer.cognitive_core import AttemptSummary, Phase, QuestionEvent
 from cfast_trainer.numerical_operations import (
     NumericalOperationsConfig,
     NumericalOperationsGenerator,
     build_numerical_operations_test,
 )
-from cfast_trainer.persistence import ResultsStore
+from cfast_trainer.persistence import ResultsStore, load_session_summary, record_attempt
 from cfast_trainer.rapid_tracking import RapidTrackingConfig, build_rapid_tracking_test
 from cfast_trainer.results import attempt_result_from_engine
 
@@ -24,6 +26,36 @@ class FakeClock:
 
     def advance(self, dt: float) -> None:
         self.t += dt
+
+
+@dataclass
+class _StaticTelemetryEngine:
+    summary: AttemptSummary
+    question_events: list[QuestionEvent]
+    phase: Phase = Phase.RESULTS
+    seed: int = 321
+    difficulty: float = 4.0 / 9.0
+    practice_questions: int = 1
+    scored_duration_s: float = 120.0
+    scored_started_at_s: float = 0.0
+    difficulty_changes_seq: tuple[AntDifficultyChange, ...] = ()
+
+    @property
+    def _difficulty(self) -> float:
+        return float(self.difficulty)
+
+    @property
+    def _scored_started_at_s(self) -> float:
+        return float(self.scored_started_at_s)
+
+    def events(self) -> list[QuestionEvent]:
+        return list(self.question_events)
+
+    def scored_summary(self) -> AttemptSummary:
+        return self.summary
+
+    def difficulty_changes(self) -> list[AntDifficultyChange]:
+        return list(self.difficulty_changes_seq)
 
 
 def _run_numerical_attempt(*, seed: int) -> object:
@@ -78,6 +110,174 @@ def _run_rapid_tracking_attempt(*, seed: int) -> object:
     return engine
 
 
+def _build_static_telemetry_engine(*, phase: Phase = Phase.RESULTS) -> _StaticTelemetryEngine:
+    return _StaticTelemetryEngine(
+        phase=phase,
+        summary=AttemptSummary(
+            attempted=4,
+            correct=2,
+            accuracy=0.5,
+            duration_s=120.0,
+            throughput_per_min=2.0,
+            mean_response_time_s=1.2,
+            total_score=2.0,
+            max_score=4.0,
+            score_ratio=0.5,
+        ),
+        question_events=[
+            QuestionEvent(
+                index=1,
+                phase=Phase.SCORED,
+                prompt="Q1",
+                correct_answer=1,
+                user_answer=1,
+                is_correct=True,
+                presented_at_s=9.6,
+                answered_at_s=10.0,
+                response_time_s=0.4,
+                raw="1",
+                score=1.0,
+            ),
+            QuestionEvent(
+                index=2,
+                phase=Phase.SCORED,
+                prompt="Q2",
+                correct_answer=2,
+                user_answer=0,
+                is_correct=False,
+                presented_at_s=29.4,
+                answered_at_s=30.0,
+                response_time_s=0.6,
+                raw="__timeout__",
+                score=0.0,
+                is_timeout=True,
+            ),
+            QuestionEvent(
+                index=3,
+                phase=Phase.SCORED,
+                prompt="Q3",
+                correct_answer=3,
+                user_answer=4,
+                is_correct=False,
+                presented_at_s=48.2,
+                answered_at_s=50.0,
+                response_time_s=1.8,
+                raw="4",
+                score=0.0,
+            ),
+            QuestionEvent(
+                index=4,
+                phase=Phase.SCORED,
+                prompt="Q4",
+                correct_answer=4,
+                user_answer=4,
+                is_correct=True,
+                presented_at_s=108.0,
+                answered_at_s=110.0,
+                response_time_s=2.0,
+                raw="4",
+                score=1.0,
+            ),
+        ],
+        difficulty_changes_seq=(
+            AntDifficultyChange(
+                after_attempt=3,
+                old_level=5,
+                new_level=7,
+                reason="accuracy_high",
+            ),
+        ),
+    )
+
+
+def _create_v1_results_db(path) -> None:
+    with sqlite3.connect(path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE session (
+                id INTEGER PRIMARY KEY,
+                created_at_utc TEXT NOT NULL
+            );
+            CREATE TABLE attempt (
+                id INTEGER PRIMARY KEY,
+                session_id INTEGER NOT NULL REFERENCES session(id) ON DELETE CASCADE,
+                test_code TEXT NOT NULL,
+                test_version INTEGER NOT NULL,
+                app_version TEXT NOT NULL,
+                rng_seed INTEGER NOT NULL,
+                difficulty REAL NOT NULL,
+                input_profile_id TEXT,
+                practice_questions INTEGER NOT NULL,
+                scored_duration_s REAL NOT NULL,
+                started_at_utc TEXT NOT NULL,
+                completed_at_utc TEXT NOT NULL
+            );
+            CREATE TABLE metric (
+                attempt_id INTEGER NOT NULL REFERENCES attempt(id) ON DELETE CASCADE,
+                key TEXT NOT NULL,
+                value TEXT NOT NULL,
+                PRIMARY KEY (attempt_id, key)
+            );
+            CREATE TABLE cognitive_event (
+                id INTEGER PRIMARY KEY,
+                attempt_id INTEGER NOT NULL REFERENCES attempt(id) ON DELETE CASCADE,
+                seq INTEGER NOT NULL,
+                phase TEXT NOT NULL,
+                prompt TEXT NOT NULL,
+                expected TEXT NOT NULL,
+                response TEXT NOT NULL,
+                is_correct INTEGER NOT NULL,
+                presented_at_ms INTEGER NOT NULL,
+                answered_at_ms INTEGER NOT NULL,
+                rt_ms INTEGER NOT NULL
+            );
+            """
+        )
+        conn.execute(
+            "INSERT INTO session(id, created_at_utc) VALUES (?, ?)",
+            (1, "2026-03-15T00:00:00Z"),
+        )
+        conn.execute(
+            """
+            INSERT INTO attempt(
+                id, session_id, test_code, test_version, app_version, rng_seed, difficulty,
+                input_profile_id, practice_questions, scored_duration_s, started_at_utc,
+                completed_at_utc
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                1,
+                1,
+                "legacy_numerical",
+                1,
+                "v1",
+                99,
+                0.5,
+                "legacy",
+                1,
+                60.0,
+                "2026-03-15T00:00:05Z",
+                "2026-03-15T00:01:05Z",
+            ),
+        )
+        conn.execute(
+            "INSERT INTO metric(attempt_id, key, value) VALUES (?, ?, ?)",
+            (1, "accuracy", "1.000000"),
+        )
+        conn.execute(
+            """
+            INSERT INTO cognitive_event(
+                attempt_id, seq, phase, prompt, expected, response, is_correct,
+                presented_at_ms, answered_at_ms, rt_ms
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (1, 0, "scored", "Legacy Q", "2", "2", 1, 1000, 1500, 500),
+        )
+        conn.execute("PRAGMA user_version=1")
+
+
 def test_attempt_result_from_engine_handles_custom_summary_metrics_without_question_events() -> None:
     engine = _run_rapid_tracking_attempt(seed=17)
 
@@ -86,10 +286,133 @@ def test_attempt_result_from_engine_handles_custom_summary_metrics_without_quest
 
     assert result.attempted == summary.attempted
     assert result.duration_s == pytest.approx(summary.duration_s)
-    assert result.events == []
-    assert result.mean_rt_ms is None
+    assert len(result.events) == summary.attempted
+    assert all(event.family == "question" for event in result.events)
+    assert result.mean_rt_ms is not None
     assert result.metrics["mean_error"] == f"{summary.mean_error:.6f}"
     assert result.metrics["capture_points"] == str(summary.capture_points)
+
+
+def test_attempt_result_from_engine_computes_short_run_telemetry_analytics() -> None:
+    engine = _build_static_telemetry_engine()
+
+    result = attempt_result_from_engine(engine, test_code="telemetry_static")
+
+    assert result.attempted == 4
+    assert result.correct == 2
+    assert result.mean_rt_ms == pytest.approx(1200.0)
+    assert result.median_rt_ms == pytest.approx(1200.0)
+    assert result.difficulty_level_start == 5
+    assert result.difficulty_level_end == 7
+    assert len(result.events) == 5
+    assert result.metrics["rt_variance_ms2"] == "500000.000000"
+    assert result.metrics["timeout_count"] == "1"
+    assert result.metrics["timeout_rate"] == "0.250000"
+    assert result.metrics["longest_lapse_streak"] == "2"
+    assert result.metrics["first_3m_attempted"] == "4"
+    assert result.metrics["last_3m_attempted"] == "4"
+    assert result.metrics["first_3m_accuracy"] == "0.500000"
+    assert result.metrics["last_3m_accuracy"] == "0.500000"
+    assert result.metrics["post_correct_next_item_mean_rt_ms"] == "600.000000"
+    assert result.metrics["post_error_next_item_mean_rt_ms"] == "1900.000000"
+    assert result.metrics["post_error_next_item_rt_inflation_ms"] == "1300.000000"
+    assert result.metrics["difficulty_change_count"] == "1"
+    assert result.metrics["first_half_attempted"] == "3"
+    assert result.metrics["first_half_accuracy"] == "0.333333"
+    assert result.metrics["first_half_mean_rt_ms"] == "933.333333"
+    assert result.metrics["first_half_timeout_rate"] == "0.333333"
+    assert result.metrics["second_half_attempted"] == "1"
+    assert result.metrics["second_half_accuracy"] == "1.000000"
+    assert result.metrics["second_half_mean_rt_ms"] == "2000.000000"
+    assert result.metrics["second_half_timeout_rate"] == "0.000000"
+    assert result.metrics["half_accuracy_drop"] == "-0.666667"
+    assert result.metrics["half_mean_rt_inflation_ms"] == "1066.666667"
+
+
+def test_results_store_persists_activity_sessions_telemetry_and_session_rollups(tmp_path) -> None:
+    store = ResultsStore(tmp_path / "results.sqlite3")
+    result = attempt_result_from_engine(
+        _build_static_telemetry_engine(),
+        test_code="telemetry_static",
+    )
+
+    saved = store.record_attempt(
+        result=result,
+        app_version="test",
+        input_profile_id="default",
+    )
+
+    session = store.session_summary()
+    assert session is not None
+    assert session.attempt_count == 1
+    assert session.activity_count == 1
+    assert session.completed_activity_count == 1
+    assert session.aborted_activity_count == 0
+    assert session.unique_tests == 1
+    assert session.mean_accuracy == pytest.approx(0.5)
+    assert session.mean_score_ratio == pytest.approx(0.5)
+
+    with sqlite3.connect(store.path) as conn:
+        attempt_row = conn.execute(
+            """
+            SELECT activity_session_id, difficulty_level_start, difficulty_level_end
+            FROM attempt
+            WHERE id=?
+            """,
+            (saved.attempt_id,),
+        ).fetchone()
+        metric_rows = dict(
+            conn.execute(
+                "SELECT key, value FROM attempt_metric WHERE attempt_id=?",
+                (saved.attempt_id,),
+            ).fetchall()
+        )
+        activity_row = conn.execute(
+            "SELECT completion_reason FROM activity_session WHERE id=?",
+            (saved.activity_session_id,),
+        ).fetchone()
+        activity_metrics = dict(
+            conn.execute(
+                "SELECT key, value FROM activity_metric WHERE activity_session_id=?",
+                (saved.activity_session_id,),
+            ).fetchall()
+        )
+        telemetry_rows = conn.execute(
+            """
+            SELECT kind, is_timeout, difficulty_level
+            FROM telemetry_event
+            WHERE activity_session_id=?
+            ORDER BY seq
+            """,
+            (saved.activity_session_id,),
+        ).fetchall()
+        session_metric_rows = dict(
+            conn.execute(
+                "SELECT key, value FROM session_metric WHERE session_id=?",
+                (saved.session_id,),
+            ).fetchall()
+        )
+
+    assert attempt_row == (saved.activity_session_id, 5, 7)
+    assert activity_row == ("completed",)
+    assert metric_rows["timeout_count"] == "1"
+    assert metric_rows["longest_lapse_streak"] == "2"
+    assert metric_rows["post_error_next_item_rt_inflation_ms"] == "1300.000000"
+    assert activity_metrics["difficulty_level_end"] == "7"
+    assert [row[0] for row in telemetry_rows] == [
+        "activity_started",
+        "question",
+        "question",
+        "question",
+        "question",
+        "difficulty_change",
+        "activity_completed",
+    ]
+    assert telemetry_rows[2][1] == 1
+    assert telemetry_rows[5][2] == 7
+    assert session_metric_rows["mean_rt_ms"] == "1200.000000"
+    assert session_metric_rows["timeout_rate"] == "0.250000"
+    assert session_metric_rows["longest_lapse_streak"] == "2.000000"
 
 
 def test_results_store_reuses_session_and_reads_session_summaries(tmp_path) -> None:
@@ -115,9 +438,13 @@ def test_results_store_reuses_session_and_reads_session_summaries(tmp_path) -> N
     )
 
     assert saved_one.session_id == saved_two.session_id
+    assert saved_one.activity_session_id != saved_two.activity_session_id
 
     session = store.session_summary()
     assert session is not None
+    assert session.activity_count == 2
+    assert session.completed_activity_count == 2
+    assert session.aborted_activity_count == 0
     assert session.attempt_count == 2
     assert session.unique_tests == 2
 
@@ -128,9 +455,166 @@ def test_results_store_reuses_session_and_reads_session_summaries(tmp_path) -> N
 
     with sqlite3.connect(store.path) as conn:
         attempt_row = conn.execute(
-            "SELECT COUNT(*), COUNT(input_profile_id) FROM attempt"
+            "SELECT COUNT(*), COUNT(input_profile_id), COUNT(activity_session_id) FROM attempt"
         ).fetchone()
-        event_count = conn.execute("SELECT COUNT(*) FROM cognitive_event").fetchone()
+        activity_row = conn.execute(
+            "SELECT COUNT(*), COUNT(CASE WHEN completion_reason = 'completed' THEN 1 END) FROM activity_session"
+        ).fetchone()
+        telemetry_row = conn.execute(
+            "SELECT COUNT(*) FROM telemetry_event"
+        ).fetchone()
 
-    assert attempt_row == (2, 2)
-    assert event_count == (numerical.attempted,)
+    assert attempt_row == (2, 2, 2)
+    assert activity_row == (2, 2)
+    assert telemetry_row == (8,)
+
+
+def test_results_store_aborts_activity_sessions_without_attempt_rows(tmp_path) -> None:
+    store = ResultsStore(tmp_path / "results.sqlite3")
+    store.start_app_session(app_version="test")
+    result = attempt_result_from_engine(
+        _build_static_telemetry_engine(phase=Phase.SCORED),
+        test_code="telemetry_static",
+    )
+
+    activity_session_id = store.start_activity_session(
+        activity_code="telemetry_static",
+        activity_kind="cognitive_test",
+        app_version="test",
+        test_version=1,
+        engine=_build_static_telemetry_engine(phase=Phase.SCORED),
+        input_profile_id="default",
+    )
+    store.abort_activity_session(
+        activity_session_id=activity_session_id,
+        app_version="test",
+        completion_reason="back_abort",
+        result=result,
+        input_profile_id="default",
+    )
+
+    session = store.session_summary()
+    assert session is not None
+    assert session.activity_count == 1
+    assert session.completed_activity_count == 0
+    assert session.aborted_activity_count == 1
+    assert session.attempt_count == 0
+
+    with sqlite3.connect(store.path) as conn:
+        attempt_count = conn.execute("SELECT COUNT(*) FROM attempt").fetchone()
+        activity_row = conn.execute(
+            "SELECT completion_reason FROM activity_session WHERE id=?",
+            (activity_session_id,),
+        ).fetchone()
+        activity_metrics = dict(
+            conn.execute(
+                "SELECT key, value FROM activity_metric WHERE activity_session_id=?",
+                (activity_session_id,),
+            ).fetchall()
+        )
+        telemetry_kinds = [
+            row[0]
+            for row in conn.execute(
+                "SELECT kind FROM telemetry_event WHERE activity_session_id=? ORDER BY seq",
+                (activity_session_id,),
+            ).fetchall()
+        ]
+
+    assert attempt_count == (0,)
+    assert activity_row == ("back_abort",)
+    assert activity_metrics["attempted"] == "4"
+    assert telemetry_kinds[-1] == "activity_aborted"
+
+
+def test_close_app_session_finalizes_open_activity_sessions_and_materializes_summary(tmp_path) -> None:
+    store = ResultsStore(tmp_path / "results.sqlite3")
+    session_id = store.start_app_session(app_version="test")
+    activity_session_id = store.start_activity_session(
+        activity_code="telemetry_static",
+        activity_kind="cognitive_test",
+        app_version="test",
+        test_version=1,
+        engine=_build_static_telemetry_engine(phase=Phase.PRACTICE),
+        input_profile_id="default",
+    )
+
+    store.close_app_session(exit_reason="app_quit")
+
+    summary = load_session_summary(db_path=store.path, session_id=session_id)
+    assert summary is not None
+    assert summary.exit_reason == "app_quit"
+    assert summary.activity_count == 1
+    assert summary.aborted_activity_count == 1
+    assert summary.attempt_count == 0
+
+    with sqlite3.connect(store.path) as conn:
+        session_row = conn.execute(
+            "SELECT ended_at_utc, exit_reason FROM session WHERE id=?",
+            (session_id,),
+        ).fetchone()
+        activity_row = conn.execute(
+            "SELECT ended_at_utc, completion_reason FROM activity_session WHERE id=?",
+            (activity_session_id,),
+        ).fetchone()
+        session_kinds = [
+            row[0]
+            for row in conn.execute(
+                """
+                SELECT kind
+                FROM telemetry_event
+                WHERE session_id=? AND activity_session_id IS NULL
+                ORDER BY seq
+                """,
+                (session_id,),
+            ).fetchall()
+        ]
+
+    assert session_row is not None
+    assert session_row[0] is not None
+    assert session_row[1] == "app_quit"
+    assert activity_row is not None
+    assert activity_row[0] is not None
+    assert activity_row[1] == "app_quit"
+    assert session_kinds == ["app_quit"]
+
+
+def test_results_store_migrates_v1_database_and_continues_writing(tmp_path) -> None:
+    path = tmp_path / "legacy-results.sqlite3"
+    _create_v1_results_db(path)
+
+    saved = record_attempt(
+        db_path=path,
+        session_id=1,
+        result=attempt_result_from_engine(
+            _run_numerical_attempt(seed=101),
+            test_code="numerical_operations",
+        ),
+        app_version="test",
+        input_profile_id="default",
+    )
+
+    with sqlite3.connect(path) as conn:
+        user_version = conn.execute("PRAGMA user_version").fetchone()
+        attempt_count = conn.execute("SELECT COUNT(*) FROM attempt").fetchone()
+        activity_count = conn.execute("SELECT COUNT(*) FROM activity_session").fetchone()
+        legacy_link = conn.execute(
+            "SELECT activity_session_id, difficulty_level_start, difficulty_level_end FROM attempt WHERE id=1"
+        ).fetchone()
+        copied_metric = conn.execute(
+            "SELECT value FROM attempt_metric WHERE attempt_id=1 AND key='accuracy'"
+        ).fetchone()
+
+    summary = load_session_summary(db_path=path, session_id=1)
+
+    assert user_version == (2,)
+    assert attempt_count == (2,)
+    assert activity_count == (2,)
+    assert legacy_link is not None
+    assert legacy_link[0] is not None
+    assert legacy_link[1:] == (6, 6)
+    assert copied_metric == ("1.000000",)
+    assert summary is not None
+    assert summary.attempt_count == 2
+    assert summary.activity_count == 2
+    assert summary.completed_activity_count == 2
+    assert saved.session_id == 1

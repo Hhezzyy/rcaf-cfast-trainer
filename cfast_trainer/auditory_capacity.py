@@ -219,6 +219,7 @@ class AuditoryCapacityEvent:
     is_correct: bool
     score: float
     response_time_s: float | None
+    occurred_at_s: float | None = None
     command_type: str | None = None
     addressed_call_sign: str | None = None
 
@@ -2158,6 +2159,7 @@ class AuditoryCapacityEngine:
             is_correct=bool(is_correct),
             score=score_clamped,
             response_time_s=response_time_s,
+            occurred_at_s=float(self._sim_elapsed_s),
             command_type=command_type,
             addressed_call_sign=addressed_call_sign,
         )

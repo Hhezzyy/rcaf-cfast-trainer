@@ -228,12 +228,30 @@ def _mode_scaled_profile(
     profile: AuditoryCapacityTrainingProfile,
     mode: AntDrillMode,
 ) -> AuditoryCapacityTrainingProfile:
-    if mode is AntDrillMode.BUILD:
+    if mode is AntDrillMode.FRESH:
+        rate_scale = 0.82
+        disturbance_scale = 0.72
+        tube_scale = 1.14
+        response_scale = 1.16
+        noise_scale = 0.70
+    elif mode is AntDrillMode.BUILD:
         rate_scale = 0.86
         disturbance_scale = 0.76
         tube_scale = 1.10
         response_scale = 1.12
         noise_scale = 0.75
+    elif mode is AntDrillMode.PRESSURE:
+        rate_scale = 1.08
+        disturbance_scale = 1.08
+        tube_scale = 0.97
+        response_scale = 0.94
+        noise_scale = 1.08
+    elif mode is AntDrillMode.RECOVERY:
+        rate_scale = 0.94
+        disturbance_scale = 0.88
+        tube_scale = 1.06
+        response_scale = 1.06
+        noise_scale = 0.88
     elif mode is AntDrillMode.STRESS:
         rate_scale = 1.18
         disturbance_scale = 1.18
@@ -529,7 +547,7 @@ def build_ac_digit_sequence_prime_drill(
 ) -> AuditoryCapacityContinuousDrill:
     cfg = config or AcDrillConfig()
     normalized_mode = _normalize_mode(mode)
-    digit_max = 5 if normalized_mode is AntDrillMode.BUILD else 6
+    digit_max = 5 if normalized_mode in (AntDrillMode.FRESH, AntDrillMode.BUILD, AntDrillMode.RECOVERY) else 6
     profile = _mode_scaled_profile(
         profile=AuditoryCapacityTrainingProfile(
             enable_state_commands=False,

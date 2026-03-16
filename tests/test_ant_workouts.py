@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from dataclasses import dataclass
 
 import pygame
@@ -13,6 +14,7 @@ from cfast_trainer.ant_workouts import (
     AntWorkoutSession,
     AntWorkoutStage,
     build_ant_workout_plan,
+    build_workout_block_engine,
 )
 from cfast_trainer.persistence import ResultsStore
 from cfast_trainer.results import attempt_result_from_engine
@@ -143,6 +145,7 @@ def test_airborne_numerical_workout_session_runs_reflections_setups_blocks_and_r
     session = _complete_small_workout(clock)
 
     summary = session.scored_summary()
+    snapshot = session.snapshot()
 
     assert summary.block_count == 2
     assert summary.completed_blocks == 2
@@ -152,6 +155,9 @@ def test_airborne_numerical_workout_session_runs_reflections_setups_blocks_and_r
     assert summary.difficulty_level_start == 6
     assert summary.difficulty_level_end == 6
     assert len(session.events()) == 2
+    assert session.stage is AntWorkoutStage.RESULTS
+    assert any("Block splits:" == line for line in snapshot.note_lines)
+    assert any("1H " in line and "2H " in line for line in snapshot.note_lines)
 
 
 def test_airborne_numerical_workout_attempt_result_omits_reflection_metrics(tmp_path) -> None:
@@ -205,6 +211,41 @@ def test_real_airborne_numerical_workout_matches_standard_90_minute_structure() 
         "Fuel-burn solving",
         "Full-question solving",
     }.issubset(set(plan.focus_skills))
+
+
+@pytest.mark.parametrize(
+    ("drill_code", "expected_title_prefix"),
+    (
+        ("ma_one_step_fluency", "Mental Arithmetic: One-Step Fluency"),
+        ("tbl_single_lookup_anchor", "Table Reading: Single Lookup Anchor"),
+        ("sl_one_rule_identify", "System Logic: One-Rule Identify"),
+        ("dtb_tracking_recall", "Dual-Task Bridge: Tracking + Recall"),
+    ),
+)
+def test_build_workout_block_engine_supports_new_primitive_drill_codes(
+    drill_code: str,
+    expected_title_prefix: str,
+) -> None:
+    clock = FakeClock()
+    block = AntWorkoutBlockPlan(
+        block_id=f"test_{drill_code}",
+        label=drill_code,
+        description="Primitive drill smoke block.",
+        focus_skills=("Primitive",),
+        drill_code=drill_code,
+        mode=AntDrillMode.BUILD,
+        duration_min=0.25,
+    )
+
+    engine = build_workout_block_engine(
+        clock=clock,
+        block_seed=1234,
+        difficulty_level=5,
+        block=block,
+    )
+    snap = engine.snapshot()
+
+    assert str(snap.title).startswith(expected_title_prefix)
 
 
 def test_workout_dev_skip_hotkeys_advance_shell_skip_block_and_finish(
@@ -358,7 +399,49 @@ def test_workout_dev_skip_does_not_persist_attempt(
         )
         screen.render(surface)
 
-        assert store.session_summary() is None
+        session_summary = store.session_summary()
+        assert session_summary is not None
+        assert session_summary.activity_count == 1
+        assert session_summary.completed_activity_count == 0
+        assert session_summary.aborted_activity_count == 1
+        assert session_summary.attempt_count == 0
         assert screen._results_persistence_lines == ["Local save skipped in dev mode."]
+    finally:
+        pygame.quit()
+
+
+def test_workout_screen_uses_single_activity_session_while_running_block(tmp_path) -> None:
+    clock = FakeClock()
+    session = AntWorkoutSession(
+        clock=clock,
+        seed=123,
+        plan=_build_small_workout_plan(),
+        starting_level=5,
+    )
+    pygame.init()
+    surface = pygame.display.set_mode((960, 540))
+    font = pygame.font.Font(None, 36)
+    store = ResultsStore(tmp_path / "results.sqlite3")
+    app = App(surface=surface, font=font, results_store=store)
+    app.push(MenuScreen(app, "Main Menu", [MenuItem("Quit", app.quit)], is_root=True))
+    screen = AntWorkoutScreen(app, session=session, test_code="airborne_numerical_workout")
+    app.push(screen)
+    try:
+        session.activate()
+        session.append_text("Need better tempo")
+        session.activate()
+        session.append_text("Move on after misses")
+        session.activate()
+        session.activate()
+        assert session.stage is AntWorkoutStage.BLOCK
+
+        screen.render(surface)
+
+        with sqlite3.connect(store.path) as conn:
+            activity_count = conn.execute("SELECT COUNT(*) FROM activity_session").fetchone()
+            attempt_count = conn.execute("SELECT COUNT(*) FROM attempt").fetchone()
+
+        assert activity_count == (1,)
+        assert attempt_count == (0,)
     finally:
         pygame.quit()

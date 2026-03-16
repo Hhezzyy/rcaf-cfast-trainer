@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from .clock import Clock
+from .content_variants import stable_variant_id
 from .cognitive_core import AnswerScorer, Problem, SeededRng, TimedTextInputTest, clamp01, lerp_int
 
 
@@ -50,6 +51,9 @@ class TableReadingPayload:
     correct_code: int
     correct_value: int
     estimate_tolerance: int
+    content_family: str = ""
+    variant_id: str = ""
+    content_pack: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -287,6 +291,38 @@ _PART_ONE_PACKS: tuple[_PartOneCardPack, ...] = (
         col_curve=2,
         cross=3,
     ),
+    _build_part_one_pack(
+        family="dispatch",
+        title="Card J - Dispatch Table",
+        row_header="Dispatch",
+        column_header="Window",
+        row_prefix="D",
+        row_count=9,
+        column_prefix="W",
+        column_count=11,
+        base=156,
+        row_gain=19,
+        col_gain=15,
+        row_curve=4,
+        col_curve=3,
+        cross=6,
+    ),
+    _build_part_one_pack(
+        family="range",
+        title="Card K - Range Table",
+        row_header="Range",
+        column_header="Band",
+        row_prefix="RG",
+        row_count=11,
+        column_prefix="B",
+        column_count=9,
+        base=188,
+        row_gain=17,
+        col_gain=14,
+        row_curve=5,
+        col_curve=4,
+        cross=4,
+    ),
 )
 
 _PART_TWO_CARD_SETS: tuple[_PartTwoCardSet, ...] = (
@@ -347,6 +383,44 @@ _PART_TWO_CARD_SETS: tuple[_PartTwoCardSet, ...] = (
         correction_col_gain=1,
         correction_cross=1,
     ),
+    _build_part_two_set(
+        family="descent",
+        index_title="Card L - Descent Index Table",
+        correction_title="Card M - Recovery Angle Table",
+        index_row_header="Track Speed",
+        index_column_header="Sink Rate",
+        index_row_labels=("90", "110", "130", "150", "170", "190", "210", "230"),
+        index_column_labels=("4", "8", "12", "16", "20", "24", "28"),
+        correction_column_header="Recovery Arc",
+        correction_column_labels=("15", "25", "35", "45", "55", "65", "75", "85"),
+        base=1,
+        row_divisor=2,
+        col_divisor=1,
+        bias=1,
+        correction_base=2,
+        correction_row_gain=1,
+        correction_col_gain=1,
+        correction_cross=1,
+    ),
+    _build_part_two_set(
+        family="timing",
+        index_title="Card N - Timing Index Table",
+        correction_title="Card O - Timing Adjustment Table",
+        index_row_header="Ground Speed",
+        index_column_header="Timing Error",
+        index_row_labels=("80", "100", "120", "140", "160", "180", "200", "220"),
+        index_column_labels=("5", "10", "15", "20", "25", "30", "35", "40"),
+        correction_column_header="Adjustment Angle",
+        correction_column_labels=("10", "20", "30", "40", "50", "60", "70", "80", "90"),
+        base=1,
+        row_divisor=1,
+        col_divisor=2,
+        bias=1,
+        correction_base=1,
+        correction_row_gain=1,
+        correction_col_gain=1,
+        correction_cross=0,
+    ),
 )
 
 _PART_ONE_PACK_BY_FAMILY = {pack.family: pack for pack in _PART_ONE_PACKS}
@@ -394,6 +468,8 @@ class TableReadingGenerator:
 
     def __init__(self, *, seed: int) -> None:
         self._rng = SeededRng(seed)
+        self._recent_part_one_families: list[str] = []
+        self._recent_part_two_families: list[str] = []
 
     @staticmethod
     def supported_part_one_families() -> tuple[str, ...]:
@@ -458,6 +534,14 @@ class TableReadingGenerator:
             correct_code=correct_code,
             correct_value=correct_value,
             estimate_tolerance=tolerance,
+            content_family=pack.family,
+            variant_id=stable_variant_id(
+                "part_one",
+                pack.family,
+                row_label,
+                col_label,
+            ),
+            content_pack="part_one",
         )
         return Problem(prompt=prompt, answer=correct_value, payload=payload)
 
@@ -499,12 +583,30 @@ class TableReadingGenerator:
             correct_code=correct_code,
             correct_value=correct_value,
             estimate_tolerance=tolerance,
+            content_family=card_set.family,
+            variant_id=stable_variant_id(
+                "part_two",
+                card_set.family,
+                speed_label,
+                wind_label,
+                angle_label,
+            ),
+            content_pack="part_two",
         )
         return Problem(prompt=prompt, answer=correct_value, payload=payload)
 
     def _select_part_one_pack(self, family: str | None) -> _PartOneCardPack:
         if family is None:
-            return _PART_ONE_PACKS[self._rng.randint(0, len(_PART_ONE_PACKS) - 1)]
+            pool = [
+                pack
+                for pack in _PART_ONE_PACKS
+                if pack.family not in self._recent_part_one_families[-2:]
+            ] or list(_PART_ONE_PACKS)
+            selected = pool[self._rng.randint(0, len(pool) - 1)]
+            self._recent_part_one_families.append(selected.family)
+            if len(self._recent_part_one_families) > 3:
+                del self._recent_part_one_families[:-3]
+            return selected
         token = str(family).strip().lower()
         if token not in _PART_ONE_PACK_BY_FAMILY:
             raise ValueError(f"Unknown Table Reading Part 1 family: {family}")
@@ -512,7 +614,16 @@ class TableReadingGenerator:
 
     def _select_part_two_set(self, family: str | None) -> _PartTwoCardSet:
         if family is None:
-            return _PART_TWO_CARD_SETS[self._rng.randint(0, len(_PART_TWO_CARD_SETS) - 1)]
+            pool = [
+                card_set
+                for card_set in _PART_TWO_CARD_SETS
+                if card_set.family not in self._recent_part_two_families[-2:]
+            ] or list(_PART_TWO_CARD_SETS)
+            selected = pool[self._rng.randint(0, len(pool) - 1)]
+            self._recent_part_two_families.append(selected.family)
+            if len(self._recent_part_two_families) > 3:
+                del self._recent_part_two_families[:-3]
+            return selected
         token = str(family).strip().lower()
         if token not in _PART_TWO_SET_BY_FAMILY:
             raise ValueError(f"Unknown Table Reading Part 2 family: {family}")

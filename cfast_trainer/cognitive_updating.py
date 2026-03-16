@@ -25,7 +25,13 @@ COGNITIVE_UPDATING_DOMAIN_ORDER = (
     "objectives",
     "state_code",
 )
-COGNITIVE_UPDATING_SCENARIO_FAMILIES = ("baseline", "compressed", "staggered")
+COGNITIVE_UPDATING_SCENARIO_FAMILIES = (
+    "baseline",
+    "compressed",
+    "staggered",
+    "crosscheck",
+    "recovery_window",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,6 +88,32 @@ _COGNITIVE_UPDATING_SCENARIO_CONFIGS: dict[str, _CognitiveUpdatingScenarioFamily
         tank_drain_scale=1.04,
         starting_upper_tab_index=5,
         starting_lower_tab_index=3,
+    ),
+    "crosscheck": _CognitiveUpdatingScenarioFamilyConfig(
+        label="Crosscheck",
+        camera_due_scale=0.92,
+        sensor_due_scale=0.88,
+        objective_deadline_scale=1.02,
+        comms_time_limit_scale=0.94,
+        message_reveal_scale=0.84,
+        pressure_drift_scale=1.08,
+        speed_drift_scale=1.10,
+        tank_drain_scale=1.08,
+        starting_upper_tab_index=1,
+        starting_lower_tab_index=2,
+    ),
+    "recovery_window": _CognitiveUpdatingScenarioFamilyConfig(
+        label="Recovery Window",
+        camera_due_scale=1.12,
+        sensor_due_scale=1.08,
+        objective_deadline_scale=1.10,
+        comms_time_limit_scale=1.14,
+        message_reveal_scale=1.08,
+        pressure_drift_scale=0.86,
+        speed_drift_scale=0.88,
+        tank_drain_scale=0.94,
+        starting_upper_tab_index=4,
+        starting_lower_tab_index=0,
     ),
 }
 

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from .clock import Clock
+from .content_variants import stable_variant_id
 from .cognitive_core import AnswerScorer, Problem, SeededRng, TimedTextInputTest, clamp01
 
 
@@ -55,6 +56,9 @@ class SystemLogicPayload:
     reasoning_mode: str
     required_index_codes: tuple[int, ...]
     required_document_kinds: tuple[str, ...]
+    content_family: str = ""
+    variant_id: str = ""
+    content_pack: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,6 +97,7 @@ class SystemLogicGenerator:
         "electrical",
         "hydraulic",
         "thermal",
+        "pressurization",
     )
     _TEMPLATE_SPECS = (
         _SystemLogicTemplateSpec("oil", "fault_diagnosis", "_build_oil_advisory_case"),
@@ -105,11 +110,15 @@ class SystemLogicGenerator:
         _SystemLogicTemplateSpec("hydraulic", "state_diagnosis", "_build_hydraulic_warning_case"),
         _SystemLogicTemplateSpec("thermal", "state_diagnosis", "_build_thermal_fan_case"),
         _SystemLogicTemplateSpec("thermal", "rule_application", "_build_thermal_derate_case"),
+        _SystemLogicTemplateSpec("thermal", "quantitative_duration", "_build_thermal_margin_case"),
+        _SystemLogicTemplateSpec("pressurization", "dependency_trace", "_build_pressurization_bleed_case"),
+        _SystemLogicTemplateSpec("pressurization", "quantitative_duration", "_build_pressurization_hold_case"),
     )
 
     def __init__(self, *, seed: int) -> None:
         self._rng = SeededRng(seed)
         self._scenario_index = 0
+        self._recent_template_keys: list[str] = []
 
     @classmethod
     def supported_families_for_reasoning_family(cls, reasoning_family: str) -> tuple[str, ...]:
@@ -185,7 +194,19 @@ class SystemLogicGenerator:
             )
         if len(matches) == 1:
             return matches[0]
-        return matches[int(self._rng.randint(0, len(matches) - 1))]
+        recent = set(self._recent_template_keys[-2:])
+        pool = [
+            spec
+            for spec in matches
+            if stable_variant_id(spec.family, spec.reasoning_mode, spec.builder_name) not in recent
+        ] or list(matches)
+        selected = pool[int(self._rng.randint(0, len(pool) - 1))]
+        self._recent_template_keys.append(
+            stable_variant_id(selected.family, selected.reasoning_mode, selected.builder_name)
+        )
+        if len(self._recent_template_keys) > 3:
+            del self._recent_template_keys[:-3]
+        return selected
 
     def _payload_from_spec(
         self,
@@ -195,7 +216,13 @@ class SystemLogicGenerator:
         difficulty: float,
     ) -> SystemLogicPayload:
         builder = getattr(self, spec.builder_name)
-        return builder(scenario_code=scenario_code, difficulty=difficulty)
+        payload = builder(scenario_code=scenario_code, difficulty=difficulty)
+        return replace(
+            payload,
+            content_family=spec.family,
+            variant_id=stable_variant_id(spec.family, spec.reasoning_mode, spec.builder_name),
+            content_pack="logic_templates",
+        )
 
     def _build_fuel_endurance_case(
         self,
@@ -1278,6 +1305,184 @@ class SystemLogicGenerator:
             reasoning_mode="rule_application",
             required_index_codes=(0, 1, 2),
             required_document_kinds=("graph", "equation"),
+        )
+
+    def _build_thermal_margin_case(
+        self,
+        *,
+        scenario_code: str,
+        difficulty: float,
+    ) -> SystemLogicPayload:
+        ambient_c = self._rng.randint(18, 34)
+        recirc_gain = self._rng.randint(3, 8)
+        exchanger_drop = self._rng.randint(5, 12)
+        margin_floor = self._rng.randint(8, 14)
+        effective_margin = ambient_c + recirc_gain - exchanger_drop
+        correct_minutes = max(1, (margin_floor + 24 - effective_margin) * 6)
+        distractors = {
+            max(1, (margin_floor + 18 - effective_margin) * 6),
+            max(1, (margin_floor + 30 - effective_margin) * 5),
+            max(1, (margin_floor + 24 - effective_margin) * 4),
+            max(1, (margin_floor + 20 - effective_margin) * 7),
+        }
+        choices = self._numeric_choices(correct_minutes, distractors, suffix=" min")
+        entries = (
+            SystemLogicIndexEntry(
+                code=0,
+                label="Thermal Inputs",
+                top_document=self._table_doc(
+                    title="Thermal Margin Inputs",
+                    headers=("Metric", "Value"),
+                    rows=(
+                        ("Ambient air", f"{ambient_c} C"),
+                        ("Recirculation gain", f"{recirc_gain} C"),
+                        ("Exchanger drop", f"{exchanger_drop} C"),
+                        ("Margin floor", f"{margin_floor} C"),
+                    ),
+                ),
+                bottom_document=self._facts_doc(
+                    title="Rule",
+                    lines=("effective margin = ambient + recirculation gain - exchanger drop",),
+                ),
+            ),
+            SystemLogicIndexEntry(
+                code=1,
+                label="Hold Estimate",
+                top_document=self._equation_doc(
+                    title="Hold Endurance",
+                    lines=(
+                        "minutes available = (margin floor + 24 - effective margin) x 6",
+                        "if the term is less than 1, use 1 minute",
+                    ),
+                ),
+                bottom_document=self._facts_doc(
+                    title="Question Focus",
+                    lines=("Estimate how long full cooling margin remains available.",),
+                ),
+            ),
+        )
+        return SystemLogicPayload(
+            scenario_code=scenario_code,
+            system_family="thermal/cooling",
+            index_entries=entries,
+            question="How many minutes of full thermal margin remain?",
+            answer_choices=choices,
+            correct_choice_code=self._find_correct_choice_code(choices, f"{correct_minutes} min"),
+            reasoning_mode="quantitative_duration",
+            required_index_codes=(0, 1),
+            required_document_kinds=("table", "equation"),
+        )
+
+    def _build_pressurization_bleed_case(
+        self,
+        *,
+        scenario_code: str,
+        difficulty: float,
+    ) -> SystemLogicPayload:
+        left_bleed = self._rng.random() < 0.7
+        right_bleed = self._rng.random() < 0.7
+        isolation_open = self._rng.random() < (0.25 + difficulty * 0.35)
+        pack_selected = "LEFT" if self._rng.random() < 0.5 else "RIGHT"
+        if pack_selected == "LEFT":
+            correct_text = "OPEN" if left_bleed or (right_bleed and isolation_open) else "CLOSED"
+        else:
+            correct_text = "OPEN" if right_bleed or (left_bleed and isolation_open) else "CLOSED"
+        choices = self._text_choices(
+            correct_text=correct_text,
+            distractors=("OPEN", "CLOSED", "STANDBY", "ISOLATED", "MANUAL"),
+        )
+        entries = (
+            SystemLogicIndexEntry(
+                code=0,
+                label="Bleed Sources",
+                top_document=self._table_doc(
+                    title="Bleed Availability",
+                    headers=("Source", "State"),
+                    rows=(
+                        ("Left bleed", "OPEN" if left_bleed else "CLOSED"),
+                        ("Right bleed", "OPEN" if right_bleed else "CLOSED"),
+                        ("Isolation", "OPEN" if isolation_open else "CLOSED"),
+                    ),
+                ),
+                bottom_document=self._facts_doc(
+                    title="Pack Selection",
+                    lines=(f"Pressurization pack selected: {pack_selected}",),
+                ),
+            ),
+            SystemLogicIndexEntry(
+                code=1,
+                label="Feed Path",
+                top_document=self._diagram_doc(
+                    title="Bleed Routing",
+                    paths=(("Left bleed", "Isolation", "Right manifold"), ("Right bleed", "Pack", "Cabin"),),
+                ),
+                bottom_document=self._facts_doc(
+                    title="Routing Rule",
+                    lines=("A pack opens only if its own bleed is open or the opposite bleed can crossfeed through an open isolation valve.",),
+                ),
+            ),
+        )
+        return SystemLogicPayload(
+            scenario_code=scenario_code,
+            system_family="pressurization",
+            index_entries=entries,
+            question=f"Is the {pack_selected.lower()} pressurization pack effectively supplied?",
+            answer_choices=choices,
+            correct_choice_code=self._find_correct_choice_code(choices, correct_text),
+            reasoning_mode="dependency_trace",
+            required_index_codes=(0, 1),
+            required_document_kinds=("table", "diagram"),
+        )
+
+    def _build_pressurization_hold_case(
+        self,
+        *,
+        scenario_code: str,
+        difficulty: float,
+    ) -> SystemLogicPayload:
+        bottle_units = self._rng.randint(18, 28)
+        leak_units = self._rng.randint(2, 5)
+        demand_units = self._rng.randint(3, 7)
+        reserve_units = self._rng.randint(3, 6)
+        effective_draw = demand_units + (leak_units if difficulty >= 0.45 else max(1, leak_units - 1))
+        correct_minutes = max(1, ((bottle_units - reserve_units) * 10) // max(1, effective_draw))
+        distractors = {
+            max(1, (bottle_units * 10) // max(1, effective_draw)),
+            max(1, ((bottle_units - reserve_units) * 8) // max(1, effective_draw)),
+            max(1, ((bottle_units - reserve_units) * 10) // max(1, demand_units)),
+            max(1, ((bottle_units - reserve_units - 2) * 10) // max(1, effective_draw)),
+        }
+        choices = self._numeric_choices(correct_minutes, distractors, suffix=" min")
+        entries = (
+            SystemLogicIndexEntry(
+                code=0,
+                label="Bottle Status",
+                top_document=self._table_doc(
+                    title="Cabin Bottle Status",
+                    headers=("Metric", "Units"),
+                    rows=(
+                        ("Bottle units", str(bottle_units)),
+                        ("Leak rate", str(leak_units)),
+                        ("Cabin demand", str(demand_units)),
+                        ("Locked reserve", str(reserve_units)),
+                    ),
+                ),
+                bottom_document=self._facts_doc(
+                    title="Consumption Rule",
+                    lines=("usable units = bottle units - locked reserve", "effective draw = cabin demand + leak rate"),
+                ),
+            ),
+        )
+        return SystemLogicPayload(
+            scenario_code=scenario_code,
+            system_family="pressurization",
+            index_entries=entries,
+            question="How many minutes of pressurization hold remain before reserve only?",
+            answer_choices=choices,
+            correct_choice_code=self._find_correct_choice_code(choices, f"{correct_minutes} min"),
+            reasoning_mode="quantitative_duration",
+            required_index_codes=(0,),
+            required_document_kinds=("table",),
         )
 
     @staticmethod

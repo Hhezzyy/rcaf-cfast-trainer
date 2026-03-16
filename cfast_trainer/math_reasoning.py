@@ -11,6 +11,8 @@ MR_DISTANCE_FROM_SPEED_TIME = "distance_from_speed_time"
 MR_TIME_FROM_DISTANCE_SPEED = "time_from_distance_speed"
 MR_SPEED_FROM_DISTANCE_TIME = "speed_from_distance_time"
 MR_FUEL_REMAINING = "fuel_remaining"
+MR_FUEL_ENDURANCE = "fuel_endurance"
+MR_RESERVE_MARGIN = "reserve_margin"
 MR_PERCENTAGE_CHANGE = "percentage_change"
 MR_AVERAGE_SPEED_TWO_LEGS = "average_speed_two_legs"
 MR_RATE_SCALING = "rate_scaling"
@@ -20,6 +22,8 @@ MR_ALL_DOMAIN_KEYS: tuple[str, ...] = (
     MR_TIME_FROM_DISTANCE_SPEED,
     MR_SPEED_FROM_DISTANCE_TIME,
     MR_FUEL_REMAINING,
+    MR_FUEL_ENDURANCE,
+    MR_RESERVE_MARGIN,
     MR_PERCENTAGE_CHANGE,
     MR_AVERAGE_SPEED_TWO_LEGS,
     MR_RATE_SCALING,
@@ -30,9 +34,12 @@ MR_MOTION_FUEL_DOMAIN_KEYS: tuple[str, ...] = (
     MR_TIME_FROM_DISTANCE_SPEED,
     MR_SPEED_FROM_DISTANCE_TIME,
     MR_FUEL_REMAINING,
+    MR_FUEL_ENDURANCE,
+    MR_RESERVE_MARGIN,
 )
 
 MR_REMAINING_DOMAIN_KEYS: tuple[str, ...] = (
+    MR_RESERVE_MARGIN,
     MR_PERCENTAGE_CHANGE,
     MR_AVERAGE_SPEED_TWO_LEGS,
     MR_RATE_SCALING,
@@ -143,6 +150,10 @@ class MathReasoningGenerator:
             return self._speed_from_distance_time_spec(difficulty, include_filler=include_filler)
         if token == MR_FUEL_REMAINING:
             return self._fuel_remaining_spec(difficulty, include_filler=include_filler)
+        if token == MR_FUEL_ENDURANCE:
+            return self._fuel_endurance_spec(difficulty, include_filler=include_filler)
+        if token == MR_RESERVE_MARGIN:
+            return self._reserve_margin_spec(difficulty, include_filler=include_filler)
         if token == MR_PERCENTAGE_CHANGE:
             return self._percentage_change_spec(difficulty, include_filler=include_filler)
         if token == MR_AVERAGE_SPEED_TWO_LEGS:
@@ -420,6 +431,89 @@ class MathReasoningGenerator:
             distractors=distractors,
             facts=facts,
             solution_label="New time",
+        )
+
+    def _fuel_endurance_spec(
+        self,
+        difficulty: float,
+        *,
+        include_filler: bool,
+    ) -> MathReasoningScenarioSpec:
+        burn_lo = lerp_int(10, 18, difficulty)
+        burn_hi = lerp_int(24, 42, difficulty)
+        burn_per_min = self._rng.randint(burn_lo, burn_hi)
+        endurance_minutes = self._rng.choice((30, 40, 45, 50, 60, 75, 90, 105))
+        start_fuel = burn_per_min * endurance_minutes
+        stem = (
+            f"An aircraft carries {start_fuel} L of usable fuel and burns {burn_per_min} L/min. "
+            "How many minutes of endurance does it have?"
+        )
+        distractors = (
+            max(1, burn_per_min + endurance_minutes),
+            max(1, start_fuel - burn_per_min),
+            max(1, endurance_minutes + 15),
+        )
+        facts = (
+            MathReasoningFact("Usable fuel", start_fuel, "L"),
+            MathReasoningFact("Burn rate", burn_per_min, "L/min"),
+        )
+        stem = self._append_filler(
+            stem,
+            include_filler=include_filler,
+            difficulty=difficulty,
+            context="fuel",
+        )
+        return self._scenario_spec(
+            domain_key=MR_FUEL_ENDURANCE,
+            domain="Fuel Planning",
+            stem=stem,
+            correct_value=endurance_minutes,
+            unit="minutes",
+            distractors=distractors,
+            facts=facts,
+            solution_label="Fuel endurance",
+        )
+
+    def _reserve_margin_spec(
+        self,
+        difficulty: float,
+        *,
+        include_filler: bool,
+    ) -> MathReasoningScenarioSpec:
+        trip_need = self._rng.choice((420, 480, 540, 600, 660, 720, 780))
+        reserve = self._rng.choice((60, 90, 120, 150, 180))
+        uplift = self._rng.choice((0, 40, 60, 80, 100, 120, 160))
+        start_fuel = trip_need + reserve + uplift
+        correct_margin = start_fuel - trip_need - reserve
+        stem = (
+            f"A sortie needs {trip_need} L for the trip and must keep {reserve} L in reserve. "
+            f"It launches with {start_fuel} L. How much margin remains after protecting reserve?"
+        )
+        distractors = (
+            max(0, start_fuel - trip_need),
+            max(0, reserve - uplift),
+            max(0, trip_need - reserve),
+        )
+        facts = (
+            MathReasoningFact("Trip fuel", trip_need, "L"),
+            MathReasoningFact("Reserve", reserve, "L"),
+            MathReasoningFact("Start fuel", start_fuel, "L"),
+        )
+        stem = self._append_filler(
+            stem,
+            include_filler=include_filler,
+            difficulty=difficulty,
+            context="reserve",
+        )
+        return self._scenario_spec(
+            domain_key=MR_RESERVE_MARGIN,
+            domain="Fuel Planning",
+            stem=stem,
+            correct_value=correct_margin,
+            unit="L",
+            distractors=distractors,
+            facts=facts,
+            solution_label="Reserve margin",
         )
 
     def _average_speed_two_legs_spec(

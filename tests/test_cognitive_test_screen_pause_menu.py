@@ -27,6 +27,7 @@ from cfast_trainer.cognitive_core import TestSnapshot as SnapshotModel
 from cfast_trainer.numerical_operations import build_numerical_operations_test
 from cfast_trainer.persistence import ResultsStore
 from cfast_trainer.rapid_tracking import build_rapid_tracking_test
+from cfast_trainer.runtime_defaults import RuntimeDefaultsStore
 from cfast_trainer.sensory_motor_apparatus import (
     SensoryMotorApparatusConfig,
     build_sensory_motor_apparatus_test,
@@ -143,6 +144,7 @@ def _build_app_and_screen(
     test_code: str | None = None,
     difficulty_settings_store: DifficultySettingsStore | None = None,
     input_profiles_store: InputProfilesStore | None = None,
+    runtime_defaults_store: RuntimeDefaultsStore | None = None,
 ) -> tuple[App, CognitiveTestScreen, list[_FakeEngine]]:
     pygame.init()
     surface = pygame.display.set_mode((960, 540))
@@ -152,6 +154,7 @@ def _build_app_and_screen(
         font=font,
         difficulty_settings_store=difficulty_settings_store,
         input_profiles_store=input_profiles_store,
+        runtime_defaults_store=runtime_defaults_store,
     )
     root = MenuScreen(app, "Main Menu", [MenuItem("Quit", app.quit)], is_root=True)
     app.push(root)
@@ -498,7 +501,12 @@ def test_dev_skip_does_not_persist_attempt(tmp_path, monkeypatch: pytest.MonkeyP
         )
         screen.render(surface)
 
-        assert store.session_summary() is None
+        session = store.session_summary()
+        assert session is not None
+        assert session.activity_count == 1
+        assert session.completed_activity_count == 0
+        assert session.aborted_activity_count == 1
+        assert session.attempt_count == 0
         assert screen._results_persistence_lines == ["Local save skipped in dev mode."]
     finally:
         pygame.quit()
@@ -1297,8 +1305,12 @@ def test_auditory_pause_reuses_last_live_world_frame_without_advancing() -> None
         pygame.quit()
 
 
-def test_pause_settings_changes_auditory_mix_controls() -> None:
-    _app, screen, engines = _build_app_and_screen(title="Auditory Capacity")
+def test_pause_settings_changes_auditory_mix_controls(tmp_path) -> None:
+    runtime_defaults_store = RuntimeDefaultsStore(tmp_path / "runtime-defaults.json")
+    _app, screen, engines = _build_app_and_screen(
+        title="Auditory Capacity",
+        runtime_defaults_store=runtime_defaults_store,
+    )
     try:
         surface = pygame.display.get_surface()
         assert surface is not None
@@ -1339,6 +1351,7 @@ def test_pause_settings_changes_auditory_mix_controls() -> None:
             pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RIGHT, "mod": 0, "unicode": ""})
         )
         assert engine._noise_level_override == 0.1
+        assert runtime_defaults_store.stored_auditory_noise_level() == pytest.approx(0.1)
 
         while screen._pause_settings_selected != distortion_index:
             screen.handle_event(
@@ -1348,6 +1361,7 @@ def test_pause_settings_changes_auditory_mix_controls() -> None:
             pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RIGHT, "mod": 0, "unicode": ""})
         )
         assert engine._distortion_level_override == 0.1
+        assert runtime_defaults_store.stored_auditory_distortion_level() == pytest.approx(0.1)
 
         while screen._pause_settings_selected != source_index:
             screen.handle_event(
@@ -1357,6 +1371,26 @@ def test_pause_settings_changes_auditory_mix_controls() -> None:
             pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RIGHT, "mod": 0, "unicode": ""})
         )
         assert engine._noise_source_override is not None
+        assert runtime_defaults_store.stored_auditory_noise_source() == engine._noise_source_override
+    finally:
+        pygame.quit()
+
+
+def test_runtime_defaults_apply_to_auditory_engine_on_launch(tmp_path) -> None:
+    runtime_defaults_store = RuntimeDefaultsStore(tmp_path / "runtime-defaults.json")
+    runtime_defaults_store.set_auditory_noise_level(0.4)
+    runtime_defaults_store.set_auditory_distortion_level(0.2)
+    runtime_defaults_store.set_auditory_noise_source("pink")
+
+    _app, _screen, engines = _build_app_and_screen(
+        title="Auditory Capacity",
+        runtime_defaults_store=runtime_defaults_store,
+    )
+    try:
+        engine = engines[-1]
+        assert engine._noise_level_override == pytest.approx(0.4)
+        assert engine._distortion_level_override == pytest.approx(0.2)
+        assert engine._noise_source_override == "pink"
     finally:
         pygame.quit()
 

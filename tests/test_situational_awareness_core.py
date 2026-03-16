@@ -13,6 +13,7 @@ from cfast_trainer.situational_awareness import (
     SituationalAwarenessTrainingProfile,
     SituationalAwarenessTrainingSegment,
     build_situational_awareness_test,
+    cell_label_from_xy,
 )
 
 
@@ -31,23 +32,33 @@ def _payload_signature(payload: SituationalAwarenessPayload | None) -> object:
     if payload is None:
         return None
     query = payload.active_query
+    cue_card = payload.cue_card
     return (
         str(payload.scenario_family),
         payload.scenario_index,
         round(payload.scenario_elapsed_s, 1),
         tuple(
             (
-                track.index,
-                track.callsign,
-                track.cell_label,
-                track.heading,
-                track.channel,
-                track.altitude_fl,
-                track.fuel_state,
-                track.waypoint,
+                contact.callsign,
+                contact.affiliation,
+                contact.cell_label,
+                contact.heading,
+                round(contact.fade, 2),
             )
-            for track in payload.tracks
+            for contact in payload.visible_contacts
         ),
+        None
+        if cue_card is None
+        else (
+            cue_card.callsign,
+            cue_card.next_waypoint,
+            cue_card.eta_clock_text,
+            cue_card.altitude_text,
+            cue_card.channel_text,
+            round(cue_card.fade, 2),
+        ),
+        payload.top_strip_text,
+        round(payload.top_strip_fade, 2),
         None
         if query is None
         else (
@@ -59,7 +70,7 @@ def _payload_signature(payload: SituationalAwarenessPayload | None) -> object:
             query.future_offset_s,
             tuple((choice.code, choice.text) for choice in query.answer_choices),
         ),
-        payload.recent_feed_lines,
+        payload.display_clock_text,
     )
 
 
@@ -67,7 +78,7 @@ def _advance_until_query(
     engine,
     clock: FakeClock,
     *,
-    max_steps: int = 180,
+    max_steps: int = 240,
     required_kind: SituationalAwarenessQueryKind | None = None,
 ) -> SituationalAwarenessPayload:
     for _ in range(max_steps):
@@ -159,7 +170,7 @@ def test_situational_awareness_different_seed_changes_family_or_query_stream() -
     assert seen1 != seen2
 
 
-def test_future_position_query_matches_future_live_track_cell() -> None:
+def test_future_location_query_matches_future_hidden_asset_cell() -> None:
     cfg = SituationalAwarenessConfig(
         scored_duration_s=90.0,
         practice_scenarios=0,
@@ -169,9 +180,7 @@ def test_future_position_query_matches_future_live_track_cell() -> None:
     )
     clock_query = FakeClock()
     clock_projection = FakeClock()
-    engine_query = build_situational_awareness_test(
-        clock=clock_query, seed=91, difficulty=0.5, config=cfg
-    )
+    engine_query = build_situational_awareness_test(clock=clock_query, seed=91, difficulty=0.5, config=cfg)
     engine_projection = build_situational_awareness_test(
         clock=clock_projection, seed=91, difficulty=0.5, config=cfg
     )
@@ -181,7 +190,7 @@ def test_future_position_query_matches_future_live_track_cell() -> None:
     payload = _advance_until_query(
         engine_query,
         clock_query,
-        required_kind=SituationalAwarenessQueryKind.FUTURE_POSITION,
+        required_kind=SituationalAwarenessQueryKind.FUTURE_LOCATION,
     )
     query = payload.active_query
     assert query is not None
@@ -197,38 +206,82 @@ def test_future_position_query_matches_future_live_track_cell() -> None:
         clock_projection.advance(1.0)
         engine_projection.update()
 
-    projection_payload = engine_projection.snapshot().payload
-    assert isinstance(projection_payload, SituationalAwarenessPayload)
-    subject = next(
-        track for track in projection_payload.tracks if track.callsign == query.subject_callsign
-    )
-    assert subject.cell_label == query.correct_answer_token
+    subject = engine_projection._live_assets[query.subject_callsign]
+    assert cell_label_from_xy(subject.x, subject.y) == query.correct_answer_token
 
 
-def test_code_status_query_answer_is_visible_in_status_panel() -> None:
-    cfg = SituationalAwarenessConfig(
-        scored_duration_s=75.0,
-        practice_scenarios=0,
-        scored_scenario_duration_s=75.0,
-        query_interval_min_s=12,
-        query_interval_max_s=12,
-    )
+def test_status_recall_query_uses_choice_mode_and_unique_options() -> None:
     clock = FakeClock()
-    engine = build_situational_awareness_test(clock=clock, seed=222, difficulty=0.7, config=cfg)
+    engine = build_situational_awareness_test(
+        clock=clock,
+        seed=222,
+        difficulty=0.7,
+        config=SituationalAwarenessConfig(
+            practice_scenarios=0,
+            scored_duration_s=45.0,
+            scored_scenario_duration_s=45.0,
+        ),
+        practice_segments=(),
+        scored_segments=(
+            SituationalAwarenessTrainingSegment(
+                label="Status Recall",
+                duration_s=45.0,
+                active_channels=("coded", "numerical", "aural"),
+                active_query_kinds=("status_recall",),
+                focus_label="Status recall",
+                profile=SituationalAwarenessTrainingProfile(
+                    query_interval_min_s=10,
+                    query_interval_max_s=10,
+                    response_window_s=9,
+                ),
+            ),
+        ),
+    )
     engine.start_scored()
 
     payload = _advance_until_query(
         engine,
         clock,
-        required_kind=SituationalAwarenessQueryKind.CODE_OR_STATUS_RECALL,
+        required_kind=SituationalAwarenessQueryKind.STATUS_RECALL,
     )
     query = payload.active_query
     assert query is not None
-    assert query.answer_mode is SituationalAwarenessAnswerMode.TRACK_INDEX
-    assert query.correct_answer_token in {str(entry.track_index) for entry in payload.status_entries}
+    assert query.answer_mode is SituationalAwarenessAnswerMode.CHOICE
+    assert query.correct_answer_token in {"1", "2", "3", "4"}
+    assert len(query.answer_choices) == 4
+    assert len({choice.text for choice in query.answer_choices}) == 4
 
 
-def test_action_query_scoring_is_binary_and_timeout_counts_as_miss() -> None:
+def test_grid_queries_target_hidden_subject_after_cues_fade() -> None:
+    cfg = SituationalAwarenessConfig(
+        scored_duration_s=90.0,
+        practice_scenarios=0,
+        scored_scenario_duration_s=90.0,
+        query_interval_min_s=12,
+        query_interval_max_s=12,
+    )
+    clock = FakeClock()
+    engine = build_situational_awareness_test(clock=clock, seed=444, difficulty=0.6, config=cfg)
+    engine.start_scored()
+
+    for _ in range(180):
+        payload = engine.snapshot().payload
+        if isinstance(payload, SituationalAwarenessPayload) and payload.active_query is not None:
+            query = payload.active_query
+            if query.kind in (
+                SituationalAwarenessQueryKind.CURRENT_LOCATION,
+                SituationalAwarenessQueryKind.FUTURE_LOCATION,
+            ):
+                visible_callsigns = {contact.callsign for contact in payload.visible_contacts}
+                assert query.subject_callsign not in visible_callsigns
+                return
+        clock.advance(1.0)
+        engine.update()
+
+    raise AssertionError("Expected a hidden-subject grid query in the scored stream.")
+
+
+def test_safe_to_move_scoring_is_binary_and_timeout_counts_as_miss() -> None:
     cfg = SituationalAwarenessConfig(
         scored_duration_s=75.0,
         practice_scenarios=0,
@@ -243,7 +296,7 @@ def test_action_query_scoring_is_binary_and_timeout_counts_as_miss() -> None:
     payload = _advance_until_query(
         engine,
         clock,
-        required_kind=SituationalAwarenessQueryKind.ACTION_SELECTION,
+        required_kind=SituationalAwarenessQueryKind.SAFE_TO_MOVE,
     )
     query = payload.active_query
     assert query is not None
@@ -262,6 +315,8 @@ def test_action_query_scoring_is_binary_and_timeout_counts_as_miss() -> None:
     assert len(scored_events) >= 2
     assert scored_events[0].score == pytest.approx(0.0)
     assert scored_events[1].score == pytest.approx(0.0)
+    assert scored_events[1].user_answer == 0
+    assert scored_events[1].raw == ""
 
 
 def test_default_config_matches_guide_focused_runtime() -> None:
@@ -288,7 +343,7 @@ def test_custom_segment_payload_exposes_focus_metadata_and_restricts_query_kinds
                 label="Projection Focus",
                 duration_s=45.0,
                 active_channels=("pictorial", "numerical"),
-                active_query_kinds=("future_position",),
+                active_query_kinds=("future_location",),
                 focus_label="Future projection",
                 profile=SituationalAwarenessTrainingProfile(
                     min_track_count=3,
@@ -304,8 +359,8 @@ def test_custom_segment_payload_exposes_focus_metadata_and_restricts_query_kinds
 
     payload = _advance_until_query(engine, clock)
     assert payload.active_channels == ("pictorial", "numerical")
-    assert payload.active_query_kinds == ("future_position",)
+    assert payload.active_query_kinds == ("future_location",)
     assert payload.focus_label == "Future projection"
     assert payload.segment_label == "Projection Focus"
     assert payload.active_query is not None
-    assert payload.active_query.kind is SituationalAwarenessQueryKind.FUTURE_POSITION
+    assert payload.active_query.kind is SituationalAwarenessQueryKind.FUTURE_LOCATION

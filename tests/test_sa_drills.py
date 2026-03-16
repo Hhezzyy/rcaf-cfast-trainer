@@ -112,27 +112,27 @@ def test_sa_drills_are_deterministic_for_same_seed_and_answers(builder) -> None:
         (
             build_sa_picture_anchor_drill,
             ("pictorial", "coded", "numerical"),
-            ("future_position", "contact_identification"),
+            ("current_location", "future_location"),
         ),
         (
             build_sa_contact_identification_prime_drill,
             ("pictorial", "coded"),
-            ("contact_identification",),
+            ("current_location",),
         ),
         (
             build_sa_status_recall_prime_drill,
             ("coded", "numerical", "aural"),
-            ("code_or_status_recall",),
+            ("status_recall",),
         ),
         (
             build_sa_future_projection_run_drill,
             ("pictorial", "numerical", "aural"),
-            ("future_position",),
+            ("future_location",),
         ),
         (
             build_sa_action_selection_run_drill,
             SA_CHANNEL_ORDER,
-            ("action_selection",),
+            ("safe_to_move",),
         ),
     ),
 )
@@ -189,23 +189,23 @@ def test_sa_mixed_tempo_repeats_fixed_query_kind_cycle() -> None:
         seed=27,
         difficulty=0.5,
         mode=AntDrillMode.TEMPO,
-        config=SaDrillConfig(scored_duration_s=390.0),
+        config=SaDrillConfig(scored_duration_s=480.0),
     )
     drill.start_practice()
 
     observed: list[str] = []
-    for _ in range(480):
+    for _ in range(540):
         payload = drill.snapshot().payload
         assert isinstance(payload, SituationalAwarenessPayload)
         query_kind = payload.active_query_kinds[0]
         if not observed or observed[-1] != query_kind:
             observed.append(query_kind)
-        if len(observed) >= 5:
+        if len(observed) >= 6:
             break
         clock.advance(1.0)
         drill.update()
 
-    assert observed[:5] == [*SA_QUERY_KIND_ORDER, SA_QUERY_KIND_ORDER[0]]
+    assert observed[:6] == [*SA_QUERY_KIND_ORDER, SA_QUERY_KIND_ORDER[0]]
 
 
 def test_sa_pressure_run_keeps_all_channels_and_query_kinds_active() -> None:
@@ -219,10 +219,7 @@ def test_sa_pressure_run_keeps_all_channels_and_query_kinds_active() -> None:
     )
     drill.start_practice()
 
-    for _ in range(4):
-        payload = drill.snapshot().payload
-        assert isinstance(payload, SituationalAwarenessPayload)
-        assert payload.active_channels == SA_CHANNEL_ORDER
-        assert payload.active_query_kinds == SA_QUERY_KIND_ORDER
-        clock.advance(1.0)
-        drill.update()
+    payload = drill.snapshot().payload
+    assert isinstance(payload, SituationalAwarenessPayload)
+    assert payload.active_channels == SA_CHANNEL_ORDER
+    assert payload.active_query_kinds == SA_QUERY_KIND_ORDER

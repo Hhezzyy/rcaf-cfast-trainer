@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import argparse
+from dataclasses import asdict
+import json
 import sys
 from pathlib import Path
 
@@ -22,15 +25,23 @@ def _ensure_repo_root_on_path() -> None:
 
 try:
     # Works when executed as a module: python -m cfast_trainer
-    from .app import run  # type: ignore[attr-defined]
+    from .app import run, run_headless_sim  # type: ignore[attr-defined]
 except ImportError:
     # Works when executed as a script (VS Code “Run Python File”, absolute path, etc.)
     _ensure_repo_root_on_path()
-    from cfast_trainer.app import run  # type: ignore[attr-defined]
+    from cfast_trainer.app import run, run_headless_sim  # type: ignore[attr-defined]
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     """Entry point for running the trainer from the command line."""
+    parser = argparse.ArgumentParser(prog="python -m cfast_trainer")
+    parser.add_argument("--headless-sim", dest="headless_sim", type=str)
+    parser.add_argument("--max-frames", dest="max_frames", type=int, default=None)
+    args = parser.parse_args(argv)
+    if args.headless_sim:
+        result = run_headless_sim(args.headless_sim, max_frames=args.max_frames)
+        print(json.dumps(asdict(result), sort_keys=True))
+        return int(result.exit_code)
     return run()
 
 

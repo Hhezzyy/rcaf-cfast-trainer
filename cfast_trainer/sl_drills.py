@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from .ant_drills import (
     ANT_DRILL_MODE_PROFILES,
@@ -12,6 +12,7 @@ from .clock import Clock
 from .cognitive_core import Phase, Problem
 from .system_logic import (
     SystemLogicGenerator,
+    SystemLogicPayload,
     SystemLogicScorer,
     canonical_system_logic_reasoning_family,
 )
@@ -156,6 +157,126 @@ class SlPressureRunGenerator(SystemLogicGenerator):
             family=family,
             reasoning_family=reasoning,
         )
+
+
+class SlOneRuleIdentifyGenerator(_SystemLogicSingleReasoningGenerator):
+    _reasoning_family = "graph_rule"
+
+
+class SlMissingStepCompleteGenerator(_SystemLogicSingleReasoningGenerator):
+    _reasoning_family = "trace"
+
+
+class SlTwoSourceReconcileGenerator(SystemLogicGenerator):
+    _SEQUENCE = ("quantitative", "diagnosis", "graph_rule", "diagnosis")
+
+    def __init__(self, *, seed: int) -> None:
+        super().__init__(seed=seed)
+        self._reasoning_index = 0
+        self._family_cursor = 0
+
+    def next_problem(self, *, difficulty: float) -> Problem:
+        reasoning = self._SEQUENCE[self._reasoning_index % len(self._SEQUENCE)]
+        self._reasoning_index += 1
+        family = self._next_family(reasoning)
+        return self.next_problem_for_selection(
+            difficulty=difficulty,
+            family=family,
+            reasoning_family=reasoning,
+        )
+
+    def _next_family(self, reasoning: str) -> str:
+        supported = SystemLogicGenerator.supported_families_for_reasoning_family(reasoning)
+        family = supported[self._family_cursor % len(supported)]
+        self._family_cursor += 1
+        return family
+
+
+class SlRuleMatchGenerator(SystemLogicGenerator):
+    _SEQUENCE = ("graph_rule", "quantitative", "graph_rule", "trace")
+
+    def __init__(self, *, seed: int) -> None:
+        super().__init__(seed=seed)
+        self._reasoning_index = 0
+        self._family_cursor = 0
+
+    def next_problem(self, *, difficulty: float) -> Problem:
+        reasoning = self._SEQUENCE[self._reasoning_index % len(self._SEQUENCE)]
+        self._reasoning_index += 1
+        supported = SystemLogicGenerator.supported_families_for_reasoning_family(reasoning)
+        family = supported[self._family_cursor % len(supported)]
+        self._family_cursor += 1
+        return self.next_problem_for_selection(
+            difficulty=difficulty,
+            family=family,
+            reasoning_family=reasoning,
+        )
+
+
+class SlFastRejectGenerator(SystemLogicGenerator):
+    _SEQUENCE = ("diagnosis", "graph_rule", "diagnosis", "quantitative")
+
+    def __init__(self, *, seed: int) -> None:
+        super().__init__(seed=seed)
+        self._reasoning_index = 0
+        self._family_cursor = 0
+
+    def next_problem(self, *, difficulty: float) -> Problem:
+        reasoning = self._SEQUENCE[self._reasoning_index % len(self._SEQUENCE)]
+        self._reasoning_index += 1
+        supported = SystemLogicGenerator.supported_families_for_reasoning_family(reasoning)
+        family = supported[self._family_cursor % len(supported)]
+        self._family_cursor += 1
+        problem = self.next_problem_for_selection(
+            difficulty=difficulty,
+            family=family,
+            reasoning_family=reasoning,
+        )
+        return _fast_reject_variant(problem)
+
+
+def _shared_word_score(*, correct_text: str, candidate_text: str) -> tuple[int, int, str]:
+    correct_words = {
+        token for token in str(correct_text).lower().replace("/", " ").replace("-", " ").split()
+    }
+    candidate_words = {
+        token for token in str(candidate_text).lower().replace("/", " ").replace("-", " ").split()
+    }
+    shared = len(correct_words & candidate_words)
+    return (shared, len(candidate_words), str(candidate_text))
+
+
+def _fast_reject_variant(problem: Problem) -> Problem:
+    payload = problem.payload
+    if not isinstance(payload, SystemLogicPayload):
+        return problem
+    correct_text = next(
+        (
+            choice.text
+            for choice in payload.answer_choices
+            if int(choice.code) == int(payload.correct_choice_code)
+        ),
+        "",
+    )
+    ordered = tuple(
+        sorted(
+            payload.answer_choices,
+            key=lambda choice: (
+                int(choice.code) == int(payload.correct_choice_code),
+                _shared_word_score(correct_text=correct_text, candidate_text=choice.text),
+            ),
+            reverse=True,
+        )
+    )
+    prompt = (
+        f"{problem.prompt}\n"
+        "Reject the tempting distractor and choose the single answer fully supported by the guide."
+    )
+    return Problem(
+        prompt=prompt,
+        answer=problem.answer,
+        payload=replace(payload, answer_choices=ordered),
+    )
 
 
 def _build_sl_drill(
@@ -424,6 +545,151 @@ def build_sl_pressure_run_drill(
         mode=mode,
         config=cfg,
         base_caps_by_level=(38.0, 36.0, 34.0, 32.0, 30.0, 28.0, 26.0, 24.0, 22.0, 20.0),
+    )
+
+
+def build_sl_one_rule_identify_drill(
+    *,
+    clock: Clock,
+    seed: int,
+    difficulty: float = 0.5,
+    mode: AntDrillMode | str = AntDrillMode.BUILD,
+    config: SlDrillConfig | None = None,
+) -> SystemLogicTimedDrill:
+    cfg = config or SlDrillConfig()
+    profile = ANT_DRILL_MODE_PROFILES[_normalize_mode(mode)]
+    return _build_sl_drill(
+        title_base="System Logic: One-Rule Identify",
+        instructions=(
+            "System Logic: One-Rule Identify",
+            f"Mode: {profile.label}",
+            "Stay on the single rule or graph relation that unlocks the answer before mixed reasoning returns.",
+            "Use the existing two-pane guide layout, but identify the decisive rule quickly and cleanly.",
+            "Press Enter to begin practice.",
+        ),
+        generator=SlOneRuleIdentifyGenerator(seed=seed),
+        clock=clock,
+        seed=seed,
+        difficulty=difficulty,
+        mode=mode,
+        config=cfg,
+        base_caps_by_level=(50.0, 47.0, 44.0, 41.0, 38.0, 35.0, 32.0, 29.0, 26.0, 23.0),
+    )
+
+
+def build_sl_missing_step_complete_drill(
+    *,
+    clock: Clock,
+    seed: int,
+    difficulty: float = 0.5,
+    mode: AntDrillMode | str = AntDrillMode.BUILD,
+    config: SlDrillConfig | None = None,
+) -> SystemLogicTimedDrill:
+    cfg = config or SlDrillConfig()
+    profile = ANT_DRILL_MODE_PROFILES[_normalize_mode(mode)]
+    return _build_sl_drill(
+        title_base="System Logic: Missing-Step Complete",
+        instructions=(
+            "System Logic: Missing-Step Complete",
+            f"Mode: {profile.label}",
+            "Focus on the one missing transfer or dependency step instead of the entire mixed scenario.",
+            "Use the index deliberately and verify the step sequence before you answer.",
+            "Press Enter to begin practice.",
+        ),
+        generator=SlMissingStepCompleteGenerator(seed=seed),
+        clock=clock,
+        seed=seed,
+        difficulty=difficulty,
+        mode=mode,
+        config=cfg,
+        base_caps_by_level=(48.0, 45.0, 42.0, 39.0, 36.0, 33.0, 30.0, 27.0, 24.0, 22.0),
+    )
+
+
+def build_sl_two_source_reconcile_drill(
+    *,
+    clock: Clock,
+    seed: int,
+    difficulty: float = 0.5,
+    mode: AntDrillMode | str = AntDrillMode.TEMPO,
+    config: SlDrillConfig | None = None,
+) -> SystemLogicTimedDrill:
+    cfg = config or SlDrillConfig()
+    profile = ANT_DRILL_MODE_PROFILES[_normalize_mode(mode)]
+    return _build_sl_drill(
+        title_base="System Logic: Two-Source Reconcile",
+        instructions=(
+            "System Logic: Two-Source Reconcile",
+            f"Mode: {profile.label}",
+            "Reconcile two guide sources quickly instead of over-reading the whole index.",
+            "This block exists to make cross-checking table, rule, and fault evidence feel automatic.",
+            "Press Enter to begin practice.",
+        ),
+        generator=SlTwoSourceReconcileGenerator(seed=seed),
+        clock=clock,
+        seed=seed,
+        difficulty=difficulty,
+        mode=mode,
+        config=cfg,
+        base_caps_by_level=(46.0, 43.0, 40.0, 37.0, 34.0, 31.0, 29.0, 27.0, 25.0, 23.0),
+    )
+
+
+def build_sl_rule_match_drill(
+    *,
+    clock: Clock,
+    seed: int,
+    difficulty: float = 0.5,
+    mode: AntDrillMode | str = AntDrillMode.TEMPO,
+    config: SlDrillConfig | None = None,
+) -> SystemLogicTimedDrill:
+    cfg = config or SlDrillConfig()
+    profile = ANT_DRILL_MODE_PROFILES[_normalize_mode(mode)]
+    return _build_sl_drill(
+        title_base="System Logic: Rule Match",
+        instructions=(
+            "System Logic: Rule Match",
+            f"Mode: {profile.label}",
+            "Match the diagram, table, and rule relationship fast enough that the right pane stops feeling like extra overhead.",
+            "Keep the same A-E answer flow; only the reasoning profile gets narrower.",
+            "Press Enter to begin practice.",
+        ),
+        generator=SlRuleMatchGenerator(seed=seed),
+        clock=clock,
+        seed=seed,
+        difficulty=difficulty,
+        mode=mode,
+        config=cfg,
+        base_caps_by_level=(46.0, 43.0, 40.0, 37.0, 34.0, 31.0, 29.0, 27.0, 24.0, 22.0),
+    )
+
+
+def build_sl_fast_reject_drill(
+    *,
+    clock: Clock,
+    seed: int,
+    difficulty: float = 0.5,
+    mode: AntDrillMode | str = AntDrillMode.STRESS,
+    config: SlDrillConfig | None = None,
+) -> SystemLogicTimedDrill:
+    cfg = config or SlDrillConfig()
+    profile = ANT_DRILL_MODE_PROFILES[_normalize_mode(mode)]
+    return _build_sl_drill(
+        title_base="System Logic: Fast Reject",
+        instructions=(
+            "System Logic: Fast Reject",
+            f"Mode: {profile.label}",
+            "Bias toward tempting distractors and force yourself to reject them without rereading the whole guide.",
+            "Choose the single supported answer fast and move on.",
+            "Press Enter to begin practice.",
+        ),
+        generator=SlFastRejectGenerator(seed=seed),
+        clock=clock,
+        seed=seed,
+        difficulty=difficulty,
+        mode=mode,
+        config=cfg,
+        base_caps_by_level=(42.0, 39.0, 36.0, 33.0, 31.0, 29.0, 27.0, 25.0, 23.0, 21.0),
     )
 
 

@@ -6,6 +6,7 @@ from enum import StrEnum
 from typing import cast
 
 from .clock import Clock
+from .content_variants import content_metadata_from_payload, stable_variant_id
 from .cognitive_core import (
     AnswerScorer,
     AttemptSummary,
@@ -168,6 +169,9 @@ class SpatialIntegrationPayload:
     correct_point: SpatialIntegrationPoint
     correct_answer_token: str
     answer_map_route_points: tuple[SpatialIntegrationPoint, ...] = ()
+    content_family: str = ""
+    variant_id: str = ""
+    content_pack: str = ""
 
 
 def _clamp(v: int, lo: int, hi: int) -> int:
@@ -316,6 +320,9 @@ class _SpatialIntegrationSceneCluster:
     velocity: SpatialIntegrationVector
     show_aircraft_motion: bool
     questions: tuple[_SpatialIntegrationQuestion, ...]
+    content_family: str = ""
+    variant_id: str = ""
+    content_pack: str = ""
 
 
 class SpatialIntegrationGenerator:
@@ -365,11 +372,36 @@ class SpatialIntegrationGenerator:
             SpatialIntegrationPoint(6, 5, 2),
             SpatialIntegrationPoint(5, 6, 1),
         ),
+        (
+            SpatialIntegrationPoint(1, 3, 1),
+            SpatialIntegrationPoint(2, 2, 2),
+            SpatialIntegrationPoint(4, 2, 3),
+            SpatialIntegrationPoint(6, 3, 3),
+            SpatialIntegrationPoint(6, 5, 2),
+            SpatialIntegrationPoint(4, 6, 1),
+        ),
+        (
+            SpatialIntegrationPoint(1, 5, 1),
+            SpatialIntegrationPoint(2, 4, 2),
+            SpatialIntegrationPoint(3, 2, 3),
+            SpatialIntegrationPoint(5, 2, 4),
+            SpatialIntegrationPoint(6, 4, 3),
+            SpatialIntegrationPoint(5, 6, 2),
+        ),
+        (
+            SpatialIntegrationPoint(2, 6, 1),
+            SpatialIntegrationPoint(3, 5, 2),
+            SpatialIntegrationPoint(4, 3, 3),
+            SpatialIntegrationPoint(5, 2, 3),
+            SpatialIntegrationPoint(6, 3, 2),
+            SpatialIntegrationPoint(6, 5, 1),
+        ),
     )
 
     def __init__(self, *, seed: int) -> None:
         self._rng = SeededRng(seed)
         self._scene_id = 0
+        self._recent_route_variants: list[str] = []
 
     def next_scene_cluster(
         self,
@@ -489,6 +521,9 @@ class SpatialIntegrationGenerator:
             velocity=SpatialIntegrationVector(0, 0, 0),
             show_aircraft_motion=False,
             questions=questions,
+            content_family="static_scene",
+            variant_id=stable_variant_id("static", scene_id, "landmark_grid"),
+            content_pack="static",
         )
 
     def _build_aircraft_scene(
@@ -506,7 +541,17 @@ class SpatialIntegrationGenerator:
             specs=self._AIRCRAFT_OBJECT_SPECS,
             count=5,
         )
-        route = tuple(cast(tuple[SpatialIntegrationPoint, ...], self._rng.choice(self._ROUTE_TEMPLATES)))
+        candidate_indices = [
+            index
+            for index in range(len(self._ROUTE_TEMPLATES))
+            if stable_variant_id("aircraft_route", index) not in self._recent_route_variants[-2:]
+        ] or list(range(len(self._ROUTE_TEMPLATES)))
+        route_idx = int(self._rng.choice(candidate_indices))
+        route = tuple(cast(tuple[SpatialIntegrationPoint, ...], self._ROUTE_TEMPLATES[route_idx]))
+        route_variant = stable_variant_id("aircraft_route", route_idx)
+        self._recent_route_variants.append(route_variant)
+        if len(self._recent_route_variants) > 3:
+            del self._recent_route_variants[:-3]
         route_current_index = int(self._rng.randint(2, len(route) - 2))
         aircraft_prev = route[route_current_index - 1]
         aircraft_now = route[route_current_index]
@@ -604,6 +649,9 @@ class SpatialIntegrationGenerator:
             velocity=velocity,
             show_aircraft_motion=True,
             questions=questions,
+            content_family="aircraft_route",
+            variant_id=route_variant,
+            content_pack="aircraft",
         )
 
     def _sample_hills(self) -> tuple[SpatialIntegrationHill, ...]:
@@ -1286,6 +1334,9 @@ class SpatialIntegrationEngine:
             correct_point=question.correct_point,
             correct_answer_token=str(question.correct_answer_token),
             answer_map_route_points=question.answer_map_route_points,
+            content_family=scene.content_family,
+            variant_id=stable_variant_id(scene.variant_id, question.kind.value, question.query_label),
+            content_pack=scene.content_pack,
         )
         return Problem(
             prompt=question.stem,
@@ -1350,6 +1401,7 @@ class SpatialIntegrationEngine:
         score: float,
         response_time_s: float,
         answered_at_s: float,
+        is_timeout: bool = False,
     ) -> None:
         assert self._current_problem is not None
         presented = answered_at_s if self._question_presented_at_s is None else self._question_presented_at_s
@@ -1366,6 +1418,8 @@ class SpatialIntegrationEngine:
             raw=str(raw),
             score=float(score),
             max_score=1.0,
+            is_timeout=bool(is_timeout),
+            content_metadata=content_metadata_from_payload(self._current_problem.payload),
         )
         self._events.append(event)
         if self._phase is Phase.SCORED:
@@ -1382,6 +1436,7 @@ class SpatialIntegrationEngine:
             score=0.0,
             response_time_s=max(0.0, now - (self._question_presented_at_s or now)),
             answered_at_s=now,
+            is_timeout=True,
         )
         if self._phase is Phase.PRACTICE:
             self._practice_feedback = "Practice: timeout"

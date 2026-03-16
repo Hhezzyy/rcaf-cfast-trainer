@@ -698,6 +698,7 @@ class ClnDrillEngine:
                 raw="__timeout__" if is_timeout else f"MEM:{response}",
                 score=(2.0 if is_correct else 0.0),
                 max_score=2.0,
+                is_timeout=is_timeout,
             )
         )
         self._memory_answered = True

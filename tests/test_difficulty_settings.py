@@ -21,6 +21,7 @@ from cfast_trainer.app import (
     TestSeedSettingsScreen,
     TestSeedSettingsStore,
 )
+from cfast_trainer.runtime_defaults import RuntimeDefaultsStore
 
 
 def test_difficulty_settings_store_persists_global_and_per_test_levels(tmp_path) -> None:
@@ -352,6 +353,102 @@ def test_joystick_bindings_screen_captures_axis_and_button(tmp_path, monkeypatch
         assert slots[0] is not None
         assert slots[0].kind == "button"
         assert slots[0].control_index == 4
+    finally:
+        pygame.quit()
+
+
+def test_runtime_defaults_store_persists_display_and_auditory_values(tmp_path) -> None:
+    path = tmp_path / "runtime-defaults.json"
+    store = RuntimeDefaultsStore(path)
+
+    assert store.stored_window_mode() is None
+    assert store.stored_use_opengl() is None
+    assert store.stored_auditory_noise_level() is None
+    assert store.stored_auditory_distortion_level() is None
+    assert store.stored_auditory_noise_source() is None
+
+    store.set_window_mode("borderless")
+    store.set_use_opengl(True)
+    store.set_auditory_noise_level(0.3)
+    store.set_auditory_distortion_level(0.6)
+    store.set_auditory_noise_source("pink")
+
+    reloaded = RuntimeDefaultsStore(path)
+    assert reloaded.stored_window_mode() == "borderless"
+    assert reloaded.stored_use_opengl() is True
+    assert reloaded.stored_auditory_noise_level() == pytest.approx(0.3)
+    assert reloaded.stored_auditory_distortion_level() == pytest.approx(0.6)
+    assert reloaded.stored_auditory_noise_source() == "pink"
+
+
+def test_runtime_defaults_store_honors_env_overrides_and_default_path(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "runtime-defaults.json"
+    monkeypatch.setenv("CFAST_RUNTIME_DEFAULTS_PATH", str(path))
+
+    store = RuntimeDefaultsStore(RuntimeDefaultsStore.default_path())
+    store.set_auditory_noise_level(0.1)
+    store.set_auditory_distortion_level(0.2)
+    store.set_auditory_noise_source("brown")
+
+    monkeypatch.setenv("CFAST_AUDITORY_NOISE_LEVEL", "0.8")
+    monkeypatch.setenv("CFAST_AUDITORY_DISTORTION_LEVEL", "0.9")
+    monkeypatch.setenv("CFAST_AUDITORY_NOISE_SOURCE", "white")
+
+    reloaded = RuntimeDefaultsStore(RuntimeDefaultsStore.default_path())
+    assert RuntimeDefaultsStore.default_path() == path
+    assert reloaded.resolved_auditory_noise_level() == pytest.approx(0.8)
+    assert reloaded.resolved_auditory_distortion_level() == pytest.approx(0.9)
+    assert reloaded.resolved_auditory_noise_source() == "white"
+
+
+def test_app_applies_and_saves_runtime_defaults(tmp_path) -> None:
+    class _AudioEngine:
+        def __init__(self) -> None:
+            self.noise_level = None
+            self.distortion_level = None
+            self.noise_source = None
+
+        def set_audio_overrides(
+            self,
+            *,
+            noise_level: float | None = None,
+            distortion_level: float | None = None,
+            noise_source: str | None = None,
+        ) -> None:
+            self.noise_level = noise_level
+            self.distortion_level = distortion_level
+            self.noise_source = noise_source
+
+    pygame.init()
+    try:
+        surface = pygame.display.set_mode((960, 540))
+        font = pygame.font.Font(None, 36)
+        runtime_defaults = RuntimeDefaultsStore(tmp_path / "runtime-defaults.json")
+        runtime_defaults.set_auditory_noise_level(0.4)
+        runtime_defaults.set_auditory_distortion_level(0.1)
+        runtime_defaults.set_auditory_noise_source("pink")
+
+        app = App(surface=surface, font=font, runtime_defaults_store=runtime_defaults)
+        engine = _AudioEngine()
+        app.apply_runtime_defaults_to_engine(engine)
+
+        assert engine.noise_level == pytest.approx(0.4)
+        assert engine.distortion_level == pytest.approx(0.1)
+        assert engine.noise_source == "pink"
+
+        app.save_auditory_runtime_defaults(
+            noise_level=0.6,
+            distortion_level=0.3,
+            noise_source="brown",
+        )
+
+        reloaded = RuntimeDefaultsStore(tmp_path / "runtime-defaults.json")
+        assert reloaded.stored_auditory_noise_level() == pytest.approx(0.6)
+        assert reloaded.stored_auditory_distortion_level() == pytest.approx(0.3)
+        assert reloaded.stored_auditory_noise_source() == "brown"
     finally:
         pygame.quit()
 

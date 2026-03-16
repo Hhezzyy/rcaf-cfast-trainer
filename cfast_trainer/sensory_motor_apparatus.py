@@ -5,6 +5,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, replace
 
 from .clock import Clock
+from .content_variants import content_metadata_from_payload
 from .cognitive_core import (
     Phase,
     QuestionEvent,
@@ -356,6 +357,14 @@ class SensoryMotorApparatusEngine:
                 raw=f"{result.control_mode}/{result.axis_focus}/{result.disturbance_profile}",
                 score=result.score,
                 max_score=1.0,
+                content_metadata=content_metadata_from_payload(
+                    None,
+                    extras={
+                        "content_family": "sensory_motor",
+                        "variant_id": f"{result.control_mode}:{result.axis_focus}:{result.disturbance_profile}",
+                        "content_pack": "sensory_motor_apparatus",
+                    },
+                ),
             )
             for result in self._window_results
         ]

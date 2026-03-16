@@ -1,38 +1,32 @@
 from __future__ import annotations
 
-from collections import deque
 from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
 from .clock import Clock
+from .content_variants import content_metadata_from_payload
 from .cognitive_core import AttemptSummary, Phase, QuestionEvent, SeededRng, TestSnapshot, clamp01
 
 _GRID_SIZE = 10
 _ROW_LABELS = tuple("ABCDEFGHIJ")
+_DEFAULT_CLOCK_BASE_S = 11 * 60 * 60
 _CALLSIGN_POOL = (
-    "R1",
-    "R2",
-    "R3",
-    "T4",
-    "K5",
-    "N6",
-    "F7",
-    "M8",
-    "H9",
-    "P1",
-    "L2",
-    "S3",
+    "LEEDS",
+    "RAVEN",
+    "SABRE",
+    "VIKING",
+    "EMBER",
+    "ARROW",
+    "NOMAD",
+    "FALCON",
+    "TALON",
+    "MERLIN",
+    "ORBIT",
+    "EAGLE",
 )
-_WAYPOINT_MAP = {
-    "ALFA": (1, 1),
-    "BRAVO": (8, 1),
-    "CHARLIE": (8, 8),
-    "DELTA": (1, 8),
-    "ECHO": (5, 2),
-    "FOXTROT": (5, 7),
-}
+_AFFILIATIONS = ("friendly", "hostile", "unknown", "friendly", "unknown")
 _HEADING_VECTORS: dict[str, tuple[int, int]] = {
     "N": (0, -1),
     "NE": (1, -1),
@@ -43,7 +37,6 @@ _HEADING_VECTORS: dict[str, tuple[int, int]] = {
     "W": (-1, 0),
     "NW": (-1, -1),
 }
-_FUEL_STATES = ("NORMAL", "LOW", "MIN")
 SA_CHANNEL_ORDER = ("pictorial", "coded", "numerical", "aural")
 
 
@@ -68,16 +61,16 @@ class SituationalAwarenessScenarioFamily(StrEnum):
 
 
 class SituationalAwarenessQueryKind(StrEnum):
-    FUTURE_POSITION = "future_position"
-    CONTACT_IDENTIFICATION = "contact_identification"
-    CODE_OR_STATUS_RECALL = "code_or_status_recall"
-    ACTION_SELECTION = "action_selection"
+    CURRENT_LOCATION = "current_location"
+    ORIGIN_LOCATION = "origin_location"
+    FUTURE_LOCATION = "future_location"
+    SAFE_TO_MOVE = "safe_to_move"
+    STATUS_RECALL = "status_recall"
 
 
 class SituationalAwarenessAnswerMode(StrEnum):
     GRID_CELL = "grid_cell"
-    TRACK_INDEX = "track_index"
-    ACTION = "action"
+    CHOICE = "choice"
 
 
 SA_QUERY_KIND_ORDER = tuple(kind.value for kind in SituationalAwarenessQueryKind)
@@ -92,6 +85,12 @@ class SituationalAwarenessTrainingProfile:
     response_window_s: int | None = None
     update_time_scale: float = 1.0
     pressure_scale: float = 1.0
+    contact_ttl_s: float | None = None
+    cue_card_ttl_s: float | None = None
+    top_strip_ttl_s: float | None = None
+    visual_density_scale: float = 1.0
+    audio_density_scale: float = 1.0
+    allow_visible_answers: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,33 +114,25 @@ class SituationalAwarenessWaypoint:
 
 
 @dataclass(frozen=True, slots=True)
-class SituationalAwarenessTrack:
-    index: int
+class SituationalAwarenessVisibleContact:
     callsign: str
+    affiliation: str
     x: float
     y: float
     cell_label: str
     heading: str
-    speed_cells_per_min: int
-    squawk: int
-    channel: int
-    altitude_fl: int
-    fuel_state: str
-    waypoint: str
+    fade: float
 
 
 @dataclass(frozen=True, slots=True)
-class SituationalAwarenessStatusEntry:
-    track_index: int
+class SituationalAwarenessCueCard:
     callsign: str
-    cell_label: str
-    heading: str
-    speed_cells_per_min: int
-    squawk: int
-    channel: int
-    altitude_fl: int
-    fuel_state: str
-    waypoint: str
+    affiliation: str
+    next_waypoint: str
+    eta_clock_text: str
+    altitude_text: str
+    channel_text: str
+    fade: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -179,10 +170,12 @@ class SituationalAwarenessPayload:
     scenario_elapsed_s: float
     scenario_time_remaining_s: float
     next_query_in_s: float | None
-    tracks: tuple[SituationalAwarenessTrack, ...]
-    status_entries: tuple[SituationalAwarenessStatusEntry, ...]
+    visible_contacts: tuple[SituationalAwarenessVisibleContact, ...]
+    cue_card: SituationalAwarenessCueCard | None
     waypoints: tuple[SituationalAwarenessWaypoint, ...]
-    recent_feed_lines: tuple[str, ...]
+    top_strip_text: str
+    top_strip_fade: float
+    display_clock_text: str
     active_query: SituationalAwarenessActiveQuery | None
     answer_mode: SituationalAwarenessAnswerMode | None
     correct_answer_token: str | None
@@ -191,32 +184,36 @@ class SituationalAwarenessPayload:
 
 
 @dataclass(frozen=True, slots=True)
-class _TrackSeed:
+class _AssetSeed:
     index: int
     callsign: str
+    affiliation: str
     x: float
     y: float
     heading: str
     speed_cells_per_min: int
-    squawk: int
     channel: int
     altitude_fl: int
-    fuel_state: str
     waypoint: str
 
 
 @dataclass(frozen=True, slots=True)
-class _TrackUpdateEvent:
+class _UpdateEvent:
     at_s: int
     callsign: str
+    modality: str
     line: str
     heading: str | None = None
     speed_cells_per_min: int | None = None
-    squawk: int | None = None
     channel: int | None = None
     altitude_fl: int | None = None
-    fuel_state: str | None = None
     waypoint: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _ContactSweepEvent:
+    at_s: int
+    callsigns: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -232,42 +229,75 @@ class _ScenarioPlan:
     label: str
     duration_s: int
     waypoints: tuple[SituationalAwarenessWaypoint, ...]
-    track_seeds: tuple[_TrackSeed, ...]
-    updates: tuple[_TrackUpdateEvent, ...]
+    asset_seeds: tuple[_AssetSeed, ...]
+    updates: tuple[_UpdateEvent, ...]
+    contact_sweeps: tuple[_ContactSweepEvent, ...]
     query_slots: tuple[_QuerySlot, ...]
     active_query_kinds: tuple[str, ...]
     response_window_s: int | None
+    display_clock_base_s: int
     context: dict[str, Any]
 
 
 @dataclass(slots=True)
-class _LiveTrackState:
+class _LiveAssetState:
     index: int
     callsign: str
+    affiliation: str
+    x: float
+    y: float
+    origin_cell: str
+    heading: str
+    speed_cells_per_min: int
+    channel: int
+    altitude_fl: int
+    waypoint: str
+
+    def copy(self) -> _LiveAssetState:
+        return _LiveAssetState(
+            index=self.index,
+            callsign=self.callsign,
+            affiliation=self.affiliation,
+            x=float(self.x),
+            y=float(self.y),
+            origin_cell=str(self.origin_cell),
+            heading=str(self.heading),
+            speed_cells_per_min=int(self.speed_cells_per_min),
+            channel=int(self.channel),
+            altitude_fl=int(self.altitude_fl),
+            waypoint=str(self.waypoint),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class _AssetMemorySample:
     x: float
     y: float
     heading: str
-    speed_cells_per_min: int
-    squawk: int
     channel: int
     altitude_fl: int
-    fuel_state: str
     waypoint: str
 
-    def copy(self) -> _LiveTrackState:
-        return _LiveTrackState(
-            index=self.index,
-            callsign=self.callsign,
-            x=float(self.x),
-            y=float(self.y),
-            heading=str(self.heading),
-            speed_cells_per_min=int(self.speed_cells_per_min),
-            squawk=int(self.squawk),
-            channel=int(self.channel),
-            altitude_fl=int(self.altitude_fl),
-            fuel_state=str(self.fuel_state),
-            waypoint=str(self.waypoint),
-        )
+
+@dataclass(slots=True)
+class _VisibleContactState:
+    callsign: str
+    shown_at_s: int
+    visible_until_s: int
+
+
+@dataclass(slots=True)
+class _CueCardState:
+    callsign: str
+    shown_at_s: int
+    visible_until_s: int
+
+
+@dataclass(slots=True)
+class _TopStripState:
+    text: str
+    shown_at_s: int
+    visible_until_s: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -282,12 +312,6 @@ class _ActiveQueryState:
     subject_callsign: str | None = None
     future_offset_s: int | None = None
     answer_choices: tuple[SituationalAwarenessAnswerChoice, ...] = ()
-
-
-@dataclass(frozen=True, slots=True)
-class _CurrentProblem:
-    prompt: str
-    answer: str
 
 
 def _clamp_grid(value: float) -> int:
@@ -362,6 +386,46 @@ def _normalize_query_kind_names(kinds: Sequence[str] | None) -> tuple[str, ...]:
     return tuple(ordered) if ordered else SA_QUERY_KIND_ORDER
 
 
+def _normalize_heading(raw: str) -> str:
+    token = str(raw).strip().upper()
+    return token if token in _HEADING_VECTORS else "E"
+
+
+def _sign(value: float) -> int:
+    if value > 0.05:
+        return 1
+    if value < -0.05:
+        return -1
+    return 0
+
+
+def _heading_from_delta(dx: float, dy: float) -> str:
+    sx = _sign(dx)
+    sy = _sign(dy)
+    for heading, vector in _HEADING_VECTORS.items():
+        if vector == (sx, sy):
+            return heading
+    return "E"
+
+
+def _clock_text(total_s: int) -> str:
+    seconds = int(total_s) % (24 * 60 * 60)
+    hours = seconds // 3600
+    minutes = (seconds % 3600) // 60
+    secs = seconds % 60
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
+
+def _family_label(family: SituationalAwarenessScenarioFamily) -> str:
+    if family is SituationalAwarenessScenarioFamily.MERGE_CONFLICT:
+        return "Conflict / Safety"
+    if family is SituationalAwarenessScenarioFamily.FUEL_PRIORITY:
+        return "Status Update"
+    if family is SituationalAwarenessScenarioFamily.ROUTE_HANDOFF:
+        return "Route Handoff"
+    return "Channel / Waypoint"
+
+
 class SituationalAwarenessScenarioGenerator:
     def __init__(self, *, seed: int, config: SituationalAwarenessConfig) -> None:
         self._rng = SeededRng(seed)
@@ -398,7 +462,7 @@ class SituationalAwarenessScenarioGenerator:
                 training_profile=training_profile,
             )
         if family is SituationalAwarenessScenarioFamily.FUEL_PRIORITY:
-            return self._build_fuel_priority(
+            return self._build_status_update(
                 track_count=track_count,
                 scenario_index=scenario_index,
                 total_scenarios=total_scenarios,
@@ -439,15 +503,17 @@ class SituationalAwarenessScenarioGenerator:
         allowed = tuple(allowed_families or tuple(SituationalAwarenessScenarioFamily))
         if not allowed:
             allowed = tuple(SituationalAwarenessScenarioFamily)
-        if practice_focus is SituationalAwarenessQueryKind.FUTURE_POSITION:
+        if practice_focus is SituationalAwarenessQueryKind.SAFE_TO_MOVE:
+            family = SituationalAwarenessScenarioFamily.MERGE_CONFLICT
+        elif practice_focus is SituationalAwarenessQueryKind.FUTURE_LOCATION:
             family = SituationalAwarenessScenarioFamily.ROUTE_HANDOFF
+        elif practice_focus is SituationalAwarenessQueryKind.STATUS_RECALL:
+            family = SituationalAwarenessScenarioFamily.FUEL_PRIORITY
         elif practice_focus in (
-            SituationalAwarenessQueryKind.CONTACT_IDENTIFICATION,
-            SituationalAwarenessQueryKind.CODE_OR_STATUS_RECALL,
+            SituationalAwarenessQueryKind.CURRENT_LOCATION,
+            SituationalAwarenessQueryKind.ORIGIN_LOCATION,
         ):
             family = SituationalAwarenessScenarioFamily.CHANNEL_WAYPOINT_CHANGE
-        elif practice_focus is SituationalAwarenessQueryKind.ACTION_SELECTION:
-            family = SituationalAwarenessScenarioFamily.FUEL_PRIORITY
         else:
             family = self._rng.choice(allowed)
             if self._last_family is family and len(allowed) > 1:
@@ -479,46 +545,39 @@ class SituationalAwarenessScenarioGenerator:
             high = max(low, int(self._config.max_track_count))
         if high == low:
             return low
-        if clamp01(difficulty) < 0.65:
-            return low
-        return high
-
-    def _base_waypoints(self) -> tuple[SituationalAwarenessWaypoint, ...]:
-        return tuple(
-            SituationalAwarenessWaypoint(name=name, x=coords[0], y=coords[1])
-            for name, coords in _WAYPOINT_MAP.items()
-        )
+        return high if clamp01(difficulty) >= 0.66 else low
 
     def _sample_callsigns(self, count: int) -> list[str]:
         return self._rng.sample(_CALLSIGN_POOL, k=count)
 
-    def _make_track_seed(
+    def _make_asset_seed(
         self,
         *,
         index: int,
         callsign: str,
+        affiliation: str,
         x: float,
         y: float,
-        heading: str,
         speed: int,
         channel: int,
         altitude_fl: int,
         waypoint: str,
-        fuel_state: str = "NORMAL",
-        squawk: int | None = None,
-    ) -> _TrackSeed:
-        return _TrackSeed(
+        heading: str | None = None,
+    ) -> _AssetSeed:
+        target = cell_xy_from_label(waypoint)
+        if heading is None and target is not None:
+            heading = _heading_from_delta(float(target[0]) - float(x), float(target[1]) - float(y))
+        return _AssetSeed(
             index=index,
             callsign=callsign,
+            affiliation=affiliation,
             x=float(x),
             y=float(y),
-            heading=str(heading).upper(),
+            heading=_normalize_heading(heading or "E"),
             speed_cells_per_min=max(1, int(speed)),
-            squawk=int(squawk if squawk is not None else 2000 + self._rng.randint(0, 5777)),
             channel=max(1, min(9, int(channel))),
             altitude_fl=max(120, int(altitude_fl)),
-            fuel_state=str(fuel_state).upper(),
-            waypoint=str(waypoint).upper(),
+            waypoint=normalize_grid_cell_token(waypoint) or "A0",
         )
 
     def _make_query_slots(
@@ -557,9 +616,9 @@ class SituationalAwarenessScenarioGenerator:
             kind = sequence[seq_index % len(sequence)]
             seq_index += 1
             future_offset_s = None
-            if kind is SituationalAwarenessQueryKind.FUTURE_POSITION:
-                max_offset = max(15, min(35, duration_s - at_s - 4))
-                future_offset_s = max(12, min(max_offset, 18 + self._rng.randint(0, 12)))
+            if kind is SituationalAwarenessQueryKind.FUTURE_LOCATION:
+                max_offset = max(12, min(24, duration_s - at_s - 4))
+                future_offset_s = max(8, min(max_offset, 12 + self._rng.randint(0, 8)))
             slots.append(_QuerySlot(at_s=at_s, kind=kind, future_offset_s=future_offset_s))
             at_s += self._rng.randint(query_interval_min, query_interval_max)
         return tuple(slots)
@@ -576,70 +635,53 @@ class SituationalAwarenessScenarioGenerator:
         active_kind_names = _normalize_query_kind_names(active_query_kinds)
         if tuple(active_kind_names) != SA_QUERY_KIND_ORDER:
             return tuple(SituationalAwarenessQueryKind(name) for name in active_kind_names)
-        if practice_focus is SituationalAwarenessQueryKind.FUTURE_POSITION:
-            return (
-                SituationalAwarenessQueryKind.FUTURE_POSITION,
-                SituationalAwarenessQueryKind.FUTURE_POSITION,
-            )
-        if practice_focus in (
-            SituationalAwarenessQueryKind.CONTACT_IDENTIFICATION,
-            SituationalAwarenessQueryKind.CODE_OR_STATUS_RECALL,
-        ):
-            return (
-                SituationalAwarenessQueryKind.CONTACT_IDENTIFICATION,
-                SituationalAwarenessQueryKind.CODE_OR_STATUS_RECALL,
-            )
-        if practice_focus is SituationalAwarenessQueryKind.ACTION_SELECTION:
-            return (
-                SituationalAwarenessQueryKind.ACTION_SELECTION,
-                SituationalAwarenessQueryKind.CODE_OR_STATUS_RECALL,
-            )
-
+        if practice_focus is not None:
+            return (practice_focus, practice_focus)
         pressure_scale = 1.0 if training_profile is None else max(0.5, float(training_profile.pressure_scale))
         high_pressure = clamp01(difficulty) >= 0.7 or pressure_scale > 1.05
         mapping = {
             SituationalAwarenessScenarioFamily.MERGE_CONFLICT: (
-                SituationalAwarenessQueryKind.FUTURE_POSITION,
-                SituationalAwarenessQueryKind.CONTACT_IDENTIFICATION,
-                SituationalAwarenessQueryKind.ACTION_SELECTION,
+                SituationalAwarenessQueryKind.CURRENT_LOCATION,
+                SituationalAwarenessQueryKind.SAFE_TO_MOVE,
+                SituationalAwarenessQueryKind.FUTURE_LOCATION,
             ),
             SituationalAwarenessScenarioFamily.FUEL_PRIORITY: (
-                SituationalAwarenessQueryKind.CODE_OR_STATUS_RECALL,
-                SituationalAwarenessQueryKind.ACTION_SELECTION,
-                SituationalAwarenessQueryKind.CONTACT_IDENTIFICATION,
+                SituationalAwarenessQueryKind.STATUS_RECALL,
+                SituationalAwarenessQueryKind.CURRENT_LOCATION,
+                SituationalAwarenessQueryKind.SAFE_TO_MOVE,
             ),
             SituationalAwarenessScenarioFamily.ROUTE_HANDOFF: (
-                SituationalAwarenessQueryKind.FUTURE_POSITION,
-                SituationalAwarenessQueryKind.CONTACT_IDENTIFICATION,
-                SituationalAwarenessQueryKind.CODE_OR_STATUS_RECALL,
+                SituationalAwarenessQueryKind.FUTURE_LOCATION,
+                SituationalAwarenessQueryKind.STATUS_RECALL,
+                SituationalAwarenessQueryKind.ORIGIN_LOCATION,
             ),
             SituationalAwarenessScenarioFamily.CHANNEL_WAYPOINT_CHANGE: (
-                SituationalAwarenessQueryKind.CODE_OR_STATUS_RECALL,
-                SituationalAwarenessQueryKind.CONTACT_IDENTIFICATION,
-                SituationalAwarenessQueryKind.FUTURE_POSITION,
+                SituationalAwarenessQueryKind.CURRENT_LOCATION,
+                SituationalAwarenessQueryKind.STATUS_RECALL,
+                SituationalAwarenessQueryKind.ORIGIN_LOCATION,
             ),
         }
         base = mapping[family]
         if not high_pressure:
             return base
         return base + (
-            SituationalAwarenessQueryKind.ACTION_SELECTION,
-            SituationalAwarenessQueryKind.CODE_OR_STATUS_RECALL,
+            SituationalAwarenessQueryKind.FUTURE_LOCATION,
+            SituationalAwarenessQueryKind.CURRENT_LOCATION,
         )
 
     def _schedule_updates(
         self,
-        updates: tuple[_TrackUpdateEvent, ...],
+        updates: tuple[_UpdateEvent, ...],
         *,
         duration_s: int,
         training_profile: SituationalAwarenessTrainingProfile | None,
-    ) -> tuple[_TrackUpdateEvent, ...]:
+    ) -> tuple[_UpdateEvent, ...]:
         if training_profile is None:
             return updates
         scale = max(0.45, float(training_profile.update_time_scale))
         if abs(scale - 1.0) < 1e-6:
             return updates
-        scheduled: list[_TrackUpdateEvent] = []
+        scheduled: list[_UpdateEvent] = []
         seen: set[tuple[int, str, str]] = set()
         for update in updates:
             at_s = max(4, min(duration_s - 4, int(round(float(update.at_s) * scale))))
@@ -649,21 +691,95 @@ class SituationalAwarenessScenarioGenerator:
                 key = (at_s, update.callsign, update.line)
             seen.add(key)
             scheduled.append(
-                _TrackUpdateEvent(
+                _UpdateEvent(
                     at_s=at_s,
                     callsign=update.callsign,
+                    modality=update.modality,
                     line=update.line,
                     heading=update.heading,
                     speed_cells_per_min=update.speed_cells_per_min,
-                    squawk=update.squawk,
                     channel=update.channel,
                     altitude_fl=update.altitude_fl,
-                    fuel_state=update.fuel_state,
                     waypoint=update.waypoint,
                 )
             )
         scheduled.sort(key=lambda item: (item.at_s, item.callsign))
         return tuple(scheduled)
+
+    def _make_contact_sweeps(
+        self,
+        *,
+        callsigns: Sequence[str],
+        duration_s: int,
+        training_profile: SituationalAwarenessTrainingProfile | None,
+    ) -> tuple[_ContactSweepEvent, ...]:
+        scale = 1.0 if training_profile is None else max(0.5, float(training_profile.update_time_scale))
+        visual_density = (
+            1.0 if training_profile is None else max(0.5, float(training_profile.visual_density_scale))
+        )
+        interval = max(3, min(8, int(round((5.0 * scale) / visual_density))))
+        events: list[_ContactSweepEvent] = []
+        idx = 0
+        at_s = 2
+        while at_s < max(6, duration_s - 2):
+            count = 1
+            if len(callsigns) >= 4 and ((idx + 1) % 3 == 0):
+                count = 2
+            picked = tuple(callsigns[(idx + offset) % len(callsigns)] for offset in range(count))
+            events.append(_ContactSweepEvent(at_s=at_s, callsigns=picked))
+            at_s += interval
+            idx += 1
+        return tuple(events)
+
+    def _scenario_plan(
+        self,
+        *,
+        family: SituationalAwarenessScenarioFamily,
+        scenario_index: int,
+        total_scenarios: int,
+        duration_s: int,
+        difficulty: float,
+        practice_focus: SituationalAwarenessQueryKind | None,
+        active_query_kinds: tuple[str, ...],
+        training_profile: SituationalAwarenessTrainingProfile | None,
+        asset_seeds: tuple[_AssetSeed, ...],
+        updates: tuple[_UpdateEvent, ...],
+        context: dict[str, Any],
+    ) -> _ScenarioPlan:
+        display_clock_base_s = _DEFAULT_CLOCK_BASE_S + (scenario_index - 1) * 95
+        return _ScenarioPlan(
+            family=family,
+            label=f"{_family_label(family)} {scenario_index}/{total_scenarios}",
+            duration_s=duration_s,
+            waypoints=(),
+            asset_seeds=asset_seeds,
+            updates=self._schedule_updates(
+                updates,
+                duration_s=duration_s,
+                training_profile=training_profile,
+            ),
+            contact_sweeps=self._make_contact_sweeps(
+                callsigns=tuple(seed.callsign for seed in asset_seeds),
+                duration_s=duration_s,
+                training_profile=training_profile,
+            ),
+            query_slots=self._make_query_slots(
+                duration_s=duration_s,
+                family=family,
+                difficulty=difficulty,
+                practice_focus=practice_focus,
+                active_query_kinds=active_query_kinds,
+                training_profile=training_profile,
+            ),
+            active_query_kinds=active_query_kinds,
+            response_window_s=(
+                None
+                if training_profile is None or training_profile.response_window_s is None
+                else int(training_profile.response_window_s)
+            ),
+            display_clock_base_s=display_clock_base_s,
+            context=context,
+        )
 
     def _build_merge_conflict(
         self,
@@ -678,107 +794,122 @@ class SituationalAwarenessScenarioGenerator:
         training_profile: SituationalAwarenessTrainingProfile | None,
     ) -> _ScenarioPlan:
         callsigns = self._sample_callsigns(max(track_count, 4))
-        base_tracks = [
-            self._make_track_seed(
+        seeds = [
+            self._make_asset_seed(
                 index=1,
                 callsign=callsigns[0],
+                affiliation="friendly",
                 x=1.0,
                 y=4.0,
-                heading="E",
-                speed=5,
-                channel=1,
-                altitude_fl=240,
-                waypoint="ECHO",
-            ),
-            self._make_track_seed(
-                index=2,
-                callsign=callsigns[1],
-                x=8.0,
-                y=4.0,
-                heading="W",
                 speed=5,
                 channel=2,
-                altitude_fl=250,
-                waypoint="DELTA",
+                altitude_fl=220,
+                waypoint="F4",
             ),
-            self._make_track_seed(
+            self._make_asset_seed(
+                index=2,
+                callsign=callsigns[1],
+                affiliation="hostile",
+                x=8.0,
+                y=4.0,
+                speed=5,
+                channel=4,
+                altitude_fl=240,
+                waypoint="D4",
+            ),
+            self._make_asset_seed(
                 index=3,
                 callsign=callsigns[2],
+                affiliation="unknown",
                 x=2.0,
                 y=1.0,
-                heading="SE",
                 speed=3,
-                channel=3,
-                altitude_fl=310,
-                waypoint="CHARLIE",
+                channel=1,
+                altitude_fl=300,
+                waypoint="E4",
             ),
-            self._make_track_seed(
+            self._make_asset_seed(
                 index=4,
                 callsign=callsigns[3],
+                affiliation="friendly",
                 x=7.0,
                 y=8.0,
-                heading="NW",
                 speed=3,
-                channel=4,
-                altitude_fl=210,
-                waypoint="BRAVO",
+                channel=3,
+                altitude_fl=180,
+                waypoint="F6",
             ),
         ]
-        tracks = list(base_tracks[:track_count])
         if track_count >= 5:
-            tracks.append(
-                self._make_track_seed(
+            seeds.append(
+                self._make_asset_seed(
                     index=5,
                     callsign=callsigns[4],
+                    affiliation="unknown",
                     x=0.0,
                     y=8.0,
-                    heading="E",
                     speed=2,
                     channel=5,
-                    altitude_fl=180,
-                    waypoint="FOXTROT",
+                    altitude_fl=260,
+                    waypoint="C8",
                 )
             )
-
-        update_events = [
-            _TrackUpdateEvent(8, callsigns[0], f"{callsigns[0]} check in on channel 3.", channel=3),
-            _TrackUpdateEvent(14, callsigns[1], f"{callsigns[1]} descend and hold FL230.", altitude_fl=230),
-            _TrackUpdateEvent(22, callsigns[2], f"{callsigns[2]} turn south direct DELTA.", heading="S", waypoint="DELTA"),
-            _TrackUpdateEvent(34, callsigns[1], f"{callsigns[1]} confirm visual and maintain course."),
+        updates = [
+            _UpdateEvent(
+                8,
+                callsigns[0],
+                "audio_plus_visual",
+                f"{callsigns[0]} channel 3, direct F5.",
+                heading="NE",
+                channel=3,
+                waypoint="F5",
+            ),
+            _UpdateEvent(
+                16,
+                callsigns[1],
+                "audio_only",
+                f"{callsigns[1]} maintain D4, hold FL230.",
+                altitude_fl=230,
+                waypoint="D4",
+                heading="W",
+            ),
+            _UpdateEvent(
+                24,
+                callsigns[2],
+                "audio_plus_visual",
+                f"{callsigns[2]} turn south, direct E6.",
+                heading="S",
+                waypoint="E6",
+            ),
         ]
-        updates = self._schedule_updates(
-            tuple(update_events),
-            duration_s=duration_s,
-            training_profile=training_profile,
-        )
-        return _ScenarioPlan(
+        if track_count >= 4:
+            updates.append(
+                _UpdateEvent(
+                    32,
+                    callsigns[3],
+                    "visual_only",
+                    f"{callsigns[3]} continue F6.",
+                )
+            )
+        return self._scenario_plan(
             family=SituationalAwarenessScenarioFamily.MERGE_CONFLICT,
-            label=f"Merge Conflict {scenario_index}/{total_scenarios}",
+            scenario_index=scenario_index,
+            total_scenarios=total_scenarios,
             duration_s=duration_s,
-            waypoints=self._base_waypoints(),
-            track_seeds=tuple(tracks),
-            updates=updates,
-            query_slots=self._make_query_slots(
-                duration_s=duration_s,
-                family=SituationalAwarenessScenarioFamily.MERGE_CONFLICT,
-                difficulty=difficulty,
-                practice_focus=practice_focus,
-                active_query_kinds=active_query_kinds,
-                training_profile=training_profile,
-            ),
+            difficulty=difficulty,
+            practice_focus=practice_focus,
             active_query_kinds=active_query_kinds,
-            response_window_s=(
-                None
-                if training_profile is None or training_profile.response_window_s is None
-                else int(training_profile.response_window_s)
-            ),
+            training_profile=training_profile,
+            asset_seeds=tuple(seeds[:track_count]),
+            updates=tuple(updates),
             context={
-                "conflict_pair": (callsigns[0], callsigns[1]),
                 "priority_callsign": callsigns[0],
+                "conflict_pair": (callsigns[0], callsigns[1]),
+                "merge_cell": "E4",
             },
         )
 
-    def _build_fuel_priority(
+    def _build_status_update(
         self,
         *,
         track_count: int,
@@ -791,108 +922,116 @@ class SituationalAwarenessScenarioGenerator:
         training_profile: SituationalAwarenessTrainingProfile | None,
     ) -> _ScenarioPlan:
         callsigns = self._sample_callsigns(max(track_count, 4))
-        base_tracks = [
-            self._make_track_seed(
+        seeds = [
+            self._make_asset_seed(
                 index=1,
                 callsign=callsigns[0],
+                affiliation="friendly",
                 x=1.0,
-                y=3.0,
-                heading="E",
+                y=2.0,
                 speed=4,
                 channel=1,
-                altitude_fl=220,
-                waypoint="BRAVO",
-                fuel_state="LOW",
+                altitude_fl=210,
+                waypoint="E2",
             ),
-            self._make_track_seed(
+            self._make_asset_seed(
                 index=2,
                 callsign=callsigns[1],
+                affiliation="unknown",
                 x=8.0,
-                y=3.0,
-                heading="W",
+                y=2.0,
                 speed=4,
-                channel=2,
-                altitude_fl=240,
-                waypoint="ALFA",
+                channel=3,
+                altitude_fl=250,
+                waypoint="D2",
             ),
-            self._make_track_seed(
+            self._make_asset_seed(
                 index=3,
                 callsign=callsigns[2],
+                affiliation="hostile",
                 x=2.0,
                 y=7.0,
-                heading="N",
-                speed=3,
-                channel=3,
-                altitude_fl=300,
-                waypoint="ECHO",
-            ),
-            self._make_track_seed(
-                index=4,
-                callsign=callsigns[3],
-                x=7.0,
-                y=1.0,
-                heading="S",
                 speed=3,
                 channel=4,
-                altitude_fl=200,
-                waypoint="FOXTROT",
+                altitude_fl=300,
+                waypoint="E7",
+            ),
+            self._make_asset_seed(
+                index=4,
+                callsign=callsigns[3],
+                affiliation="friendly",
+                x=7.0,
+                y=8.0,
+                speed=2,
+                channel=2,
+                altitude_fl=190,
+                waypoint="G6",
             ),
         ]
-        tracks = list(base_tracks[:track_count])
         if track_count >= 5:
-            tracks.append(
-                self._make_track_seed(
+            seeds.append(
+                self._make_asset_seed(
                     index=5,
                     callsign=callsigns[4],
+                    affiliation="unknown",
                     x=5.0,
                     y=8.0,
-                    heading="NW",
                     speed=2,
                     channel=5,
-                    altitude_fl=260,
-                    waypoint="CHARLIE",
+                    altitude_fl=280,
+                    waypoint="C8",
                 )
             )
-
-        update_events = [
-            _TrackUpdateEvent(6, callsigns[0], f"{callsigns[0]} reports minimum fuel.", fuel_state="MIN"),
-            _TrackUpdateEvent(12, callsigns[0], f"{callsigns[0]} switch channel 2 and continue BRAVO.", channel=2),
-            _TrackUpdateEvent(18, callsigns[1], f"{callsigns[1]} adjust to heading NW.", heading="NW"),
+        updates = [
+            _UpdateEvent(
+                6,
+                callsigns[0],
+                "audio_plus_visual",
+                f"{callsigns[0]} direct F3, channel 2.",
+                heading="E",
+                channel=2,
+                waypoint="F3",
+            ),
+            _UpdateEvent(
+                14,
+                callsigns[1],
+                "audio_plus_visual",
+                f"{callsigns[1]} hold FL260, next waypoint C2.",
+                altitude_fl=260,
+                waypoint="C2",
+                heading="W",
+            ),
+            _UpdateEvent(
+                22,
+                callsigns[2],
+                "audio_only",
+                f"{callsigns[2]} channel 1, direct E5.",
+                channel=1,
+                heading="N",
+                waypoint="E5",
+            ),
         ]
         if track_count >= 4:
-            update_events.append(
-                _TrackUpdateEvent(24, callsigns[3], f"{callsigns[3]} climb and hold FL220.", altitude_fl=220)
+            updates.append(
+                _UpdateEvent(
+                    30,
+                    callsigns[3],
+                    "visual_only",
+                    f"{callsigns[3]} continue G6.",
+                )
             )
-        updates = self._schedule_updates(
-            tuple(update_events),
-            duration_s=duration_s,
-            training_profile=training_profile,
-        )
-        return _ScenarioPlan(
+        return self._scenario_plan(
             family=SituationalAwarenessScenarioFamily.FUEL_PRIORITY,
-            label=f"Fuel Priority {scenario_index}/{total_scenarios}",
+            scenario_index=scenario_index,
+            total_scenarios=total_scenarios,
             duration_s=duration_s,
-            waypoints=self._base_waypoints(),
-            track_seeds=tuple(tracks),
-            updates=updates,
-            query_slots=self._make_query_slots(
-                duration_s=duration_s,
-                family=SituationalAwarenessScenarioFamily.FUEL_PRIORITY,
-                difficulty=difficulty,
-                practice_focus=practice_focus,
-                active_query_kinds=active_query_kinds,
-                training_profile=training_profile,
-            ),
+            difficulty=difficulty,
+            practice_focus=practice_focus,
             active_query_kinds=active_query_kinds,
-            response_window_s=(
-                None
-                if training_profile is None or training_profile.response_window_s is None
-                else int(training_profile.response_window_s)
-            ),
-            context={
-                "conflict_pair": (callsigns[0], callsigns[1]),
-                "priority_callsign": callsigns[0],
-            },
+            training_profile=training_profile,
+            asset_seeds=tuple(seeds[:track_count]),
+            updates=tuple(updates),
+            context={"priority_callsign": callsigns[0], "merge_cell": "F3"},
         )
 
     def _build_route_handoff(
@@ -908,101 +1047,112 @@ class SituationalAwarenessScenarioGenerator:
         training_profile: SituationalAwarenessTrainingProfile | None,
     ) -> _ScenarioPlan:
         callsigns = self._sample_callsigns(max(track_count, 4))
-        base_tracks = [
-            self._make_track_seed(
+        seeds = [
+            self._make_asset_seed(
                 index=1,
                 callsign=callsigns[0],
+                affiliation="friendly",
                 x=1.0,
                 y=7.0,
-                heading="NE",
                 speed=4,
                 channel=1,
-                altitude_fl=260,
-                waypoint="BRAVO",
+                altitude_fl=250,
+                waypoint="F4",
             ),
-            self._make_track_seed(
+            self._make_asset_seed(
                 index=2,
                 callsign=callsigns[1],
+                affiliation="unknown",
                 x=7.0,
                 y=1.0,
-                heading="SW",
                 speed=3,
                 channel=2,
                 altitude_fl=240,
-                waypoint="DELTA",
+                waypoint="D4",
             ),
-            self._make_track_seed(
+            self._make_asset_seed(
                 index=3,
                 callsign=callsigns[2],
+                affiliation="friendly",
                 x=2.0,
                 y=2.0,
-                heading="E",
-                speed=2,
-                channel=3,
-                altitude_fl=190,
-                waypoint="CHARLIE",
-            ),
-            self._make_track_seed(
-                index=4,
-                callsign=callsigns[3],
-                x=8.0,
-                y=8.0,
-                heading="W",
                 speed=2,
                 channel=4,
+                altitude_fl=190,
+                waypoint="F2",
+            ),
+            self._make_asset_seed(
+                index=4,
+                callsign=callsigns[3],
+                affiliation="hostile",
+                x=8.0,
+                y=8.0,
+                speed=2,
+                channel=3,
                 altitude_fl=320,
-                waypoint="ALFA",
+                waypoint="D8",
             ),
         ]
-        tracks = list(base_tracks[:track_count])
         if track_count >= 5:
-            tracks.append(
-                self._make_track_seed(
+            seeds.append(
+                self._make_asset_seed(
                     index=5,
                     callsign=callsigns[4],
+                    affiliation="unknown",
                     x=4.0,
                     y=8.0,
-                    heading="N",
                     speed=2,
                     channel=5,
                     altitude_fl=280,
-                    waypoint="FOXTROT",
+                    waypoint="B8",
                 )
             )
-
-        update_events = [
-            _TrackUpdateEvent(10, callsigns[0], f"{callsigns[0]} hand off to channel 3, direct DELTA.", channel=3, waypoint="DELTA"),
-            _TrackUpdateEvent(18, callsigns[0], f"{callsigns[0]} turn east and continue DELTA.", heading="E"),
-            _TrackUpdateEvent(26, callsigns[1], f"{callsigns[1]} change squawk and hold FL250.", squawk=4100 + self._rng.randint(0, 499), altitude_fl=250),
-            _TrackUpdateEvent(34, callsigns[2], f"{callsigns[2]} proceed direct ECHO.", waypoint="ECHO"),
+        updates = [
+            _UpdateEvent(
+                10,
+                callsigns[0],
+                "audio_plus_visual",
+                f"{callsigns[0]} handoff channel 3, direct G5.",
+                channel=3,
+                heading="NE",
+                waypoint="G5",
+            ),
+            _UpdateEvent(
+                18,
+                callsigns[0],
+                "audio_plus_visual",
+                f"{callsigns[0]} continue G7.",
+                heading="S",
+                waypoint="G7",
+            ),
+            _UpdateEvent(
+                26,
+                callsigns[1],
+                "audio_only",
+                f"{callsigns[1]} hold FL250, next waypoint D5.",
+                altitude_fl=250,
+                waypoint="D5",
+                heading="S",
+            ),
+            _UpdateEvent(
+                34,
+                callsigns[2],
+                "visual_only",
+                f"{callsigns[2]} continue F2.",
+            ),
         ]
-        updates = self._schedule_updates(
-            tuple(update_events),
-            duration_s=duration_s,
-            training_profile=training_profile,
-        )
-        return _ScenarioPlan(
+        return self._scenario_plan(
             family=SituationalAwarenessScenarioFamily.ROUTE_HANDOFF,
-            label=f"Route Handoff {scenario_index}/{total_scenarios}",
+            scenario_index=scenario_index,
+            total_scenarios=total_scenarios,
             duration_s=duration_s,
-            waypoints=self._base_waypoints(),
-            track_seeds=tuple(tracks),
-            updates=updates,
-            query_slots=self._make_query_slots(
-                duration_s=duration_s,
-                family=SituationalAwarenessScenarioFamily.ROUTE_HANDOFF,
-                difficulty=difficulty,
-                practice_focus=practice_focus,
-                active_query_kinds=active_query_kinds,
-                training_profile=training_profile,
-            ),
+            difficulty=difficulty,
+            practice_focus=practice_focus,
             active_query_kinds=active_query_kinds,
-            response_window_s=(
-                None
-                if training_profile is None or training_profile.response_window_s is None
-                else int(training_profile.response_window_s)
-            ),
-            context={"handoff_callsign": callsigns[0]},
+            training_profile=training_profile,
+            asset_seeds=tuple(seeds[:track_count]),
+            updates=tuple(updates),
+            context={"priority_callsign": callsigns[0], "merge_cell": "G5"},
         )
 
     def _build_channel_waypoint_change(
@@ -1018,104 +1168,116 @@ class SituationalAwarenessScenarioGenerator:
         training_profile: SituationalAwarenessTrainingProfile | None,
     ) -> _ScenarioPlan:
         callsigns = self._sample_callsigns(max(track_count, 4))
-        base_tracks = [
-            self._make_track_seed(
+        seeds = [
+            self._make_asset_seed(
                 index=1,
                 callsign=callsigns[0],
+                affiliation="friendly",
                 x=2.0,
                 y=2.0,
-                heading="E",
                 speed=3,
                 channel=1,
                 altitude_fl=210,
-                waypoint="BRAVO",
+                waypoint="G2",
             ),
-            self._make_track_seed(
+            self._make_asset_seed(
                 index=2,
                 callsign=callsigns[1],
+                affiliation="unknown",
                 x=7.0,
                 y=6.0,
-                heading="W",
                 speed=4,
                 channel=4,
                 altitude_fl=250,
-                waypoint="ALFA",
+                waypoint="C6",
             ),
-            self._make_track_seed(
+            self._make_asset_seed(
                 index=3,
                 callsign=callsigns[2],
+                affiliation="hostile",
                 x=1.0,
                 y=8.0,
-                heading="NE",
                 speed=3,
                 channel=3,
                 altitude_fl=300,
-                waypoint="ECHO",
+                waypoint="E5",
             ),
-            self._make_track_seed(
+            self._make_asset_seed(
                 index=4,
                 callsign=callsigns[3],
+                affiliation="friendly",
                 x=8.0,
                 y=1.0,
-                heading="SW",
                 speed=2,
                 channel=2,
                 altitude_fl=270,
-                waypoint="DELTA",
+                waypoint="D4",
             ),
         ]
-        tracks = list(base_tracks[:track_count])
         if track_count >= 5:
-            tracks.append(
-                self._make_track_seed(
+            seeds.append(
+                self._make_asset_seed(
                     index=5,
                     callsign=callsigns[4],
+                    affiliation="unknown",
                     x=4.0,
                     y=5.0,
-                    heading="S",
                     speed=2,
                     channel=5,
                     altitude_fl=230,
-                    waypoint="CHARLIE",
+                    waypoint="B5",
                 )
             )
-
-        update_events = [
-            _TrackUpdateEvent(8, callsigns[1], f"{callsigns[1]} change to channel 2 and proceed ECHO.", channel=2, waypoint="ECHO"),
-            _TrackUpdateEvent(16, callsigns[0], f"{callsigns[0]} update squawk code and hold FL230.", squawk=4300 + self._rng.randint(0, 499), altitude_fl=230),
-            _TrackUpdateEvent(24, callsigns[2], f"{callsigns[2]} report low fuel and continue ALFA.", fuel_state="LOW", waypoint="ALFA"),
+        updates = [
+            _UpdateEvent(
+                8,
+                callsigns[1],
+                "audio_plus_visual",
+                f"{callsigns[1]} channel 2, direct E6.",
+                channel=2,
+                waypoint="E6",
+                heading="W",
+            ),
+            _UpdateEvent(
+                16,
+                callsigns[0],
+                "audio_plus_visual",
+                f"{callsigns[0]} hold FL230, continue G2.",
+                altitude_fl=230,
+                waypoint="G2",
+                heading="E",
+            ),
+            _UpdateEvent(
+                24,
+                callsigns[2],
+                "audio_only",
+                f"{callsigns[2]} direct C6, channel 1.",
+                channel=1,
+                waypoint="C6",
+                heading="NE",
+            ),
         ]
         if track_count >= 4:
-            update_events.append(
-                _TrackUpdateEvent(32, callsigns[3], f"{callsigns[3]} turn west and hold channel 1.", heading="W", channel=1)
+            updates.append(
+                _UpdateEvent(
+                    32,
+                    callsigns[3],
+                    "visual_only",
+                    f"{callsigns[3]} continue D4.",
+                )
             )
-        updates = self._schedule_updates(
-            tuple(update_events),
-            duration_s=duration_s,
-            training_profile=training_profile,
-        )
-        return _ScenarioPlan(
+        return self._scenario_plan(
             family=SituationalAwarenessScenarioFamily.CHANNEL_WAYPOINT_CHANGE,
-            label=f"Channel Shift {scenario_index}/{total_scenarios}",
+            scenario_index=scenario_index,
+            total_scenarios=total_scenarios,
             duration_s=duration_s,
-            waypoints=self._base_waypoints(),
-            track_seeds=tuple(tracks),
-            updates=updates,
-            query_slots=self._make_query_slots(
-                duration_s=duration_s,
-                family=SituationalAwarenessScenarioFamily.CHANNEL_WAYPOINT_CHANGE,
-                difficulty=difficulty,
-                practice_focus=practice_focus,
-                active_query_kinds=active_query_kinds,
-                training_profile=training_profile,
-            ),
+            difficulty=difficulty,
+            practice_focus=practice_focus,
             active_query_kinds=active_query_kinds,
-            response_window_s=(
-                None
-                if training_profile is None or training_profile.response_window_s is None
-                else int(training_profile.response_window_s)
-            ),
-            context={"handoff_callsign": callsigns[1]},
+            training_profile=training_profile,
+            asset_seeds=tuple(seeds[:track_count]),
+            updates=tuple(updates),
+            context={"priority_callsign": callsigns[1], "merge_cell": "E6"},
         )
 
 
@@ -1140,16 +1302,15 @@ class SituationalAwarenessTest:
         self._instructions = [
             f"{self._title} Test" if "Test" not in self._title else self._title,
             "",
-            "Monitor verbal, numerical, pictorial, and coded information on a live tactical display.",
-            "Build and update a mental picture of moving tracks, channel changes, fuel priorities, and future conflicts.",
-            "Answer direct-response queries about future position, track identity, coded status, and the best immediate action.",
+            "Build the picture from short radio calls, brief cue-card flashes, and fading grid sweeps.",
+            "Most of the state is hidden: keep track of where assets are now, where they came from, where they will be later, and whether a move is safe.",
+            "The map keeps updating while questions are open. Misses do not pause the world.",
             "",
             "Answer modes:",
             "- Grid cell: click a cell or type row+column, then Enter",
-            "- Track index: press 1-5 or click a track row, then Enter",
-            "- Action: press 1-4 or click an action card, then Enter",
+            "- Choice: click an option or press 1-4, then Enter",
             "",
-            "Practice runs three guided 45-second scenarios before the 25-minute timed block.",
+            "Practice runs three guided scenarios before the 25-minute timed block.",
         ]
 
         self._custom_segment_layout = practice_segments is not None or scored_segments is not None
@@ -1163,9 +1324,9 @@ class SituationalAwarenessTest:
         self._practice_scenario_index = 0
         self._practice_total = max(0, int(self._config.practice_scenarios))
         self._practice_focus_order = (
-            SituationalAwarenessQueryKind.FUTURE_POSITION,
-            SituationalAwarenessQueryKind.CONTACT_IDENTIFICATION,
-            SituationalAwarenessQueryKind.ACTION_SELECTION,
+            SituationalAwarenessQueryKind.CURRENT_LOCATION,
+            SituationalAwarenessQueryKind.STATUS_RECALL,
+            SituationalAwarenessQueryKind.SAFE_TO_MOVE,
         )
 
         self._scored_started_at_s: float | None = None
@@ -1179,12 +1340,15 @@ class SituationalAwarenessTest:
         self._scenario_index = 0
         self._scenario_total = 0
         self._processed_ticks = 0
-        self._live_tracks: dict[str, _LiveTrackState] = {}
-        self._recent_feed_lines: deque[str] = deque(maxlen=4)
-        self._feed_cursor = 0
+        self._update_cursor = 0
+        self._contact_sweep_cursor = 0
         self._query_slot_cursor = 0
         self._current_query: _ActiveQueryState | None = None
-        self._current_problem: _CurrentProblem | None = None
+        self._live_assets: dict[str, _LiveAssetState] = {}
+        self._asset_history: dict[str, list[_AssetMemorySample]] = {}
+        self._visible_contacts: dict[str, _VisibleContactState] = {}
+        self._cue_card_state: _CueCardState | None = None
+        self._top_strip_state: _TopStripState | None = None
         self._announcement_serial = 0
         self._announcement_token: tuple[object, ...] | None = None
         self._announcement_lines: tuple[str, ...] = ()
@@ -1228,6 +1392,12 @@ class SituationalAwarenessTest:
                         response_window_s=profile.response_window_s,
                         update_time_scale=max(0.45, float(profile.update_time_scale)),
                         pressure_scale=max(0.5, float(profile.pressure_scale)),
+                        contact_ttl_s=profile.contact_ttl_s,
+                        cue_card_ttl_s=profile.cue_card_ttl_s,
+                        top_strip_ttl_s=profile.top_strip_ttl_s,
+                        visual_density_scale=max(0.5, float(profile.visual_density_scale)),
+                        audio_density_scale=max(0.5, float(profile.audio_density_scale)),
+                        allow_visible_answers=bool(profile.allow_visible_answers),
                     ),
                 )
             )
@@ -1307,7 +1477,6 @@ class SituationalAwarenessTest:
             self._scenario_plan = None
             self._current_segment = None
             self._current_query = None
-            self._current_problem = None
 
     def submit_answer(self, raw: str) -> bool:
         if self._phase not in (Phase.PRACTICE, Phase.SCORED):
@@ -1318,16 +1487,14 @@ class SituationalAwarenessTest:
         if normalized is None:
             return False
         event = self._record_query_result(raw=normalized, is_timeout=False)
-        is_correct = event.is_correct
         if self._phase is Phase.PRACTICE:
             expected = self._current_query.correct_answer_token
             self._practice_feedback = (
                 f"Correct. {expected} was the right answer."
-                if is_correct
+                if event.is_correct
                 else f"Incorrect. Correct answer: {expected}."
             )
         self._current_query = None
-        self._current_problem = None
         return True
 
     def time_remaining_s(self) -> float | None:
@@ -1338,11 +1505,10 @@ class SituationalAwarenessTest:
 
     def snapshot(self) -> TestSnapshot:
         if self._phase is Phase.INSTRUCTIONS:
-            prompt = "Press Enter to begin the guided practice scenarios."
             return TestSnapshot(
                 title=self._title,
                 phase=self._phase,
-                prompt=prompt,
+                prompt="Press Enter to begin the guided practice scenarios.",
                 input_hint="Press Enter to continue",
                 time_remaining_s=None,
                 attempted_scored=self._scored_attempted,
@@ -1386,7 +1552,7 @@ class SituationalAwarenessTest:
         prompt = (
             payload.active_query.prompt
             if payload.active_query is not None
-            else f"Monitor the picture. Next query in {int(round(payload.next_query_in_s or 0.0)):02d}s."
+            else f"Monitor the fading picture. Next query in {int(round(payload.next_query_in_s or 0.0)):02d}s."
         )
         input_hint = self._input_hint(payload)
         time_remaining = self.time_remaining_s() if self._phase is Phase.SCORED else None
@@ -1446,7 +1612,6 @@ class SituationalAwarenessTest:
             self._scenario_plan = None
             self._current_segment = None
             self._current_query = None
-            self._current_problem = None
             return
         self._practice_feedback = None
         self._scenario_index = self._active_segment_index + 1
@@ -1465,7 +1630,6 @@ class SituationalAwarenessTest:
             self._scenario_plan = None
             self._current_segment = None
             self._current_query = None
-            self._current_problem = None
             return
         self._practice_feedback = None
         self._scenario_index += 1
@@ -1493,51 +1657,72 @@ class SituationalAwarenessTest:
         )
         self._scenario_started_at_s = self._clock.now()
         self._processed_ticks = 0
-        self._feed_cursor = 0
+        self._update_cursor = 0
+        self._contact_sweep_cursor = 0
         self._query_slot_cursor = 0
         self._current_query = None
-        self._current_problem = None
-        self._live_tracks = {
-            seed.callsign: _LiveTrackState(
+        self._live_assets = {
+            seed.callsign: _LiveAssetState(
                 index=seed.index,
                 callsign=seed.callsign,
+                affiliation=seed.affiliation,
                 x=float(seed.x),
                 y=float(seed.y),
+                origin_cell=cell_label_from_xy(seed.x, seed.y),
                 heading=seed.heading,
                 speed_cells_per_min=seed.speed_cells_per_min,
-                squawk=seed.squawk,
                 channel=seed.channel,
                 altitude_fl=seed.altitude_fl,
-                fuel_state=seed.fuel_state,
                 waypoint=seed.waypoint,
             )
-            for seed in self._scenario_plan.track_seeds
+            for seed in self._scenario_plan.asset_seeds
         }
-        self._recent_feed_lines.clear()
+        self._asset_history = {
+            seed.callsign: [
+                _AssetMemorySample(
+                    x=float(seed.x),
+                    y=float(seed.y),
+                    heading=seed.heading,
+                    channel=seed.channel,
+                    altitude_fl=seed.altitude_fl,
+                    waypoint=seed.waypoint,
+                )
+            ]
+            for seed in self._scenario_plan.asset_seeds
+        }
+        self._visible_contacts = {}
+        self._cue_card_state = None
+        self._top_strip_state = None
+        intro_line = self._scenario_intro_line(self._scenario_plan)
         self._set_announcement(
             lines=(
                 f"{self._scenario_plan.label}.",
-                self._scenario_intro_line(self._scenario_plan),
+                intro_line,
             ),
             reason=("scenario", self._phase.value, self._scenario_index),
         )
-        self._recent_feed_lines.append(self._scenario_intro_line(self._scenario_plan))
+        seed_order = sorted(self._live_assets.values(), key=lambda item: item.index)
+        if seed_order and "pictorial" in self._active_channels():
+            self._reveal_contact(seed_order[0].callsign, tick=0)
+        if seed_order and ("coded" in self._active_channels() or "numerical" in self._active_channels()):
+            self._show_cue_card(seed_order[0].callsign, tick=0)
+        if "coded" in self._active_channels() or "numerical" in self._active_channels():
+            self._show_top_strip(intro_line, tick=0)
 
     @staticmethod
     def _scenario_intro_line(plan: _ScenarioPlan) -> str:
         if plan.family is SituationalAwarenessScenarioFamily.MERGE_CONFLICT:
-            return "Monitor converging traffic and identify the correct deconfliction action."
+            return "Watch the grid sweeps and radio calls for a possible conflict."
         if plan.family is SituationalAwarenessScenarioFamily.FUEL_PRIORITY:
-            return "Watch fuel priority, route overlap, and the direct track for the minimum-fuel flight."
+            return "Hold the coded status picture while the map only reveals short contact flashes."
         if plan.family is SituationalAwarenessScenarioFamily.ROUTE_HANDOFF:
-            return "Track route handoff updates, channel changes, and future position after the handoff."
-        return "Monitor channel, squawk, altitude, and waypoint changes while the picture evolves."
+            return "Track the handoff and keep projecting the route after the update fades."
+        return "Track channel and waypoint changes from short cue-card flashes and radio chatter."
 
     def _end_current_scenario(self) -> None:
         if self._current_query is not None:
             self._record_query_result(raw="", is_timeout=True)
             self._current_query = None
-            self._current_problem = None
 
         if self._custom_segment_layout:
             self._active_segment_index += 1
@@ -1578,19 +1763,27 @@ class SituationalAwarenessTest:
         if self._current_query is not None and tick >= int(self._current_query.expires_at_s):
             self._record_query_result(raw="", is_timeout=True)
             self._current_query = None
-            self._current_problem = None
 
-        for track in self._live_tracks.values():
-            dx, dy = _HEADING_VECTORS.get(track.heading, (0, 0))
-            track.x = max(0.0, min(float(_GRID_SIZE - 1), track.x + (dx * track.speed_cells_per_min / 60.0)))
-            track.y = max(0.0, min(float(_GRID_SIZE - 1), track.y + (dy * track.speed_cells_per_min / 60.0)))
+        for asset in self._live_assets.values():
+            dx, dy = _HEADING_VECTORS.get(asset.heading, (0, 0))
+            asset.x = max(0.0, min(float(_GRID_SIZE - 1), asset.x + (dx * asset.speed_cells_per_min / 60.0)))
+            asset.y = max(0.0, min(float(_GRID_SIZE - 1), asset.y + (dy * asset.speed_cells_per_min / 60.0)))
 
         while (
-            self._feed_cursor < len(self._scenario_plan.updates)
-            and int(self._scenario_plan.updates[self._feed_cursor].at_s) == int(tick)
+            self._update_cursor < len(self._scenario_plan.updates)
+            and int(self._scenario_plan.updates[self._update_cursor].at_s) == int(tick)
         ):
-            self._apply_update(self._scenario_plan.updates[self._feed_cursor], tick=tick)
-            self._feed_cursor += 1
+            self._apply_update(self._scenario_plan.updates[self._update_cursor], tick=tick)
+            self._update_cursor += 1
+
+        while (
+            self._contact_sweep_cursor < len(self._scenario_plan.contact_sweeps)
+            and int(self._scenario_plan.contact_sweeps[self._contact_sweep_cursor].at_s) == int(tick)
+        ):
+            self._apply_contact_sweep(self._scenario_plan.contact_sweeps[self._contact_sweep_cursor], tick=tick)
+            self._contact_sweep_cursor += 1
+
+        self._record_asset_history()
 
         if self._current_query is None and self._query_slot_cursor < len(self._scenario_plan.query_slots):
             slot = self._scenario_plan.query_slots[self._query_slot_cursor]
@@ -1598,27 +1791,93 @@ class SituationalAwarenessTest:
                 self._query_slot_cursor += 1
                 self._spawn_query(slot=slot, tick=tick)
 
-    def _apply_update(self, update: _TrackUpdateEvent, *, tick: int) -> None:
-        track = self._live_tracks.get(update.callsign)
-        if track is None:
-            return
+    def _apply_update_to_state(self, asset: _LiveAssetState, update: _UpdateEvent) -> None:
         if update.heading is not None:
-            track.heading = str(update.heading).upper()
+            asset.heading = _normalize_heading(update.heading)
         if update.speed_cells_per_min is not None:
-            track.speed_cells_per_min = max(1, int(update.speed_cells_per_min))
-        if update.squawk is not None:
-            track.squawk = int(update.squawk)
+            asset.speed_cells_per_min = max(1, int(update.speed_cells_per_min))
         if update.channel is not None:
-            track.channel = int(update.channel)
+            asset.channel = int(update.channel)
         if update.altitude_fl is not None:
-            track.altitude_fl = int(update.altitude_fl)
-        if update.fuel_state is not None:
-            track.fuel_state = str(update.fuel_state).upper()
+            asset.altitude_fl = int(update.altitude_fl)
         if update.waypoint is not None:
-            track.waypoint = str(update.waypoint).upper()
-        line = f"T+{tick:02d} {update.line}"
-        self._recent_feed_lines.append(line)
-        self._set_announcement(lines=(update.line,), reason=("feed", self._scenario_index, tick, update.callsign))
+            asset.waypoint = normalize_grid_cell_token(update.waypoint) or asset.waypoint
+
+    def _apply_update(self, update: _UpdateEvent, *, tick: int) -> None:
+        asset = self._live_assets.get(update.callsign)
+        if asset is None:
+            return
+        self._apply_update_to_state(asset, update)
+        if update.modality in {"audio_plus_visual", "visual_only"}:
+            if "pictorial" in self._active_channels():
+                self._reveal_contact(asset.callsign, tick=tick)
+            if "coded" in self._active_channels() or "numerical" in self._active_channels():
+                self._show_cue_card(asset.callsign, tick=tick)
+                self._show_top_strip(update.line, tick=tick)
+        elif "coded" in self._active_channels() or "numerical" in self._active_channels():
+            self._show_top_strip(update.line, tick=tick)
+        self._set_announcement(lines=(update.line,), reason=("sa_update", self._scenario_index, tick, asset.callsign))
+
+    def _apply_contact_sweep(self, sweep: _ContactSweepEvent, *, tick: int) -> None:
+        if "pictorial" not in self._active_channels():
+            return
+        for callsign in sweep.callsigns:
+            self._reveal_contact(callsign, tick=tick)
+
+    def _record_asset_history(self) -> None:
+        for asset in self._live_assets.values():
+            history = self._asset_history.setdefault(asset.callsign, [])
+            history.append(
+                _AssetMemorySample(
+                    x=float(asset.x),
+                    y=float(asset.y),
+                    heading=asset.heading,
+                    channel=asset.channel,
+                    altitude_fl=asset.altitude_fl,
+                    waypoint=asset.waypoint,
+                )
+            )
+
+    def _contact_ttl_s(self) -> int:
+        profile = self._current_profile()
+        if profile.contact_ttl_s is not None:
+            return max(2, int(round(float(profile.contact_ttl_s))))
+        return max(2, int(round(6.0 / max(0.65, float(profile.pressure_scale)))))
+
+    def _cue_card_ttl_s(self) -> int:
+        profile = self._current_profile()
+        if profile.cue_card_ttl_s is not None:
+            return max(2, int(round(float(profile.cue_card_ttl_s))))
+        return max(2, int(round(7.0 / max(0.65, float(profile.pressure_scale)))))
+
+    def _top_strip_ttl_s(self) -> int:
+        profile = self._current_profile()
+        if profile.top_strip_ttl_s is not None:
+            return max(2, int(round(float(profile.top_strip_ttl_s))))
+        return max(2, int(round(5.0 / max(0.65, float(profile.pressure_scale)))))
+
+    def _reveal_contact(self, callsign: str, *, tick: int) -> None:
+        self._visible_contacts[callsign] = _VisibleContactState(
+            callsign=callsign,
+            shown_at_s=int(tick),
+            visible_until_s=int(tick) + self._contact_ttl_s(),
+        )
+
+    def _show_cue_card(self, callsign: str, *, tick: int) -> None:
+        self._cue_card_state = _CueCardState(
+            callsign=callsign,
+            shown_at_s=int(tick),
+            visible_until_s=int(tick) + self._cue_card_ttl_s(),
+        )
+
+    def _show_top_strip(self, text: str, *, tick: int) -> None:
+        if str(text).strip() == "":
+            return
+        self._top_strip_state = _TopStripState(
+            text=str(text),
+            shown_at_s=int(tick),
+            visible_until_s=int(tick) + self._top_strip_ttl_s(),
+        )
 
     def _spawn_query(self, *, slot: _QuerySlot, tick: int) -> None:
         if self._scenario_plan is None:
@@ -1635,22 +1894,25 @@ class SituationalAwarenessTest:
                 int(self._scenario_plan.duration_s),
             )
         query = self._build_query(slot=slot, tick=tick, expires_at_s=expires_at_s)
+        if not self._current_profile().allow_visible_answers and query.subject_callsign is not None:
+            self._visible_contacts.pop(query.subject_callsign, None)
+            if (
+                self._cue_card_state is not None
+                and self._cue_card_state.callsign == query.subject_callsign
+            ):
+                self._cue_card_state = None
         self._current_query = query
-        self._current_problem = _CurrentProblem(prompt=query.prompt, answer=query.correct_answer_token)
         self._set_announcement(
-            lines=(
-                self._spoken_family_tag(self._scenario_plan.family),
-                query.prompt,
-            ),
-            reason=("query", self._scenario_index, query.query_id),
+            lines=(self._spoken_family_tag(self._scenario_plan.family), query.prompt),
+            reason=("sa_query", self._scenario_index, query.query_id),
         )
 
     @staticmethod
     def _spoken_family_tag(family: SituationalAwarenessScenarioFamily) -> str:
         if family is SituationalAwarenessScenarioFamily.MERGE_CONFLICT:
-            return "Traffic merge update."
+            return "Conflict update."
         if family is SituationalAwarenessScenarioFamily.FUEL_PRIORITY:
-            return "Fuel priority update."
+            return "Status update."
         if family is SituationalAwarenessScenarioFamily.ROUTE_HANDOFF:
             return "Route handoff update."
         return "Channel and waypoint update."
@@ -1663,59 +1925,144 @@ class SituationalAwarenessTest:
         expires_at_s: int,
     ) -> _ActiveQueryState:
         query_id = (self._scenario_index * 100) + tick
-        kind = slot.kind
-        if kind is SituationalAwarenessQueryKind.FUTURE_POSITION:
-            query = self._build_future_position_query(
+        builders = {
+            SituationalAwarenessQueryKind.CURRENT_LOCATION: self._build_current_location_query,
+            SituationalAwarenessQueryKind.ORIGIN_LOCATION: self._build_origin_location_query,
+            SituationalAwarenessQueryKind.FUTURE_LOCATION: self._build_future_location_query,
+            SituationalAwarenessQueryKind.SAFE_TO_MOVE: self._build_safe_to_move_query,
+            SituationalAwarenessQueryKind.STATUS_RECALL: self._build_status_recall_query,
+        }
+        order = [
+            slot.kind,
+            SituationalAwarenessQueryKind.CURRENT_LOCATION,
+            SituationalAwarenessQueryKind.STATUS_RECALL,
+            SituationalAwarenessQueryKind.FUTURE_LOCATION,
+            SituationalAwarenessQueryKind.ORIGIN_LOCATION,
+            SituationalAwarenessQueryKind.SAFE_TO_MOVE,
+        ]
+        for kind in order:
+            builder = builders[kind]
+            query = builder(
                 query_id=query_id,
                 tick=tick,
                 expires_at_s=expires_at_s,
-                future_offset_s=max(12, int(slot.future_offset_s or 20)),
+                future_offset_s=max(8, int(slot.future_offset_s or 12)),
             )
             if query is not None:
                 return query
-        if kind is SituationalAwarenessQueryKind.CONTACT_IDENTIFICATION:
-            query = self._build_contact_identification_query(
-                query_id=query_id,
-                tick=tick,
-                expires_at_s=expires_at_s,
-            )
-            if query is not None:
-                return query
-        if kind is SituationalAwarenessQueryKind.CODE_OR_STATUS_RECALL:
-            query = self._build_code_status_query(
-                query_id=query_id,
-                tick=tick,
-                expires_at_s=expires_at_s,
-            )
-            if query is not None:
-                return query
-        query = self._build_action_query(query_id=query_id, tick=tick, expires_at_s=expires_at_s)
-        if query is not None:
-            return query
-        return self._build_contact_identification_query(
-            query_id=query_id,
-            tick=tick,
-            expires_at_s=expires_at_s,
-        ) or self._build_code_status_query(
-            query_id=query_id,
-            tick=tick,
-            expires_at_s=expires_at_s,
-        ) or self._build_future_position_query(
-            query_id=query_id,
-            tick=tick,
-            expires_at_s=expires_at_s,
-            future_offset_s=18,
-        ) or _ActiveQueryState(
+        return _ActiveQueryState(
             query_id=query_id,
             asked_at_s=tick,
             expires_at_s=expires_at_s,
-            kind=SituationalAwarenessQueryKind.CODE_OR_STATUS_RECALL,
-            answer_mode=SituationalAwarenessAnswerMode.TRACK_INDEX,
-            prompt="Which indexed track is currently active?",
-            correct_answer_token="1",
+            kind=SituationalAwarenessQueryKind.CURRENT_LOCATION,
+            answer_mode=SituationalAwarenessAnswerMode.GRID_CELL,
+            prompt="Where is the priority contact now?",
+            correct_answer_token="E5",
         )
 
-    def _build_future_position_query(
+    def _memory_candidates(self) -> list[_LiveAssetState]:
+        assets = sorted(self._live_assets.values(), key=lambda item: item.index)
+        if self._current_profile().allow_visible_answers:
+            return assets
+        hidden = [asset for asset in assets if not self._is_contact_visible(asset.callsign)]
+        return hidden or assets
+
+    def _is_contact_visible(self, callsign: str) -> bool:
+        state = self._visible_contacts.get(callsign)
+        return state is not None and int(state.visible_until_s) > int(self._processed_ticks)
+
+    def _pick_asset_for_query(
+        self,
+        candidates: Sequence[_LiveAssetState],
+        *,
+        preferred_callsign: str | None = None,
+    ) -> _LiveAssetState:
+        ordered = list(candidates)
+        if preferred_callsign is not None:
+            for asset in ordered:
+                if asset.callsign == preferred_callsign:
+                    return asset
+        if not ordered:
+            raise ValueError("Expected at least one candidate asset.")
+        index = (self._scenario_index + self._query_slot_cursor - 1) % len(ordered)
+        return ordered[index]
+
+    def _build_current_location_query(
+        self,
+        *,
+        query_id: int,
+        tick: int,
+        expires_at_s: int,
+        future_offset_s: int,
+    ) -> _ActiveQueryState | None:
+        candidates = self._memory_candidates()
+        if not candidates:
+            return None
+        target = self._pick_asset_for_query(candidates)
+        return _ActiveQueryState(
+            query_id=query_id,
+            asked_at_s=tick,
+            expires_at_s=expires_at_s,
+            kind=SituationalAwarenessQueryKind.CURRENT_LOCATION,
+            answer_mode=SituationalAwarenessAnswerMode.GRID_CELL,
+            prompt=f"Where is {target.callsign} now?",
+            correct_answer_token=cell_label_from_xy(target.x, target.y),
+            subject_callsign=target.callsign,
+        )
+
+    def _build_origin_location_query(
+        self,
+        *,
+        query_id: int,
+        tick: int,
+        expires_at_s: int,
+        future_offset_s: int,
+    ) -> _ActiveQueryState | None:
+        candidates = sorted(self._live_assets.values(), key=lambda item: item.index)
+        if not candidates:
+            return None
+        target = self._pick_asset_for_query(candidates)
+        return _ActiveQueryState(
+            query_id=query_id,
+            asked_at_s=tick,
+            expires_at_s=expires_at_s,
+            kind=SituationalAwarenessQueryKind.ORIGIN_LOCATION,
+            answer_mode=SituationalAwarenessAnswerMode.GRID_CELL,
+            prompt=f"Where did {target.callsign} enter the picture?",
+            correct_answer_token=target.origin_cell,
+            subject_callsign=target.callsign,
+        )
+
+    def _build_future_location_query(
+        self,
+        *,
+        query_id: int,
+        tick: int,
+        expires_at_s: int,
+        future_offset_s: int,
+    ) -> _ActiveQueryState | None:
+        candidates = self._memory_candidates()
+        if not candidates:
+            return None
+        target = self._pick_asset_for_query(candidates)
+        projected = self._project_asset_cell(
+            callsign=target.callsign,
+            start_tick=tick,
+            offset_s=future_offset_s,
+        )
+        return _ActiveQueryState(
+            query_id=query_id,
+            asked_at_s=tick,
+            expires_at_s=expires_at_s,
+            kind=SituationalAwarenessQueryKind.FUTURE_LOCATION,
+            answer_mode=SituationalAwarenessAnswerMode.GRID_CELL,
+            prompt=f"Where will {target.callsign} be in {future_offset_s}s if the current routing continues?",
+            correct_answer_token=projected,
+            subject_callsign=target.callsign,
+            future_offset_s=future_offset_s,
+        )
+
+    def _build_safe_to_move_query(
         self,
         *,
         query_id: int,
@@ -1725,250 +2072,250 @@ class SituationalAwarenessTest:
     ) -> _ActiveQueryState | None:
         if self._scenario_plan is None:
             return None
-        valid_tracks = [track for track in self._live_tracks.values() if track.speed_cells_per_min > 0]
-        if not valid_tracks:
+        preferred = self._scenario_plan.context.get("priority_callsign")
+        assets = sorted(self._live_assets.values(), key=lambda item: item.index)
+        if not assets:
             return None
-        target = self._pick_track_for_query(valid_tracks)
-        projected = self._project_track_cell(
-            callsign=target.callsign,
-            start_tick=tick,
-            offset_s=min(future_offset_s, max(6, int(self._scenario_plan.duration_s) - tick)),
+        target = self._pick_asset_for_query(assets, preferred_callsign=str(preferred) if preferred else None)
+        destination = normalize_grid_cell_token(str(self._scenario_plan.context.get("merge_cell", target.waypoint)))
+        if destination is None:
+            destination = target.waypoint
+        decision = self._safe_move_decision(target.callsign, destination, start_tick=tick)
+        choices = (
+            SituationalAwarenessAnswerChoice(1, "Safe now."),
+            SituationalAwarenessAnswerChoice(2, "Wait one sweep, then go."),
+            SituationalAwarenessAnswerChoice(3, "Unsafe. Hold clear of traffic."),
+            SituationalAwarenessAnswerChoice(4, "Request a fresh picture first."),
         )
-        prompt = (
-            f"Future position: where will track {target.index} ({target.callsign}) be in "
-            f"{future_offset_s}s if current routing and updates continue?"
-        )
+        correct = {"safe_now": "1", "wait": "2", "unsafe": "3", "refresh": "4"}[decision]
         return _ActiveQueryState(
             query_id=query_id,
             asked_at_s=tick,
             expires_at_s=expires_at_s,
-            kind=SituationalAwarenessQueryKind.FUTURE_POSITION,
-            answer_mode=SituationalAwarenessAnswerMode.GRID_CELL,
-            prompt=prompt,
-            correct_answer_token=projected,
-            subject_callsign=target.callsign,
-            future_offset_s=future_offset_s,
-        )
-
-    def _build_contact_identification_query(
-        self,
-        *,
-        query_id: int,
-        tick: int,
-        expires_at_s: int,
-    ) -> _ActiveQueryState | None:
-        targets = sorted(self._live_tracks.values(), key=lambda item: item.index)
-        for target in targets:
-            cell = cell_label_from_xy(target.x, target.y)
-            prompt = (
-                f"Contact identification: which indexed track is at {cell}, "
-                f"heading {target.heading}, on CH {target.channel}?"
-            )
-            if self._track_index_query_is_unique(
-                target=target,
-                predicate=lambda track: (
-                    cell_label_from_xy(track.x, track.y) == cell
-                    and track.heading == target.heading
-                    and int(track.channel) == int(target.channel)
-                ),
-            ):
-                return _ActiveQueryState(
-                    query_id=query_id,
-                    asked_at_s=tick,
-                    expires_at_s=expires_at_s,
-                    kind=SituationalAwarenessQueryKind.CONTACT_IDENTIFICATION,
-                    answer_mode=SituationalAwarenessAnswerMode.TRACK_INDEX,
-                    prompt=prompt,
-                    correct_answer_token=str(target.index),
-                    subject_callsign=target.callsign,
-                )
-        return None
-
-    def _build_code_status_query(
-        self,
-        *,
-        query_id: int,
-        tick: int,
-        expires_at_s: int,
-    ) -> _ActiveQueryState | None:
-        targets = sorted(self._live_tracks.values(), key=lambda item: item.index)
-        for target in targets:
-            prompt = (
-                f"Code/status recall: which indexed track is squawking {target.squawk:04d} "
-                f"at FL{target.altitude_fl} on CH {target.channel}?"
-            )
-            if self._track_index_query_is_unique(
-                target=target,
-                predicate=lambda track: (
-                    int(track.squawk) == int(target.squawk)
-                    and int(track.altitude_fl) == int(target.altitude_fl)
-                    and int(track.channel) == int(target.channel)
-                ),
-            ):
-                return _ActiveQueryState(
-                    query_id=query_id,
-                    asked_at_s=tick,
-                    expires_at_s=expires_at_s,
-                    kind=SituationalAwarenessQueryKind.CODE_OR_STATUS_RECALL,
-                    answer_mode=SituationalAwarenessAnswerMode.TRACK_INDEX,
-                    prompt=prompt,
-                    correct_answer_token=str(target.index),
-                    subject_callsign=target.callsign,
-                )
-        return None
-
-    def _build_action_query(
-        self,
-        *,
-        query_id: int,
-        tick: int,
-        expires_at_s: int,
-    ) -> _ActiveQueryState | None:
-        if self._scenario_plan is None:
-            return None
-        pair = self._scenario_plan.context.get("conflict_pair")
-        priority = str(self._scenario_plan.context.get("priority_callsign", ""))
-        if not isinstance(pair, tuple) or len(pair) != 2 or priority == "":
-            return None
-        other = pair[1] if pair[0] == priority else pair[0]
-        priority_track = self._live_tracks.get(priority)
-        other_track = self._live_tracks.get(other)
-        if priority_track is None or other_track is None:
-            return None
-        merge_hint = cell_label_from_xy(
-            (priority_track.x + other_track.x) / 2.0,
-            (priority_track.y + other_track.y) / 2.0,
-        )
-        if self._scenario_plan.family is SituationalAwarenessScenarioFamily.FUEL_PRIORITY:
-            choices = (
-                SituationalAwarenessAnswerChoice(
-                    1,
-                    f"Keep {priority} direct and vector track {other_track.index} off the merge path.",
-                ),
-                SituationalAwarenessAnswerChoice(
-                    2,
-                    f"Hold {priority} and keep track {other_track.index} direct.",
-                ),
-                SituationalAwarenessAnswerChoice(
-                    3,
-                    "Delay both tracks and change both to standby channel.",
-                ),
-                SituationalAwarenessAnswerChoice(
-                    4,
-                    "Maintain current routing and monitor one more sweep.",
-                ),
-            )
-            prompt = (
-                f"Action selection: {priority} is {priority_track.fuel_state}. "
-                f"Best immediate action near {merge_hint}?"
-            )
-            correct = "1"
-        else:
-            choices = (
-                SituationalAwarenessAnswerChoice(
-                    1,
-                    f"Vector track {other_track.index} away and keep {priority} direct.",
-                ),
-                SituationalAwarenessAnswerChoice(
-                    2,
-                    f"Hold {priority} and keep track {other_track.index} direct.",
-                ),
-                SituationalAwarenessAnswerChoice(
-                    3,
-                    "Delay both tracks and reconfirm both squawks before acting.",
-                ),
-                SituationalAwarenessAnswerChoice(
-                    4,
-                    "Maintain current routes and wait one more query cycle.",
-                ),
-            )
-            prompt = (
-                f"Action selection: tracks {priority_track.index} and {other_track.index} "
-                f"converge near {merge_hint}. Best immediate action?"
-            )
-            correct = "1"
-        return _ActiveQueryState(
-            query_id=query_id,
-            asked_at_s=tick,
-            expires_at_s=expires_at_s,
-            kind=SituationalAwarenessQueryKind.ACTION_SELECTION,
-            answer_mode=SituationalAwarenessAnswerMode.ACTION,
-            prompt=prompt,
+            kind=SituationalAwarenessQueryKind.SAFE_TO_MOVE,
+            answer_mode=SituationalAwarenessAnswerMode.CHOICE,
+            prompt=f"Is it safe for {target.callsign} to proceed to {destination} now?",
             correct_answer_token=correct,
-            subject_callsign=priority,
+            subject_callsign=target.callsign,
             answer_choices=choices,
         )
 
-    def _track_index_query_is_unique(
+    def _build_status_recall_query(
         self,
         *,
-        target: _LiveTrackState,
-        predicate,
-    ) -> bool:
-        matches = [track for track in self._live_tracks.values() if predicate(track)]
-        return len(matches) == 1 and matches[0].callsign == target.callsign
+        query_id: int,
+        tick: int,
+        expires_at_s: int,
+        future_offset_s: int,
+    ) -> _ActiveQueryState | None:
+        assets = sorted(self._live_assets.values(), key=lambda item: item.index)
+        if not assets:
+            return None
+        target = self._pick_asset_for_query(assets)
+        subkind = ("channel", "altitude", "waypoint", "eta")[(query_id + target.index) % 4]
+        if subkind == "channel":
+            prompt = f"What communication channel is {target.callsign} using?"
+            correct_text = f"CH {target.channel}"
+            distractors = tuple(
+                f"CH {value}"
+                for value in range(1, 6)
+                if value != target.channel
+            )
+        elif subkind == "altitude":
+            prompt = f"What altitude is {target.callsign} holding?"
+            correct_text = f"FL{target.altitude_fl}"
+            distractors = tuple(
+                f"FL{value}"
+                for value in (
+                    target.altitude_fl - 20,
+                    target.altitude_fl - 10,
+                    target.altitude_fl + 10,
+                    target.altitude_fl + 20,
+                )
+                if value != target.altitude_fl and value >= 120
+            )
+        elif subkind == "waypoint":
+            prompt = f"What is {target.callsign}'s next waypoint?"
+            correct_text = target.waypoint
+            other_waypoints = [asset.waypoint for asset in assets if asset.callsign != target.callsign]
+            distractors = tuple(dict.fromkeys(other_waypoints + ["C5", "F5", "H4"]))
+        else:
+            prompt = f"When is {target.callsign} due at its next waypoint?"
+            eta_s = self._estimate_time_to_waypoint_s(target)
+            correct_text = _clock_text(
+                int(self._scenario_clock_s()) + eta_s
+            )
+            distractors = tuple(
+                _clock_text(int(self._scenario_clock_s()) + max(0, eta_s + delta))
+                for delta in (-20, -10, 10, 20)
+            )
+        choices, correct_token = self._choice_card(
+            query_id=query_id,
+            correct_text=correct_text,
+            distractors=distractors,
+        )
+        return _ActiveQueryState(
+            query_id=query_id,
+            asked_at_s=tick,
+            expires_at_s=expires_at_s,
+            kind=SituationalAwarenessQueryKind.STATUS_RECALL,
+            answer_mode=SituationalAwarenessAnswerMode.CHOICE,
+            prompt=prompt,
+            correct_answer_token=correct_token,
+            subject_callsign=target.callsign,
+            answer_choices=choices,
+        )
 
-    def _pick_track_for_query(self, tracks: list[_LiveTrackState]) -> _LiveTrackState:
-        preferred = sorted(tracks, key=lambda item: (item.index, item.callsign))
-        return preferred[(self._scenario_index + self._query_slot_cursor - 1) % len(preferred)]
+    def _choice_card(
+        self,
+        *,
+        query_id: int,
+        correct_text: str,
+        distractors: Sequence[str],
+    ) -> tuple[tuple[SituationalAwarenessAnswerChoice, ...], str]:
+        unique_distractors: list[str] = []
+        for item in distractors:
+            text = str(item).strip()
+            if text == "" or text == str(correct_text) or text in unique_distractors:
+                continue
+            unique_distractors.append(text)
+            if len(unique_distractors) >= 3:
+                break
+        while len(unique_distractors) < 3:
+            unique_distractors.append(f"Hold {len(unique_distractors) + 1}")
+        correct_index = int((query_id % 4) + 1)
+        ordered: list[str] = []
+        distractor_index = 0
+        for code in range(1, 5):
+            if code == correct_index:
+                ordered.append(str(correct_text))
+            else:
+                ordered.append(unique_distractors[distractor_index])
+                distractor_index += 1
+        choices = tuple(
+            SituationalAwarenessAnswerChoice(code=index + 1, text=text)
+            for index, text in enumerate(ordered)
+        )
+        return choices, str(correct_index)
 
-    def _project_track_cell(self, *, callsign: str, start_tick: int, offset_s: int) -> str:
-        if self._scenario_plan is None:
-            return "A0"
-        tracks = {name: track.copy() for name, track in self._live_tracks.items()}
-        end_tick = min(int(self._scenario_plan.duration_s), int(start_tick) + max(1, int(offset_s)))
-        pending_updates = [event for event in self._scenario_plan.updates if int(event.at_s) > int(start_tick)]
+    def _safe_move_decision(self, callsign: str, destination: str, *, start_tick: int) -> str:
+        dest_xy = cell_xy_from_label(destination)
+        if dest_xy is None:
+            return "refresh"
+        states = {name: asset.copy() for name, asset in self._live_assets.items()}
+        breaches_now = self._count_destination_conflicts(
+            states=states,
+            destination=dest_xy,
+            subject_callsign=callsign,
+        )
+        if breaches_now["hostile"] or breaches_now["unknown"]:
+            return "unsafe"
+        if breaches_now["friendly"]:
+            return "wait"
+
+        pending_updates = [
+            update
+            for update in self._scenario_plan.updates
+            if int(update.at_s) > int(start_tick)
+        ]
         update_cursor = 0
-        for sim_tick in range(int(start_tick) + 1, end_tick + 1):
-            for track in tracks.values():
-                dx, dy = _HEADING_VECTORS.get(track.heading, (0, 0))
-                track.x = max(0.0, min(float(_GRID_SIZE - 1), track.x + (dx * track.speed_cells_per_min / 60.0)))
-                track.y = max(0.0, min(float(_GRID_SIZE - 1), track.y + (dy * track.speed_cells_per_min / 60.0)))
+        for step in range(1, 13):
+            sim_tick = int(start_tick) + step
+            for asset in states.values():
+                dx, dy = _HEADING_VECTORS.get(asset.heading, (0, 0))
+                asset.x = max(0.0, min(float(_GRID_SIZE - 1), asset.x + (dx * asset.speed_cells_per_min / 60.0)))
+                asset.y = max(0.0, min(float(_GRID_SIZE - 1), asset.y + (dy * asset.speed_cells_per_min / 60.0)))
             while update_cursor < len(pending_updates) and int(pending_updates[update_cursor].at_s) == sim_tick:
                 update = pending_updates[update_cursor]
-                track = tracks.get(update.callsign)
-                if track is not None:
-                    if update.heading is not None:
-                        track.heading = str(update.heading).upper()
-                    if update.speed_cells_per_min is not None:
-                        track.speed_cells_per_min = int(update.speed_cells_per_min)
-                    if update.squawk is not None:
-                        track.squawk = int(update.squawk)
-                    if update.channel is not None:
-                        track.channel = int(update.channel)
-                    if update.altitude_fl is not None:
-                        track.altitude_fl = int(update.altitude_fl)
-                    if update.fuel_state is not None:
-                        track.fuel_state = str(update.fuel_state).upper()
-                    if update.waypoint is not None:
-                        track.waypoint = str(update.waypoint).upper()
+                asset = states.get(update.callsign)
+                if asset is not None:
+                    self._apply_update_to_state(asset, update)
                 update_cursor += 1
-        projected = tracks.get(callsign)
+            breaches = self._count_destination_conflicts(
+                states=states,
+                destination=dest_xy,
+                subject_callsign=callsign,
+            )
+            if breaches["hostile"] or breaches["unknown"]:
+                return "unsafe"
+            if breaches["friendly"]:
+                return "wait"
+        return "safe_now"
+
+    def _count_destination_conflicts(
+        self,
+        *,
+        states: dict[str, _LiveAssetState],
+        destination: tuple[int, int],
+        subject_callsign: str,
+    ) -> dict[str, int]:
+        counts = {"friendly": 0, "hostile": 0, "unknown": 0}
+        for asset in states.values():
+            if asset.callsign == subject_callsign:
+                continue
+            dx = float(destination[0]) - float(asset.x)
+            dy = float(destination[1]) - float(asset.y)
+            if ((dx * dx) + (dy * dy)) ** 0.5 <= 0.85:
+                counts[asset.affiliation] += 1
+        return counts
+
+    def _project_asset_cell(self, *, callsign: str, start_tick: int, offset_s: int) -> str:
+        states = {name: asset.copy() for name, asset in self._live_assets.items()}
+        pending_updates = [
+            update
+            for update in self._scenario_plan.updates
+            if int(update.at_s) > int(start_tick)
+        ]
+        update_cursor = 0
+        end_tick = min(int(self._scenario_plan.duration_s), int(start_tick) + max(1, int(offset_s)))
+        for sim_tick in range(int(start_tick) + 1, end_tick + 1):
+            for asset in states.values():
+                dx, dy = _HEADING_VECTORS.get(asset.heading, (0, 0))
+                asset.x = max(0.0, min(float(_GRID_SIZE - 1), asset.x + (dx * asset.speed_cells_per_min / 60.0)))
+                asset.y = max(0.0, min(float(_GRID_SIZE - 1), asset.y + (dy * asset.speed_cells_per_min / 60.0)))
+            while update_cursor < len(pending_updates) and int(pending_updates[update_cursor].at_s) == sim_tick:
+                update = pending_updates[update_cursor]
+                asset = states.get(update.callsign)
+                if asset is not None:
+                    self._apply_update_to_state(asset, update)
+                update_cursor += 1
+        projected = states.get(callsign)
         if projected is None:
             return "A0"
         return cell_label_from_xy(projected.x, projected.y)
+
+    def _estimate_time_to_waypoint_s(self, asset: _LiveAssetState) -> int:
+        target = cell_xy_from_label(asset.waypoint)
+        if target is None or asset.speed_cells_per_min <= 0:
+            return 0
+        dx = float(target[0]) - float(asset.x)
+        dy = float(target[1]) - float(asset.y)
+        distance = ((dx * dx) + (dy * dy)) ** 0.5
+        if distance <= 0.05:
+            return 0
+        return max(0, int(round((distance / float(asset.speed_cells_per_min)) * 60.0)))
 
     def _record_query_result(self, *, raw: str, is_timeout: bool) -> QuestionEvent:
         assert self._current_query is not None
         assert self._scenario_started_at_s is not None
         prompt = self._current_query.prompt
         correct = self._current_query.correct_answer_token
-        now = self._clock.now()
         presented_at = self._scenario_started_at_s + float(self._current_query.asked_at_s)
         if is_timeout:
             answered_at = self._scenario_started_at_s + float(self._current_query.expires_at_s)
             response_time = max(0.0, answered_at - presented_at)
-            user_answer = -1
+            user_answer = 0
             submitted = ""
             is_correct = False
         else:
-            answered_at = now
+            answered_at = self._clock.now()
             response_time = max(0.0, answered_at - presented_at)
             submitted = str(raw)
             user_answer = self._user_answer_value(raw=submitted)
             is_correct = submitted == correct
 
         score = 1.0 if is_correct else 0.0
+        payload = self.snapshot().payload
         event = QuestionEvent(
             index=len(self._events),
             phase=self._phase,
@@ -1982,6 +2329,8 @@ class SituationalAwarenessTest:
             raw=submitted,
             score=score,
             max_score=1.0,
+            is_timeout=is_timeout,
+            content_metadata=content_metadata_from_payload(payload),
         )
         self._events.append(event)
 
@@ -1999,7 +2348,7 @@ class SituationalAwarenessTest:
             return int(token)
         cell = cell_xy_from_label(token)
         if cell is None:
-            return -1
+            return 0
         return (cell[1] * 10) + cell[0]
 
     def _normalize_submission(
@@ -2014,9 +2363,7 @@ class SituationalAwarenessTest:
         if not token.isdigit():
             return None
         value = int(token)
-        if answer_mode is SituationalAwarenessAnswerMode.ACTION:
-            return str(value) if 1 <= value <= 4 else None
-        return str(value) if 1 <= value <= max(5, len(self._live_tracks)) else None
+        return str(value) if 1 <= value <= 4 else None
 
     def _active_channels(self) -> tuple[str, ...]:
         if self._current_segment is None:
@@ -2028,6 +2375,11 @@ class SituationalAwarenessTest:
             return SA_QUERY_KIND_ORDER
         return self._current_segment.active_query_kinds
 
+    def _current_profile(self) -> SituationalAwarenessTrainingProfile:
+        if self._current_segment is None:
+            return SituationalAwarenessTrainingProfile()
+        return self._current_segment.profile
+
     def _focus_label(self) -> str:
         if self._current_segment is None:
             return "Full mixed picture"
@@ -2038,50 +2390,76 @@ class SituationalAwarenessTest:
             return self._scenario_plan.label if self._scenario_plan is not None else self._title
         return self._current_segment.label
 
+    def _scenario_clock_s(self) -> float:
+        assert self._scenario_plan is not None
+        assert self._scenario_started_at_s is not None
+        return float(self._scenario_plan.display_clock_base_s) + max(
+            0.0, self._clock.now() - self._scenario_started_at_s
+        )
+
     def _payload(self) -> SituationalAwarenessPayload:
         assert self._scenario_plan is not None
         assert self._scenario_started_at_s is not None
         scenario_elapsed_s = max(0.0, self._clock.now() - self._scenario_started_at_s)
         scenario_remaining_s = max(0.0, float(self._scenario_plan.duration_s) - scenario_elapsed_s)
 
-        tracks = tuple(
-            SituationalAwarenessTrack(
-                index=track.index,
-                callsign=track.callsign,
-                x=float(track.x),
-                y=float(track.y),
-                cell_label=cell_label_from_xy(track.x, track.y),
-                heading=track.heading,
-                speed_cells_per_min=int(track.speed_cells_per_min),
-                squawk=int(track.squawk),
-                channel=int(track.channel),
-                altitude_fl=int(track.altitude_fl),
-                fuel_state=str(track.fuel_state),
-                waypoint=str(track.waypoint),
+        contacts: list[SituationalAwarenessVisibleContact] = []
+        ttl = max(1.0, float(self._contact_ttl_s()))
+        for state in list(self._visible_contacts.values()):
+            if int(state.visible_until_s) <= int(scenario_elapsed_s):
+                continue
+            asset = self._live_assets.get(state.callsign)
+            if asset is None:
+                continue
+            fade = max(0.0, min(1.0, (float(state.visible_until_s) - scenario_elapsed_s) / ttl))
+            contacts.append(
+                SituationalAwarenessVisibleContact(
+                    callsign=asset.callsign,
+                    affiliation=asset.affiliation,
+                    x=float(asset.x),
+                    y=float(asset.y),
+                    cell_label=cell_label_from_xy(asset.x, asset.y),
+                    heading=asset.heading,
+                    fade=fade,
+                )
             )
-            for track in sorted(self._live_tracks.values(), key=lambda item: item.index)
-        )
-        status_entries = tuple(
-            SituationalAwarenessStatusEntry(
-                track_index=track.index,
-                callsign=track.callsign,
-                cell_label=track.cell_label,
-                heading=track.heading,
-                speed_cells_per_min=track.speed_cells_per_min,
-                squawk=track.squawk,
-                channel=track.channel,
-                altitude_fl=track.altitude_fl,
-                fuel_state=track.fuel_state,
-                waypoint=track.waypoint,
+        contacts.sort(key=lambda item: item.callsign)
+
+        cue_card = None
+        if self._cue_card_state is not None and int(self._cue_card_state.visible_until_s) > int(scenario_elapsed_s):
+            asset = self._live_assets.get(self._cue_card_state.callsign)
+            if asset is not None:
+                ttl_card = max(1.0, float(self._cue_card_ttl_s()))
+                cue_card = SituationalAwarenessCueCard(
+                    callsign=asset.callsign,
+                    affiliation=asset.affiliation,
+                    next_waypoint=asset.waypoint,
+                    eta_clock_text=_clock_text(int(self._scenario_clock_s()) + self._estimate_time_to_waypoint_s(asset)),
+                    altitude_text=f"FL{asset.altitude_fl}",
+                    channel_text=f"CH {asset.channel}",
+                    fade=max(
+                        0.0,
+                        min(1.0, (float(self._cue_card_state.visible_until_s) - scenario_elapsed_s) / ttl_card),
+                    ),
+                )
+
+        top_strip_text = ""
+        top_strip_fade = 0.0
+        if self._top_strip_state is not None and int(self._top_strip_state.visible_until_s) > int(scenario_elapsed_s):
+            ttl_strip = max(1.0, float(self._top_strip_ttl_s()))
+            top_strip_text = self._top_strip_state.text
+            top_strip_fade = max(
+                0.0,
+                min(1.0, (float(self._top_strip_state.visible_until_s) - scenario_elapsed_s) / ttl_strip),
             )
-            for track in tracks
-        )
+
         next_query_in_s = None
         if self._current_query is None and self._query_slot_cursor < len(self._scenario_plan.query_slots):
             next_query_in_s = max(
                 0.0,
                 float(self._scenario_plan.query_slots[self._query_slot_cursor].at_s) - float(self._processed_ticks),
             )
+
         active_query = None
         answer_mode = None
         correct_answer_token = None
@@ -2115,10 +2493,12 @@ class SituationalAwarenessTest:
             scenario_elapsed_s=scenario_elapsed_s,
             scenario_time_remaining_s=scenario_remaining_s,
             next_query_in_s=next_query_in_s,
-            tracks=tracks,
-            status_entries=status_entries,
+            visible_contacts=tuple(contacts),
+            cue_card=cue_card,
             waypoints=self._scenario_plan.waypoints,
-            recent_feed_lines=tuple(self._recent_feed_lines),
+            top_strip_text=top_strip_text,
+            top_strip_fade=top_strip_fade,
+            display_clock_text=_clock_text(int(self._scenario_clock_s())),
             active_query=active_query,
             answer_mode=answer_mode,
             correct_answer_token=correct_answer_token,
@@ -2128,12 +2508,10 @@ class SituationalAwarenessTest:
 
     def _input_hint(self, payload: SituationalAwarenessPayload) -> str:
         if payload.active_query is None:
-            return "Monitor the grid, coded panel, and aural feed for the next query."
+            return "Monitor the fading grid sweeps, cue card, and aural updates."
         if payload.answer_mode is SituationalAwarenessAnswerMode.GRID_CELL:
             return "Click a grid cell or type row+column, then press Enter."
-        if payload.answer_mode is SituationalAwarenessAnswerMode.TRACK_INDEX:
-            return "Click a track row or press 1-5, then press Enter."
-        return "Click an action card or press 1-4, then press Enter."
+        return "Click a choice or press 1-4, then press Enter."
 
     def _set_announcement(self, *, lines: tuple[str, ...], reason: tuple[object, ...]) -> None:
         self._announcement_serial += 1

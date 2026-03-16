@@ -484,7 +484,7 @@ def _build_tt1_engine(
     practice_questions = (
         int(cfg.practice_questions_per_segment)
         if cfg.practice_questions_per_segment is not None
-        else (2 if mode is AntDrillMode.BUILD else 0)
+        else (2 if mode in (AntDrillMode.FRESH, AntDrillMode.BUILD) else 0)
     )
     scored_duration_s = (
         float(cfg.scored_duration_s)
@@ -520,7 +520,7 @@ def _build_tt2_engine(
     practice_questions = (
         int(cfg.practice_questions_per_segment)
         if cfg.practice_questions_per_segment is not None
-        else (2 if mode is AntDrillMode.BUILD else 0)
+        else (2 if mode in (AntDrillMode.FRESH, AntDrillMode.BUILD) else 0)
     )
     scored_duration_s = (
         float(cfg.scored_duration_s)
@@ -785,7 +785,7 @@ def _build_mixed_trace_drill(
     practice_questions_per_segment = (
         int(cfg.practice_questions_per_segment)
         if cfg.practice_questions_per_segment is not None
-        else (1 if normalized_mode is AntDrillMode.BUILD else 0)
+        else (1 if normalized_mode in (AntDrillMode.FRESH, AntDrillMode.BUILD) else 0)
     )
     scored_duration_s = (
         float(cfg.scored_duration_s)

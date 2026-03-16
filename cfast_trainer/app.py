@@ -33,7 +33,7 @@ import tempfile
 import time
 import wave
 from array import array
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol, cast
@@ -41,6 +41,8 @@ from typing import Any, Protocol, cast
 import pygame
 
 from .abd_drills import (
+    AbdDrillConfig,
+    AbdFamilyRunConfig,
     build_abd_angle_calibration_drill,
     build_abd_bearing_calibration_drill,
     build_abd_cardinal_anchors_drill,
@@ -57,7 +59,17 @@ from .aircraft_art import (
     project_fixed_wing_faces,
 )
 from .ant_drills import (
+    ANT_DRILL_MODE_PROFILES,
+    AntDistanceScanConfig,
     AntDrillMode,
+    AntEnduranceSolveConfig,
+    AntFuelBurnSolveConfig,
+    AntInfoGrabberConfig,
+    AntMixedTempoSetConfig,
+    AntPayloadReferenceConfig,
+    AntRouteTimeSolveConfig,
+    AntSnapFactsSprintConfig,
+    AntTimeFlipConfig,
     build_ant_distance_scan_drill,
     build_ant_endurance_solve_drill,
     build_ant_fuel_burn_solve_drill,
@@ -84,12 +96,21 @@ from .angles_bearings_degrees import (
     build_angles_bearings_degrees_test,
 )
 from .mr_drills import (
+    MrDrillConfig,
     build_mr_domain_run_drill,
     build_mr_mixed_pressure_set_drill,
     build_mr_multi_step_solve_drill,
     build_mr_one_step_solve_drill,
     build_mr_relevant_info_scan_drill,
     build_mr_unit_relation_prime_drill,
+)
+from .ma_drills import (
+    MaDrillConfig,
+    build_ma_fuel_endurance_drill,
+    build_ma_mixed_conversion_caps_drill,
+    build_ma_one_step_fluency_drill,
+    build_ma_percentage_snap_drill,
+    build_ma_rate_time_distance_drill,
 )
 from .mr_workouts import build_mr_workout_plan, mr_workout_menu_entries
 from .ac_drills import (
@@ -117,6 +138,8 @@ from .auditory_capacity_panda3d import (
     AuditoryCapacityPanda3DRenderer,
     panda3d_auditory_rendering_available,
 )
+from .adaptive_scheduler import AdaptiveSession, AdaptiveStage, build_adaptive_session_plan
+from .benchmark import BenchmarkSession, BenchmarkStage, build_benchmark_plan
 from .clock import PausableClock, RealClock
 from .cognitive_core import Phase, TestSnapshot
 from .cognitive_updating import (
@@ -155,6 +178,7 @@ from .colours_letters_numbers import (
     build_colours_letters_numbers_test,
 )
 from .cln_drills import (
+    ClnDrillConfig,
     build_cln_colour_lane_drill,
     build_cln_full_pressure_drill,
     build_cln_full_steady_drill,
@@ -165,9 +189,17 @@ from .cln_drills import (
     build_cln_sequence_math_recall_drill,
     build_cln_sequence_match_drill,
 )
+from .dtb_drills import (
+    DualTaskBridgeDrillConfig,
+    build_dtb_tracking_command_filter_drill,
+    build_dtb_tracking_filter_digit_report_drill,
+    build_dtb_tracking_interference_recovery_drill,
+    build_dtb_tracking_recall_drill,
+)
 from .cln_workouts import build_cln_workout_plan, cln_workout_menu_entries
 from .digit_recognition import DigitRecognitionPayload, build_digit_recognition_test
 from .dr_drills import (
+    DigitRecognitionDrillConfig,
     build_dr_count_target_drill,
     build_dr_different_digit_drill,
     build_dr_grouped_family_run_drill,
@@ -219,6 +251,7 @@ from .math_reasoning import (
     build_math_reasoning_test,
 )
 from .no_drills import (
+    NoDrillConfig,
     build_no_clean_compute_drill,
     build_no_fact_prime_drill,
     build_no_mixed_tempo_drill,
@@ -257,6 +290,8 @@ from .rapid_tracking_panda3d import (
 )
 from .rt_workouts import build_rt_workout_plan, rt_workout_menu_entries
 from .results import attempt_result_from_engine
+from .runtime_defaults import RuntimeDefaultsStore
+from .training_modes import maybe_build_fatigue_probe_drill, supported_manual_modes
 from .sensory_motor_apparatus import (
     SensoryMotorApparatusEngine,
     SensoryMotorApparatusPayload,
@@ -326,19 +361,28 @@ from .system_logic import (
     build_system_logic_test,
 )
 from .sl_drills import (
+    SlDrillConfig,
+    build_sl_fast_reject_drill,
     build_sl_fault_diagnosis_prime_drill,
     build_sl_family_run_drill,
     build_sl_flow_trace_anchor_drill,
     build_sl_graph_rule_anchor_drill,
     build_sl_index_switch_run_drill,
+    build_sl_missing_step_complete_drill,
     build_sl_mixed_tempo_drill,
+    build_sl_one_rule_identify_drill,
     build_sl_pressure_run_drill,
     build_sl_quantitative_anchor_drill,
+    build_sl_rule_match_drill,
+    build_sl_two_source_reconcile_drill,
 )
 from .sl_workouts import build_sl_workout_plan, sl_workout_menu_entries
 from .table_reading import TableReadingPayload, TableReadingTable, build_table_reading_test
 from .tbl_drills import (
+    TblDrillConfig,
     build_tbl_card_family_run_drill,
+    build_tbl_distractor_grid_drill,
+    build_tbl_lookup_compute_drill,
     build_tbl_mixed_tempo_drill,
     build_tbl_part1_anchor_drill,
     build_tbl_part1_scan_run_drill,
@@ -346,6 +390,9 @@ from .tbl_drills import (
     build_tbl_part2_prime_drill,
     build_tbl_part_switch_run_drill,
     build_tbl_pressure_run_drill,
+    build_tbl_shrinking_cap_run_drill,
+    build_tbl_single_lookup_anchor_drill,
+    build_tbl_two_table_xref_drill,
 )
 from .tbl_workouts import build_tbl_workout_plan, tbl_workout_menu_entries
 from .target_recognition import (
@@ -414,6 +461,7 @@ from .vig_workouts import build_vig_workout_plan, vig_workout_menu_entries
 from .vigilance import VigilancePayload, VigilanceSymbolKind, build_vigilance_test
 from .visual_search import VisualSearchPayload, VisualSearchTaskKind, build_visual_search_test
 from .vs_drills import (
+    VsDrillConfig,
     build_vs_clean_scan_drill,
     build_vs_family_run_drill,
     build_vs_mixed_tempo_drill,
@@ -436,6 +484,11 @@ TEST_DIFFICULTY_OPTIONS: tuple[tuple[str, str], ...] = (
     ("no_clean_compute", "Numerical Operations: Clean Compute"),
     ("no_mixed_tempo", "Numerical Operations: Mixed Tempo"),
     ("no_pressure_run", "Numerical Operations: Pressure Run"),
+    ("ma_one_step_fluency", "Mental Arithmetic: One-Step Fluency"),
+    ("ma_percentage_snap", "Mental Arithmetic: Percentage Snap"),
+    ("ma_rate_time_distance", "Mental Arithmetic: Rate Time Distance"),
+    ("ma_fuel_endurance", "Mental Arithmetic: Fuel Burn And Endurance"),
+    ("ma_mixed_conversion_caps", "Mental Arithmetic: Mixed Conversion Caps"),
     ("numerical_operations_workout", "Numerical Operations Workout"),
     ("math_reasoning", "Mathematics Reasoning"),
     ("mr_relevant_info_scan", "Mathematics Reasoning: Relevant Info Scan"),
@@ -524,6 +577,11 @@ TEST_DIFFICULTY_OPTIONS: tuple[tuple[str, str], ...] = (
     ("sl_family_run", "System Logic: Family Run"),
     ("sl_mixed_tempo", "System Logic: Mixed Tempo"),
     ("sl_pressure_run", "System Logic: Pressure Run"),
+    ("sl_one_rule_identify", "System Logic: One-Rule Identify"),
+    ("sl_missing_step_complete", "System Logic: Missing-Step Complete"),
+    ("sl_two_source_reconcile", "System Logic: Two-Source Reconcile"),
+    ("sl_rule_match", "System Logic: Rule Match"),
+    ("sl_fast_reject", "System Logic: Fast Reject"),
     ("system_logic_workout", "System Logic Workout"),
     ("table_reading", "Table Reading"),
     ("tbl_part1_anchor", "Table Reading: Part 1 Anchor"),
@@ -534,6 +592,11 @@ TEST_DIFFICULTY_OPTIONS: tuple[tuple[str, str], ...] = (
     ("tbl_card_family_run", "Table Reading: Card Family Run"),
     ("tbl_mixed_tempo", "Table Reading: Mixed Tempo"),
     ("tbl_pressure_run", "Table Reading: Pressure Run"),
+    ("tbl_single_lookup_anchor", "Table Reading: Single Lookup Anchor"),
+    ("tbl_two_table_xref", "Table Reading: Two-Table Cross Reference"),
+    ("tbl_distractor_grid", "Table Reading: Distractor Grid"),
+    ("tbl_lookup_compute", "Table Reading: Lookup + Compute"),
+    ("tbl_shrinking_cap_run", "Table Reading: Shrinking Cap Run"),
     ("table_reading_workout", "Table Reading Workout"),
     ("sensory_motor_apparatus", "Sensory Motor Apparatus"),
     ("sma_joystick_horizontal_anchor", "Sensory Motor Apparatus: Joystick Horizontal Anchor"),
@@ -584,6 +647,10 @@ TEST_DIFFICULTY_OPTIONS: tuple[tuple[str, str], ...] = (
     ("rt_air_speed_run", "Rapid Tracking: Air Speed Run"),
     ("rt_mixed_tempo", "Rapid Tracking: Mixed Tempo"),
     ("rt_pressure_run", "Rapid Tracking: Pressure Run"),
+    ("dtb_tracking_recall", "Dual-Task Bridge: Tracking + Recall"),
+    ("dtb_tracking_command_filter", "Dual-Task Bridge: Tracking + Command Filter"),
+    ("dtb_tracking_filter_digit_report", "Dual-Task Bridge: Tracking + Filter + Digit Report"),
+    ("dtb_tracking_interference_recovery", "Dual-Task Bridge: Tracking + Interference + Recovery"),
     ("rapid_tracking_workout", "Rapid Tracking Workout"),
     ("spatial_integration", "Spatial Integration"),
     ("si_landmark_anchor", "Spatial Integration: Landmark Anchor"),
@@ -713,6 +780,66 @@ TEST_GUIDE_BRIEFS: dict[str, TestGuideBriefing] = {
         controls="Type the answer digits and press Enter.",
         app_flow="This drill reuses the full-screen Numerical Operations layout with per-item caps and immediate workout-style feedback.",
     ),
+    "ma_one_step_fluency": TestGuideBriefing(
+        label="Mental Arithmetic: One-Step Fluency",
+        assessment="Primitive arithmetic drill for making one-step solving automatic without routing through a named test family.",
+        tasks=(
+            "Work direct addition, subtraction, multiplication, and division until setup time drops.",
+            "Stay typed and exact under the same hard-cap rhythm used by the rest of the arithmetic microdrills.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: none beyond basic arithmetic facts.",
+        controls="Type the answer digits and press Enter.",
+        app_flow="This primitive drill uses the same full-screen typed cap shell as the other arithmetic drill families.",
+    ),
+    "ma_percentage_snap": TestGuideBriefing(
+        label="Mental Arithmetic: Percentage Snap",
+        assessment="Primitive arithmetic drill for fast percentage transforms that support several task families at once.",
+        tasks=(
+            "Snap to common percentage transforms instead of recomputing the whole item from first principles.",
+            "Keep the retrieval clean enough that later symbolic and aviation-style tasks can spend attention elsewhere.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: be comfortable with 5, 10, 20, 25, 50, and 75 percent anchors.",
+        controls="Type the answer digits and press Enter.",
+        app_flow="This primitive drill stays on the typed cap shell and keeps immediate correction in the lower-pressure modes.",
+    ),
+    "ma_rate_time_distance": TestGuideBriefing(
+        label="Mental Arithmetic: Rate Time Distance",
+        assessment="Primitive arithmetic drill for one-step speed, distance, and time transforms.",
+        tasks=(
+            "Solve the requested unit directly without reading the item like a full word problem.",
+            "Keep units stable enough that later route-time work does not pay a setup penalty.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: know the rate-time-distance relationship cold.",
+        controls="Type the answer digits and press Enter.",
+        app_flow="This primitive drill uses the typed cap shell rather than the Mathematics Reasoning multiple-choice layout.",
+    ),
+    "ma_fuel_endurance": TestGuideBriefing(
+        label="Mental Arithmetic: Fuel Burn And Endurance",
+        assessment="Primitive arithmetic drill for fuel-used, endurance, and burn-rate transforms.",
+        tasks=(
+            "Keep fuel-time relationships automatic before the larger scenario layer returns.",
+            "Recover immediately after a slow item instead of carrying the delay into the next calculation.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: know the fuel-used, burn-rate, and endurance relationships well enough to solve them in one pass.",
+        controls="Type the answer digits and press Enter.",
+        app_flow="This primitive drill stays on the full-screen typed cap shell with no extra overlays.",
+    ),
+    "ma_mixed_conversion_caps": TestGuideBriefing(
+        label="Mental Arithmetic: Mixed Conversion Caps",
+        assessment="Primitive arithmetic drill for exact mixed-unit conversion under tighter time pressure.",
+        tasks=(
+            "Flip between time, mass, volume, and distance conversions without paying extra orientation cost.",
+            "Treat the cap as part of the task and move on quickly after small misses.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: be comfortable with exact base-unit conversions and HHMM-to-minutes transforms.",
+        controls="Type the answer digits and press Enter.",
+        app_flow="This primitive drill uses the typed cap shell with tighter conversion-heavy item caps than the easier arithmetic blocks.",
+    ),
     "numerical_operations_workout": TestGuideBriefing(
         label="Numerical Operations Workout",
         assessment="Chained Numerical Operations workout with reflection, arithmetic priming, mixed tempo, and late pressure runs.",
@@ -823,15 +950,15 @@ TEST_GUIDE_BRIEFS: dict[str, TestGuideBriefing] = {
     ),
     "airborne_numerical": TestGuideBriefing(
         label="Airborne Numerical",
-        assessment="Reasoning test for airborne-style estimation under time pressure.",
+        assessment="Reasoning test for airborne-style route, endurance, fuel, and payload estimation under time pressure.",
         tasks=(
-            "Estimate time, speed, distance, and fuel-consumption problems mentally.",
-            "Use quick arithmetic without paper or a calculator.",
+            "Estimate route time, empty time, fuel endurance, fuel burned, distance, parcel weight, and parcel effect mentally.",
+            "Use the mixed table and chart overlays cleanly without paper or a calculator.",
         ),
         timing="Guide time including instructions: about 35 minutes.",
-        prep="Guide preparation: mental arithmetic plus time, speed, distance, and fuel work.",
-        controls="Type the 4-digit answer. S, D, F, and A open the reference aids in this trainer.",
-        app_flow="Use practice to learn the overlays and answer format before the timed block.",
+        prep="Guide preparation: mental arithmetic plus time, speed, distance, endurance, and payload-effect work.",
+        controls="Type the 4-digit answer. Hold A for route distances, D for speed and fuel reference, and F for speed and parcel reference.",
+        app_flow="Use practice to learn the live table/chart overlays and the 4-digit answer format before the timed block.",
     ),
     "ant_snap_facts_sprint": TestGuideBriefing(
         label="Airborne Numerical: Snap Facts Sprint",
@@ -1769,6 +1896,66 @@ TEST_GUIDE_BRIEFS: dict[str, TestGuideBriefing] = {
         controls="Use Up/Down to move the index, A/B/C/D/E or 1-5 to choose, then Enter to submit.",
         app_flow="The pressure run keeps the full live System Logic renderer and keyboard-only controls while removing simplifications.",
     ),
+    "sl_one_rule_identify": TestGuideBriefing(
+        label="System Logic: One-Rule Identify",
+        assessment="Primitive symbolic drill for spotting the decisive rule or graph relation quickly.",
+        tasks=(
+            "Identify the one rule that actually resolves the item instead of over-reading the whole guide.",
+            "Keep the right-side index movement deliberate and minimal.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: use the graph and rule pane together instead of guessing from one source.",
+        controls="Use Up/Down to move the index, A/B/C/D/E or 1-5 to choose, then Enter to submit.",
+        app_flow="This primitive drill preserves the normal System Logic guide layout and exact multiple-choice scoring.",
+    ),
+    "sl_missing_step_complete": TestGuideBriefing(
+        label="System Logic: Missing-Step Complete",
+        assessment="Primitive symbolic drill for finishing a broken dependency or transfer chain.",
+        tasks=(
+            "Find the missing step instead of rereading every visible fact line.",
+            "Use the guide index to verify the missing transfer or dependency exactly once.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: treat step order as the deciding feature, not just familiar wording.",
+        controls="Use Up/Down to move the index, A/B/C/D/E or 1-5 to choose, then Enter to submit.",
+        app_flow="This primitive drill keeps the standard two-pane System Logic presentation while narrowing the reasoning profile.",
+    ),
+    "sl_two_source_reconcile": TestGuideBriefing(
+        label="System Logic: Two-Source Reconcile",
+        assessment="Primitive symbolic drill for reconciling two guide sources without over-reading the rest of the scenario.",
+        tasks=(
+            "Cross-check the two decisive sources quickly and ignore the rest.",
+            "Use the block to make table-rule-fault reconciliation feel routine.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: know how the index maps you to the minimum evidence set.",
+        controls="Use Up/Down to move the index, A/B/C/D/E or 1-5 to choose, then Enter to submit.",
+        app_flow="This primitive drill still uses the normal System Logic panes and exact scoring.",
+    ),
+    "sl_rule_match": TestGuideBriefing(
+        label="System Logic: Rule Match",
+        assessment="Primitive symbolic drill for matching diagrams, tables, and rules faster.",
+        tasks=(
+            "Match the relevant diagram/table/rule relationship before the distractors feel plausible.",
+            "Keep the answer flow identical to the full System Logic task.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: let the guide structure do the work; do not free-associate from one pane.",
+        controls="Use Up/Down to move the index, A/B/C/D/E or 1-5 to choose, then Enter to submit.",
+        app_flow="This primitive drill keeps the live guide layout and focuses the generator on rule-matching cases.",
+    ),
+    "sl_fast_reject": TestGuideBriefing(
+        label="System Logic: Fast Reject",
+        assessment="Primitive symbolic drill for rejecting tempting distractors under tighter cap pressure.",
+        tasks=(
+            "Choose the single fully supported answer and reject the near-miss distractors quickly.",
+            "Do not reread the whole guide after you have enough evidence to eliminate the trap answers.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: be ready to commit once the required evidence is clear.",
+        controls="Use Up/Down to move the index, A/B/C/D/E or 1-5 to choose, then Enter to submit.",
+        app_flow="This primitive drill uses the normal System Logic guide flow but biases the answer set toward tempting distractors.",
+    ),
     "system_logic_workout": TestGuideBriefing(
         label="System Logic Workout",
         assessment="Chained System Logic workout with typed reflection, focused reasoning warm-ups, family switching, and a final pressure block.",
@@ -1888,6 +2075,66 @@ TEST_GUIDE_BRIEFS: dict[str, TestGuideBriefing] = {
         prep="Guide preparation: arrive warmed up; this is a pressure block, not a teaching block.",
         controls="Use A/S/D/F/G or 1-5 to choose, Up/Down to move the highlight, then Enter to submit.",
         app_flow="This pressure block keeps the same live Table Reading UI and keyboard-only controls while tightening the pacing.",
+    ),
+    "tbl_single_lookup_anchor": TestGuideBriefing(
+        label="Table Reading: Single Lookup Anchor",
+        assessment="Primitive table-reading drill for one-table row and column lookup speed.",
+        tasks=(
+            "Stay on single-table lookup only until the scan path stops costing extra time.",
+            "Keep the live table layout and answer strip exactly as they appear in the main task.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: none beyond the standard Table Reading answer flow.",
+        controls="Use A/S/D/F/G or 1-5 to choose, Up/Down to move the highlight, then Enter to submit.",
+        app_flow="This primitive drill uses the live Table Reading renderer and the normal partial-credit scoring model.",
+    ),
+    "tbl_two_table_xref": TestGuideBriefing(
+        label="Table Reading: Two-Table Cross Reference",
+        assessment="Primitive table-reading drill for repeated two-table cross-reference chains.",
+        tasks=(
+            "Use the index card and correction card in sequence on every item.",
+            "Stop the handoff between the two tables from leaking extra time.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: treat the first lookup and second lookup as two distinct steps.",
+        controls="Use A/S/D/F/G or 1-5 to choose, Up/Down to move the highlight, then Enter to submit.",
+        app_flow="This primitive drill uses the live Table Reading renderer with only the two-table workflow active.",
+    ),
+    "tbl_distractor_grid": TestGuideBriefing(
+        label="Table Reading: Distractor Grid",
+        assessment="Primitive table-reading drill for scan discipline under denser row and column distraction.",
+        tasks=(
+            "Finish the full row and column search instead of committing off partial matches.",
+            "Keep the response format unchanged while the scan pressure gets denser.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: keep your row-first then column confirmation sequence stable.",
+        controls="Use A/S/D/F/G or 1-5 to choose, Up/Down to move the highlight, then Enter to submit.",
+        app_flow="This primitive drill uses the normal Table Reading renderer and scoring, but tighter option spacing and scan pressure.",
+    ),
+    "tbl_lookup_compute": TestGuideBriefing(
+        label="Table Reading: Lookup + Compute",
+        assessment="Primitive table-reading drill for adding one small transform after the lookup is complete.",
+        tasks=(
+            "Extract the table value first, then apply the simple arithmetic transform only once.",
+            "Keep the lookup and transform separate so the arithmetic does not contaminate the scan.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: be comfortable with the base table workflow before adding the one-step transform.",
+        controls="Use A/S/D/F/G or 1-5 to choose, Up/Down to move the highlight, then Enter to submit.",
+        app_flow="This primitive drill keeps the live Table Reading screen and partial-credit scoring while adding one post-lookup transform.",
+    ),
+    "tbl_shrinking_cap_run": TestGuideBriefing(
+        label="Table Reading: Shrinking Cap Run",
+        assessment="Primitive table-reading drill for stable lookup workflow while the cap tightens through the block.",
+        tasks=(
+            "Keep the workflow stable even as the time cap shrinks from item to item.",
+            "Reset immediately after a slow answer; the next cap will be tighter.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: know both the single-table and two-table flows before starting.",
+        controls="Use A/S/D/F/G or 1-5 to choose, Up/Down to move the highlight, then Enter to submit.",
+        app_flow="This primitive drill uses the live Table Reading renderer with a cap profile that tightens during the block.",
     ),
     "table_reading_workout": TestGuideBriefing(
         label="Table Reading Workout",
@@ -2266,120 +2513,120 @@ TEST_GUIDE_BRIEFS: dict[str, TestGuideBriefing] = {
         assessment="Multitask test for building and updating a mental picture of a changing situation.",
         tasks=(
             "Combine verbal, numerical, pictorial, and coded information.",
-            "Answer questions about current, past, and future movement or the best action to take.",
+            "Answer questions about current, past, and future movement or whether a move is safe.",
         ),
         timing="Guide time including instructions: about 30 minutes.",
         prep="Guide preparation: none required.",
-        controls="Grid-cell queries use click or row+column plus Enter; track and action queries use 1-5 or click, then Enter.",
-        app_flow="Practice teaches the live grid, coded panel, and direct-response query modes before the timed continuous scenario starts.",
+        controls="Grid-cell queries use click or row+column plus Enter; choice queries use 1-4 or click, then Enter.",
+        app_flow="Practice teaches the live sparse grid, fading cue card, and direct-response query modes before the timed continuous scenario starts.",
     ),
     "sa_picture_anchor": TestGuideBriefing(
         label="Situational Awareness: Picture Anchor",
-        assessment="Focused Situational Awareness drill for holding the live traffic picture and simple contact matching.",
+        assessment="Focused Situational Awareness drill for holding the sparse traffic picture and near-future location work.",
         tasks=(
-            "Track the moving grid and keep the route picture stable enough to answer future-position and simple identification prompts.",
-            "Use the live tactical display instead of a simplified trainer while the non-essential channels stay de-emphasized.",
+            "Track the fading grid sweeps and keep the route picture stable enough to answer current and future-location prompts.",
+            "Use the live sparse display instead of a simplified trainer while the non-essential channels stay de-emphasized.",
         ),
         timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
         prep="Guide preparation: none required beyond understanding the live grid and direct-response controls.",
-        controls="Use the normal SA controls: click a grid cell or type row+column, and use 1-5 only when the prompt asks for a track index.",
-        app_flow="This drill reuses the live SA screen and narrows the block to picture-driven future-position and contact-identification work.",
+        controls="Use the normal SA controls: click a grid cell or type row+column, then press Enter.",
+        app_flow="This drill reuses the live SA screen and narrows the block to picture-driven current and future-location work.",
     ),
     "sa_contact_identification_prime": TestGuideBriefing(
         label="Situational Awareness: Contact Identification Prime",
-        assessment="Focused Situational Awareness drill for matching described or coded state to the correct indexed track.",
+        assessment="Focused Situational Awareness drill for matching callsigns to the correct fading contact.",
         tasks=(
-            "Read the live picture and coded panel together to identify the right track quickly.",
-            "Keep the moving display live while only contact-identification prompts are scored.",
+            "Read the live picture and cue card together to locate the right callsign quickly.",
+            "Keep the moving display live while only location prompts are scored.",
         ),
         timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
-        prep="Guide preparation: know how the live track rows map to the tactical picture.",
-        controls="Use the normal SA controls: click a track row or press 1-5, then Enter when needed.",
-        app_flow="This drill keeps the full live display visible and isolates contact-identification scoring.",
+        prep="Guide preparation: know how the cue card and the short grid flashes map to the callsigns in play.",
+        controls="Use the normal SA controls: click a grid cell or type row+column, then Enter.",
+        app_flow="This drill keeps the full live display visible and isolates callsign-to-contact scoring.",
     ),
     "sa_status_recall_prime": TestGuideBriefing(
         label="Situational Awareness: Status Recall Prime",
-        assessment="Focused Situational Awareness drill for channel, code, altitude, and fuel/status recall.",
+        assessment="Focused Situational Awareness drill for channel, waypoint, ETA, and altitude recall.",
         tasks=(
-            "Pull the correct coded state from the live track list and recent feed without losing the broader picture.",
+            "Pull the correct coded state from short cue-card flashes and radio chatter without losing the broader picture.",
             "Use the live display and announcements while only status-recall prompts are scored.",
         ),
         timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
-        prep="Guide preparation: know how channel, squawk, altitude, and fuel status appear on the live panel.",
-        controls="Use the normal SA controls: click a track row or press 1-5, then Enter when needed.",
-        app_flow="This drill reuses the live SA renderer and narrows scoring to coded-status recall.",
+        prep="Guide preparation: know how waypoint, ETA, altitude, and communication channel appear on the cue card.",
+        controls="Use the normal SA controls: click a choice or press 1-4, then Enter.",
+        app_flow="This drill reuses the live SA renderer and narrows scoring to coded-status recall after the cue fades.",
     ),
     "sa_future_projection_run": TestGuideBriefing(
         label="Situational Awareness: Future Projection Run",
         assessment="Focused Situational Awareness drill for projecting live movement and route continuation forward in time.",
         tasks=(
-            "Predict where a track will be after the stated time while headings and route changes continue underneath you.",
+            "Predict where a contact will be after the stated time while route changes continue underneath you.",
             "Keep using the live tactical picture instead of collapsing into one-sweep guessing.",
         ),
         timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
         prep="Guide preparation: understand the live grid coordinates and how route changes affect future position.",
         controls="Use the normal SA controls: click a grid cell or type row+column, then press Enter.",
-        app_flow="This drill reuses the live SA screen and only scores future-position projection prompts.",
+        app_flow="This drill reuses the live SA screen and only scores future-position projection prompts after the update fades.",
     ),
     "sa_action_selection_run": TestGuideBriefing(
         label="Situational Awareness: Action Selection Run",
-        assessment="Focused Situational Awareness drill for choosing the best immediate intervention on the live tactical picture.",
+        assessment="Focused Situational Awareness drill for judging whether a move is safe on the live tactical picture.",
         tasks=(
-            "Prioritize the right track and choose the best action during merge and fuel-pressure situations.",
-            "Answer from the live picture instead of waiting for a perfectly quiet screen.",
+            "Judge the right move during conflict and status-pressure situations.",
+            "Answer from the hidden picture instead of waiting for a perfectly quiet screen.",
         ),
         timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
-        prep="Guide preparation: know the live action-card response flow before the block starts.",
-        controls="Use the normal SA controls: click an action card or press 1-4, then Enter when needed.",
-        app_flow="This drill reuses the live SA display and narrows scoring to action-selection prompts.",
+        prep="Guide preparation: know the live choice-card response flow before the block starts.",
+        controls="Use the normal SA controls: click a choice card or press 1-4, then Enter when needed.",
+        app_flow="This drill reuses the live SA display and narrows scoring to safe-move prompts.",
     ),
     "sa_family_switch_run": TestGuideBriefing(
         label="Situational Awareness: Family Switch Run",
         assessment="Situational Awareness drill for rotating through the four scenario families while keeping the live display constant.",
         tasks=(
-            "Cycle merge, fuel, route-handoff, and channel-shift scenarios without paying a large reset cost on each family change.",
+            "Cycle conflict, status, route-handoff, and channel/waypoint scenarios without paying a large reset cost on each family change.",
             "Keep the full query mix active while the scenario family is what changes underneath you.",
         ),
         timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
         prep="Guide preparation: know the live SA layout and what each scenario family tends to emphasize.",
-        controls="Use the normal SA direct-response controls for grid-cell, track-index, and action queries.",
+        controls="Use the normal SA direct-response controls for grid-cell and choice queries.",
         app_flow="This drill reuses the live SA renderer and repeats a fixed four-family cycle for the full block.",
     ),
     "sa_mixed_tempo": TestGuideBriefing(
         label="Situational Awareness: Mixed Tempo",
         assessment="Situational Awareness drill that cycles the four live query types while the tactical picture keeps evolving.",
         tasks=(
-            "Move through future-position, identification, status-recall, and action-selection prompts without losing continuity.",
+            "Move through current-location, origin, future, status, and safe-move prompts without losing continuity.",
             "Reset quickly when the query mode changes, but stay on the same live tactical display the whole time.",
         ),
         timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
-        prep="Guide preparation: know all three SA answer modes before starting the block.",
-        controls="Use the normal SA controls: row+column for grid cells, 1-5 for track rows, and 1-4 for action cards.",
+        prep="Guide preparation: know both SA answer modes before starting the block.",
+        controls="Use the normal SA controls: row+column for grid cells and 1-4 for choice cards.",
         app_flow="This drill reuses the live SA screen and repeats a fixed four-query-kind cycle for the entire block.",
     ),
     "sa_pressure_run": TestGuideBriefing(
         label="Situational Awareness: Pressure Run",
         assessment="Late-workout Situational Awareness drill with the full live picture, all query kinds, and the hardest timing pressure in this family.",
         tasks=(
-            "Handle denser updates, shorter response windows, and more five-track pictures without losing the current state estimate.",
-            "Recover immediately after misses instead of letting one bad query collapse the next picture update.",
+            "Handle denser updates, shorter response windows, and shorter cue windows without losing the current state estimate.",
+            "Recover immediately after misses instead of letting one bad query collapse the next hidden-state update.",
         ),
         timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
         prep="Guide preparation: arrive warmed up; this block assumes the focused SA anchors already feel stable.",
         controls="Use the full live SA direct-response control model throughout the block.",
-        app_flow="This drill reuses the live continuous SA renderer with all channels and all query kinds active at once.",
+        app_flow="This drill reuses the live continuous SA renderer with all channels and all query kinds active at once under the shortest fade windows.",
     ),
     "situational_awareness_workout": TestGuideBriefing(
         label="Situational Awareness Workout",
         assessment="Chained Situational Awareness workout with focused live-picture anchors, family and query switching, and a final pressure run.",
         tasks=(
-            "Warm up picture tracking, identification, recall, projection, and intervention before the mixed and pressure blocks.",
+            "Warm up picture tracking, identification, recall, projection, and safe-move judgment before the mixed and pressure blocks.",
             "Stay on the live continuous SA display throughout instead of switching to simplified drill screens.",
         ),
         timing="Workout drill time: 90 minutes, plus opening and closing reflection outside the timed blocks.",
-        prep="Guide preparation: know the live tactical grid, right-side coded panel, and all three direct-response answer modes before starting.",
+        prep="Guide preparation: know the live tactical grid, fading cue card, and both direct-response answer modes before starting.",
         controls="Use Left and Right to set workout or block difficulty, type reflections, then use the normal live SA controls during blocks.",
-        app_flow="Each block gets an untimed setup screen, and every timed block reuses the live continuous Situational Awareness runtime with focus labels and de-emphasized non-focused channels where needed.",
+        app_flow="Each block gets an untimed setup screen, and every timed block reuses the live continuous Situational Awareness runtime with focus labels, fading cues, and de-emphasized non-focused channels where needed.",
     ),
     "rapid_tracking": TestGuideBriefing(
         label="Rapid Tracking",
@@ -2488,6 +2735,54 @@ TEST_GUIDE_BRIEFS: dict[str, TestGuideBriefing] = {
         prep="Guide preparation: arrive warmed up; this block assumes the focused RT anchors already feel stable.",
         controls="Use the normal Rapid Tracking pan and capture controls throughout the block.",
         app_flow="This drill reuses the live Rapid Tracking scene with all target kinds and all challenge types active at once.",
+    ),
+    "dtb_tracking_recall": TestGuideBriefing(
+        label="Dual-Task Bridge: Tracking + Recall",
+        assessment="RT-first bridge drill for holding tracking stability while delayed digit reports appear under mild load.",
+        tasks=(
+            "Keep the track stable while short digit holds arrive in the background.",
+            "Report the digits only when the recall prompt opens; do not stop tracking early to rehearse them.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: know the Rapid Tracking pan and capture controls first.",
+        controls="Use normal Rapid Tracking pan and capture controls. Digits plus Enter submit the delayed report.",
+        app_flow="This bridge drill stays on the live Rapid Tracking scene and layers a delayed digit-report channel over it.",
+    ),
+    "dtb_tracking_command_filter": TestGuideBriefing(
+        label="Dual-Task Bridge: Tracking + Command Filter",
+        assessment="RT-first bridge drill for clean go/no-go command filtering while tracking stays live.",
+        tasks=(
+            "Keep the track stable while visual command cues appear on top of the scene.",
+            "Respond only to valid filter cues and ignore the rest without chasing the overlay.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: know the Rapid Tracking controls and the Q/W/E/R command mapping before starting.",
+        controls="Use normal Rapid Tracking pan and capture controls. Q/W/E/R answer command cues.",
+        app_flow="This bridge drill keeps the live Rapid Tracking scene and layers a clean command-filter channel over it.",
+    ),
+    "dtb_tracking_filter_digit_report": TestGuideBriefing(
+        label="Dual-Task Bridge: Tracking + Filter + Digit Report",
+        assessment="RT-first bridge drill for mild dual-task overload before full CLN or auditory-capacity style clutter.",
+        tasks=(
+            "Track continuously while command filtering and delayed digit reports alternate underneath.",
+            "Keep the extra channels orderly instead of jumping straight to full-chaos multitask load.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: use the simpler tracking-plus-recall and tracking-plus-filter bridges first if needed.",
+        controls="Use normal Rapid Tracking pan and capture controls. Q/W/E/R answer filter cues. Digits plus Enter submit delayed reports.",
+        app_flow="This bridge drill stays on the live Rapid Tracking scene and alternates command-filter and delayed digit-report prompts.",
+    ),
+    "dtb_tracking_interference_recovery": TestGuideBriefing(
+        label="Dual-Task Bridge: Tracking + Interference + Recovery",
+        assessment="RT-first bridge drill for ignoring short interference bursts and recovering on the next valid cue.",
+        tasks=(
+            "Ignore the interference cluster, then answer the recovery cue cleanly without losing the track.",
+            "Use this to build upward toward overload instead of jumping straight into maximum clutter.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: come in warmed up on the simpler command-filter bridge first.",
+        controls="Use normal Rapid Tracking pan and capture controls. Q/W/E/R answer valid recovery cues.",
+        app_flow="This bridge drill keeps the live Rapid Tracking scene and overlays short interference bursts followed by recovery targets.",
     ),
     "rapid_tracking_workout": TestGuideBriefing(
         label="Rapid Tracking Workout",
@@ -2887,6 +3182,37 @@ class CognitiveEngine(Protocol):
 class MenuItem:
     label: str
     action: Callable[[], None]
+
+
+@dataclass(slots=True)
+class _ActiveActivitySession:
+    activity_session_id: int
+    activity_code: str
+    activity_kind: str
+    test_version: int
+
+
+@dataclass(frozen=True, slots=True)
+class RunStateIndicator:
+    shell_state: str
+    display_mode: str
+    renderer_path: str
+    activity_label: str | None
+    warning: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class HeadlessSimResult:
+    scenario: str
+    success: bool
+    final_shell_state: str
+    display_mode: str
+    renderer_path: str
+    activity_label: str | None
+    used_renderer_fallback: bool
+    used_failure_recovery: bool
+    exit_reason: str
+    exit_code: int
 
 
 @dataclass(slots=True)
@@ -5706,10 +6032,13 @@ class App:
         font: pygame.font.Font,
         *,
         opengl_enabled: bool = False,
+        window_mode: str = "windowed",
+        headless_mode: bool = False,
         results_store: ResultsStore | None = None,
         input_profiles_store: InputProfilesStore | None = None,
         difficulty_settings_store: DifficultySettingsStore | None = None,
         test_seed_settings_store: TestSeedSettingsStore | None = None,
+        runtime_defaults_store: RuntimeDefaultsStore | None = None,
         app_version: str = "dev",
     ) -> None:
         self._surface = surface
@@ -5717,19 +6046,40 @@ class App:
         self._screens: list[Screen] = []
         self._running = True
         self._opengl_enabled = bool(opengl_enabled)
+        self._window_mode = str(window_mode).strip().lower() or "windowed"
+        self._headless_mode = bool(headless_mode)
         self._gl_scene: GlScene | None = None
         self._results_store = results_store
         self._input_profiles_store = input_profiles_store
         self._joystick_binding_router = JoystickBindingRouter(profiles=input_profiles_store)
         self._difficulty_settings_store = difficulty_settings_store
         self._test_seed_settings_store = test_seed_settings_store
+        self._runtime_defaults_store = runtime_defaults_store
         self._app_version = str(app_version).strip() or "dev"
+        self._activity_sessions: dict[int, _ActiveActivitySession] = {}
+        self._renderer_path = "GL" if self._opengl_enabled else "2D"
+        self._renderer_fallback_used = False
+        self._failure_recovery_used = False
+        self._menu_banner_message: str | None = None
+        self._menu_banner_until_ms = 0
+        self._shell_pause_active = False
+        self._shell_pause_selected = 0
+        self._shell_pause_hitboxes: dict[int, pygame.Rect] = {}
+        self._status_font = pygame.font.Font(None, 22)
+        self._status_tiny_font = pygame.font.Font(None, 18)
+        self._exit_code = 0
+        self._exit_reason = "running"
         self._dev_tools_enabled = os.environ.get(DEV_TOOLS_ENV, "").strip().lower() in {
             "1",
             "true",
             "on",
             "yes",
         }
+        if self._results_store is not None:
+            try:
+                self._results_store.start_app_session(app_version=self._app_version)
+            except Exception:
+                pass
 
     @property
     def running(self) -> bool:
@@ -5754,6 +6104,8 @@ class App:
         self._opengl_enabled = bool(enabled)
         if not self._opengl_enabled:
             self._gl_scene = None
+        if self._renderer_path != "FALLBACK":
+            self._renderer_path = "GL" if self._opengl_enabled else "2D"
 
     def push(self, screen: Screen) -> None:
         self._screens.append(screen)
@@ -5775,6 +6127,8 @@ class App:
             close = getattr(screen, "close", None)
             if callable(close):
                 close()
+        if self._shell_pause_active and not self._screen_has_activity(self._current_screen()):
+            self._set_shell_pause_active(False)
 
     def pop_to_root(self) -> None:
         while len(self._screens) > 1:
@@ -5782,9 +6136,279 @@ class App:
             close = getattr(screen, "close", None)
             if callable(close):
                 close()
+        if self._shell_pause_active:
+            self._set_shell_pause_active(False)
 
-    def quit(self) -> None:
+    def quit(self, *, exit_reason: str = "app_quit", exit_code: int = 0) -> None:
+        self._exit_reason = str(exit_reason)
+        self._exit_code = int(exit_code)
+        self._set_shell_pause_active(False)
+        for screen in tuple(reversed(self._screens)):
+            abort = getattr(screen, "abort_activity", None)
+            if callable(abort):
+                abort(exit_reason)
+        if self._results_store is not None:
+            try:
+                self._results_store.close_app_session(exit_reason=exit_reason)
+            except Exception:
+                pass
         self._running = False
+
+    @property
+    def exit_code(self) -> int:
+        return int(self._exit_code)
+
+    @property
+    def exit_reason(self) -> str:
+        return str(self._exit_reason)
+
+    def headless_mode(self) -> bool:
+        return bool(self._headless_mode)
+
+    def current_run_state(self) -> RunStateIndicator:
+        screen = self._current_screen()
+        activity_label = self._screen_activity_label(screen)
+        if self._shell_pause_active:
+            shell_state = "PAUSED"
+        elif self._screen_has_activity(screen):
+            shell_state = "RUNNING"
+        else:
+            shell_state = "MENU"
+        warning = None
+        if self._renderer_path == "FALLBACK":
+            warning = "FALLBACK"
+        elif self._failure_recovery_used:
+            warning = "RECOVERED"
+        elif self._headless_mode:
+            warning = "HEADLESS"
+        return RunStateIndicator(
+            shell_state=shell_state,
+            display_mode=str(self._window_mode).upper(),
+            renderer_path=str(self._renderer_path),
+            activity_label=activity_label,
+            warning=warning,
+        )
+
+    def used_renderer_fallback(self) -> bool:
+        return bool(self._renderer_fallback_used)
+
+    def used_failure_recovery(self) -> bool:
+        return bool(self._failure_recovery_used)
+
+    def shell_pause_overlay_active(self) -> bool:
+        return bool(self._shell_pause_active)
+
+    def set_window_mode(self, window_mode: str) -> None:
+        token = str(window_mode).strip().lower()
+        self._window_mode = token if token in {"windowed", "fullscreen", "borderless"} else "windowed"
+
+    def note_renderer_fallback(self) -> None:
+        self._renderer_fallback_used = True
+        self._renderer_path = "FALLBACK"
+
+    def set_renderer_path(self, path: str) -> None:
+        token = str(path).strip().upper()
+        self._renderer_path = token or "2D"
+        if token != "FALLBACK":
+            self._renderer_fallback_used = False
+
+    def _current_screen(self) -> Screen | None:
+        if not self._screens:
+            return None
+        return self._screens[-1]
+
+    @staticmethod
+    def _screen_call_bool(screen: object | None, method_name: str) -> bool:
+        if screen is None:
+            return False
+        method = getattr(screen, method_name, None)
+        if not callable(method):
+            return False
+        try:
+            return bool(method())
+        except Exception:
+            return False
+
+    @staticmethod
+    def _screen_call_text(screen: object | None, method_name: str) -> str | None:
+        if screen is None:
+            return None
+        method = getattr(screen, method_name, None)
+        if not callable(method):
+            return None
+        try:
+            value = method()
+        except Exception:
+            return None
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+    def _screen_has_activity(self, screen: object | None) -> bool:
+        return self._screen_call_bool(screen, "shell_activity_active")
+
+    def _screen_supports_safe_pause(self, screen: object | None) -> bool:
+        return self._screen_call_bool(screen, "shell_pause_available")
+
+    def _screen_activity_label(self, screen: object | None) -> str | None:
+        return self._screen_call_text(screen, "shell_activity_label")
+
+    @staticmethod
+    def _is_emergency_hotkey(event: pygame.event.Event) -> bool:
+        if event.type != pygame.KEYDOWN:
+            return False
+        mod = int(getattr(event, "mod", 0))
+        if event.key == pygame.K_F12:
+            return True
+        return event.key == pygame.K_ESCAPE and bool(mod & pygame.KMOD_SHIFT)
+
+    def _set_menu_banner(self, message: str, *, duration_ms: int = 5200) -> None:
+        text = str(message).strip()
+        if text == "":
+            return
+        self._menu_banner_message = text
+        self._menu_banner_until_ms = pygame.time.get_ticks() + max(1000, int(duration_ms))
+
+    def _set_shell_pause_active(self, active: bool) -> bool:
+        screen = self._current_screen()
+        if not active:
+            if self._shell_pause_active and screen is not None:
+                setter = getattr(screen, "shell_pause_set_active", None)
+                if callable(setter):
+                    try:
+                        setter(False)
+                    except Exception:
+                        pass
+            self._shell_pause_active = False
+            self._shell_pause_selected = 0
+            self._shell_pause_hitboxes = {}
+            self.clear_pending_bound_actions(
+                "pause_toggle",
+                "menu_up",
+                "menu_down",
+                "menu_select",
+                "menu_back",
+            )
+            return True
+        if screen is None or not self._screen_supports_safe_pause(screen):
+            return False
+        setter = getattr(screen, "shell_pause_set_active", None)
+        if callable(setter):
+            setter(True)
+        self._shell_pause_active = True
+        self._shell_pause_selected = 0
+        self._shell_pause_hitboxes = {}
+        self.clear_pending_bound_actions("pause_toggle")
+        return True
+
+    def _shell_pause_items(self) -> tuple[tuple[str, str], ...]:
+        return (
+            ("resume", "Resume"),
+            ("restart", "Restart Current"),
+            ("main_menu", "Main Menu"),
+            ("quit_app", "Quit App"),
+        )
+
+    def _handle_shell_pause_event(self, event: pygame.event.Event) -> None:
+        items = self._shell_pause_items()
+        if event.type == pygame.MOUSEMOTION:
+            pos = getattr(event, "pos", None)
+            if pos is None:
+                return
+            for idx, rect in self._shell_pause_hitboxes.items():
+                if rect.collidepoint(pos):
+                    self._shell_pause_selected = idx
+                    return
+            return
+        if event.type == pygame.MOUSEBUTTONDOWN and getattr(event, "button", 0) == 1:
+            pos = getattr(event, "pos", None)
+            if pos is None:
+                return
+            for idx, rect in self._shell_pause_hitboxes.items():
+                if rect.collidepoint(pos):
+                    self._shell_pause_selected = idx
+                    self._activate_shell_pause_selection()
+                    return
+            return
+        if event.type != pygame.KEYDOWN:
+            return
+        if event.key in (pygame.K_ESCAPE, pygame.K_BACKSPACE):
+            self._set_shell_pause_active(False)
+            return
+        if event.key in (pygame.K_UP, pygame.K_w):
+            self._shell_pause_selected = (self._shell_pause_selected - 1) % len(items)
+            return
+        if event.key in (pygame.K_DOWN, pygame.K_s):
+            self._shell_pause_selected = (self._shell_pause_selected + 1) % len(items)
+            return
+        if event.key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE):
+            self._activate_shell_pause_selection()
+
+    def _activate_shell_pause_selection(self) -> None:
+        screen = self._current_screen()
+        items = self._shell_pause_items()
+        action = items[self._shell_pause_selected % len(items)][0]
+        self._set_shell_pause_active(False)
+        if screen is None:
+            return
+        if action == "resume":
+            return
+        if action == "restart":
+            restart = getattr(screen, "shell_pause_restart", None)
+            if callable(restart):
+                restart()
+            return
+        if action == "main_menu":
+            to_menu = getattr(screen, "shell_pause_main_menu", None)
+            if callable(to_menu):
+                to_menu()
+            else:
+                self.pop_to_root()
+            return
+        if action == "quit_app":
+            emergency = getattr(screen, "shell_emergency_exit", None)
+            if callable(emergency):
+                emergency("app_quit")
+            self.quit(exit_reason="app_quit")
+
+    def _handle_emergency_hotkey(self) -> None:
+        self._set_shell_pause_active(False)
+        screen = self._current_screen()
+        if self._screen_has_activity(screen):
+            emergency = getattr(screen, "shell_emergency_exit", None)
+            if callable(emergency):
+                emergency("emergency_abort")
+            else:
+                abort = getattr(screen, "abort_activity", None)
+                if callable(abort):
+                    abort("emergency_abort")
+                self.pop_to_root()
+            return
+        self.quit(exit_reason="emergency_abort")
+
+    def recover_to_menu(self, *, reason: str, detail: str) -> None:
+        self._failure_recovery_used = True
+        self._set_shell_pause_active(False)
+        self._set_menu_banner(f"Recovered to menu after {detail}.")
+        screen = self._current_screen()
+        if self._screen_has_activity(screen):
+            emergency = getattr(screen, "shell_emergency_exit", None)
+            if callable(emergency):
+                try:
+                    emergency(str(reason))
+                except Exception:
+                    self.pop_to_root()
+            else:
+                abort = getattr(screen, "abort_activity", None)
+                if callable(abort):
+                    try:
+                        abort(str(reason))
+                    except Exception:
+                        pass
+                self.pop_to_root()
+            return
+        self.quit(exit_reason=str(reason), exit_code=1)
 
     def handle_event(self, event: pygame.event.Event) -> None:
         if event.type == pygame.QUIT:
@@ -5795,22 +6419,78 @@ class App:
             if event.key == pygame.K_q and (mod & (pygame.KMOD_CTRL | pygame.KMOD_META)):
                 self.quit()
                 return
-        if not self._screens:
+        if self._is_emergency_hotkey(event):
+            self._handle_emergency_hotkey()
             return
-        self._screens[-1].handle_event(event)
+        if self._shell_pause_active:
+            self._handle_shell_pause_event(event)
+            return
+        screen = self._current_screen()
+        if (
+            event.type == pygame.KEYDOWN
+            and event.key == pygame.K_ESCAPE
+            and self._screen_supports_safe_pause(screen)
+        ):
+            self._set_shell_pause_active(True)
+            return
+        if screen is None:
+            return
+        try:
+            screen.handle_event(event)
+        except Exception:
+            self.recover_to_menu(reason="input_failure_abort", detail="input failure")
 
     def render(self) -> None:
         if not self._screens:
             return
-        self._joystick_binding_router.poll()
-        screen = self._screens[-1]
-        poll_bound_input = getattr(screen, "poll_bound_input", None)
-        if callable(poll_bound_input):
-            poll_bound_input()
+        try:
+            self._joystick_binding_router.poll()
+        except Exception:
+            self.recover_to_menu(reason="input_failure_abort", detail="input failure")
+            return
+        screen = self._current_screen()
+        if screen is None:
+            return
+        if self._shell_pause_active:
+            if self.consume_bound_action("pause_toggle"):
+                self._set_shell_pause_active(False)
+            while self.consume_bound_action("menu_up"):
+                self._shell_pause_selected = (self._shell_pause_selected - 1) % len(
+                    self._shell_pause_items()
+                )
+            while self.consume_bound_action("menu_down"):
+                self._shell_pause_selected = (self._shell_pause_selected + 1) % len(
+                    self._shell_pause_items()
+                )
+            while self.consume_bound_action("menu_select"):
+                self._activate_shell_pause_selection()
+            while self.consume_bound_action("menu_back"):
+                self._set_shell_pause_active(False)
+        else:
+            if self._screen_supports_safe_pause(screen) and self.consume_bound_action("pause_toggle"):
+                self._set_shell_pause_active(True)
+            else:
+                poll_bound_input = getattr(screen, "poll_bound_input", None)
+                if callable(poll_bound_input):
+                    try:
+                        poll_bound_input()
+                    except Exception:
+                        self.recover_to_menu(reason="input_failure_abort", detail="input failure")
+                        return
         if not self._screens:
             return
         self._gl_scene = None
-        self._screens[-1].render(self._surface)
+        try:
+            self._screens[-1].render(self._surface)
+        except Exception:
+            self.recover_to_menu(reason="runtime_failure_abort", detail="runtime failure")
+            return
+        if not self._screens:
+            return
+        if self._shell_pause_active:
+            self._render_shell_pause_overlay(self._surface)
+        self._render_menu_banner(self._surface)
+        self._render_run_state_indicator(self._surface)
 
     def queue_gl_scene(self, scene: GlScene) -> None:
         if not self._opengl_enabled:
@@ -5843,9 +6523,42 @@ class App:
             return scene
         return None
 
-    def persist_attempt(
+    def start_activity_session(
         self,
         *,
+        owner: object,
+        activity_code: str,
+        activity_kind: str,
+        engine: object,
+        test_version: int = 1,
+    ) -> None:
+        if self._results_store is None:
+            return
+        owner_id = id(owner)
+        if owner_id in self._activity_sessions:
+            return
+        try:
+            activity_session_id = self._results_store.start_activity_session(
+                activity_code=activity_code,
+                activity_kind=activity_kind,
+                app_version=self._app_version,
+                test_version=test_version,
+                engine=engine,
+                input_profile_id=self.active_input_profile_id(),
+            )
+        except Exception:
+            return
+        self._activity_sessions[owner_id] = _ActiveActivitySession(
+            activity_session_id=activity_session_id,
+            activity_code=str(activity_code),
+            activity_kind=str(activity_kind),
+            test_version=int(test_version),
+        )
+
+    def complete_activity_session(
+        self,
+        *,
+        owner: object,
         engine: object,
         test_code: str,
         test_version: int = 1,
@@ -5858,14 +6571,59 @@ class App:
                 test_code=test_code,
                 test_version=test_version,
             )
-            self._results_store.record_attempt(
-                result=result,
-                app_version=self._app_version,
-                input_profile_id=self.active_input_profile_id(),
-            )
+            handle = self._activity_sessions.pop(id(owner), None)
+            if handle is None:
+                self._results_store.record_attempt(
+                    result=result,
+                    app_version=self._app_version,
+                    input_profile_id=self.active_input_profile_id(),
+                )
+            else:
+                self._results_store.complete_activity_session(
+                    activity_session_id=handle.activity_session_id,
+                    result=result,
+                    app_version=self._app_version,
+                    input_profile_id=self.active_input_profile_id(),
+                    completion_reason="completed",
+                )
             return self._build_persistence_summary_lines(test_code=test_code)
         except Exception:
             return ["Local save failed."]
+
+    def abort_activity_session(
+        self,
+        *,
+        owner: object,
+        engine: object | None,
+        completion_reason: str,
+        test_code: str | None,
+        test_version: int = 1,
+    ) -> None:
+        if self._results_store is None:
+            return
+        handle = self._activity_sessions.pop(id(owner), None)
+        if handle is None:
+            return
+        result = None
+        if engine is not None and test_code:
+            try:
+                result = attempt_result_from_engine(
+                    engine,
+                    test_code=str(test_code),
+                    test_version=int(test_version),
+                )
+            except Exception:
+                result = None
+        try:
+            self._results_store.abort_activity_session(
+                activity_session_id=handle.activity_session_id,
+                app_version=self._app_version,
+                completion_reason=completion_reason,
+                result=result,
+                input_profile_id=self.active_input_profile_id(),
+            )
+        except Exception:
+            return
 
     def active_input_profile_id(self) -> str | None:
         if self._input_profiles_store is None:
@@ -5993,6 +6751,31 @@ class App:
             return self.rapid_tracking_seed_value()
         return _new_seed()
 
+    def apply_runtime_defaults_to_engine(self, engine: object) -> None:
+        if self._runtime_defaults_store is None or not hasattr(engine, "set_audio_overrides"):
+            return
+        try:
+            engine.set_audio_overrides(
+                noise_level=self._runtime_defaults_store.resolved_auditory_noise_level(),
+                distortion_level=self._runtime_defaults_store.resolved_auditory_distortion_level(),
+                noise_source=self._runtime_defaults_store.resolved_auditory_noise_source(),
+            )
+        except Exception:
+            return
+
+    def save_auditory_runtime_defaults(
+        self,
+        *,
+        noise_level: float | None,
+        distortion_level: float | None,
+        noise_source: str | None,
+    ) -> None:
+        if self._runtime_defaults_store is None:
+            return
+        self._runtime_defaults_store.set_auditory_noise_level(noise_level)
+        self._runtime_defaults_store.set_auditory_distortion_level(distortion_level)
+        self._runtime_defaults_store.set_auditory_noise_source(noise_source)
+
     def _build_persistence_summary_lines(self, *, test_code: str) -> list[str]:
         if self._results_store is None:
             return []
@@ -6035,6 +6818,125 @@ class App:
             f"This test: {summary.attempt_count} attempts this session, "
             f"{label} {value}%."
         )
+
+    def _render_menu_banner(self, surface: pygame.Surface) -> None:
+        if self._menu_banner_message is None:
+            return
+        now_ms = pygame.time.get_ticks()
+        if now_ms >= self._menu_banner_until_ms:
+            self._menu_banner_message = None
+            return
+        screen = self._current_screen()
+        if not isinstance(screen, MenuScreen):
+            return
+        text = self._menu_banner_message
+        box_w = min(surface.get_width() - 36, max(320, self._status_font.size(text)[0] + 26))
+        box_h = 38
+        box = pygame.Rect((surface.get_width() - box_w) // 2, 14, box_w, box_h)
+        pygame.draw.rect(surface, (110, 36, 24), box, border_radius=10)
+        pygame.draw.rect(surface, (250, 220, 176), box, 2, border_radius=10)
+        label = self._status_font.render(text, True, (255, 242, 220))
+        surface.blit(label, label.get_rect(center=box.center))
+
+    def _render_run_state_indicator(self, surface: pygame.Surface) -> None:
+        state = self.current_run_state()
+        renderer_text = state.renderer_path
+        warning = state.warning
+        lines = [
+            f"{state.shell_state} | {state.display_mode} | {renderer_text}",
+        ]
+        if state.activity_label is not None:
+            lines.append(state.activity_label)
+        if warning is not None and warning not in renderer_text:
+            lines.append(warning)
+
+        fonts = [self._status_font] + [self._status_tiny_font] * max(0, len(lines) - 1)
+        line_gap = 4
+        line_heights = [font.get_height() for font in fonts]
+        content_h = sum(line_heights) + max(0, len(line_heights) - 1) * line_gap
+        content_w = 0
+        for font, line in zip(fonts, lines, strict=True):
+            content_w = max(content_w, font.size(line)[0])
+
+        box = pygame.Rect(
+            0,
+            0,
+            min(surface.get_width() - 24, content_w + 24),
+            content_h + 16,
+        )
+        box.topright = (surface.get_width() - 12, 12)
+        is_warning = warning in {"FALLBACK", "RECOVERED"}
+        fill = (94, 42, 18) if is_warning else (12, 22, 62)
+        border = (246, 210, 168) if is_warning else (196, 210, 242)
+        text = (255, 242, 220) if is_warning else (238, 245, 255)
+        muted = (236, 218, 198) if is_warning else (188, 204, 228)
+
+        tint = pygame.Surface(box.size, pygame.SRCALPHA)
+        tint.fill((*fill, 218))
+        surface.blit(tint, box.topleft)
+        pygame.draw.rect(surface, border, box, 2, border_radius=10)
+
+        y = box.y + 8
+        for idx, (font, line) in enumerate(zip(fonts, lines, strict=True)):
+            color = text if idx == 0 else muted
+            surf = font.render(line, True, color)
+            surface.blit(surf, (box.x + 12, y))
+            y += font.get_height() + line_gap
+
+    def _render_shell_pause_overlay(self, surface: pygame.Surface) -> None:
+        dim = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
+        dim.fill((2, 6, 18, 198))
+        surface.blit(dim, (0, 0))
+
+        items = self._shell_pause_items()
+        row_h = 42
+        gap = 10
+        total_h = (row_h * len(items)) + (gap * (len(items) - 1))
+        panel = pygame.Rect(
+            max(22, surface.get_width() // 4),
+            max(20, surface.get_height() // 6),
+            min(max(360, surface.get_width() // 2), surface.get_width() - 44),
+            min(max(300, total_h + 164), surface.get_height() - 40),
+        )
+        panel.center = (surface.get_width() // 2, surface.get_height() // 2)
+
+        pygame.draw.rect(surface, (10, 20, 92), panel, border_radius=12)
+        pygame.draw.rect(surface, (226, 236, 255), panel, 2, border_radius=12)
+
+        title = self._font.render("Paused", True, (238, 245, 255))
+        surface.blit(title, title.get_rect(midtop=(panel.centerx, panel.y + 18)))
+
+        subtitle = self._status_tiny_font.render(
+            "Resume, restart, return to menu, or quit safely.",
+            True,
+            (188, 204, 228),
+        )
+        surface.blit(subtitle, subtitle.get_rect(midtop=(panel.centerx, panel.y + 56)))
+
+        y = panel.y + 94 + max(0, (panel.h - 150 - total_h) // 2)
+        self._shell_pause_hitboxes = {}
+        for idx, (_action, label) in enumerate(items):
+            row = pygame.Rect(panel.x + 28, y, panel.w - 56, row_h)
+            self._shell_pause_hitboxes[idx] = row.copy()
+            selected = idx == (self._shell_pause_selected % len(items))
+            if selected:
+                pygame.draw.rect(surface, (244, 248, 255), row, border_radius=7)
+                pygame.draw.rect(surface, (120, 142, 196), row, 2, border_radius=7)
+                color = (14, 26, 74)
+            else:
+                pygame.draw.rect(surface, (9, 20, 106), row, border_radius=7)
+                pygame.draw.rect(surface, (62, 84, 152), row, 1, border_radius=7)
+                color = (238, 245, 255)
+            text = self._status_font.render(label, True, color)
+            surface.blit(text, text.get_rect(center=row.center))
+            y += row_h + gap
+
+        hint = self._status_tiny_font.render(
+            "Up/Down: Select  Enter: Confirm  Esc/Backspace: Resume",
+            True,
+            (188, 204, 228),
+        )
+        surface.blit(hint, hint.get_rect(midbottom=(panel.centerx, panel.bottom - 14)))
 
 
 class PlaceholderScreen:
@@ -6155,6 +7057,7 @@ class AntWorkoutScreen:
         self._app = app
         self._session = session
         self._test_code = str(test_code).strip()
+        self._test_version = 1
         self._session_factory = session_factory
         self._results_persisted = False
         self._results_persistence_lines: list[str] = []
@@ -6170,6 +7073,8 @@ class AntWorkoutScreen:
         self._pause_settings_hitboxes: dict[int, pygame.Rect] = {}
         self._pause_settings_control_hitboxes: dict[tuple[int, str], pygame.Rect] = {}
         self._pause_staged_level: int | None = None
+        self._activity_finalized = False
+        self._activity_close_reason: str | None = None
 
         self._title_font = pygame.font.Font(None, 44)
         self._subtitle_font = pygame.font.Font(None, 28)
@@ -6177,6 +7082,12 @@ class AntWorkoutScreen:
         self._small_font = pygame.font.Font(None, 22)
         self._tiny_font = pygame.font.Font(None, 18)
         self._input_font = pygame.font.Font(None, 42)
+        self._app.start_activity_session(
+            owner=self,
+            activity_code=self._test_code,
+            activity_kind="workout",
+            engine=self._session,
+        )
 
     def _set_pause_menu_state(self, active: bool) -> None:
         self._pause_menu_active = bool(active)
@@ -6191,6 +7102,50 @@ class AntWorkoutScreen:
         runtime = cast(CognitiveTestScreen | None, self._runtime_screen)
         if runtime is not None:
             runtime._set_external_pause_state(self._pause_menu_active)
+
+    def shell_activity_active(self) -> bool:
+        return True
+
+    def shell_pause_available(self) -> bool:
+        return self._session.snapshot().stage is AntWorkoutStage.BLOCK
+
+    def shell_pause_set_active(self, active: bool) -> None:
+        self._set_pause_menu_state(active)
+
+    def shell_pause_restart(self) -> None:
+        self._set_pause_menu_state(False)
+        self._activity_close_reason = "back_abort"
+        if self._session_factory is not None:
+            next_session = self._session_factory(self._app.effective_difficulty_level(self._test_code))
+        else:
+            next_session = AntWorkoutSession(
+                clock=self._session._clock,
+                seed=self._session.seed,
+                plan=self._session._plan,
+                starting_level=self._app.effective_difficulty_level(self._test_code),
+            )
+        self._app.replace_top(
+            AntWorkoutScreen(
+                self._app,
+                session=next_session,
+                test_code=self._test_code,
+                session_factory=self._session_factory,
+            )
+        )
+
+    def shell_pause_main_menu(self) -> None:
+        self._set_pause_menu_state(False)
+        self._activity_close_reason = "main_menu_abort"
+        self._app.pop_to_root()
+
+    def shell_emergency_exit(self, reason: str) -> None:
+        self._set_pause_menu_state(False)
+        self.abort_activity(reason)
+        self._app.pop_to_root()
+
+    def shell_activity_label(self) -> str:
+        snap = self._session.snapshot()
+        return str(getattr(snap, "current_block_label", "") or snap.title)
 
     def handle_event(self, event: pygame.event.Event) -> None:
         if event.type != pygame.KEYDOWN:
@@ -6225,6 +7180,7 @@ class AntWorkoutScreen:
 
         if stage is AntWorkoutStage.INTRO:
             if key == pygame.K_BACKSPACE:
+                self._activity_close_reason = "back_abort"
                 self._app.pop()
                 return
             if key == pygame.K_LEFT:
@@ -6266,6 +7222,28 @@ class AntWorkoutScreen:
         if stage is AntWorkoutStage.RESULTS and key == pygame.K_BACKSPACE:
             self._app.pop()
 
+    def abort_activity(self, reason: str) -> None:
+        if self._activity_finalized:
+            return
+        self._app.abort_activity_session(
+            owner=self,
+            engine=self._session,
+            completion_reason=str(reason),
+            test_code=self._test_code,
+        )
+        self._activity_finalized = True
+
+    def close(self) -> None:
+        if self._runtime_screen is not None:
+            close = getattr(self._runtime_screen, "close", None)
+            if callable(close):
+                close()
+        if not self._activity_finalized:
+            if self._session.snapshot().stage is AntWorkoutStage.RESULTS:
+                self._persist_results_if_needed(self._session.snapshot())
+            else:
+                self.abort_activity(self._activity_close_reason or "back_abort")
+
     def _handle_dev_skip_hotkey(self, key: int) -> bool:
         if not self._app.dev_tools_enabled():
             return False
@@ -6305,7 +7283,7 @@ class AntWorkoutScreen:
                 self._render_block_status_overlay(surface, latest)
             else:
                 snap = latest
-            if self._pause_menu_active:
+            if self._pause_menu_active and not self._app.shell_pause_overlay_active():
                 self._render_pause_overlay(surface)
             return
 
@@ -6468,7 +7446,7 @@ class AntWorkoutScreen:
         footer_surf = self._tiny_font.render(footer, True, text_faint)
         surface.blit(footer_surf, footer_surf.get_rect(midbottom=(panel.centerx, panel.bottom - 12)))
 
-        if self._pause_menu_active:
+        if self._pause_menu_active and not self._app.shell_pause_overlay_active():
             self._render_pause_overlay(surface)
 
     def _ensure_runtime_screen(self) -> None:
@@ -6494,11 +7472,22 @@ class AntWorkoutScreen:
             return
         self._results_persisted = True
         if self._suppress_persistence:
+            if self._test_code is not None:
+                self._app.abort_activity_session(
+                    owner=self,
+                    engine=None,
+                    completion_reason="back_abort",
+                    test_code=self._test_code,
+                    test_version=self._test_version,
+                )
+            self._activity_finalized = True
             return
-        self._results_persistence_lines = self._app.persist_attempt(
+        self._results_persistence_lines = self._app.complete_activity_session(
+            owner=self,
             engine=self._session,
             test_code=self._test_code,
         )
+        self._activity_finalized = True
 
     @staticmethod
     def _format_time(value_s: float | None) -> str:
@@ -6753,6 +7742,7 @@ class AntWorkoutScreen:
             self._pause_settings_selected = 0
             return
         self._set_pause_menu_state(False)
+        self._activity_close_reason = "main_menu_abort"
         self._app.pop_to_root()
 
     def _pause_menu_items(self) -> tuple[tuple[str, str], ...]:
@@ -6846,6 +7836,7 @@ class AntWorkoutScreen:
         level = self._pause_staged_level or self._app.effective_difficulty_level(self._test_code)
         self._app.set_persistent_difficulty_level(test_code=self._test_code, level=level)
         self._set_pause_menu_state(False)
+        self._activity_close_reason = "back_abort"
         if self._session_factory is not None:
             next_session = self._session_factory(self._app.effective_difficulty_level(self._test_code))
         else:
@@ -6962,6 +7953,857 @@ class AntWorkoutScreen:
                 value_surf = self._tiny_font.render(value, True, (46, 62, 112) if selected else (198, 212, 242))
                 surface.blit(value_surf, value_surf.get_rect(midright=(row.right - 16, row.centery)))
             y += 58
+
+
+class BenchmarkScreen:
+    def __init__(
+        self,
+        app: App,
+        *,
+        session: BenchmarkSession,
+        session_factory: Callable[[], BenchmarkSession] | None = None,
+    ) -> None:
+        self._app = app
+        self._session = session
+        self._session_factory = session_factory
+        self._test_code = "benchmark_battery"
+        self._test_version = 1
+        self._results_persisted = False
+        self._results_persistence_lines: list[str] = []
+        self._runtime_screen: object | None = None
+        self._runtime_engine_id: int | None = None
+        self._pause_menu_active = False
+        self._pause_menu_selected = 0
+        self._activity_finalized = False
+        self._activity_close_reason: str | None = None
+
+        self._title_font = pygame.font.Font(None, 44)
+        self._subtitle_font = pygame.font.Font(None, 28)
+        self._body_font = pygame.font.Font(None, 26)
+        self._small_font = pygame.font.Font(None, 22)
+        self._tiny_font = pygame.font.Font(None, 18)
+
+        self._app.start_activity_session(
+            owner=self,
+            activity_code=self._test_code,
+            activity_kind="benchmark",
+            engine=self._session,
+            test_version=self._test_version,
+        )
+
+    def shell_activity_active(self) -> bool:
+        return True
+
+    def shell_pause_available(self) -> bool:
+        return self._session.stage is BenchmarkStage.PROBE
+
+    def shell_pause_set_active(self, active: bool) -> None:
+        self._set_pause_menu_state(active)
+
+    def shell_pause_restart(self) -> None:
+        self._set_pause_menu_state(False)
+        self._activity_close_reason = "back_abort"
+        if self._session_factory is not None:
+            next_session = self._session_factory()
+        else:
+            next_session = BenchmarkSession(plan=self._session._plan)
+        self._app.replace_top(
+            BenchmarkScreen(
+                self._app,
+                session=next_session,
+                session_factory=self._session_factory,
+            )
+        )
+
+    def shell_pause_main_menu(self) -> None:
+        self._set_pause_menu_state(False)
+        self._activity_close_reason = "main_menu_abort"
+        self._app.pop_to_root()
+
+    def shell_emergency_exit(self, reason: str) -> None:
+        self._set_pause_menu_state(False)
+        self.abort_activity(reason)
+        self._app.pop_to_root()
+
+    def shell_activity_label(self) -> str:
+        snap = self._session.snapshot()
+        return str(getattr(snap, "current_probe_label", "") or snap.title)
+
+    def handle_event(self, event: pygame.event.Event) -> None:
+        if event.type != pygame.KEYDOWN:
+            return
+
+        stage = self._session.stage
+        key = event.key
+
+        if stage is BenchmarkStage.PROBE and key == pygame.K_ESCAPE:
+            self._set_pause_menu_state(not self._pause_menu_active)
+            return
+
+        if self._pause_menu_active:
+            self._handle_pause_event(event)
+            return
+
+        if stage is BenchmarkStage.INTRO:
+            if key in (pygame.K_BACKSPACE, pygame.K_ESCAPE):
+                self._activity_close_reason = "back_abort"
+                self._app.pop()
+                return
+            if key == pygame.K_RETURN:
+                self._session.activate()
+            return
+
+        if stage is BenchmarkStage.RESULTS:
+            if key in (pygame.K_RETURN, pygame.K_BACKSPACE, pygame.K_ESCAPE):
+                self._app.pop()
+            return
+
+        engine = self._session.current_engine()
+        if engine is None or getattr(engine, "phase", None) is Phase.RESULTS:
+            return
+        self._ensure_runtime_screen()
+        runtime = cast(CognitiveTestScreen | None, self._runtime_screen)
+        if runtime is not None:
+            runtime.handle_event(event)
+
+    def render(self, surface: pygame.Surface) -> None:
+        snap = self._session.snapshot()
+        self._persist_results_if_needed()
+
+        if snap.stage is BenchmarkStage.PROBE:
+            self._ensure_runtime_screen()
+            runtime = cast(CognitiveTestScreen | None, self._runtime_screen)
+            if runtime is not None:
+                runtime._set_external_pause_state(self._pause_menu_active)
+                runtime.render(surface)
+            if not self._pause_menu_active:
+                self._session.sync_runtime()
+            latest = self._session.snapshot()
+            if latest.stage is BenchmarkStage.PROBE:
+                self._render_probe_overlay(surface, latest)
+                if self._pause_menu_active and not self._app.shell_pause_overlay_active():
+                    self._render_pause_overlay(surface)
+                return
+            snap = latest
+
+        self._clear_runtime_screen()
+        self._render_panel(surface, snap)
+
+    def close(self) -> None:
+        self._clear_runtime_screen()
+        if self._activity_finalized:
+            return
+        if self._session.stage is BenchmarkStage.RESULTS:
+            self._persist_results_if_needed()
+        else:
+            self.abort_activity(self._activity_close_reason or "back_abort")
+
+    def abort_activity(self, reason: str) -> None:
+        if self._activity_finalized:
+            return
+        self._app.abort_activity_session(
+            owner=self,
+            engine=self._session,
+            completion_reason=str(reason),
+            test_code=self._test_code,
+            test_version=self._test_version,
+        )
+        self._activity_finalized = True
+
+    def _persist_results_if_needed(self) -> None:
+        if self._results_persisted or self._session.stage is not BenchmarkStage.RESULTS:
+            return
+        self._results_persistence_lines = self._app.complete_activity_session(
+            owner=self,
+            engine=self._session,
+            test_code=self._test_code,
+            test_version=self._test_version,
+        )
+        self._results_persisted = True
+        self._activity_finalized = True
+
+    def _clear_runtime_screen(self) -> None:
+        if self._runtime_screen is not None:
+            close = getattr(self._runtime_screen, "close", None)
+            if callable(close):
+                close()
+        self._runtime_screen = None
+        self._runtime_engine_id = None
+
+    def _ensure_runtime_screen(self) -> None:
+        engine = self._session.current_engine()
+        if engine is None:
+            self._clear_runtime_screen()
+            return
+        engine_id = id(engine)
+        if self._runtime_screen is not None and self._runtime_engine_id == engine_id:
+            return
+        self._clear_runtime_screen()
+        self._runtime_screen = CognitiveTestScreen(
+            self._app,
+            engine_factory=lambda engine=engine: engine,
+            test_code=None,
+        )
+        self._runtime_engine_id = engine_id
+
+    def _set_pause_menu_state(self, active: bool) -> None:
+        self._pause_menu_active = bool(active)
+        if not self._pause_menu_active:
+            self._pause_menu_selected = 0
+        runtime = cast(CognitiveTestScreen | None, self._runtime_screen)
+        if runtime is not None:
+            runtime._set_external_pause_state(self._pause_menu_active)
+
+    def _pause_menu_options(self) -> tuple[str, ...]:
+        return ("Resume", "Restart Battery", "Main Menu")
+
+    def _handle_pause_event(self, event: pygame.event.Event) -> None:
+        if event.type != pygame.KEYDOWN:
+            return
+        options = self._pause_menu_options()
+        if event.key in (pygame.K_ESCAPE, pygame.K_BACKSPACE):
+            self._set_pause_menu_state(False)
+            return
+        if event.key in (pygame.K_UP, pygame.K_w):
+            self._pause_menu_selected = (self._pause_menu_selected - 1) % len(options)
+            return
+        if event.key in (pygame.K_DOWN, pygame.K_s):
+            self._pause_menu_selected = (self._pause_menu_selected + 1) % len(options)
+            return
+        if event.key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE):
+            self._activate_pause_selection()
+
+    def _activate_pause_selection(self) -> None:
+        selected = self._pause_menu_selected % len(self._pause_menu_options())
+        if selected == 0:
+            self._set_pause_menu_state(False)
+            return
+        if selected == 1:
+            self._set_pause_menu_state(False)
+            self._activity_close_reason = "back_abort"
+            if self._session_factory is not None:
+                next_session = self._session_factory()
+            else:
+                next_session = BenchmarkSession(plan=self._session._plan)
+            self._app.replace_top(
+                BenchmarkScreen(
+                    self._app,
+                    session=next_session,
+                    session_factory=self._session_factory,
+                )
+            )
+            return
+        self._set_pause_menu_state(False)
+        self._activity_close_reason = "main_menu_abort"
+        self._app.pop_to_root()
+
+    @staticmethod
+    def _wrap_text(text: str, font: pygame.font.Font, max_width: int) -> list[str]:
+        if max_width <= 0:
+            return [str(text)]
+        paragraphs = str(text).splitlines() or [""]
+        lines: list[str] = []
+        for paragraph in paragraphs:
+            words = paragraph.split()
+            if not words:
+                lines.append("")
+                continue
+            current = words[0]
+            for word in words[1:]:
+                candidate = f"{current} {word}"
+                if font.size(candidate)[0] <= max_width:
+                    current = candidate
+                    continue
+                lines.append(current)
+                current = word
+            lines.append(current)
+        return lines
+
+    def _render_panel(self, surface: pygame.Surface, snap: object) -> None:
+        w, h = surface.get_size()
+        surface.fill((4, 10, 64))
+        panel = pygame.Rect(
+            max(24, w // 12),
+            max(20, h // 14),
+            min(max(620, int(w * 0.78)), w - 48),
+            min(max(420, int(h * 0.82)), h - 40),
+        )
+        panel.center = (w // 2, h // 2)
+        pygame.draw.rect(surface, (8, 18, 104), panel, border_radius=14)
+        pygame.draw.rect(surface, (226, 236, 255), panel, 2, border_radius=14)
+
+        title = self._title_font.render(str(getattr(snap, "title", "")), True, (238, 245, 255))
+        surface.blit(title, title.get_rect(midtop=(panel.centerx, panel.y + 18)))
+        subtitle = self._subtitle_font.render(
+            str(getattr(snap, "subtitle", "")),
+            True,
+            (188, 204, 228),
+        )
+        surface.blit(subtitle, subtitle.get_rect(midtop=(panel.centerx, panel.y + 58)))
+
+        prompt_lines = self._wrap_text(
+            str(getattr(snap, "prompt", "")),
+            self._body_font,
+            panel.w - 56,
+        )
+        y = panel.y + 102
+        for line in prompt_lines:
+            surf = self._body_font.render(line, True, (238, 245, 255))
+            surface.blit(surf, (panel.x + 28, y))
+            y += self._body_font.get_linesize() + 2
+
+        note_lines = [str(line) for line in getattr(snap, "note_lines", ())]
+        if getattr(snap, "stage", None) is BenchmarkStage.RESULTS and self._results_persistence_lines:
+            note_lines.extend(self._results_persistence_lines)
+
+        notes_top = max(y + 14, panel.y + 188)
+        notes_rect = pygame.Rect(panel.x + 24, notes_top, panel.w - 48, panel.bottom - notes_top - 56)
+        pygame.draw.rect(surface, (9, 18, 78), notes_rect, border_radius=10)
+        pygame.draw.rect(surface, (128, 148, 204), notes_rect, 1, border_radius=10)
+        notes_title = self._small_font.render("Details", True, (238, 245, 255))
+        surface.blit(notes_title, (notes_rect.x + 14, notes_rect.y + 12))
+
+        y = notes_rect.y + 40
+        for line in note_lines:
+            for wrapped in self._wrap_text(line, self._small_font, notes_rect.w - 28):
+                surf = self._small_font.render(wrapped, True, (198, 212, 242))
+                surface.blit(surf, (notes_rect.x + 14, y))
+                y += self._small_font.get_linesize() + 2
+                if y > notes_rect.bottom - 28:
+                    break
+            if y > notes_rect.bottom - 28:
+                break
+
+        if getattr(snap, "stage", None) is BenchmarkStage.INTRO:
+            hint_text = "Enter: Start Benchmark    Backspace: Back"
+        else:
+            hint_text = "Enter or Backspace: Exit"
+        hint = self._tiny_font.render(hint_text, True, (188, 204, 228))
+        surface.blit(hint, hint.get_rect(midbottom=(panel.centerx, panel.bottom - 18)))
+
+    def _render_probe_overlay(self, surface: pygame.Surface, snap: object) -> None:
+        overlay = pygame.Rect(18, 14, min(500, surface.get_width() - 36), 88)
+        glass = pygame.Surface(overlay.size, pygame.SRCALPHA)
+        glass.fill((6, 14, 36, 188))
+        surface.blit(glass, overlay.topleft)
+        pygame.draw.rect(surface, (226, 236, 255), overlay, 1, border_radius=10)
+
+        title = self._small_font.render(
+            f"Benchmark {getattr(snap, 'probe_index', 0)}/{getattr(snap, 'probe_total', 0)}",
+            True,
+            (238, 245, 255),
+        )
+        label = self._small_font.render(
+            str(getattr(snap, "current_probe_label", "")),
+            True,
+            (198, 212, 242),
+        )
+        probe_time = getattr(snap, "probe_time_remaining_s", None)
+        battery_time = getattr(snap, "battery_time_remaining_s", None)
+        status = self._tiny_font.render(
+            f"Probe time {self._format_time(probe_time)}   Battery remaining {self._format_time(battery_time)}",
+            True,
+            (188, 204, 228),
+        )
+        summary = self._tiny_font.render(
+            f"Attempted {getattr(snap, 'attempted_total', 0)}   Correct {getattr(snap, 'correct_total', 0)}",
+            True,
+            (188, 204, 228),
+        )
+        surface.blit(title, (overlay.x + 14, overlay.y + 10))
+        surface.blit(label, (overlay.x + 14, overlay.y + 34))
+        surface.blit(status, (overlay.x + 14, overlay.y + 58))
+        surface.blit(summary, summary.get_rect(midright=(overlay.right - 14, overlay.y + 67)))
+
+    def _render_pause_overlay(self, surface: pygame.Surface) -> None:
+        dim = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
+        dim.fill((4, 8, 18, 176))
+        surface.blit(dim, (0, 0))
+        options = self._pause_menu_options()
+        panel = pygame.Rect((surface.get_width() - 400) // 2, (surface.get_height() - 280) // 2, 400, 280)
+        pygame.draw.rect(surface, (8, 18, 104), panel, border_radius=10)
+        pygame.draw.rect(surface, (226, 236, 255), panel, 2, border_radius=10)
+        title = self._title_font.render("Paused", True, (238, 245, 255))
+        subtitle = self._tiny_font.render(
+            "Benchmark-wide controls only",
+            True,
+            (188, 204, 228),
+        )
+        surface.blit(title, title.get_rect(midtop=(panel.centerx, panel.y + 18)))
+        surface.blit(subtitle, subtitle.get_rect(midtop=(panel.centerx, panel.y + 62)))
+
+        y = panel.y + 104
+        for idx, label in enumerate(options):
+            row = pygame.Rect(panel.x + 28, y, panel.w - 56, 42)
+            selected = idx == (self._pause_menu_selected % len(options))
+            pygame.draw.rect(
+                surface,
+                (244, 248, 255) if selected else (9, 20, 106),
+                row,
+                border_radius=6,
+            )
+            pygame.draw.rect(
+                surface,
+                (120, 142, 196) if selected else (62, 84, 152),
+                row,
+                2 if selected else 1,
+                border_radius=6,
+            )
+            text = self._small_font.render(
+                label,
+                True,
+                (14, 26, 74) if selected else (238, 245, 255),
+            )
+            surface.blit(text, text.get_rect(center=row.center))
+            y += 54
+
+    @staticmethod
+    def _format_time(value: float | None) -> str:
+        if value is None:
+            return "--:--"
+        total = max(0, int(round(float(value))))
+        minutes, seconds = divmod(total, 60)
+        return f"{minutes:02d}:{seconds:02d}"
+
+
+class AdaptiveSessionScreen:
+    def __init__(
+        self,
+        app: App,
+        *,
+        session: AdaptiveSession | None,
+        screen_factory: Callable[[], Screen] | None = None,
+        benchmark_screen_factory: Callable[[], Screen] | None = None,
+    ) -> None:
+        self._app = app
+        self._session = session
+        self._screen_factory = screen_factory
+        self._benchmark_screen_factory = benchmark_screen_factory
+        self._test_code = "adaptive_session"
+        self._test_version = 1
+        self._results_persisted = False
+        self._results_persistence_lines: list[str] = []
+        self._runtime_screen: object | None = None
+        self._runtime_engine_id: int | None = None
+        self._pause_menu_active = False
+        self._pause_menu_selected = 0
+        self._activity_finalized = False
+        self._activity_close_reason: str | None = None
+
+        self._title_font = pygame.font.Font(None, 44)
+        self._subtitle_font = pygame.font.Font(None, 28)
+        self._body_font = pygame.font.Font(None, 26)
+        self._small_font = pygame.font.Font(None, 22)
+        self._tiny_font = pygame.font.Font(None, 18)
+
+        if self._session is not None:
+            self._app.start_activity_session(
+                owner=self,
+                activity_code=self._test_code,
+                activity_kind="adaptive_session",
+                engine=self._session,
+                test_version=self._test_version,
+            )
+
+    def shell_activity_active(self) -> bool:
+        return self._session is not None
+
+    def shell_pause_available(self) -> bool:
+        return self._session is not None and self._session.stage is AdaptiveStage.BLOCK
+
+    def shell_pause_set_active(self, active: bool) -> None:
+        self._set_pause_menu_state(active)
+
+    def shell_pause_restart(self) -> None:
+        self._set_pause_menu_state(False)
+        self._activity_close_reason = "back_abort"
+        if self._screen_factory is not None:
+            self._app.replace_top(self._screen_factory())
+
+    def shell_pause_main_menu(self) -> None:
+        self._set_pause_menu_state(False)
+        self._activity_close_reason = "main_menu_abort"
+        self._app.pop_to_root()
+
+    def shell_emergency_exit(self, reason: str) -> None:
+        self._set_pause_menu_state(False)
+        if self._session is not None:
+            self.abort_activity(reason)
+        self._app.pop_to_root()
+
+    def shell_activity_label(self) -> str | None:
+        if self._session is None:
+            return None
+        snap = self._session.snapshot()
+        return str(getattr(snap, "current_block_label", "") or snap.title)
+
+    def handle_event(self, event: pygame.event.Event) -> None:
+        if event.type != pygame.KEYDOWN:
+            return
+
+        if self._session is None:
+            if event.key in (pygame.K_BACKSPACE, pygame.K_ESCAPE):
+                self._app.pop()
+                return
+            if event.key == pygame.K_RETURN and self._benchmark_screen_factory is not None:
+                self._app.replace_top(self._benchmark_screen_factory())
+            return
+
+        stage = self._session.stage
+        key = event.key
+
+        if stage is AdaptiveStage.BLOCK and key == pygame.K_ESCAPE:
+            self._set_pause_menu_state(not self._pause_menu_active)
+            return
+
+        if self._pause_menu_active:
+            self._handle_pause_event(event)
+            return
+
+        if stage is AdaptiveStage.INTRO:
+            if key in (pygame.K_BACKSPACE, pygame.K_ESCAPE):
+                self._activity_close_reason = "back_abort"
+                self._app.pop()
+                return
+            if key == pygame.K_RETURN:
+                self._session.activate()
+            return
+
+        if stage is AdaptiveStage.RESULTS:
+            if key in (pygame.K_RETURN, pygame.K_BACKSPACE, pygame.K_ESCAPE):
+                self._app.pop()
+            return
+
+        engine = self._session.current_engine()
+        if engine is None or getattr(engine, "phase", None) is Phase.RESULTS:
+            return
+        self._ensure_runtime_screen()
+        runtime = cast(CognitiveTestScreen | None, self._runtime_screen)
+        if runtime is not None:
+            runtime.handle_event(event)
+
+    def render(self, surface: pygame.Surface) -> None:
+        if self._session is None:
+            self._render_panel(
+                surface,
+                title="Adaptive Session",
+                subtitle="Benchmark Required",
+                prompt=(
+                    "The scheduler needs mapped benchmark or drill history before it can rank weak "
+                    "primitives. Run the fixed benchmark battery first."
+                ),
+                note_lines=(
+                    "Enter: Launch Benchmark Battery",
+                    "Backspace: Back",
+                    "No adaptive session is persisted from this bootstrap screen.",
+                ),
+                hint_text="Enter: Benchmark Battery    Backspace: Back",
+            )
+            return
+
+        snap = self._session.snapshot()
+        self._persist_results_if_needed()
+
+        if snap.stage is AdaptiveStage.BLOCK:
+            self._ensure_runtime_screen()
+            runtime = cast(CognitiveTestScreen | None, self._runtime_screen)
+            if runtime is not None:
+                runtime._set_external_pause_state(self._pause_menu_active)
+                runtime.render(surface)
+            if not self._pause_menu_active:
+                self._session.sync_runtime()
+            latest = self._session.snapshot()
+            if latest.stage is AdaptiveStage.BLOCK:
+                self._render_block_overlay(surface, latest)
+                if self._pause_menu_active and not self._app.shell_pause_overlay_active():
+                    self._render_pause_overlay(surface)
+                return
+            snap = latest
+
+        self._clear_runtime_screen()
+        note_lines = tuple(snap.note_lines)
+        if snap.stage is AdaptiveStage.RESULTS and self._results_persistence_lines:
+            note_lines = note_lines + tuple(self._results_persistence_lines)
+        hint = (
+            "Enter: Start Session    Backspace: Back"
+            if snap.stage is AdaptiveStage.INTRO
+            else "Enter or Backspace: Exit"
+        )
+        self._render_panel(
+            surface,
+            title=snap.title,
+            subtitle=snap.subtitle,
+            prompt=snap.prompt,
+            note_lines=note_lines,
+            hint_text=hint,
+        )
+
+    def close(self) -> None:
+        self._clear_runtime_screen()
+        if self._session is None or self._activity_finalized:
+            return
+        if self._session.stage is AdaptiveStage.RESULTS:
+            self._persist_results_if_needed()
+        else:
+            self.abort_activity(self._activity_close_reason or "back_abort")
+
+    def abort_activity(self, reason: str) -> None:
+        if self._session is None or self._activity_finalized:
+            return
+        self._app.abort_activity_session(
+            owner=self,
+            engine=self._session,
+            completion_reason=str(reason),
+            test_code=self._test_code,
+            test_version=self._test_version,
+        )
+        self._activity_finalized = True
+
+    def _persist_results_if_needed(self) -> None:
+        if (
+            self._session is None
+            or self._results_persisted
+            or self._session.stage is not AdaptiveStage.RESULTS
+        ):
+            return
+        self._results_persistence_lines = self._app.complete_activity_session(
+            owner=self,
+            engine=self._session,
+            test_code=self._test_code,
+            test_version=self._test_version,
+        )
+        self._results_persisted = True
+        self._activity_finalized = True
+
+    def _clear_runtime_screen(self) -> None:
+        if self._runtime_screen is not None:
+            close = getattr(self._runtime_screen, "close", None)
+            if callable(close):
+                close()
+        self._runtime_screen = None
+        self._runtime_engine_id = None
+
+    def _ensure_runtime_screen(self) -> None:
+        if self._session is None:
+            self._clear_runtime_screen()
+            return
+        engine = self._session.current_engine()
+        if engine is None:
+            self._clear_runtime_screen()
+            return
+        engine_id = id(engine)
+        if self._runtime_screen is not None and self._runtime_engine_id == engine_id:
+            return
+        self._clear_runtime_screen()
+        self._runtime_screen = CognitiveTestScreen(
+            self._app,
+            engine_factory=lambda engine=engine: engine,
+            test_code=None,
+        )
+        self._runtime_engine_id = engine_id
+
+    def _set_pause_menu_state(self, active: bool) -> None:
+        self._pause_menu_active = bool(active)
+        if not self._pause_menu_active:
+            self._pause_menu_selected = 0
+        runtime = cast(CognitiveTestScreen | None, self._runtime_screen)
+        if runtime is not None:
+            runtime._set_external_pause_state(self._pause_menu_active)
+
+    def _pause_menu_options(self) -> tuple[str, ...]:
+        return ("Resume", "Restart Session", "Main Menu")
+
+    def _handle_pause_event(self, event: pygame.event.Event) -> None:
+        if event.type != pygame.KEYDOWN:
+            return
+        options = self._pause_menu_options()
+        if event.key in (pygame.K_ESCAPE, pygame.K_BACKSPACE):
+            self._set_pause_menu_state(False)
+            return
+        if event.key in (pygame.K_UP, pygame.K_w):
+            self._pause_menu_selected = (self._pause_menu_selected - 1) % len(options)
+            return
+        if event.key in (pygame.K_DOWN, pygame.K_s):
+            self._pause_menu_selected = (self._pause_menu_selected + 1) % len(options)
+            return
+        if event.key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE):
+            self._activate_pause_selection()
+
+    def _activate_pause_selection(self) -> None:
+        selected = self._pause_menu_selected % len(self._pause_menu_options())
+        if selected == 0:
+            self._set_pause_menu_state(False)
+            return
+        if selected == 1:
+            self._set_pause_menu_state(False)
+            self._activity_close_reason = "back_abort"
+            if self._screen_factory is not None:
+                self._app.replace_top(self._screen_factory())
+            return
+        self._set_pause_menu_state(False)
+        self._activity_close_reason = "main_menu_abort"
+        self._app.pop_to_root()
+
+    def _render_panel(
+        self,
+        surface: pygame.Surface,
+        *,
+        title: str,
+        subtitle: str,
+        prompt: str,
+        note_lines: tuple[str, ...],
+        hint_text: str,
+    ) -> None:
+        w, h = surface.get_size()
+        surface.fill((4, 10, 64))
+        panel = pygame.Rect(
+            max(24, w // 12),
+            max(20, h // 14),
+            min(max(620, int(w * 0.78)), w - 48),
+            min(max(420, int(h * 0.82)), h - 40),
+        )
+        panel.center = (w // 2, h // 2)
+        pygame.draw.rect(surface, (8, 18, 104), panel, border_radius=14)
+        pygame.draw.rect(surface, (226, 236, 255), panel, 2, border_radius=14)
+
+        title_surf = self._title_font.render(str(title), True, (238, 245, 255))
+        surface.blit(title_surf, title_surf.get_rect(midtop=(panel.centerx, panel.y + 18)))
+        subtitle_surf = self._subtitle_font.render(str(subtitle), True, (188, 204, 228))
+        surface.blit(subtitle_surf, subtitle_surf.get_rect(midtop=(panel.centerx, panel.y + 58)))
+
+        prompt_lines = self._wrap_text(str(prompt), self._body_font, panel.w - 56)
+        y = panel.y + 102
+        for line in prompt_lines:
+            surf = self._body_font.render(line, True, (238, 245, 255))
+            surface.blit(surf, (panel.x + 28, y))
+            y += self._body_font.get_linesize() + 2
+
+        notes_top = max(y + 14, panel.y + 188)
+        notes_rect = pygame.Rect(panel.x + 24, notes_top, panel.w - 48, panel.bottom - notes_top - 56)
+        pygame.draw.rect(surface, (9, 18, 78), notes_rect, border_radius=10)
+        pygame.draw.rect(surface, (128, 148, 204), notes_rect, 1, border_radius=10)
+        notes_title = self._small_font.render("Details", True, (238, 245, 255))
+        surface.blit(notes_title, (notes_rect.x + 14, notes_rect.y + 12))
+
+        y = notes_rect.y + 40
+        for line in note_lines:
+            for wrapped in self._wrap_text(line, self._small_font, notes_rect.w - 28):
+                surf = self._small_font.render(wrapped, True, (198, 212, 242))
+                surface.blit(surf, (notes_rect.x + 14, y))
+                y += self._small_font.get_linesize() + 2
+                if y > notes_rect.bottom - 28:
+                    break
+            if y > notes_rect.bottom - 28:
+                break
+
+        hint = self._tiny_font.render(hint_text, True, (188, 204, 228))
+        surface.blit(hint, hint.get_rect(midbottom=(panel.centerx, panel.bottom - 18)))
+
+    def _render_block_overlay(self, surface: pygame.Surface, snap: object) -> None:
+        overlay = pygame.Rect(18, 14, min(560, surface.get_width() - 36), 88)
+        glass = pygame.Surface(overlay.size, pygame.SRCALPHA)
+        glass.fill((6, 14, 36, 188))
+        surface.blit(glass, overlay.topleft)
+        pygame.draw.rect(surface, (226, 236, 255), overlay, 1, border_radius=10)
+
+        title = self._small_font.render(
+            f"Adaptive {getattr(snap, 'block_index', 0)}/{getattr(snap, 'block_total', 0)}",
+            True,
+            (238, 245, 255),
+        )
+        label = self._small_font.render(
+            f"{getattr(snap, 'current_primitive_label', '')} :: {getattr(snap, 'current_block_label', '')}",
+            True,
+            (198, 212, 242),
+        )
+        block_time = getattr(snap, "block_time_remaining_s", None)
+        session_time = getattr(snap, "session_time_remaining_s", None)
+        status = self._tiny_font.render(
+            f"Block time {self._format_time(block_time)}   Session remaining {self._format_time(session_time)}",
+            True,
+            (188, 204, 228),
+        )
+        summary = self._tiny_font.render(
+            f"Attempted {getattr(snap, 'attempted_total', 0)}   Correct {getattr(snap, 'correct_total', 0)}",
+            True,
+            (188, 204, 228),
+        )
+        surface.blit(title, (overlay.x + 14, overlay.y + 10))
+        surface.blit(label, (overlay.x + 14, overlay.y + 34))
+        surface.blit(status, (overlay.x + 14, overlay.y + 58))
+        surface.blit(summary, summary.get_rect(midright=(overlay.right - 14, overlay.y + 67)))
+
+    def _render_pause_overlay(self, surface: pygame.Surface) -> None:
+        dim = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
+        dim.fill((4, 8, 18, 176))
+        surface.blit(dim, (0, 0))
+        options = self._pause_menu_options()
+        panel = pygame.Rect((surface.get_width() - 420) // 2, (surface.get_height() - 280) // 2, 420, 280)
+        pygame.draw.rect(surface, (8, 18, 104), panel, border_radius=10)
+        pygame.draw.rect(surface, (226, 236, 255), panel, 2, border_radius=10)
+        title = self._title_font.render("Paused", True, (238, 245, 255))
+        subtitle = self._tiny_font.render(
+            "Session-wide controls only",
+            True,
+            (188, 204, 228),
+        )
+        surface.blit(title, title.get_rect(midtop=(panel.centerx, panel.y + 18)))
+        surface.blit(subtitle, subtitle.get_rect(midtop=(panel.centerx, panel.y + 62)))
+
+        y = panel.y + 104
+        for idx, label in enumerate(options):
+            row = pygame.Rect(panel.x + 28, y, panel.w - 56, 42)
+            selected = idx == (self._pause_menu_selected % len(options))
+            pygame.draw.rect(
+                surface,
+                (244, 248, 255) if selected else (9, 20, 106),
+                row,
+                border_radius=6,
+            )
+            pygame.draw.rect(
+                surface,
+                (120, 142, 196) if selected else (62, 84, 152),
+                row,
+                2 if selected else 1,
+                border_radius=6,
+            )
+            text = self._small_font.render(
+                label,
+                True,
+                (14, 26, 74) if selected else (238, 245, 255),
+            )
+            surface.blit(text, text.get_rect(center=row.center))
+            y += 54
+
+    @staticmethod
+    def _wrap_text(text: str, font: pygame.font.Font, max_width: int) -> list[str]:
+        if max_width <= 0:
+            return [str(text)]
+        paragraphs = str(text).splitlines() or [""]
+        lines: list[str] = []
+        for paragraph in paragraphs:
+            words = paragraph.split()
+            if not words:
+                lines.append("")
+                continue
+            current = words[0]
+            for word in words[1:]:
+                candidate = f"{current} {word}"
+                if font.size(candidate)[0] <= max_width:
+                    current = candidate
+                    continue
+                lines.append(current)
+                current = word
+            lines.append(current)
+        return lines
+
+    @staticmethod
+    def _format_time(value: float | None) -> str:
+        if value is None:
+            return "--:--"
+        total = max(0, int(round(float(value))))
+        minutes, seconds = divmod(total, 60)
+        return f"{minutes:02d}:{seconds:02d}"
 
 
 INPUT_PROFILE_STORE_ENV = "CFAST_INPUT_PROFILES_PATH"
@@ -9701,6 +11543,7 @@ class CognitiveTestScreen:
         self._app = app
         self._engine_factory = engine_factory
         self._engine: CognitiveEngine = engine_factory()
+        self._app.apply_runtime_defaults_to_engine(self._engine)
         self._review_clock = self._install_pausable_clock(self._engine)
         self._test_code = None if test_code is None else str(test_code).strip() or None
         self._test_version = int(test_version)
@@ -9709,6 +11552,8 @@ class CognitiveTestScreen:
         self._results_persisted = False
         self._results_persistence_lines: list[str] = []
         self._suppress_persistence = False
+        self._activity_finalized = False
+        self._activity_close_reason: str | None = None
         self._input_prompt_key: tuple[str, ...] | None = None
         self._review_state: _AnswerReviewState | None = None
 
@@ -9884,6 +11729,14 @@ class CognitiveTestScreen:
         self._target_recognition_reset_scan_subtask()
         self._target_recognition_reset_system_subtask()
         self._sync_intro_loading_state(self._engine.snapshot().phase)
+        if self._test_code is not None:
+            self._app.start_activity_session(
+                owner=self,
+                activity_code=self._test_code,
+                activity_kind="cognitive_test",
+                engine=self._engine,
+                test_version=self._test_version,
+            )
 
     def close(self) -> None:
         self._pause_menu_active = False
@@ -9949,7 +11802,9 @@ class CognitiveTestScreen:
         ):
             return
         try:
-            if isinstance(payload, RapidTrackingPayload) or str(snap.title).startswith("Rapid Tracking"):
+            if isinstance(payload, RapidTrackingPayload) or str(snap.title).startswith(
+                ("Rapid Tracking", "Dual-Task Bridge")
+            ):
                 self._get_rapid_tracking_panda_renderer(size=surface_size)
                 return
             if is_trace_test_1:
@@ -10325,7 +12180,7 @@ class CognitiveTestScreen:
         if snap.phase not in (Phase.PRACTICE, Phase.SCORED):
             return
         payload = snap.payload
-        if isinstance(payload, RapidTrackingPayload):
+        if isinstance(payload, RapidTrackingPayload) or str(snap.title).startswith("Dual-Task Bridge"):
             while self._app.consume_bound_action("rapid_tracking_capture"):
                 self._engine.submit_answer("CAPTURE")
         if isinstance(payload, AuditoryCapacityPayload):
@@ -10392,15 +12247,18 @@ class CognitiveTestScreen:
         auditory_payload: AuditoryCapacityPayload | None = (
             p if isinstance(p, AuditoryCapacityPayload) else None
         )
+        is_dual_task_bridge = str(snap.title).startswith("Dual-Task Bridge")
 
         # Emergency exit: allow a hard escape from any state (including SCORED).
         if event.type == pygame.KEYDOWN:
             if event.key == pygame.K_F12:
+                self.abort_activity("emergency_abort")
                 self._stop_auditory_audio()
                 self._stop_situational_awareness_audio()
                 self._app.pop()
                 return
             if event.key == pygame.K_ESCAPE and (event.mod & pygame.KMOD_SHIFT):
+                self.abort_activity("emergency_abort")
                 self._stop_auditory_audio()
                 self._stop_situational_awareness_audio()
                 self._app.pop()
@@ -10460,7 +12318,7 @@ class CognitiveTestScreen:
 
         if (
             event.type == pygame.JOYBUTTONDOWN
-            and rapid_tracking_payload is not None
+            and (rapid_tracking_payload is not None or is_dual_task_bridge)
             and snap.phase in (Phase.PRACTICE, Phase.SCORED)
             and int(getattr(event, "button", -1)) in (0, 1)
             and not self._app.has_explicit_action_binding("rapid_tracking_capture")
@@ -10480,7 +12338,7 @@ class CognitiveTestScreen:
 
         if (
             event.type == pygame.MOUSEBUTTONDOWN
-            and rapid_tracking_payload is not None
+            and (rapid_tracking_payload is not None or is_dual_task_bridge)
             and snap.phase in (Phase.PRACTICE, Phase.SCORED)
             and getattr(event, "button", 0) == 1
         ):
@@ -10896,6 +12754,13 @@ class CognitiveTestScreen:
                 if accepted:
                     self._input = ""
                 return
+            if is_dual_task_bridge:
+                if self._input == "":
+                    return
+                accepted = self._engine.submit_answer(f"DIGITS:{self._input}")
+                if accepted:
+                    self._input = ""
+                return
             if dr is not None and not dr.accepting_input:
                 return
             if (
@@ -11020,6 +12885,27 @@ class CognitiveTestScreen:
                     self._input += ch
                 return
 
+            return
+
+        if is_dual_task_bridge:
+            if key == pygame.K_BACKSPACE:
+                self._input = self._input[:-1]
+                return
+            if key == pygame.K_SPACE:
+                self._engine.submit_answer("CAPTURE")
+                return
+            command_key = {
+                pygame.K_q: "BLUE",
+                pygame.K_w: "GREEN",
+                pygame.K_e: "YELLOW",
+                pygame.K_r: "RED",
+            }.get(key)
+            if command_key is not None:
+                self._engine.submit_answer(f"CMD:{command_key}")
+                return
+            ch = event.unicode
+            if ch and ch.isdigit() and len(self._input) < 8:
+                self._input += ch
             return
 
         if auditory_payload is not None:
@@ -11208,12 +13094,7 @@ class CognitiveTestScreen:
                     return
                 return
 
-            option_count = (
-                len(active_query.answer_choices)
-                if active_query.answer_mode is SituationalAwarenessAnswerMode.ACTION
-                else len(situational_awareness_payload.status_entries)
-            )
-            option_count = max(1, int(option_count))
+            option_count = max(1, int(len(active_query.answer_choices)))
             if key == pygame.K_BACKSPACE:
                 self._input = self._input[:-1]
                 return
@@ -11522,6 +13403,7 @@ class CognitiveTestScreen:
             self._pause_settings_selected = 0
             return
         self._set_pause_menu_state(False)
+        self._activity_close_reason = "main_menu_abort"
         self._stop_auditory_audio()
         self._stop_situational_awareness_audio()
         self._app.pop_to_root()
@@ -11712,6 +13594,7 @@ class CognitiveTestScreen:
     def _apply_pause_restart(self) -> None:
         self._persist_staged_difficulty_level()
         self._set_pause_menu_state(False)
+        self._activity_close_reason = "back_abort"
         self._restart_activity(auto_start_practice=False)
 
     def _get_intro_difficulty_level(self) -> int:
@@ -11842,6 +13725,11 @@ class CognitiveTestScreen:
         self._engine.set_audio_overrides(
             noise_level=next_noise,
             distortion_level=next_distortion,
+            noise_source=cast(str | None, next_source),
+        )
+        self._app.save_auditory_runtime_defaults(
+            noise_level=None if next_noise is None else float(next_noise),
+            distortion_level=None if next_distortion is None else float(next_distortion),
             noise_source=cast(str | None, next_source),
         )
 
@@ -11991,9 +13879,13 @@ class CognitiveTestScreen:
                     axis_focus=axis_focus,
                 )
                 set_control(horizontal=control_x, vertical=control_y)
-            elif isinstance(self._engine, RapidTrackingEngine):
+            elif isinstance(self._engine, RapidTrackingEngine) or str(
+                getattr(self._engine, "_title", "")
+            ).startswith("Dual-Task Bridge"):
                 control_x, control_y = self._read_sensory_motor_control()
-                self._engine.set_control(horizontal=control_x, vertical=control_y)
+                set_control = getattr(self._engine, "set_control", None)
+                if callable(set_control):
+                    set_control(horizontal=control_x, vertical=control_y)
             elif isinstance(self._engine, AuditoryCapacityEngine):
                 control_x, control_y = self._read_sensory_motor_control()
                 self._engine.set_control(horizontal=control_x, vertical=control_y)
@@ -12045,7 +13937,9 @@ class CognitiveTestScreen:
 
         prompt_key: tuple[str, ...] | None = None
         if not self._review_state_active() and snap.phase in (Phase.PRACTICE, Phase.SCORED):
-            if (
+            if str(snap.title).startswith("Dual-Task Bridge"):
+                prompt_key = (snap.phase.value, str(snap.prompt), str(snap.input_hint))
+            elif (
                 snap.payload is None
                 or isinstance(snap.payload, AirborneScenario)
                 or str(snap.title).startswith("Numerical Operations")
@@ -12168,9 +14062,10 @@ class CognitiveTestScreen:
         is_sensory_motor_apparatus = sensory_payload is not None or str(snap.title).startswith(
             "Sensory Motor Apparatus"
         )
+        is_dual_task_bridge = str(snap.title).startswith("Dual-Task Bridge")
         is_rapid_tracking = rapid_tracking_payload is not None or str(snap.title).startswith(
             "Rapid Tracking"
-        )
+        ) or is_dual_task_bridge
         is_spatial_integration = spatial_payload is not None or str(snap.title).startswith(
             "Spatial Integration"
         )
@@ -12341,7 +14236,7 @@ class CognitiveTestScreen:
         if snap.phase is Phase.RESULTS and not self._pause_menu_active:
             self._render_standard_results_overlay(surface, snap)
 
-        if self._pause_menu_active:
+        if self._pause_menu_active and not self._app.shell_pause_overlay_active():
             self._render_pause_overlay(surface)
         else:
             self._advance_intro_loading(surface_size=surface.get_size(), snap=snap)
@@ -12351,14 +14246,24 @@ class CognitiveTestScreen:
             return
         self._results_persisted = True
         if self._suppress_persistence:
+            self._app.abort_activity_session(
+                owner=self,
+                engine=None,
+                completion_reason="back_abort",
+                test_code=self._test_code,
+            )
+            self._activity_finalized = True
             return
         if self._test_code is None:
             return
-        self._results_persistence_lines = self._app.persist_attempt(
+        self._attach_runtime_telemetry()
+        self._results_persistence_lines = self._app.complete_activity_session(
+            owner=self,
             engine=self._engine,
             test_code=self._test_code,
             test_version=self._test_version,
         )
+        self._activity_finalized = True
 
     def _render_standard_results_overlay(
         self,
@@ -13371,9 +15276,70 @@ class CognitiveTestScreen:
                 return None
         return self._trace_test_2_panda_renderer
 
+    def _attach_runtime_telemetry(self) -> None:
+        runtime = self._cognitive_updating_runtime
+        if runtime is None:
+            setattr(self._engine, "_telemetry_runtime_events", None)
+            return
+        setattr(self._engine, "_telemetry_runtime_events", runtime.events())
+
+    def shell_activity_active(self) -> bool:
+        return self._test_code is not None and not self._activity_finalized
+
+    def shell_pause_available(self) -> bool:
+        snap = self._engine.snapshot()
+        return snap.phase in (
+            Phase.INSTRUCTIONS,
+            Phase.PRACTICE,
+            Phase.PRACTICE_DONE,
+            Phase.SCORED,
+        )
+
+    def shell_pause_set_active(self, active: bool) -> None:
+        self._set_pause_menu_state(active)
+
+    def shell_pause_restart(self) -> None:
+        self._set_pause_menu_state(False)
+        self._activity_close_reason = "back_abort"
+        self._restart_activity(auto_start_practice=False)
+
+    def shell_pause_main_menu(self) -> None:
+        self._set_pause_menu_state(False)
+        self._activity_close_reason = "main_menu_abort"
+        self._stop_auditory_audio()
+        self._stop_situational_awareness_audio()
+        self._app.pop_to_root()
+
+    def shell_emergency_exit(self, reason: str) -> None:
+        self._set_pause_menu_state(False)
+        self._stop_auditory_audio()
+        self._stop_situational_awareness_audio()
+        self.abort_activity(reason)
+        self._app.pop_to_root()
+
+    def shell_activity_label(self) -> str:
+        return self._engine.snapshot().title
+
+    def abort_activity(self, reason: str) -> None:
+        if self._activity_finalized or self._test_code is None:
+            return
+        self._attach_runtime_telemetry()
+        self._app.abort_activity_session(
+            owner=self,
+            engine=self._engine,
+            completion_reason=str(reason),
+            test_code=self._test_code,
+            test_version=self._test_version,
+        )
+        self._activity_finalized = True
+
     def close(self) -> None:
         self._clear_review_state()
-        self._persist_results_if_needed(self._engine.snapshot())
+        snap = self._engine.snapshot()
+        if snap.phase is Phase.RESULTS:
+            self._persist_results_if_needed(snap)
+        elif not self._activity_finalized and self._test_code is not None:
+            self.abort_activity(self._activity_close_reason or "back_abort")
         self._stop_auditory_audio()
         self._stop_situational_awareness_audio()
         self._dispose_auditory_panda_renderer()
@@ -13820,6 +15786,7 @@ class CognitiveTestScreen:
         snap: TestSnapshot,
         payload: RapidTrackingPayload | None,
     ) -> None:
+        is_dual_task_bridge = str(snap.title).startswith("Dual-Task Bridge")
         w, h = surface.get_size()
         bg = (6, 24, 20)
         panel_bg = (12, 44, 34)
@@ -13846,7 +15813,8 @@ class CognitiveTestScreen:
             Phase.RESULTS: "Results",
         }.get(snap.phase, "Task")
 
-        title = self._small_font.render(f"Rapid Tracking - {phase_label}", True, text_main)
+        title_prefix = "Dual-Task Bridge" if is_dual_task_bridge else "Rapid Tracking"
+        title = self._small_font.render(f"{title_prefix} - {phase_label}", True, text_main)
         surface.blit(title, (header.x + 12, header.y + 8))
 
         stats = self._tiny_font.render(
@@ -14926,6 +16894,33 @@ class CognitiveTestScreen:
                 right, right.get_rect(midright=(metrics_bg.right - 8, metrics_bg.centery + 7))
             )
 
+        if is_dual_task_bridge and snap.phase in (Phase.PRACTICE, Phase.SCORED):
+            bridge_panel = pygame.Rect(track.x + 10, track.bottom - 98, track.w - 20, 88)
+            pygame.draw.rect(surface, (14, 52, 42), bridge_panel)
+            pygame.draw.rect(surface, (86, 130, 114), bridge_panel, 1)
+            prompt_rect = pygame.Rect(
+                bridge_panel.x + 10,
+                bridge_panel.y + 8,
+                bridge_panel.w - 20,
+                42,
+            )
+            self._draw_wrapped_text(
+                surface,
+                str(snap.prompt),
+                prompt_rect,
+                color=text_main,
+                font=self._tiny_font,
+                max_lines=3,
+            )
+            input_text = self._input if self._input != "" else "..."
+            report = self._tiny_font.render(f"Report: {input_text}", True, text_main)
+            hint = self._tiny_font.render(str(snap.input_hint), True, text_muted)
+            surface.blit(report, (bridge_panel.x + 10, bridge_panel.bottom - 30))
+            surface.blit(
+                hint,
+                hint.get_rect(bottomright=(bridge_panel.right - 10, bridge_panel.bottom - 10)),
+            )
+
         if snap.phase in (Phase.INSTRUCTIONS, Phase.PRACTICE_DONE, Phase.RESULTS):
             prompt_bg = pygame.Rect(track.x + 10, track.bottom - 96, track.w - 20, 86)
             pygame.draw.rect(surface, (14, 52, 42), prompt_bg)
@@ -14955,10 +16950,16 @@ class CognitiveTestScreen:
         if snap.phase in (Phase.INSTRUCTIONS, Phase.PRACTICE_DONE):
             footer = "Enter: Continue  |  Esc/Backspace: Back"
         elif snap.phase in (Phase.PRACTICE, Phase.SCORED):
-            footer = (
-                "Configured HOTAS movement axes, arrows, or A/D control the camera. "
-                "Configured capture binding, Space, or LMB captures in the center box."
-            )
+            if is_dual_task_bridge:
+                footer = (
+                    "Configured HOTAS movement axes, arrows, or A/D control the camera. "
+                    "Space/LMB capture | Q/W/E/R command filter | digits + Enter delayed report."
+                )
+            else:
+                footer = (
+                    "Configured HOTAS movement axes, arrows, or A/D control the camera. "
+                    "Configured capture binding, Space, or LMB captures in the center box."
+                )
         else:
             footer = "Enter: Return to Tests"
         foot = self._tiny_font.render(footer, True, text_muted)
@@ -20007,32 +22008,34 @@ class CognitiveTestScreen:
         self._sa_option_hitboxes = {}
         self._sa_grid_hitboxes = {}
 
-        bg = (6, 16, 86)
-        panel_bg = (12, 28, 116)
-        panel_dark = (10, 22, 96)
-        panel_mid = (18, 36, 126)
-        grid_fill_a = (72, 116, 86)
-        grid_fill_b = (80, 124, 92)
-        border = (224, 236, 255)
-        text_main = (238, 246, 255)
-        text_muted = (182, 202, 230)
-        text_dark = (12, 20, 36)
-        accent_red = (212, 86, 74)
-        accent_green = (112, 214, 124)
-        accent_yellow = (255, 219, 120)
+        bg = (11, 18, 80)
+        frame_fill = (84, 84, 92)
+        frame_edge = (212, 220, 236)
+        chrome_blue = (18, 28, 118)
+        strip_dark = (26, 26, 32)
+        strip_mid = (42, 42, 48)
+        strip_soft = (62, 62, 68)
+        grid_fill_a = (92, 124, 96)
+        grid_fill_b = (102, 134, 106)
+        grid_edge = (220, 228, 236)
+        text_main = (240, 244, 252)
+        text_muted = (198, 205, 220)
+        text_dark = (22, 24, 32)
+        accent_yellow = (250, 224, 126)
+        accent_red = (205, 90, 84)
 
         w, h = surface.get_size()
         surface.fill(bg)
 
         margin = max(8, min(18, w // 48))
         frame = pygame.Rect(margin, margin, w - margin * 2, h - margin * 2)
-        pygame.draw.rect(surface, panel_bg, frame)
-        pygame.draw.rect(surface, border, frame, 1)
+        pygame.draw.rect(surface, chrome_blue, frame)
+        pygame.draw.rect(surface, frame_edge, frame, 1)
 
         header_h = max(30, min(40, h // 16))
         header = pygame.Rect(frame.x + 1, frame.y + 1, frame.w - 2, header_h)
-        pygame.draw.rect(surface, panel_dark, header)
-        pygame.draw.line(surface, border, (header.x, header.bottom), (header.right, header.bottom), 1)
+        pygame.draw.rect(surface, chrome_blue, header)
+        pygame.draw.line(surface, frame_edge, (header.x, header.bottom), (header.right, header.bottom), 1)
 
         title = self._tiny_font.render("Situational Awareness Test", True, text_main)
         surface.blit(title, title.get_rect(midleft=(header.x + 10, header.centery)))
@@ -20052,10 +22055,31 @@ class CognitiveTestScreen:
             )
             return
 
-        left_w = int(frame.w * 0.64)
-        query_h = 136
-        left_panel = pygame.Rect(frame.x + 10, header.bottom + 28, left_w - 18, frame.h - header_h - query_h - 48)
-        right_panel = pygame.Rect(left_panel.right + 10, left_panel.y, frame.right - left_panel.right - 20, left_panel.h)
+        def _fade_color(color: tuple[int, int, int], fade: float, *, floor: float = 0.24) -> tuple[int, int, int]:
+            mix = max(floor, min(1.0, float(fade)))
+            return tuple(max(0, min(255, int(round(channel * mix)))) for channel in color)
+
+        cue_strip = pygame.Rect(frame.x + 10, header.bottom + 8, frame.w - 20, 34)
+        pygame.draw.rect(surface, strip_dark, cue_strip)
+        pygame.draw.rect(surface, frame_edge, cue_strip, 1)
+
+        top_text = payload.top_strip_text or "Build the picture from fading cues."
+        top_color = _fade_color(text_main, payload.top_strip_fade if payload.top_strip_text else 0.45, floor=0.45)
+        cue_render = self._tiny_font.render(top_text, True, top_color)
+        surface.blit(cue_render, cue_render.get_rect(midleft=(cue_strip.x + 10, cue_strip.centery)))
+        clock_render = self._small_font.render(payload.display_clock_text, True, text_main)
+        surface.blit(clock_render, clock_render.get_rect(midright=(cue_strip.right - 12, cue_strip.centery)))
+
+        query_h = 138
+        main_top = cue_strip.bottom + 10
+        right_w = max(210, min(280, int(frame.w * 0.30)))
+        left_panel = pygame.Rect(
+            frame.x + 10,
+            main_top,
+            frame.w - right_w - 30,
+            frame.bottom - main_top - query_h - 20,
+        )
+        right_panel = pygame.Rect(left_panel.right + 10, left_panel.y, right_w, left_panel.h)
         query_panel = pygame.Rect(frame.x + 10, left_panel.bottom + 10, frame.w - 20, query_h)
 
         active_query = payload.active_query
@@ -20069,17 +22093,13 @@ class CognitiveTestScreen:
         answer_mode = payload.answer_mode
         active_channels = set(payload.active_channels)
 
-        def _channel_fill(channel: str) -> tuple[int, int, int]:
-            return panel_dark if channel in active_channels else (7, 18, 72)
+        pygame.draw.rect(surface, frame_fill, left_panel)
+        pygame.draw.rect(surface, frame_edge, left_panel, 1)
+        pygame.draw.rect(surface, accent_red, right_panel)
+        pygame.draw.rect(surface, frame_edge, right_panel, 1)
+        pygame.draw.rect(surface, strip_dark, query_panel)
+        pygame.draw.rect(surface, frame_edge, query_panel, 1)
 
-        pygame.draw.rect(surface, _channel_fill("pictorial"), left_panel)
-        pygame.draw.rect(surface, border, left_panel, 1)
-        pygame.draw.rect(surface, _channel_fill("coded"), right_panel)
-        pygame.draw.rect(surface, border, right_panel, 1)
-        pygame.draw.rect(surface, panel_dark, query_panel)
-        pygame.draw.rect(surface, border, query_panel, 1)
-
-        # Left panel: tactical grid.
         grid_box = left_panel.inflate(-14, -14)
         label_pad = 20
         grid_size_px = min(grid_box.w - label_pad - 4, grid_box.h - label_pad - 4)
@@ -20090,7 +22110,7 @@ class CognitiveTestScreen:
         start_y = grid_box.y + label_pad + max(0, (grid_box.h - label_pad - grid_h) // 2)
         grid_rect = pygame.Rect(start_x, start_y, grid_w, grid_h)
         pygame.draw.rect(surface, (50, 90, 66), grid_rect)
-        pygame.draw.rect(surface, (170, 188, 208), grid_rect, 1)
+        pygame.draw.rect(surface, grid_edge, grid_rect, 1)
 
         for x in range(10):
             col_text = self._tiny_font.render(str(x), True, text_muted)
@@ -20106,24 +22126,13 @@ class CognitiveTestScreen:
                 cell = pygame.Rect(grid_rect.x + x * cell_size, grid_rect.y + y * cell_size, cell_size, cell_size)
                 fill = grid_fill_a if (x + y) % 2 == 0 else grid_fill_b
                 pygame.draw.rect(surface, fill, cell)
-                pygame.draw.rect(surface, (122, 156, 132), cell, 1)
+                pygame.draw.rect(surface, (140, 168, 146), cell, 1)
                 cell_label = cell_label_from_xy(x, y)
                 if answer_mode is SituationalAwarenessAnswerMode.GRID_CELL and active_query is not None:
                     self._sa_grid_hitboxes[cell_label] = cell.copy()
                     if selected_cell == cell_label:
                         pygame.draw.rect(surface, accent_yellow, cell, 3)
 
-        for waypoint in payload.waypoints:
-            cx = grid_rect.x + int(waypoint.x) * cell_size + (cell_size // 2)
-            cy = grid_rect.y + int(waypoint.y) * cell_size + (cell_size // 2)
-            marker = pygame.Rect(0, 0, max(8, cell_size // 3), max(8, cell_size // 3))
-            marker.center = (cx, cy)
-            pygame.draw.rect(surface, (248, 248, 255), marker)
-            pygame.draw.rect(surface, (42, 56, 92), marker, 1)
-            label = self._tiny_font.render(waypoint.name[:2], True, text_main)
-            surface.blit(label, label.get_rect(midbottom=(cx, marker.y - 2)))
-
-        track_colors = ((30, 81, 209), (22, 131, 77), (189, 83, 23), (142, 36, 170), (196, 56, 114))
         heading_vectors = {
             "N": (0, -1),
             "NE": (1, -1),
@@ -20134,132 +22143,81 @@ class CognitiveTestScreen:
             "W": (-1, 0),
             "NW": (-1, -1),
         }
-        for idx, track in enumerate(payload.tracks):
-            cx = grid_rect.x + int(round(track.x * cell_size)) + (cell_size // 2)
-            cy = grid_rect.y + int(round(track.y * cell_size)) + (cell_size // 2)
-            color = track_colors[idx % len(track_colors)]
+        affiliation_colors = {
+            "friendly": (236, 214, 78),
+            "hostile": (212, 76, 74),
+            "unknown": (232, 236, 248),
+        }
+        for contact in payload.visible_contacts:
+            cx = grid_rect.x + int(round(contact.x * cell_size)) + (cell_size // 2)
+            cy = grid_rect.y + int(round(contact.y * cell_size)) + (cell_size // 2)
+            color = _fade_color(affiliation_colors.get(contact.affiliation, (232, 236, 248)), contact.fade)
             radius = max(5, min(10, cell_size // 4))
             pygame.draw.circle(surface, color, (cx, cy), radius)
-            pygame.draw.circle(surface, (0, 0, 0), (cx, cy), radius, 1)
-            dx, dy = heading_vectors.get(str(track.heading).upper(), (0, 0))
+            pygame.draw.circle(surface, text_dark, (cx, cy), radius, 1)
+            dx, dy = heading_vectors.get(str(contact.heading).upper(), (0, 0))
             if dx != 0 or dy != 0:
                 line_len = max(7, cell_size // 3)
                 end = (cx + int(dx * line_len), cy + int(dy * line_len))
                 pygame.draw.line(surface, color, (cx, cy), end, 2)
-            label = self._tiny_font.render(str(track.index), True, text_main)
+            label = self._tiny_font.render(str(contact.callsign), True, text_main)
             surface.blit(label, label.get_rect(midbottom=(cx, cy - radius - 1)))
 
-        # Right panel: status/index + recent feed.
-        info_box = pygame.Rect(right_panel.x + 8, right_panel.y + 8, right_panel.w - 16, 72)
-        status_box = pygame.Rect(right_panel.x + 8, info_box.bottom + 8, right_panel.w - 16, right_panel.h - 168)
-        feed_box = pygame.Rect(right_panel.x + 8, status_box.bottom + 8, right_panel.w - 16, right_panel.bottom - status_box.bottom - 16)
-        info_fill = panel_mid if ("coded" in active_channels or "numerical" in active_channels) else (16, 28, 92)
-        status_fill = panel_mid if "coded" in active_channels else (16, 28, 92)
-        feed_fill = panel_mid if ("aural" in active_channels or "coded" in active_channels) else (16, 28, 92)
-        for rect, fill in ((info_box, info_fill), (status_box, status_fill), (feed_box, feed_fill)):
-            pygame.draw.rect(surface, fill, rect)
-            pygame.draw.rect(surface, border, rect, 1)
+        card_outer = right_panel.inflate(-18, -22)
+        card_inner = card_outer.inflate(-18, -24)
+        pygame.draw.rect(surface, frame_fill, card_inner)
+        pygame.draw.rect(surface, frame_edge, card_inner, 1)
+        cue_card = payload.cue_card
+        card_title = cue_card.callsign if cue_card is not None else "STANDBY"
+        title_render = self._small_font.render(card_title, True, text_main)
+        surface.blit(title_render, title_render.get_rect(midtop=(card_inner.centerx, card_inner.y + 10)))
 
-        family_txt = str(payload.scenario_family).replace("_", " ").title()
-        header_line = self._tiny_font.render(payload.segment_label, True, text_main)
-        family_line = self._tiny_font.render(
-            f"{payload.scenario_label} | {family_txt}",
-            True,
-            text_muted,
-        )
-        focus_line = self._tiny_font.render(payload.focus_label, True, text_muted)
-        channels_line = self._tiny_font.render(
+        family_render = self._tiny_font.render(payload.segment_label, True, text_muted)
+        surface.blit(family_render, family_render.get_rect(midtop=(card_inner.centerx, card_inner.y + 34)))
+        focus_render = self._tiny_font.render(payload.focus_label, True, text_muted)
+        surface.blit(focus_render, focus_render.get_rect(midtop=(card_inner.centerx, card_inner.y + 50)))
+
+        field_y = card_inner.y + 84
+        field_h = 52
+        field_gap = 10
+        card_fade = cue_card.fade if cue_card is not None else 0.3
+
+        def _field(label: str, value: str) -> None:
+            nonlocal field_y
+            box = pygame.Rect(card_inner.x + 18, field_y, card_inner.w - 36, field_h)
+            pygame.draw.rect(surface, strip_dark, box)
+            pygame.draw.rect(surface, frame_edge, box, 1)
+            label_render = self._tiny_font.render(label, True, text_muted)
+            surface.blit(label_render, label_render.get_rect(midtop=(box.centerx, box.y + 6)))
+            value_render = self._small_font.render(value or "--", True, _fade_color(text_main, card_fade, floor=0.45))
+            surface.blit(value_render, value_render.get_rect(center=(box.centerx, box.centery + 6)))
+            field_y += field_h + field_gap
+
+        _field("NEXT WAYPOINT", cue_card.next_waypoint if cue_card is not None else "")
+        _field("NEXT WAYPOINT AT", cue_card.eta_clock_text if cue_card is not None else "")
+        _field("ALTITUDE", cue_card.altitude_text if cue_card is not None else "")
+        _field("COMMUNICATION CHANNEL", cue_card.channel_text if cue_card is not None else "")
+
+        channel_line = self._tiny_font.render(
             "Channels: " + ", ".join(channel.title() for channel in payload.active_channels),
             True,
             text_muted,
         )
-        surface.blit(header_line, (info_box.x + 8, info_box.y + 8))
-        surface.blit(family_line, (info_box.x + 8, info_box.y + 28))
-        surface.blit(focus_line, (info_box.x + 8, info_box.y + 44))
-        surface.blit(channels_line, (info_box.x + 8, info_box.y + 60))
-
-        if active_query is not None:
-            query_timer = self._tiny_font.render(
-                f"Query expires in {int(round(active_query.expires_in_s)):02d}s",
-                True,
-                accent_yellow,
-            )
-        else:
-            query_timer = self._tiny_font.render(
-                f"Next query in {int(round(payload.next_query_in_s or 0.0)):02d}s",
-                True,
-                text_muted,
-            )
-        surface.blit(query_timer, query_timer.get_rect(midright=(info_box.right - 8, info_box.centery - 10)))
-        query_kind_line = self._tiny_font.render(
-            "Queries: " + ", ".join(kind.replace("_", " ") for kind in payload.active_query_kinds),
-            True,
-            text_muted,
+        surface.blit(channel_line, channel_line.get_rect(midbottom=(card_inner.centerx, card_inner.bottom - 34)))
+        query_state = (
+            f"Query expires in {int(round(active_query.expires_in_s)):02d}s"
+            if active_query is not None
+            else f"Next query in {int(round(payload.next_query_in_s or 0.0)):02d}s"
         )
-        surface.blit(query_kind_line, query_kind_line.get_rect(midright=(info_box.right - 8, info_box.centery + 10)))
+        query_render = self._tiny_font.render(query_state, True, accent_yellow if active_query is not None else text_muted)
+        surface.blit(query_render, query_render.get_rect(midbottom=(card_inner.centerx, card_inner.bottom - 14)))
 
-        entry_count = max(1, len(payload.status_entries))
-        usable_status_h = max(40, status_box.h - 16)
-        row_gap = 4 if entry_count <= 4 else 2
-        row_h = max(24, min(34, (usable_status_h - (row_gap * max(0, entry_count - 1))) // entry_count))
-        y = status_box.y + 8
-        for entry in payload.status_entries:
-            row = pygame.Rect(status_box.x + 6, y, status_box.w - 12, row_h)
-            is_selected = (
-                answer_mode is SituationalAwarenessAnswerMode.TRACK_INDEX
-                and int(entry.track_index) == int(selected_code)
-                and active_query is not None
-            )
-            fill = (242, 246, 255) if is_selected else (230, 238, 248)
-            edge = accent_yellow if is_selected else (176, 194, 224)
-            pygame.draw.rect(surface, fill, row)
-            pygame.draw.rect(surface, edge, row, 1)
-            if answer_mode is SituationalAwarenessAnswerMode.TRACK_INDEX and active_query is not None:
-                self._sa_option_hitboxes[int(entry.track_index)] = row.copy()
-            top_offset = 3 if row_h < 30 else 4
-            bottom_offset = row_h - 14
-            left = self._tiny_font.render(
-                f"{entry.track_index}. {entry.callsign}  {entry.cell_label}  {entry.heading}{entry.speed_cells_per_min}",
-                True,
-                text_dark,
-            )
-            right = self._tiny_font.render(
-                f"CH{entry.channel}  FL{entry.altitude_fl}  {entry.fuel_state[:3]}  {entry.squawk:04d}",
-                True,
-                text_dark,
-            )
-            surface.blit(left, (row.x + 6, row.y + top_offset))
-            surface.blit(right, (row.x + 6, row.y + max(12, bottom_offset)))
-            wp = self._tiny_font.render(entry.waypoint, True, (52, 70, 104))
-            surface.blit(wp, wp.get_rect(midright=(row.right - 8, row.centery)))
-            y += row_h + row_gap
-
-        feed_title = self._tiny_font.render("Recent Feed", True, text_main)
-        surface.blit(feed_title, (feed_box.x + 8, feed_box.y + 6))
-        if payload.recent_feed_lines:
-            self._draw_wrapped_text(
-                surface,
-                "\n".join(payload.recent_feed_lines[-4:]),
-                pygame.Rect(feed_box.x + 8, feed_box.y + 22, feed_box.w - 16, feed_box.h - 28),
-                color=text_muted,
-                font=self._tiny_font,
-                max_lines=5,
-            )
-        else:
-            idle = self._tiny_font.render("Stand by for the first update.", True, text_muted)
-            surface.blit(idle, (feed_box.x + 8, feed_box.y + 26))
-
-        if "aural" not in active_channels:
-            muted = self._tiny_font.render("Aural feed de-emphasized", True, accent_yellow)
-            surface.blit(muted, muted.get_rect(midright=(feed_box.right - 8, feed_box.y + 14)))
-
-        # Bottom query / answer area.
-        pygame.draw.rect(surface, panel_mid, query_panel.inflate(-12, -12))
-        pygame.draw.rect(surface, border, query_panel.inflate(-12, -12), 1)
+        pygame.draw.rect(surface, strip_mid, query_panel.inflate(-12, -12))
+        pygame.draw.rect(surface, frame_edge, query_panel.inflate(-12, -12), 1)
         if active_query is None:
             self._draw_wrapped_text(
                 surface,
-                f"Stand by. Next query in {int(round(payload.next_query_in_s or 0.0)):02d}s while the situation updates.",
+                f"Stand by. Next query in {int(round(payload.next_query_in_s or 0.0)):02d}s while the hidden picture keeps moving.",
                 pygame.Rect(query_panel.x + 18, query_panel.y + 18, query_panel.w - 36, 40),
                 color=text_main,
                 font=self._small_font,
@@ -20284,15 +22242,6 @@ class CognitiveTestScreen:
                 value = self._small_font.render(token or "--", True, text_dark)
                 surface.blit(value, value.get_rect(center=entry_box.center))
                 hint = self._tiny_font.render("Grid cell", True, text_muted)
-                surface.blit(hint, (entry_box.x, entry_box.y - 16))
-            elif answer_mode is SituationalAwarenessAnswerMode.TRACK_INDEX:
-                entry_box = pygame.Rect(query_panel.x + 22, query_panel.y + 70, 132, 36)
-                pygame.draw.rect(surface, (235, 242, 251), entry_box)
-                pygame.draw.rect(surface, accent_yellow, entry_box, 2)
-                token = self._input if self._input.strip() != "" else str(selected_code)
-                value = self._small_font.render(token or "--", True, text_dark)
-                surface.blit(value, value.get_rect(center=entry_box.center))
-                hint = self._tiny_font.render("Track index", True, text_muted)
                 surface.blit(hint, (entry_box.x, entry_box.y - 16))
             else:
                 card_w = (query_panel.w - 58) // 4
@@ -25685,9 +27634,15 @@ def _new_seed() -> int:
     return random.SystemRandom().randint(1, 2**31 - 1)
 
 
-def _resolve_window_mode(*, video_driver: str, platform_name: str | None = None) -> str:
+def _resolve_window_mode(
+    *,
+    video_driver: str,
+    platform_name: str | None = None,
+    stored_mode: str | None = None,
+) -> str:
     platform_name = sys.platform if platform_name is None else str(platform_name)
     window_mode_env = os.environ.get("CFAST_WINDOW_MODE", "").strip().lower()
+    _ = stored_mode
 
     if video_driver == "dummy":
         return "windowed"
@@ -25707,6 +27662,15 @@ def _resolve_window_mode(*, video_driver: str, platform_name: str | None = None)
     if want_fullscreen:
         return "borderless" if platform_name == "darwin" else "fullscreen"
     return "windowed"
+
+
+def _resolve_use_opengl(*, stored_default: bool | None) -> bool:
+    env_value = os.environ.get("CFAST_USE_OPENGL")
+    if env_value is not None:
+        return env_value.strip().lower() not in {"0", "false", "off", "no"}
+    if stored_default is not None:
+        return bool(stored_default)
+    return sys.platform != "darwin"
 
 
 def _initialize_display_surfaces(
@@ -25739,15 +27703,41 @@ def _initialize_display_surfaces(
 
 
 def run(
-    *, max_frames: int | None = None, event_injector: Callable[[int], None] | None = None
+    *,
+    max_frames: int | None = None,
+    event_injector: Callable[[int], None] | None = None,
+    headless: bool = False,
+    summary_sink: dict[str, object] | None = None,
 ) -> int:
+    app: App | None = None
+    headless_env_previous: dict[str, str | None] = {}
+    if headless:
+        for key in (
+            "PYGAME_HIDE_SUPPORT_PROMPT",
+            "SDL_VIDEODRIVER",
+            "SDL_AUDIODRIVER",
+            "CFAST_DISABLE_TTS",
+        ):
+            headless_env_previous[key] = os.environ.get(key)
+        os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
+        os.environ["SDL_VIDEODRIVER"] = "dummy"
+        os.environ["SDL_AUDIODRIVER"] = "dummy"
+        os.environ["CFAST_DISABLE_TTS"] = "1"
     pygame.init()
     _init_joysticks()
 
     pygame.display.set_caption("RCAF CFAST Trainer")
 
+    runtime_defaults_store = RuntimeDefaultsStore(RuntimeDefaultsStore.default_path())
     video_driver = os.environ.get("SDL_VIDEODRIVER", "").strip().lower()
-    window_mode = _resolve_window_mode(video_driver=video_driver)
+    window_mode = (
+        "windowed"
+        if headless
+        else _resolve_window_mode(
+            video_driver=video_driver,
+            stored_mode=runtime_defaults_store.stored_window_mode(),
+        )
+    )
 
     window_size = WINDOW_SIZE
     if window_mode in {"fullscreen", "borderless"}:
@@ -25775,13 +27765,9 @@ def run(
 
     opengl_window_flags = window_flags | pygame.OPENGL | pygame.DOUBLEBUF
 
-    default_gl_pref = "0" if sys.platform == "darwin" else "1"
-    want_gl = os.environ.get("CFAST_USE_OPENGL", default_gl_pref).strip().lower() not in {
-        "0",
-        "false",
-        "off",
-        "no",
-    }
+    want_gl = False if headless else _resolve_use_opengl(
+        stored_default=runtime_defaults_store.stored_use_opengl(),
+    )
     display_surface, app_surface, gl_renderer, active_window_flags = _initialize_display_surfaces(
         window_size=window_size,
         window_flags=window_flags,
@@ -25801,12 +27787,17 @@ def run(
         surface=app_surface,
         font=font,
         opengl_enabled=(gl_renderer is not None),
+        window_mode=window_mode,
+        headless_mode=headless,
         results_store=results_store,
         input_profiles_store=input_profiles_store,
         difficulty_settings_store=difficulty_settings_store,
         test_seed_settings_store=test_seed_settings_store,
+        runtime_defaults_store=runtime_defaults_store,
         app_version=app_version,
     )
+    if want_gl and gl_renderer is None and video_driver != "dummy":
+        app.note_renderer_fallback()
 
     axis_calibration = AxisCalibrationScreen(app, profiles=input_profiles_store)
     axis_visualizer = AxisVisualizerScreen(app, profiles=input_profiles_store)
@@ -25870,6 +27861,232 @@ def run(
             )
         )
 
+    def _open_mode_wrapped_drill(
+        *,
+        test_code: str,
+        title: str,
+        mode: AntDrillMode,
+        engine_builder: Callable[[int, float, AntDrillMode, float | None], CognitiveEngine],
+    ) -> None:
+        seed = _new_seed()
+        open_test(
+            test_code=test_code,
+            title=title,
+            engine_factory=lambda difficulty: cast(
+                CognitiveEngine,
+                (
+                    maybe_build_fatigue_probe_drill(
+                        mode=mode,
+                        title_base=title,
+                        clock=real_clock,
+                        seed=seed,
+                        difficulty=difficulty,
+                        build_segment=lambda segment_mode, segment_seed, segment_duration_s: engine_builder(
+                            segment_seed,
+                            difficulty,
+                            AntDrillMode(str(segment_mode)),
+                            float(segment_duration_s),
+                        ),
+                    )
+                    if mode is AntDrillMode.FATIGUE_PROBE
+                    else engine_builder(seed, difficulty, mode, None)
+                ),
+            ),
+        )
+
+    def _open_configurable_drill(
+        *,
+        test_code: str,
+        title: str,
+        mode: AntDrillMode,
+        builder: Callable[..., object],
+        segment_config_factory: Callable[[float], object] | None = None,
+        extra_builder_kwargs: dict[str, object] | None = None,
+    ) -> None:
+        extra_builder_kwargs = {} if extra_builder_kwargs is None else dict(extra_builder_kwargs)
+        _open_mode_wrapped_drill(
+            test_code=test_code,
+            title=title,
+            mode=mode,
+            engine_builder=lambda seed, difficulty, resolved_mode, scored_duration_s: cast(
+                CognitiveEngine,
+                builder(
+                    clock=real_clock,
+                    seed=seed,
+                    difficulty=difficulty,
+                    mode=resolved_mode,
+                    config=(
+                        None
+                        if scored_duration_s is None or segment_config_factory is None
+                        else segment_config_factory(float(scored_duration_s))
+                    ),
+                    **extra_builder_kwargs,
+                ),
+            ),
+        )
+
+    def _open_no_drill(
+        *,
+        test_code: str,
+        title: str,
+        builder: Callable[..., object],
+        mode: AntDrillMode,
+    ) -> None:
+        _open_configurable_drill(
+            test_code=test_code,
+            title=title,
+            mode=mode,
+            builder=builder,
+            segment_config_factory=lambda scored_duration_s: NoDrillConfig(
+                practice_questions=0,
+                scored_duration_s=float(scored_duration_s),
+            ),
+        )
+
+    def _open_ant_drill(
+        *,
+        test_code: str,
+        title: str,
+        builder: Callable[..., object],
+        mode: AntDrillMode,
+        segment_config_factory: Callable[[float], object],
+    ) -> None:
+        _open_configurable_drill(
+            test_code=test_code,
+            title=title,
+            mode=mode,
+            builder=builder,
+            segment_config_factory=segment_config_factory,
+        )
+
+    def _open_mr_drill(
+        *,
+        test_code: str,
+        title: str,
+        builder: Callable[..., object],
+        mode: AntDrillMode,
+    ) -> None:
+        _open_configurable_drill(
+            test_code=test_code,
+            title=title,
+            mode=mode,
+            builder=builder,
+            segment_config_factory=lambda scored_duration_s: MrDrillConfig(
+                practice_questions=0,
+                scored_duration_s=float(scored_duration_s),
+            ),
+        )
+
+    def _open_dr_drill(
+        *,
+        test_code: str,
+        title: str,
+        builder: Callable[..., object],
+        mode: AntDrillMode,
+    ) -> None:
+        _open_configurable_drill(
+            test_code=test_code,
+            title=title,
+            mode=mode,
+            builder=builder,
+            segment_config_factory=lambda scored_duration_s: DigitRecognitionDrillConfig(
+                practice_questions=0,
+                scored_duration_s=float(scored_duration_s),
+            ),
+        )
+
+    def _open_cln_drill(
+        *,
+        test_code: str,
+        title: str,
+        builder: Callable[..., object],
+        mode: AntDrillMode,
+    ) -> None:
+        _open_configurable_drill(
+            test_code=test_code,
+            title=title,
+            mode=mode,
+            builder=builder,
+            segment_config_factory=lambda scored_duration_s: ClnDrillConfig(
+                practice_rounds=0,
+                scored_duration_s=float(scored_duration_s),
+            ),
+        )
+
+    def _open_abd_drill(
+        *,
+        test_code: str,
+        title: str,
+        builder: Callable[..., object],
+        mode: AntDrillMode,
+    ) -> None:
+        _open_configurable_drill(
+            test_code=test_code,
+            title=title,
+            mode=mode,
+            builder=builder,
+            segment_config_factory=lambda scored_duration_s: AbdDrillConfig(
+                practice_questions=0,
+                scored_duration_s=float(scored_duration_s),
+            ),
+        )
+
+    def _open_abd_family_run_drill(
+        *,
+        test_code: str,
+        title: str,
+        family: AnglesBearingsQuestionKind,
+        mode: AntDrillMode,
+    ) -> None:
+        _open_configurable_drill(
+            test_code=test_code,
+            title=title,
+            mode=mode,
+            builder=build_abd_test_style_family_run_drill,
+            segment_config_factory=lambda scored_duration_s: AbdFamilyRunConfig(
+                family=family,
+                practice_questions=0,
+                scored_duration_s=float(scored_duration_s),
+            ),
+            extra_builder_kwargs={"family": family},
+        )
+
+    def _open_vs_drill(
+        *,
+        test_code: str,
+        title: str,
+        builder: Callable[..., object],
+        mode: AntDrillMode,
+        extra_builder_kwargs: dict[str, object] | None = None,
+    ) -> None:
+        _open_configurable_drill(
+            test_code=test_code,
+            title=title,
+            mode=mode,
+            builder=builder,
+            segment_config_factory=lambda scored_duration_s: VsDrillConfig(
+                practice_questions=0,
+                scored_duration_s=float(scored_duration_s),
+            ),
+            extra_builder_kwargs=extra_builder_kwargs,
+        )
+
+    def _mode_menu_items(
+        entries: Sequence[tuple[str, str, Callable[[AntDrillMode], None]]],
+    ) -> list[MenuItem]:
+        items: list[MenuItem] = []
+        for test_code, label, opener in entries:
+            for mode in supported_manual_modes(test_code):
+                profile = ANT_DRILL_MODE_PROFILES[cast(AntDrillMode, mode)]
+                items.append(
+                    MenuItem(
+                        f"{label} - {profile.label}",
+                        lambda open_fn=opener, resolved_mode=cast(AntDrillMode, mode): open_fn(resolved_mode),
+                    )
+                )
+        items.append(MenuItem("Back", app.pop))
+        return items
+
     def open_numerical_ops() -> None:
         seed = _new_seed()
         open_test(
@@ -25881,68 +28098,110 @@ def run(
         )
 
     def open_no_fact_prime(mode: AntDrillMode) -> None:
-        seed = _new_seed()
-        open_test(
+        _open_no_drill(
             test_code="no_fact_prime",
             title="Numerical Operations: Fact Prime",
-            engine_factory=lambda difficulty: build_no_fact_prime_drill(
-                clock=real_clock,
-                seed=seed,
-                difficulty=difficulty,
-                mode=mode,
-            ),
+            builder=build_no_fact_prime_drill,
+            mode=mode,
         )
 
     def open_no_operator_ladders(mode: AntDrillMode) -> None:
-        seed = _new_seed()
-        open_test(
+        _open_no_drill(
             test_code="no_operator_ladders",
             title="Numerical Operations: Operator Ladders",
-            engine_factory=lambda difficulty: build_no_operator_ladders_drill(
-                clock=real_clock,
-                seed=seed,
-                difficulty=difficulty,
-                mode=mode,
-            ),
+            builder=build_no_operator_ladders_drill,
+            mode=mode,
         )
 
     def open_no_clean_compute(mode: AntDrillMode) -> None:
-        seed = _new_seed()
-        open_test(
+        _open_no_drill(
             test_code="no_clean_compute",
             title="Numerical Operations: Clean Compute",
-            engine_factory=lambda difficulty: build_no_clean_compute_drill(
-                clock=real_clock,
-                seed=seed,
-                difficulty=difficulty,
-                mode=mode,
-            ),
+            builder=build_no_clean_compute_drill,
+            mode=mode,
         )
 
     def open_no_mixed_tempo(mode: AntDrillMode) -> None:
-        seed = _new_seed()
-        open_test(
+        _open_no_drill(
             test_code="no_mixed_tempo",
             title="Numerical Operations: Mixed Tempo",
-            engine_factory=lambda difficulty: build_no_mixed_tempo_drill(
-                clock=real_clock,
-                seed=seed,
-                difficulty=difficulty,
-                mode=mode,
-            ),
+            builder=build_no_mixed_tempo_drill,
+            mode=mode,
         )
 
     def open_no_pressure_run(mode: AntDrillMode) -> None:
-        seed = _new_seed()
-        open_test(
+        _open_no_drill(
             test_code="no_pressure_run",
             title="Numerical Operations: Pressure Run",
-            engine_factory=lambda difficulty: build_no_pressure_run_drill(
+            builder=build_no_pressure_run_drill,
+            mode=mode,
+        )
+
+    def _open_ma_drill(
+        *,
+        test_code: str,
+        title: str,
+        builder: Callable[..., object],
+        mode: AntDrillMode,
+    ) -> None:
+        _open_mode_wrapped_drill(
+            test_code=test_code,
+            title=title,
+            mode=mode,
+            engine_builder=lambda seed, difficulty, resolved_mode, scored_duration_s: builder(
                 clock=real_clock,
                 seed=seed,
                 difficulty=difficulty,
-                mode=mode,
+                mode=resolved_mode,
+                config=(
+                    None
+                    if scored_duration_s is None
+                    else MaDrillConfig(
+                        practice_questions=0,
+                        scored_duration_s=float(scored_duration_s),
+                    )
+                ),
             ),
+        )
+
+    def open_ma_one_step_fluency(mode: AntDrillMode) -> None:
+        _open_ma_drill(
+            test_code="ma_one_step_fluency",
+            title="Mental Arithmetic: One-Step Fluency",
+            builder=build_ma_one_step_fluency_drill,
+            mode=mode,
+        )
+
+    def open_ma_percentage_snap(mode: AntDrillMode) -> None:
+        _open_ma_drill(
+            test_code="ma_percentage_snap",
+            title="Mental Arithmetic: Percentage Snap",
+            builder=build_ma_percentage_snap_drill,
+            mode=mode,
+        )
+
+    def open_ma_rate_time_distance(mode: AntDrillMode) -> None:
+        _open_ma_drill(
+            test_code="ma_rate_time_distance",
+            title="Mental Arithmetic: Rate Time Distance",
+            builder=build_ma_rate_time_distance_drill,
+            mode=mode,
+        )
+
+    def open_ma_fuel_endurance(mode: AntDrillMode) -> None:
+        _open_ma_drill(
+            test_code="ma_fuel_endurance",
+            title="Mental Arithmetic: Fuel Burn And Endurance",
+            builder=build_ma_fuel_endurance_drill,
+            mode=mode,
+        )
+
+    def open_ma_mixed_conversion_caps(mode: AntDrillMode) -> None:
+        _open_ma_drill(
+            test_code="ma_mixed_conversion_caps",
+            title="Mental Arithmetic: Mixed Conversion Caps",
+            builder=build_ma_mixed_conversion_caps_drill,
+            mode=mode,
         )
 
     def open_airborne_numerical() -> None:
@@ -25956,119 +28215,110 @@ def run(
         )
 
     def open_ant_snap_facts_sprint(mode: AntDrillMode) -> None:
-        seed = _new_seed()
-        open_test(
+        _open_ant_drill(
             test_code="ant_snap_facts_sprint",
             title="Airborne Numerical: Snap Facts Sprint",
-            engine_factory=lambda difficulty: build_ant_snap_facts_sprint_drill(
-                clock=real_clock,
-                seed=seed,
-                difficulty=difficulty,
-                mode=mode,
+            builder=build_ant_snap_facts_sprint_drill,
+            mode=mode,
+            segment_config_factory=lambda scored_duration_s: AntSnapFactsSprintConfig(
+                practice_questions=0,
+                scored_duration_s=float(scored_duration_s),
             ),
         )
 
     def open_ant_time_flip(mode: AntDrillMode) -> None:
-        seed = _new_seed()
-        open_test(
+        _open_ant_drill(
             test_code="ant_time_flip",
             title="Airborne Numerical: Time Flip",
-            engine_factory=lambda difficulty: build_ant_time_flip_drill(
-                clock=real_clock,
-                seed=seed,
-                difficulty=difficulty,
-                mode=mode,
+            builder=build_ant_time_flip_drill,
+            mode=mode,
+            segment_config_factory=lambda scored_duration_s: AntTimeFlipConfig(
+                practice_questions=0,
+                scored_duration_s=float(scored_duration_s),
             ),
         )
 
     def open_ant_mixed_tempo_set(mode: AntDrillMode) -> None:
-        seed = _new_seed()
-        open_test(
+        _open_ant_drill(
             test_code="ant_mixed_tempo_set",
             title="Airborne Numerical: Mixed Tempo Set",
-            engine_factory=lambda difficulty: build_ant_mixed_tempo_set_drill(
-                clock=real_clock,
-                seed=seed,
-                difficulty=difficulty,
-                mode=mode,
+            builder=build_ant_mixed_tempo_set_drill,
+            mode=mode,
+            segment_config_factory=lambda scored_duration_s: AntMixedTempoSetConfig(
+                practice_questions=0,
+                scored_duration_s=float(scored_duration_s),
             ),
         )
 
     def open_ant_route_time_solve(mode: AntDrillMode) -> None:
-        seed = _new_seed()
-        open_test(
+        _open_ant_drill(
             test_code="ant_route_time_solve",
             title="Airborne Numerical: Route Time Solve",
-            engine_factory=lambda difficulty: build_ant_route_time_solve_drill(
-                clock=real_clock,
-                seed=seed,
-                difficulty=difficulty,
-                mode=mode,
+            builder=build_ant_route_time_solve_drill,
+            mode=mode,
+            segment_config_factory=lambda scored_duration_s: AntRouteTimeSolveConfig(
+                practice_questions=0,
+                scored_duration_s=float(scored_duration_s),
             ),
         )
 
     def open_ant_endurance_solve(mode: AntDrillMode) -> None:
-        seed = _new_seed()
-        open_test(
+        _open_ant_drill(
             test_code="ant_endurance_solve",
             title="Airborne Numerical: Endurance Solve",
-            engine_factory=lambda difficulty: build_ant_endurance_solve_drill(
-                clock=real_clock,
-                seed=seed,
-                difficulty=difficulty,
-                mode=mode,
+            builder=build_ant_endurance_solve_drill,
+            mode=mode,
+            segment_config_factory=lambda scored_duration_s: AntEnduranceSolveConfig(
+                practice_questions=0,
+                scored_duration_s=float(scored_duration_s),
             ),
         )
 
     def open_ant_fuel_burn_solve(mode: AntDrillMode) -> None:
-        seed = _new_seed()
-        open_test(
+        _open_ant_drill(
             test_code="ant_fuel_burn_solve",
             title="Airborne Numerical: Fuel Burn Solve",
-            engine_factory=lambda difficulty: build_ant_fuel_burn_solve_drill(
-                clock=real_clock,
-                seed=seed,
-                difficulty=difficulty,
-                mode=mode,
+            builder=build_ant_fuel_burn_solve_drill,
+            mode=mode,
+            segment_config_factory=lambda scored_duration_s: AntFuelBurnSolveConfig(
+                practice_questions=0,
+                scored_duration_s=float(scored_duration_s),
             ),
         )
 
     def open_ant_distance_scan(mode: AntDrillMode) -> None:
-        seed = _new_seed()
-        open_test(
+        _open_ant_drill(
             test_code="ant_distance_scan",
             title="Airborne Numerical: Distance Scan",
-            engine_factory=lambda difficulty: build_ant_distance_scan_drill(
-                clock=real_clock,
-                seed=seed,
-                difficulty=difficulty,
-                mode=mode,
+            builder=build_ant_distance_scan_drill,
+            mode=mode,
+            segment_config_factory=lambda scored_duration_s: AntDistanceScanConfig(
+                practice_questions=0,
+                scored_duration_s=float(scored_duration_s),
             ),
         )
 
     def open_ant_payload_reference(mode: AntDrillMode) -> None:
-        seed = _new_seed()
-        open_test(
+        _open_ant_drill(
             test_code="ant_payload_reference",
             title="Airborne Numerical: Payload Reference",
-            engine_factory=lambda difficulty: build_ant_payload_reference_drill(
-                clock=real_clock,
-                seed=seed,
-                difficulty=difficulty,
-                mode=mode,
+            builder=build_ant_payload_reference_drill,
+            mode=mode,
+            segment_config_factory=lambda scored_duration_s: AntPayloadReferenceConfig(
+                practice_questions=0,
+                scored_duration_s=float(scored_duration_s),
             ),
         )
 
     def open_ant_info_grabber(mode: AntDrillMode) -> None:
-        seed = _new_seed()
-        open_test(
+        _open_ant_drill(
             test_code="ant_info_grabber",
             title="Airborne Numerical: Info Grabber",
-            engine_factory=lambda difficulty: build_ant_info_grabber_drill(
-                clock=real_clock,
-                seed=seed,
-                difficulty=difficulty,
-                mode=mode,
+            builder=build_ant_info_grabber_drill,
+            mode=mode,
+            segment_config_factory=lambda scored_duration_s: AntInfoGrabberConfig(
+                practice_questions=0,
+                scored_duration_s=float(scored_duration_s),
             ),
         )
 
@@ -26194,302 +28444,187 @@ def run(
         )
 
     def open_mr_relevant_info_scan(mode: AntDrillMode) -> None:
-        seed = _new_seed()
-        open_test(
+        _open_mr_drill(
             test_code="mr_relevant_info_scan",
             title="Mathematics Reasoning: Relevant Info Scan",
-            engine_factory=lambda difficulty: build_mr_relevant_info_scan_drill(
-                clock=real_clock,
-                seed=seed,
-                difficulty=difficulty,
-                mode=mode,
-            ),
+            builder=build_mr_relevant_info_scan_drill,
+            mode=mode,
         )
 
     def open_mr_unit_relation_prime(mode: AntDrillMode) -> None:
-        seed = _new_seed()
-        open_test(
+        _open_mr_drill(
             test_code="mr_unit_relation_prime",
             title="Mathematics Reasoning: Unit And Relation Prime",
-            engine_factory=lambda difficulty: build_mr_unit_relation_prime_drill(
-                clock=real_clock,
-                seed=seed,
-                difficulty=difficulty,
-                mode=mode,
-            ),
+            builder=build_mr_unit_relation_prime_drill,
+            mode=mode,
         )
 
     def open_mr_one_step_solve(mode: AntDrillMode) -> None:
-        seed = _new_seed()
-        open_test(
+        _open_mr_drill(
             test_code="mr_one_step_solve",
             title="Mathematics Reasoning: One-Step Solve",
-            engine_factory=lambda difficulty: build_mr_one_step_solve_drill(
-                clock=real_clock,
-                seed=seed,
-                difficulty=difficulty,
-                mode=mode,
-            ),
+            builder=build_mr_one_step_solve_drill,
+            mode=mode,
         )
 
     def open_mr_multi_step_solve(mode: AntDrillMode) -> None:
-        seed = _new_seed()
-        open_test(
+        _open_mr_drill(
             test_code="mr_multi_step_solve",
             title="Mathematics Reasoning: Multi-Step Solve",
-            engine_factory=lambda difficulty: build_mr_multi_step_solve_drill(
-                clock=real_clock,
-                seed=seed,
-                difficulty=difficulty,
-                mode=mode,
-            ),
+            builder=build_mr_multi_step_solve_drill,
+            mode=mode,
         )
 
     def open_mr_domain_run(mode: AntDrillMode) -> None:
-        seed = _new_seed()
-        open_test(
+        _open_mr_drill(
             test_code="mr_domain_run",
             title="Mathematics Reasoning: Domain Run",
-            engine_factory=lambda difficulty: build_mr_domain_run_drill(
-                clock=real_clock,
-                seed=seed,
-                difficulty=difficulty,
-                mode=mode,
-            ),
+            builder=build_mr_domain_run_drill,
+            mode=mode,
         )
 
     def open_mr_mixed_pressure_set(mode: AntDrillMode) -> None:
-        seed = _new_seed()
-        open_test(
+        _open_mr_drill(
             test_code="mr_mixed_pressure_set",
             title="Mathematics Reasoning: Mixed Pressure Set",
-            engine_factory=lambda difficulty: build_mr_mixed_pressure_set_drill(
-                clock=real_clock,
-                seed=seed,
-                difficulty=difficulty,
-                mode=mode,
-            ),
+            builder=build_mr_mixed_pressure_set_drill,
+            mode=mode,
         )
 
     def open_dr_visible_copy(mode: AntDrillMode) -> None:
-        seed = _new_seed()
-        open_test(
+        _open_dr_drill(
             test_code="dr_visible_copy",
             title="Digit Recognition: Visible Copy",
-            engine_factory=lambda difficulty: build_dr_visible_copy_drill(
-                clock=real_clock,
-                seed=seed,
-                difficulty=difficulty,
-                mode=mode,
-            ),
+            builder=build_dr_visible_copy_drill,
+            mode=mode,
         )
 
     def open_dr_position_probe(mode: AntDrillMode) -> None:
-        seed = _new_seed()
-        open_test(
+        _open_dr_drill(
             test_code="dr_position_probe",
             title="Digit Recognition: Position Probe",
-            engine_factory=lambda difficulty: build_dr_position_probe_drill(
-                clock=real_clock,
-                seed=seed,
-                difficulty=difficulty,
-                mode=mode,
-            ),
+            builder=build_dr_position_probe_drill,
+            mode=mode,
         )
 
     def open_dr_visible_family_primer(mode: AntDrillMode) -> None:
-        seed = _new_seed()
-        open_test(
+        _open_dr_drill(
             test_code="dr_visible_family_primer",
             title="Digit Recognition: Visible Family Primer",
-            engine_factory=lambda difficulty: build_dr_visible_family_primer_drill(
-                clock=real_clock,
-                seed=seed,
-                difficulty=difficulty,
-                mode=mode,
-            ),
+            builder=build_dr_visible_family_primer_drill,
+            mode=mode,
         )
 
     def open_dr_recall_run(mode: AntDrillMode) -> None:
-        seed = _new_seed()
-        open_test(
+        _open_dr_drill(
             test_code="dr_recall_run",
             title="Digit Recognition: Recall Run",
-            engine_factory=lambda difficulty: build_dr_recall_run_drill(
-                clock=real_clock,
-                seed=seed,
-                difficulty=difficulty,
-                mode=mode,
-            ),
+            builder=build_dr_recall_run_drill,
+            mode=mode,
         )
 
     def open_dr_count_target(mode: AntDrillMode) -> None:
-        seed = _new_seed()
-        open_test(
+        _open_dr_drill(
             test_code="dr_count_target",
             title="Digit Recognition: Count Target",
-            engine_factory=lambda difficulty: build_dr_count_target_drill(
-                clock=real_clock,
-                seed=seed,
-                difficulty=difficulty,
-                mode=mode,
-            ),
+            builder=build_dr_count_target_drill,
+            mode=mode,
         )
 
     def open_dr_different_digit(mode: AntDrillMode) -> None:
-        seed = _new_seed()
-        open_test(
+        _open_dr_drill(
             test_code="dr_different_digit",
             title="Digit Recognition: Different Digit",
-            engine_factory=lambda difficulty: build_dr_different_digit_drill(
-                clock=real_clock,
-                seed=seed,
-                difficulty=difficulty,
-                mode=mode,
-            ),
+            builder=build_dr_different_digit_drill,
+            mode=mode,
         )
 
     def open_dr_grouped_family_run(mode: AntDrillMode) -> None:
-        seed = _new_seed()
-        open_test(
+        _open_dr_drill(
             test_code="dr_grouped_family_run",
             title="Digit Recognition: Grouped Family Run",
-            engine_factory=lambda difficulty: build_dr_grouped_family_run_drill(
-                clock=real_clock,
-                seed=seed,
-                difficulty=difficulty,
-                mode=mode,
-            ),
+            builder=build_dr_grouped_family_run_drill,
+            mode=mode,
         )
 
     def open_dr_mixed_pressure(mode: AntDrillMode) -> None:
-        seed = _new_seed()
-        open_test(
+        _open_dr_drill(
             test_code="dr_mixed_pressure",
             title="Digit Recognition: Mixed Pressure",
-            engine_factory=lambda difficulty: build_dr_mixed_pressure_drill(
-                clock=real_clock,
-                seed=seed,
-                difficulty=difficulty,
-                mode=mode,
-            ),
+            builder=build_dr_mixed_pressure_drill,
+            mode=mode,
         )
 
     def open_cln_sequence_copy(mode: AntDrillMode) -> None:
-        seed = _new_seed()
-        open_test(
+        _open_cln_drill(
             test_code="cln_sequence_copy",
             title="Colours, Letters and Numbers: Sequence Copy",
-            engine_factory=lambda difficulty: build_cln_sequence_copy_drill(
-                clock=real_clock,
-                seed=seed,
-                difficulty=difficulty,
-                mode=mode,
-            ),
+            builder=build_cln_sequence_copy_drill,
+            mode=mode,
         )
 
     def open_cln_sequence_match(mode: AntDrillMode) -> None:
-        seed = _new_seed()
-        open_test(
+        _open_cln_drill(
             test_code="cln_sequence_match",
             title="Colours, Letters and Numbers: Sequence Match",
-            engine_factory=lambda difficulty: build_cln_sequence_match_drill(
-                clock=real_clock,
-                seed=seed,
-                difficulty=difficulty,
-                mode=mode,
-            ),
+            builder=build_cln_sequence_match_drill,
+            mode=mode,
         )
 
     def open_cln_sequence_math_recall(mode: AntDrillMode) -> None:
-        seed = _new_seed()
-        open_test(
+        _open_cln_drill(
             test_code="cln_sequence_math_recall",
             title="Colours, Letters and Numbers: Sequence Hold + One Math",
-            engine_factory=lambda difficulty: build_cln_sequence_math_recall_drill(
-                clock=real_clock,
-                seed=seed,
-                difficulty=difficulty,
-                mode=mode,
-            ),
+            builder=build_cln_sequence_math_recall_drill,
+            mode=mode,
         )
 
     def open_cln_math_prime(mode: AntDrillMode) -> None:
-        seed = _new_seed()
-        open_test(
+        _open_cln_drill(
             test_code="cln_math_prime",
             title="Colours, Letters and Numbers: Math Prime",
-            engine_factory=lambda difficulty: build_cln_math_prime_drill(
-                clock=real_clock,
-                seed=seed,
-                difficulty=difficulty,
-                mode=mode,
-            ),
+            builder=build_cln_math_prime_drill,
+            mode=mode,
         )
 
     def open_cln_colour_lane(mode: AntDrillMode) -> None:
-        seed = _new_seed()
-        open_test(
+        _open_cln_drill(
             test_code="cln_colour_lane",
             title="Colours, Letters and Numbers: Colour Lane Warm-Up",
-            engine_factory=lambda difficulty: build_cln_colour_lane_drill(
-                clock=real_clock,
-                seed=seed,
-                difficulty=difficulty,
-                mode=mode,
-            ),
+            builder=build_cln_colour_lane_drill,
+            mode=mode,
         )
 
     def open_cln_memory_math(mode: AntDrillMode) -> None:
-        seed = _new_seed()
-        open_test(
+        _open_cln_drill(
             test_code="cln_memory_math",
             title="Colours, Letters and Numbers: Memory + Math",
-            engine_factory=lambda difficulty: build_cln_memory_math_drill(
-                clock=real_clock,
-                seed=seed,
-                difficulty=difficulty,
-                mode=mode,
-            ),
+            builder=build_cln_memory_math_drill,
+            mode=mode,
         )
 
     def open_cln_memory_colour(mode: AntDrillMode) -> None:
-        seed = _new_seed()
-        open_test(
+        _open_cln_drill(
             test_code="cln_memory_colour",
             title="Colours, Letters and Numbers: Memory + Colour",
-            engine_factory=lambda difficulty: build_cln_memory_colour_drill(
-                clock=real_clock,
-                seed=seed,
-                difficulty=difficulty,
-                mode=mode,
-            ),
+            builder=build_cln_memory_colour_drill,
+            mode=mode,
         )
 
     def open_cln_full_steady(mode: AntDrillMode) -> None:
-        seed = _new_seed()
-        open_test(
+        _open_cln_drill(
             test_code="cln_full_steady",
             title="Colours, Letters and Numbers: Full Steady",
-            engine_factory=lambda difficulty: build_cln_full_steady_drill(
-                clock=real_clock,
-                seed=seed,
-                difficulty=difficulty,
-                mode=mode,
-            ),
+            builder=build_cln_full_steady_drill,
+            mode=mode,
         )
 
     def open_cln_full_pressure(mode: AntDrillMode) -> None:
-        seed = _new_seed()
-        open_test(
+        _open_cln_drill(
             test_code="cln_full_pressure",
             title="Colours, Letters and Numbers: Full Pressure",
-            engine_factory=lambda difficulty: build_cln_full_pressure_drill(
-                clock=real_clock,
-                seed=seed,
-                difficulty=difficulty,
-                mode=mode,
-            ),
+            builder=build_cln_full_pressure_drill,
+            mode=mode,
         )
 
     def open_digit_recognition() -> None:
@@ -26527,96 +28662,59 @@ def run(
         )
 
     def open_abd_cardinal_anchors(mode: AntDrillMode) -> None:
-        seed = _new_seed()
-        open_test(
+        _open_abd_drill(
             test_code="abd_cardinal_anchors",
             title="Angles, Bearings and Degrees: Cardinal Anchors",
-            engine_factory=lambda difficulty: build_abd_cardinal_anchors_drill(
-                clock=real_clock,
-                seed=seed,
-                difficulty=difficulty,
-                mode=mode,
-            ),
+            builder=build_abd_cardinal_anchors_drill,
+            mode=mode,
         )
 
     def open_abd_intermediate_anchors(mode: AntDrillMode) -> None:
-        seed = _new_seed()
-        open_test(
+        _open_abd_drill(
             test_code="abd_intermediate_anchors",
             title="Angles, Bearings and Degrees: Intermediate Anchors",
-            engine_factory=lambda difficulty: build_abd_intermediate_anchors_drill(
-                clock=real_clock,
-                seed=seed,
-                difficulty=difficulty,
-                mode=mode,
-            ),
+            builder=build_abd_intermediate_anchors_drill,
+            mode=mode,
         )
 
     def open_abd_angle_calibration(mode: AntDrillMode) -> None:
-        seed = _new_seed()
-        open_test(
+        _open_abd_drill(
             test_code="abd_angle_calibration",
             title="Angles, Bearings and Degrees: Angle Calibration",
-            engine_factory=lambda difficulty: build_abd_angle_calibration_drill(
-                clock=real_clock,
-                seed=seed,
-                difficulty=difficulty,
-                mode=mode,
-            ),
+            builder=build_abd_angle_calibration_drill,
+            mode=mode,
         )
 
     def open_abd_bearing_calibration(mode: AntDrillMode) -> None:
-        seed = _new_seed()
-        open_test(
+        _open_abd_drill(
             test_code="abd_bearing_calibration",
             title="Angles, Bearings and Degrees: Bearing Calibration",
-            engine_factory=lambda difficulty: build_abd_bearing_calibration_drill(
-                clock=real_clock,
-                seed=seed,
-                difficulty=difficulty,
-                mode=mode,
-            ),
+            builder=build_abd_bearing_calibration_drill,
+            mode=mode,
         )
 
     def open_abd_mixed_tempo(mode: AntDrillMode) -> None:
-        seed = _new_seed()
-        open_test(
+        _open_abd_drill(
             test_code="abd_mixed_tempo",
             title="Angles, Bearings and Degrees: Mixed Tempo",
-            engine_factory=lambda difficulty: build_abd_mixed_tempo_drill(
-                clock=real_clock,
-                seed=seed,
-                difficulty=difficulty,
-                mode=mode,
-            ),
+            builder=build_abd_mixed_tempo_drill,
+            mode=mode,
         )
 
     def open_abd_family_run_angle(mode: AntDrillMode) -> None:
-        seed = _new_seed()
-        open_test(
+        _open_abd_family_run_drill(
             test_code="abd_family_run_angle",
             title="Angles, Bearings and Degrees: Test-Style Angle Run",
-            engine_factory=lambda difficulty: build_abd_test_style_family_run_drill(
-                clock=real_clock,
-                seed=seed,
-                family=AnglesBearingsQuestionKind.ANGLE_BETWEEN_LINES,
-                difficulty=difficulty,
-                mode=mode,
-            ),
+            family=AnglesBearingsQuestionKind.ANGLE_BETWEEN_LINES,
+            mode=mode,
         )
 
     def open_abd_family_run_bearing(mode: AntDrillMode) -> None:
-        seed = _new_seed()
-        open_test(
+        _open_abd_family_run_drill(
             test_code="abd_family_run_bearing",
             title="Angles, Bearings and Degrees: Test-Style Bearing Run",
-            engine_factory=lambda difficulty: build_abd_test_style_family_run_drill(
-                clock=real_clock,
-                seed=seed,
-                family=AnglesBearingsQuestionKind.BEARING_FROM_REFERENCE,
-                difficulty=difficulty,
-                mode=mode,
-            ),
+            family=AnglesBearingsQuestionKind.BEARING_FROM_REFERENCE,
+            mode=mode,
         )
 
     def open_visual_search() -> None:
@@ -26632,83 +28730,53 @@ def run(
         )
 
     def open_vs_target_preview(mode: AntDrillMode) -> None:
-        seed = _new_seed()
-        open_test(
+        _open_vs_drill(
             test_code="vs_target_preview",
             title="Visual Search: Target Preview",
-            engine_factory=lambda difficulty: build_vs_target_preview_drill(
-                clock=real_clock,
-                seed=seed,
-                difficulty=difficulty,
-                mode=mode,
-            ),
+            builder=build_vs_target_preview_drill,
+            mode=mode,
         )
 
     def open_vs_clean_scan(mode: AntDrillMode) -> None:
-        seed = _new_seed()
-        open_test(
+        _open_vs_drill(
             test_code="vs_clean_scan",
             title="Visual Search: Clean Scan",
-            engine_factory=lambda difficulty: build_vs_clean_scan_drill(
-                clock=real_clock,
-                seed=seed,
-                difficulty=difficulty,
-                mode=mode,
-            ),
+            builder=build_vs_clean_scan_drill,
+            mode=mode,
         )
 
     def open_vs_family_run_letters(mode: AntDrillMode) -> None:
-        seed = _new_seed()
-        open_test(
+        _open_vs_drill(
             test_code="vs_family_run_letters",
             title="Visual Search: Letter Family Run",
-            engine_factory=lambda difficulty: build_vs_family_run_drill(
-                clock=real_clock,
-                seed=seed,
-                kind=VisualSearchTaskKind.ALPHANUMERIC,
-                difficulty=difficulty,
-                mode=mode,
-            ),
+            builder=build_vs_family_run_drill,
+            mode=mode,
+            extra_builder_kwargs={"kind": VisualSearchTaskKind.ALPHANUMERIC},
         )
 
     def open_vs_family_run_symbols(mode: AntDrillMode) -> None:
-        seed = _new_seed()
-        open_test(
+        _open_vs_drill(
             test_code="vs_family_run_symbols",
             title="Visual Search: Line Figure Family Run",
-            engine_factory=lambda difficulty: build_vs_family_run_drill(
-                clock=real_clock,
-                seed=seed,
-                kind=VisualSearchTaskKind.SYMBOL_CODE,
-                difficulty=difficulty,
-                mode=mode,
-            ),
+            builder=build_vs_family_run_drill,
+            mode=mode,
+            extra_builder_kwargs={"kind": VisualSearchTaskKind.SYMBOL_CODE},
         )
 
     def open_vs_mixed_tempo(mode: AntDrillMode) -> None:
-        seed = _new_seed()
-        open_test(
+        _open_vs_drill(
             test_code="vs_mixed_tempo",
             title="Visual Search: Mixed Tempo",
-            engine_factory=lambda difficulty: build_vs_mixed_tempo_drill(
-                clock=real_clock,
-                seed=seed,
-                difficulty=difficulty,
-                mode=mode,
-            ),
+            builder=build_vs_mixed_tempo_drill,
+            mode=mode,
         )
 
     def open_vs_pressure_run(mode: AntDrillMode) -> None:
-        seed = _new_seed()
-        open_test(
+        _open_vs_drill(
             test_code="vs_pressure_run",
             title="Visual Search: Pressure Run",
-            engine_factory=lambda difficulty: build_vs_pressure_run_drill(
-                clock=real_clock,
-                seed=seed,
-                difficulty=difficulty,
-                mode=mode,
-            ),
+            builder=build_vs_pressure_run_drill,
+            mode=mode,
         )
 
     def _open_ic_drill(
@@ -26718,15 +28786,23 @@ def run(
         builder: Callable[..., object],
         mode: AntDrillMode,
     ) -> None:
-        seed = _new_seed()
-        open_test(
+        _open_mode_wrapped_drill(
             test_code=test_code,
             title=title,
-            engine_factory=lambda difficulty: builder(
+            mode=mode,
+            engine_builder=lambda seed, difficulty, resolved_mode, scored_duration_s: builder(
                 clock=real_clock,
                 seed=seed,
                 difficulty=difficulty,
-                mode=mode,
+                mode=resolved_mode,
+                config=(
+                    None
+                    if scored_duration_s is None
+                    else IcDrillConfig(
+                        practice_questions=0,
+                        scored_duration_s=float(scored_duration_s),
+                    )
+                ),
             ),
         )
 
@@ -26802,6 +28878,53 @@ def run(
             mode=mode,
         )
 
+    def _build_benchmark_screen() -> Screen:
+        def _build_session() -> BenchmarkSession:
+            return BenchmarkSession(plan=build_benchmark_plan(clock=real_clock))
+
+        return BenchmarkScreen(
+            app,
+            session=_build_session(),
+            session_factory=_build_session,
+        )
+
+    def open_benchmark_battery() -> None:
+        def _build_screen() -> Screen:
+            return _build_benchmark_screen()
+
+        open_loading_screen(
+            title="Benchmark Battery",
+            detail="Building fixed benchmark battery",
+            target_factory=_build_screen,
+        )
+
+    def open_adaptive_session() -> None:
+        def _build_screen() -> Screen:
+            history = []
+            try:
+                history = results_store.recent_attempt_history(since_days=28)
+            except Exception:
+                history = []
+            session_seed = _new_seed()
+            plan = build_adaptive_session_plan(history=history, seed=session_seed)
+            session = None if plan is None else AdaptiveSession(
+                clock=real_clock,
+                seed=session_seed,
+                plan=plan,
+            )
+            return AdaptiveSessionScreen(
+                app,
+                session=session,
+                screen_factory=_build_screen,
+                benchmark_screen_factory=_build_benchmark_screen,
+            )
+
+        open_loading_screen(
+            title="Adaptive Session",
+            detail="Ranking recent primitive evidence",
+            target_factory=_build_screen,
+        )
+
     def open_vigilance() -> None:
         seed = _new_seed()
         open_test(
@@ -26821,15 +28944,22 @@ def run(
         builder: Callable[..., object],
         mode: AntDrillMode,
     ) -> None:
-        seed = _new_seed()
-        open_test(
+        _open_mode_wrapped_drill(
             test_code=test_code,
             title=title,
-            engine_factory=lambda difficulty: builder(
+            mode=mode,
+            engine_builder=lambda seed, difficulty, resolved_mode, scored_duration_s: builder(
                 clock=real_clock,
                 seed=seed,
                 difficulty=difficulty,
-                mode=mode,
+                mode=resolved_mode,
+                config=(
+                    None
+                    if scored_duration_s is None
+                    else VigilanceDrillConfig(
+                        scored_duration_s=float(scored_duration_s),
+                    )
+                ),
             ),
         )
 
@@ -26912,15 +29042,23 @@ def run(
         builder: Callable[..., object],
         mode: AntDrillMode,
     ) -> None:
-        seed = _new_seed()
-        open_test(
+        _open_mode_wrapped_drill(
             test_code=test_code,
             title=title,
-            engine_factory=lambda difficulty: builder(
+            mode=mode,
+            engine_builder=lambda seed, difficulty, resolved_mode, scored_duration_s: builder(
                 clock=real_clock,
                 seed=seed,
                 difficulty=difficulty,
-                mode=mode,
+                mode=resolved_mode,
+                config=(
+                    None
+                    if scored_duration_s is None
+                    else TrDrillConfig(
+                        practice_questions=0,
+                        scored_duration_s=float(scored_duration_s),
+                    )
+                ),
             ),
         )
 
@@ -26995,15 +29133,23 @@ def run(
         builder: Callable[..., object],
         mode: AntDrillMode,
     ) -> None:
-        seed = _new_seed()
-        open_test(
+        _open_mode_wrapped_drill(
             test_code=test_code,
             title=title,
-            engine_factory=lambda difficulty: builder(
+            mode=mode,
+            engine_builder=lambda seed, difficulty, resolved_mode, scored_duration_s: builder(
                 clock=real_clock,
                 seed=seed,
                 difficulty=difficulty,
-                mode=mode,
+                mode=resolved_mode,
+                config=(
+                    None
+                    if scored_duration_s is None
+                    else SlDrillConfig(
+                        practice_questions=0,
+                        scored_duration_s=float(scored_duration_s),
+                    )
+                ),
             ),
         )
 
@@ -27071,6 +29217,46 @@ def run(
             mode=mode,
         )
 
+    def open_sl_one_rule_identify(mode: AntDrillMode) -> None:
+        _open_sl_drill(
+            test_code="sl_one_rule_identify",
+            title="System Logic: One-Rule Identify",
+            builder=build_sl_one_rule_identify_drill,
+            mode=mode,
+        )
+
+    def open_sl_missing_step_complete(mode: AntDrillMode) -> None:
+        _open_sl_drill(
+            test_code="sl_missing_step_complete",
+            title="System Logic: Missing-Step Complete",
+            builder=build_sl_missing_step_complete_drill,
+            mode=mode,
+        )
+
+    def open_sl_two_source_reconcile(mode: AntDrillMode) -> None:
+        _open_sl_drill(
+            test_code="sl_two_source_reconcile",
+            title="System Logic: Two-Source Reconcile",
+            builder=build_sl_two_source_reconcile_drill,
+            mode=mode,
+        )
+
+    def open_sl_rule_match(mode: AntDrillMode) -> None:
+        _open_sl_drill(
+            test_code="sl_rule_match",
+            title="System Logic: Rule Match",
+            builder=build_sl_rule_match_drill,
+            mode=mode,
+        )
+
+    def open_sl_fast_reject(mode: AntDrillMode) -> None:
+        _open_sl_drill(
+            test_code="sl_fast_reject",
+            title="System Logic: Fast Reject",
+            builder=build_sl_fast_reject_drill,
+            mode=mode,
+        )
+
     def _open_tbl_drill(
         *,
         test_code: str,
@@ -27078,15 +29264,23 @@ def run(
         builder: Callable[..., object],
         mode: AntDrillMode,
     ) -> None:
-        seed = _new_seed()
-        open_test(
+        _open_mode_wrapped_drill(
             test_code=test_code,
             title=title,
-            engine_factory=lambda difficulty: builder(
+            mode=mode,
+            engine_builder=lambda seed, difficulty, resolved_mode, scored_duration_s: builder(
                 clock=real_clock,
                 seed=seed,
                 difficulty=difficulty,
-                mode=mode,
+                mode=resolved_mode,
+                config=(
+                    None
+                    if scored_duration_s is None
+                    else TblDrillConfig(
+                        practice_questions=0,
+                        scored_duration_s=float(scored_duration_s),
+                    )
+                ),
             ),
         )
 
@@ -27154,6 +29348,46 @@ def run(
             mode=mode,
         )
 
+    def open_tbl_single_lookup_anchor(mode: AntDrillMode) -> None:
+        _open_tbl_drill(
+            test_code="tbl_single_lookup_anchor",
+            title="Table Reading: Single Lookup Anchor",
+            builder=build_tbl_single_lookup_anchor_drill,
+            mode=mode,
+        )
+
+    def open_tbl_two_table_xref(mode: AntDrillMode) -> None:
+        _open_tbl_drill(
+            test_code="tbl_two_table_xref",
+            title="Table Reading: Two-Table Cross Reference",
+            builder=build_tbl_two_table_xref_drill,
+            mode=mode,
+        )
+
+    def open_tbl_distractor_grid(mode: AntDrillMode) -> None:
+        _open_tbl_drill(
+            test_code="tbl_distractor_grid",
+            title="Table Reading: Distractor Grid",
+            builder=build_tbl_distractor_grid_drill,
+            mode=mode,
+        )
+
+    def open_tbl_lookup_compute(mode: AntDrillMode) -> None:
+        _open_tbl_drill(
+            test_code="tbl_lookup_compute",
+            title="Table Reading: Lookup + Compute",
+            builder=build_tbl_lookup_compute_drill,
+            mode=mode,
+        )
+
+    def open_tbl_shrinking_cap_run(mode: AntDrillMode) -> None:
+        _open_tbl_drill(
+            test_code="tbl_shrinking_cap_run",
+            title="Table Reading: Shrinking Cap Run",
+            builder=build_tbl_shrinking_cap_run_drill,
+            mode=mode,
+        )
+
     def open_system_logic() -> None:
         seed = _new_seed()
         open_test(
@@ -27197,15 +29431,22 @@ def run(
         builder: Callable[..., object],
         mode: AntDrillMode,
     ) -> None:
-        seed = _new_seed()
-        open_test(
+        _open_mode_wrapped_drill(
             test_code=test_code,
             title=title,
-            engine_factory=lambda difficulty: builder(
+            mode=mode,
+            engine_builder=lambda seed, difficulty, resolved_mode, scored_duration_s: builder(
                 clock=real_clock,
                 seed=seed,
                 difficulty=difficulty,
-                mode=mode,
+                mode=resolved_mode,
+                config=(
+                    None
+                    if scored_duration_s is None
+                    else SmaDrillConfig(
+                        scored_duration_s=float(scored_duration_s),
+                    )
+                ),
             ),
         )
 
@@ -27292,15 +29533,22 @@ def run(
         builder: Callable[..., object],
         mode: AntDrillMode,
     ) -> None:
-        seed = _new_seed()
-        open_test(
+        _open_mode_wrapped_drill(
             test_code=test_code,
             title=title,
-            engine_factory=lambda difficulty: builder(
+            mode=mode,
+            engine_builder=lambda seed, difficulty, resolved_mode, scored_duration_s: builder(
                 clock=real_clock,
                 seed=seed,
                 difficulty=difficulty,
-                mode=mode,
+                mode=resolved_mode,
+                config=(
+                    None
+                    if scored_duration_s is None
+                    else RtDrillConfig(
+                        scored_duration_s=float(scored_duration_s),
+                    )
+                ),
             ),
         )
 
@@ -27368,6 +29616,64 @@ def run(
             mode=mode,
         )
 
+    def _open_dtb_drill(
+        *,
+        test_code: str,
+        title: str,
+        builder: Callable[..., object],
+        mode: AntDrillMode,
+    ) -> None:
+        _open_mode_wrapped_drill(
+            test_code=test_code,
+            title=title,
+            mode=mode,
+            engine_builder=lambda seed, difficulty, resolved_mode, scored_duration_s: builder(
+                clock=real_clock,
+                seed=seed,
+                difficulty=difficulty,
+                mode=resolved_mode,
+                config=(
+                    None
+                    if scored_duration_s is None
+                    else DualTaskBridgeDrillConfig(
+                        scored_duration_s=float(scored_duration_s),
+                    )
+                ),
+            ),
+        )
+
+    def open_dtb_tracking_recall(mode: AntDrillMode) -> None:
+        _open_dtb_drill(
+            test_code="dtb_tracking_recall",
+            title="Dual-Task Bridge: Tracking + Recall",
+            builder=build_dtb_tracking_recall_drill,
+            mode=mode,
+        )
+
+    def open_dtb_tracking_command_filter(mode: AntDrillMode) -> None:
+        _open_dtb_drill(
+            test_code="dtb_tracking_command_filter",
+            title="Dual-Task Bridge: Tracking + Command Filter",
+            builder=build_dtb_tracking_command_filter_drill,
+            mode=mode,
+        )
+
+    def open_dtb_tracking_filter_digit_report(mode: AntDrillMode) -> None:
+        _open_dtb_drill(
+            test_code="dtb_tracking_filter_digit_report",
+            title="Dual-Task Bridge: Tracking + Filter + Digit Report",
+            builder=build_dtb_tracking_filter_digit_report_drill,
+            mode=mode,
+        )
+
+    def open_dtb_tracking_interference_recovery(mode: AntDrillMode) -> None:
+        _open_dtb_drill(
+            test_code="dtb_tracking_interference_recovery",
+            title="Dual-Task Bridge: Tracking + Interference + Recovery",
+            builder=build_dtb_tracking_interference_recovery_drill,
+            mode=mode,
+        )
+
     def open_spatial_integration() -> None:
         seed = _new_seed()
         open_test(
@@ -27387,15 +29693,23 @@ def run(
         builder: Callable[..., object],
         mode: AntDrillMode,
     ) -> None:
-        seed = _new_seed()
-        open_test(
+        _open_mode_wrapped_drill(
             test_code=test_code,
             title=title,
-            engine_factory=lambda difficulty: builder(
+            mode=mode,
+            engine_builder=lambda seed, difficulty, resolved_mode, scored_duration_s: builder(
                 clock=real_clock,
                 seed=seed,
                 difficulty=difficulty,
-                mode=mode,
+                mode=resolved_mode,
+                config=(
+                    None
+                    if scored_duration_s is None
+                    else SiDrillConfig(
+                        practice_scenes_per_part=0,
+                        scored_duration_s=float(scored_duration_s),
+                    )
+                ),
             ),
         )
 
@@ -27494,15 +29808,23 @@ def run(
         builder: Callable[..., object],
         mode: AntDrillMode,
     ) -> None:
-        seed = _new_seed()
-        open_test(
+        _open_mode_wrapped_drill(
             test_code=test_code,
             title=title,
-            engine_factory=lambda difficulty: builder(
+            mode=mode,
+            engine_builder=lambda seed, difficulty, resolved_mode, scored_duration_s: builder(
                 clock=real_clock,
                 seed=seed,
                 difficulty=difficulty,
-                mode=mode,
+                mode=resolved_mode,
+                config=(
+                    None
+                    if scored_duration_s is None
+                    else TraceDrillConfig(
+                        practice_questions_per_segment=0,
+                        scored_duration_s=float(scored_duration_s),
+                    )
+                ),
             ),
         )
 
@@ -27577,15 +29899,22 @@ def run(
         builder: Callable[..., object],
         mode: AntDrillMode,
     ) -> None:
-        seed = _new_seed()
-        open_test(
+        _open_mode_wrapped_drill(
             test_code=test_code,
             title=title,
-            engine_factory=lambda difficulty: builder(
+            mode=mode,
+            engine_builder=lambda seed, difficulty, resolved_mode, scored_duration_s: builder(
                 clock=real_clock,
                 seed=seed,
                 difficulty=difficulty,
-                mode=mode,
+                mode=resolved_mode,
+                config=(
+                    None
+                    if scored_duration_s is None
+                    else AcDrillConfig(
+                        scored_duration_s=float(scored_duration_s),
+                    )
+                ),
             ),
         )
 
@@ -27672,15 +30001,23 @@ def run(
         builder: Callable[..., object],
         mode: AntDrillMode,
     ) -> None:
-        seed = _new_seed()
-        open_test(
+        _open_mode_wrapped_drill(
             test_code=test_code,
             title=title,
-            engine_factory=lambda difficulty: builder(
+            mode=mode,
+            engine_builder=lambda seed, difficulty, resolved_mode, scored_duration_s: builder(
                 clock=real_clock,
                 seed=seed,
                 difficulty=difficulty,
-                mode=mode,
+                mode=resolved_mode,
+                config=(
+                    None
+                    if scored_duration_s is None
+                    else CuDrillConfig(
+                        practice_questions=0,
+                        scored_duration_s=float(scored_duration_s),
+                    )
+                ),
             ),
         )
 
@@ -27767,15 +30104,22 @@ def run(
         builder: Callable[..., object],
         mode: AntDrillMode,
     ) -> None:
-        seed = _new_seed()
-        open_test(
+        _open_mode_wrapped_drill(
             test_code=test_code,
             title=title,
-            engine_factory=lambda difficulty: builder(
+            mode=mode,
+            engine_builder=lambda seed, difficulty, resolved_mode, scored_duration_s: builder(
                 clock=real_clock,
                 seed=seed,
                 difficulty=difficulty,
-                mode=mode,
+                mode=resolved_mode,
+                config=(
+                    None
+                    if scored_duration_s is None
+                    else SaDrillConfig(
+                        scored_duration_s=float(scored_duration_s),
+                    )
+                ),
             ),
         )
 
@@ -27879,6 +30223,7 @@ def run(
             MenuItem("Trace Test 1", open_trace_test_1),
             MenuItem("Trace Test 2", open_trace_test_2),
             MenuItem("Vigilance", open_vigilance),
+            MenuItem("Benchmark Battery (13m)", open_benchmark_battery),
             MenuItem("Back", app.pop),
         ],
     )
@@ -27886,802 +30231,384 @@ def run(
     ant_drills_menu = MenuScreen(
         app,
         "Airborne Numerical Drills",
-        [
-            MenuItem(
-                "Snap Facts Sprint - Build",
-                lambda: open_ant_snap_facts_sprint(AntDrillMode.BUILD),
-            ),
-            MenuItem(
-                "Snap Facts Sprint - Tempo",
-                lambda: open_ant_snap_facts_sprint(AntDrillMode.TEMPO),
-            ),
-            MenuItem(
-                "Snap Facts Sprint - Stress",
-                lambda: open_ant_snap_facts_sprint(AntDrillMode.STRESS),
-            ),
-            MenuItem(
-                "Time Flip - Build",
-                lambda: open_ant_time_flip(AntDrillMode.BUILD),
-            ),
-            MenuItem(
-                "Time Flip - Tempo",
-                lambda: open_ant_time_flip(AntDrillMode.TEMPO),
-            ),
-            MenuItem(
-                "Time Flip - Stress",
-                lambda: open_ant_time_flip(AntDrillMode.STRESS),
-            ),
-            MenuItem(
-                "Mixed Tempo Set - Build",
-                lambda: open_ant_mixed_tempo_set(AntDrillMode.BUILD),
-            ),
-            MenuItem(
-                "Mixed Tempo Set - Tempo",
-                lambda: open_ant_mixed_tempo_set(AntDrillMode.TEMPO),
-            ),
-            MenuItem(
-                "Mixed Tempo Set - Stress",
-                lambda: open_ant_mixed_tempo_set(AntDrillMode.STRESS),
-            ),
-            MenuItem(
-                "Route Time Solve - Build",
-                lambda: open_ant_route_time_solve(AntDrillMode.BUILD),
-            ),
-            MenuItem(
-                "Route Time Solve - Tempo",
-                lambda: open_ant_route_time_solve(AntDrillMode.TEMPO),
-            ),
-            MenuItem(
-                "Route Time Solve - Stress",
-                lambda: open_ant_route_time_solve(AntDrillMode.STRESS),
-            ),
-            MenuItem(
-                "Fuel Burn Solve - Build",
-                lambda: open_ant_fuel_burn_solve(AntDrillMode.BUILD),
-            ),
-            MenuItem(
-                "Fuel Burn Solve - Tempo",
-                lambda: open_ant_fuel_burn_solve(AntDrillMode.TEMPO),
-            ),
-            MenuItem(
-                "Fuel Burn Solve - Stress",
-                lambda: open_ant_fuel_burn_solve(AntDrillMode.STRESS),
-            ),
-            MenuItem(
-                "Endurance Solve - Build",
-                lambda: open_ant_endurance_solve(AntDrillMode.BUILD),
-            ),
-            MenuItem(
-                "Endurance Solve - Tempo",
-                lambda: open_ant_endurance_solve(AntDrillMode.TEMPO),
-            ),
-            MenuItem(
-                "Endurance Solve - Stress",
-                lambda: open_ant_endurance_solve(AntDrillMode.STRESS),
-            ),
-            MenuItem(
-                "Distance Scan - Build",
-                lambda: open_ant_distance_scan(AntDrillMode.BUILD),
-            ),
-            MenuItem(
-                "Distance Scan - Tempo",
-                lambda: open_ant_distance_scan(AntDrillMode.TEMPO),
-            ),
-            MenuItem(
-                "Distance Scan - Stress",
-                lambda: open_ant_distance_scan(AntDrillMode.STRESS),
-            ),
-            MenuItem(
-                "Payload Reference - Build",
-                lambda: open_ant_payload_reference(AntDrillMode.BUILD),
-            ),
-            MenuItem(
-                "Payload Reference - Tempo",
-                lambda: open_ant_payload_reference(AntDrillMode.TEMPO),
-            ),
-            MenuItem(
-                "Payload Reference - Stress",
-                lambda: open_ant_payload_reference(AntDrillMode.STRESS),
-            ),
-            MenuItem(
-                "Info Grabber - Build",
-                lambda: open_ant_info_grabber(AntDrillMode.BUILD),
-            ),
-            MenuItem(
-                "Info Grabber - Tempo",
-                lambda: open_ant_info_grabber(AntDrillMode.TEMPO),
-            ),
-            MenuItem(
-                "Info Grabber - Stress",
-                lambda: open_ant_info_grabber(AntDrillMode.STRESS),
-            ),
-            MenuItem("Back", app.pop),
-        ],
+        _mode_menu_items(
+            (
+                ("ant_snap_facts_sprint", "Snap Facts Sprint", open_ant_snap_facts_sprint),
+                ("ant_time_flip", "Time Flip", open_ant_time_flip),
+                ("ant_mixed_tempo_set", "Mixed Tempo Set", open_ant_mixed_tempo_set),
+                ("ant_route_time_solve", "Route Time Solve", open_ant_route_time_solve),
+                ("ant_fuel_burn_solve", "Fuel Burn Solve", open_ant_fuel_burn_solve),
+                ("ant_endurance_solve", "Endurance Solve", open_ant_endurance_solve),
+                ("ant_distance_scan", "Distance Scan", open_ant_distance_scan),
+                ("ant_payload_reference", "Payload Reference", open_ant_payload_reference),
+                ("ant_info_grabber", "Info Grabber", open_ant_info_grabber),
+            )
+        ),
     )
 
     no_drills_menu = MenuScreen(
         app,
         "Numerical Operations Drills",
-        [
-            MenuItem("Fact Prime - Build", lambda: open_no_fact_prime(AntDrillMode.BUILD)),
-            MenuItem("Fact Prime - Tempo", lambda: open_no_fact_prime(AntDrillMode.TEMPO)),
-            MenuItem("Fact Prime - Stress", lambda: open_no_fact_prime(AntDrillMode.STRESS)),
-            MenuItem(
-                "Operator Ladders - Build",
-                lambda: open_no_operator_ladders(AntDrillMode.BUILD),
-            ),
-            MenuItem(
-                "Operator Ladders - Tempo",
-                lambda: open_no_operator_ladders(AntDrillMode.TEMPO),
-            ),
-            MenuItem(
-                "Operator Ladders - Stress",
-                lambda: open_no_operator_ladders(AntDrillMode.STRESS),
-            ),
-            MenuItem("Clean Compute - Build", lambda: open_no_clean_compute(AntDrillMode.BUILD)),
-            MenuItem("Clean Compute - Tempo", lambda: open_no_clean_compute(AntDrillMode.TEMPO)),
-            MenuItem("Clean Compute - Stress", lambda: open_no_clean_compute(AntDrillMode.STRESS)),
-            MenuItem("Mixed Tempo - Build", lambda: open_no_mixed_tempo(AntDrillMode.BUILD)),
-            MenuItem("Mixed Tempo - Tempo", lambda: open_no_mixed_tempo(AntDrillMode.TEMPO)),
-            MenuItem("Mixed Tempo - Stress", lambda: open_no_mixed_tempo(AntDrillMode.STRESS)),
-            MenuItem("Pressure Run - Build", lambda: open_no_pressure_run(AntDrillMode.BUILD)),
-            MenuItem("Pressure Run - Tempo", lambda: open_no_pressure_run(AntDrillMode.TEMPO)),
-            MenuItem("Pressure Run - Stress", lambda: open_no_pressure_run(AntDrillMode.STRESS)),
-            MenuItem("Back", app.pop),
-        ],
+        _mode_menu_items(
+            (
+                ("no_fact_prime", "Fact Prime", open_no_fact_prime),
+                ("no_operator_ladders", "Operator Ladders", open_no_operator_ladders),
+                ("no_clean_compute", "Clean Compute", open_no_clean_compute),
+                ("no_mixed_tempo", "Mixed Tempo", open_no_mixed_tempo),
+                ("no_pressure_run", "Pressure Run", open_no_pressure_run),
+            )
+        ),
+    )
+
+    ma_drills_menu = MenuScreen(
+        app,
+        "Primitive Drills: Mental Arithmetic",
+        _mode_menu_items(
+            (
+                ("ma_one_step_fluency", "One-Step Fluency", open_ma_one_step_fluency),
+                ("ma_percentage_snap", "Percentage Snap", open_ma_percentage_snap),
+                ("ma_rate_time_distance", "Rate Time Distance", open_ma_rate_time_distance),
+                ("ma_fuel_endurance", "Fuel Burn And Endurance", open_ma_fuel_endurance),
+                ("ma_mixed_conversion_caps", "Mixed Conversion Caps", open_ma_mixed_conversion_caps),
+            )
+        ),
     )
 
     mr_drills_menu = MenuScreen(
         app,
         "Mathematics Reasoning Drills",
-        [
-            MenuItem(
-                "Relevant Info Scan - Build",
-                lambda: open_mr_relevant_info_scan(AntDrillMode.BUILD),
-            ),
-            MenuItem(
-                "Relevant Info Scan - Tempo",
-                lambda: open_mr_relevant_info_scan(AntDrillMode.TEMPO),
-            ),
-            MenuItem(
-                "Relevant Info Scan - Stress",
-                lambda: open_mr_relevant_info_scan(AntDrillMode.STRESS),
-            ),
-            MenuItem(
-                "Unit And Relation Prime - Build",
-                lambda: open_mr_unit_relation_prime(AntDrillMode.BUILD),
-            ),
-            MenuItem(
-                "Unit And Relation Prime - Tempo",
-                lambda: open_mr_unit_relation_prime(AntDrillMode.TEMPO),
-            ),
-            MenuItem(
-                "Unit And Relation Prime - Stress",
-                lambda: open_mr_unit_relation_prime(AntDrillMode.STRESS),
-            ),
-            MenuItem(
-                "One-Step Solve - Build",
-                lambda: open_mr_one_step_solve(AntDrillMode.BUILD),
-            ),
-            MenuItem(
-                "One-Step Solve - Tempo",
-                lambda: open_mr_one_step_solve(AntDrillMode.TEMPO),
-            ),
-            MenuItem(
-                "One-Step Solve - Stress",
-                lambda: open_mr_one_step_solve(AntDrillMode.STRESS),
-            ),
-            MenuItem(
-                "Multi-Step Solve - Build",
-                lambda: open_mr_multi_step_solve(AntDrillMode.BUILD),
-            ),
-            MenuItem(
-                "Multi-Step Solve - Tempo",
-                lambda: open_mr_multi_step_solve(AntDrillMode.TEMPO),
-            ),
-            MenuItem(
-                "Multi-Step Solve - Stress",
-                lambda: open_mr_multi_step_solve(AntDrillMode.STRESS),
-            ),
-            MenuItem("Domain Run - Build", lambda: open_mr_domain_run(AntDrillMode.BUILD)),
-            MenuItem("Domain Run - Tempo", lambda: open_mr_domain_run(AntDrillMode.TEMPO)),
-            MenuItem("Domain Run - Stress", lambda: open_mr_domain_run(AntDrillMode.STRESS)),
-            MenuItem(
-                "Mixed Pressure Set - Build",
-                lambda: open_mr_mixed_pressure_set(AntDrillMode.BUILD),
-            ),
-            MenuItem(
-                "Mixed Pressure Set - Tempo",
-                lambda: open_mr_mixed_pressure_set(AntDrillMode.TEMPO),
-            ),
-            MenuItem(
-                "Mixed Pressure Set - Stress",
-                lambda: open_mr_mixed_pressure_set(AntDrillMode.STRESS),
-            ),
-            MenuItem("Back", app.pop),
-        ],
+        _mode_menu_items(
+            (
+                ("mr_relevant_info_scan", "Relevant Info Scan", open_mr_relevant_info_scan),
+                ("mr_unit_relation_prime", "Unit And Relation Prime", open_mr_unit_relation_prime),
+                ("mr_one_step_solve", "One-Step Solve", open_mr_one_step_solve),
+                ("mr_multi_step_solve", "Multi-Step Solve", open_mr_multi_step_solve),
+                ("mr_domain_run", "Domain Run", open_mr_domain_run),
+                ("mr_mixed_pressure_set", "Mixed Pressure Set", open_mr_mixed_pressure_set),
+            )
+        ),
     )
 
     dr_drills_menu = MenuScreen(
         app,
         "Digit Recognition Drills",
-        [
-            MenuItem("Visible Copy - Build", lambda: open_dr_visible_copy(AntDrillMode.BUILD)),
-            MenuItem("Visible Copy - Tempo", lambda: open_dr_visible_copy(AntDrillMode.TEMPO)),
-            MenuItem("Visible Copy - Stress", lambda: open_dr_visible_copy(AntDrillMode.STRESS)),
-            MenuItem(
-                "Position Probe - Build",
-                lambda: open_dr_position_probe(AntDrillMode.BUILD),
-            ),
-            MenuItem(
-                "Position Probe - Tempo",
-                lambda: open_dr_position_probe(AntDrillMode.TEMPO),
-            ),
-            MenuItem(
-                "Position Probe - Stress",
-                lambda: open_dr_position_probe(AntDrillMode.STRESS),
-            ),
-            MenuItem(
-                "Visible Family Primer - Build",
-                lambda: open_dr_visible_family_primer(AntDrillMode.BUILD),
-            ),
-            MenuItem(
-                "Visible Family Primer - Tempo",
-                lambda: open_dr_visible_family_primer(AntDrillMode.TEMPO),
-            ),
-            MenuItem(
-                "Visible Family Primer - Stress",
-                lambda: open_dr_visible_family_primer(AntDrillMode.STRESS),
-            ),
-            MenuItem("Recall Run - Build", lambda: open_dr_recall_run(AntDrillMode.BUILD)),
-            MenuItem("Recall Run - Tempo", lambda: open_dr_recall_run(AntDrillMode.TEMPO)),
-            MenuItem("Recall Run - Stress", lambda: open_dr_recall_run(AntDrillMode.STRESS)),
-            MenuItem("Count Target - Build", lambda: open_dr_count_target(AntDrillMode.BUILD)),
-            MenuItem("Count Target - Tempo", lambda: open_dr_count_target(AntDrillMode.TEMPO)),
-            MenuItem("Count Target - Stress", lambda: open_dr_count_target(AntDrillMode.STRESS)),
-            MenuItem(
-                "Different Digit - Build",
-                lambda: open_dr_different_digit(AntDrillMode.BUILD),
-            ),
-            MenuItem(
-                "Different Digit - Tempo",
-                lambda: open_dr_different_digit(AntDrillMode.TEMPO),
-            ),
-            MenuItem(
-                "Different Digit - Stress",
-                lambda: open_dr_different_digit(AntDrillMode.STRESS),
-            ),
-            MenuItem(
-                "Grouped Family Run - Build",
-                lambda: open_dr_grouped_family_run(AntDrillMode.BUILD),
-            ),
-            MenuItem(
-                "Grouped Family Run - Tempo",
-                lambda: open_dr_grouped_family_run(AntDrillMode.TEMPO),
-            ),
-            MenuItem(
-                "Grouped Family Run - Stress",
-                lambda: open_dr_grouped_family_run(AntDrillMode.STRESS),
-            ),
-            MenuItem(
-                "Mixed Pressure - Build",
-                lambda: open_dr_mixed_pressure(AntDrillMode.BUILD),
-            ),
-            MenuItem(
-                "Mixed Pressure - Tempo",
-                lambda: open_dr_mixed_pressure(AntDrillMode.TEMPO),
-            ),
-            MenuItem(
-                "Mixed Pressure - Stress",
-                lambda: open_dr_mixed_pressure(AntDrillMode.STRESS),
-            ),
-            MenuItem("Back", app.pop),
-        ],
+        _mode_menu_items(
+            (
+                ("dr_visible_copy", "Visible Copy", open_dr_visible_copy),
+                ("dr_position_probe", "Position Probe", open_dr_position_probe),
+                ("dr_visible_family_primer", "Visible Family Primer", open_dr_visible_family_primer),
+                ("dr_recall_run", "Recall Run", open_dr_recall_run),
+                ("dr_count_target", "Count Target", open_dr_count_target),
+                ("dr_different_digit", "Different Digit", open_dr_different_digit),
+                ("dr_grouped_family_run", "Grouped Family Run", open_dr_grouped_family_run),
+                ("dr_mixed_pressure", "Mixed Pressure", open_dr_mixed_pressure),
+            )
+        ),
     )
 
     cln_drills_menu = MenuScreen(
         app,
         "Colours, Letters and Numbers Drills",
-        [
-            MenuItem("Sequence Copy - Build", lambda: open_cln_sequence_copy(AntDrillMode.BUILD)),
-            MenuItem("Sequence Copy - Tempo", lambda: open_cln_sequence_copy(AntDrillMode.TEMPO)),
-            MenuItem("Sequence Copy - Stress", lambda: open_cln_sequence_copy(AntDrillMode.STRESS)),
-            MenuItem(
-                "Sequence Match - Build",
-                lambda: open_cln_sequence_match(AntDrillMode.BUILD),
-            ),
-            MenuItem(
-                "Sequence Match - Tempo",
-                lambda: open_cln_sequence_match(AntDrillMode.TEMPO),
-            ),
-            MenuItem(
-                "Sequence Match - Stress",
-                lambda: open_cln_sequence_match(AntDrillMode.STRESS),
-            ),
-            MenuItem(
-                "Sequence Hold + One Math - Build",
-                lambda: open_cln_sequence_math_recall(AntDrillMode.BUILD),
-            ),
-            MenuItem(
-                "Sequence Hold + One Math - Tempo",
-                lambda: open_cln_sequence_math_recall(AntDrillMode.TEMPO),
-            ),
-            MenuItem(
-                "Sequence Hold + One Math - Stress",
-                lambda: open_cln_sequence_math_recall(AntDrillMode.STRESS),
-            ),
-            MenuItem("Math Prime - Build", lambda: open_cln_math_prime(AntDrillMode.BUILD)),
-            MenuItem("Math Prime - Tempo", lambda: open_cln_math_prime(AntDrillMode.TEMPO)),
-            MenuItem("Math Prime - Stress", lambda: open_cln_math_prime(AntDrillMode.STRESS)),
-            MenuItem(
-                "Colour Lane Warm-Up - Build",
-                lambda: open_cln_colour_lane(AntDrillMode.BUILD),
-            ),
-            MenuItem(
-                "Colour Lane Warm-Up - Tempo",
-                lambda: open_cln_colour_lane(AntDrillMode.TEMPO),
-            ),
-            MenuItem(
-                "Colour Lane Warm-Up - Stress",
-                lambda: open_cln_colour_lane(AntDrillMode.STRESS),
-            ),
-            MenuItem(
-                "Memory + Math - Build",
-                lambda: open_cln_memory_math(AntDrillMode.BUILD),
-            ),
-            MenuItem(
-                "Memory + Math - Tempo",
-                lambda: open_cln_memory_math(AntDrillMode.TEMPO),
-            ),
-            MenuItem(
-                "Memory + Math - Stress",
-                lambda: open_cln_memory_math(AntDrillMode.STRESS),
-            ),
-            MenuItem(
-                "Memory + Colour - Build",
-                lambda: open_cln_memory_colour(AntDrillMode.BUILD),
-            ),
-            MenuItem(
-                "Memory + Colour - Tempo",
-                lambda: open_cln_memory_colour(AntDrillMode.TEMPO),
-            ),
-            MenuItem(
-                "Memory + Colour - Stress",
-                lambda: open_cln_memory_colour(AntDrillMode.STRESS),
-            ),
-            MenuItem("Full Steady - Build", lambda: open_cln_full_steady(AntDrillMode.BUILD)),
-            MenuItem("Full Steady - Tempo", lambda: open_cln_full_steady(AntDrillMode.TEMPO)),
-            MenuItem("Full Steady - Stress", lambda: open_cln_full_steady(AntDrillMode.STRESS)),
-            MenuItem(
-                "Full Pressure - Build",
-                lambda: open_cln_full_pressure(AntDrillMode.BUILD),
-            ),
-            MenuItem(
-                "Full Pressure - Tempo",
-                lambda: open_cln_full_pressure(AntDrillMode.TEMPO),
-            ),
-            MenuItem(
-                "Full Pressure - Stress",
-                lambda: open_cln_full_pressure(AntDrillMode.STRESS),
-            ),
-            MenuItem("Back", app.pop),
-        ],
+        _mode_menu_items(
+            (
+                ("cln_sequence_copy", "Sequence Copy", open_cln_sequence_copy),
+                ("cln_sequence_match", "Sequence Match", open_cln_sequence_match),
+                ("cln_sequence_math_recall", "Sequence Hold + One Math", open_cln_sequence_math_recall),
+                ("cln_math_prime", "Math Prime", open_cln_math_prime),
+                ("cln_colour_lane", "Colour Lane Warm-Up", open_cln_colour_lane),
+                ("cln_memory_math", "Memory + Math", open_cln_memory_math),
+                ("cln_memory_colour", "Memory + Colour", open_cln_memory_colour),
+                ("cln_full_steady", "Full Steady", open_cln_full_steady),
+                ("cln_full_pressure", "Full Pressure", open_cln_full_pressure),
+            )
+        ),
     )
 
-    abd_drill_openers: tuple[tuple[str, Callable[[AntDrillMode], None]], ...] = (
-        ("Cardinal Anchors", open_abd_cardinal_anchors),
-        ("Intermediate Anchors", open_abd_intermediate_anchors),
-        ("Angle Calibration", open_abd_angle_calibration),
-        ("Bearing Calibration", open_abd_bearing_calibration),
-        ("Mixed Tempo", open_abd_mixed_tempo),
-        ("Test-Style Angle Run", open_abd_family_run_angle),
-        ("Test-Style Bearing Run", open_abd_family_run_bearing),
-    )
-    abd_drills_items: list[MenuItem] = []
-    for label, opener in abd_drill_openers:
-        abd_drills_items.extend(
-            (
-                MenuItem(f"{label} - Build", lambda open_fn=opener: open_fn(AntDrillMode.BUILD)),
-                MenuItem(f"{label} - Tempo", lambda open_fn=opener: open_fn(AntDrillMode.TEMPO)),
-                MenuItem(f"{label} - Stress", lambda open_fn=opener: open_fn(AntDrillMode.STRESS)),
-            )
-        )
-    abd_drills_items.append(MenuItem("Back", app.pop))
     abd_drills_menu = MenuScreen(
         app,
         "Angles, Bearings and Degrees Drills",
-        abd_drills_items,
+        _mode_menu_items(
+            (
+                ("abd_cardinal_anchors", "Cardinal Anchors", open_abd_cardinal_anchors),
+                ("abd_intermediate_anchors", "Intermediate Anchors", open_abd_intermediate_anchors),
+                ("abd_angle_calibration", "Angle Calibration", open_abd_angle_calibration),
+                ("abd_bearing_calibration", "Bearing Calibration", open_abd_bearing_calibration),
+                ("abd_mixed_tempo", "Mixed Tempo", open_abd_mixed_tempo),
+                ("abd_family_run_angle", "Test-Style Angle Run", open_abd_family_run_angle),
+                ("abd_family_run_bearing", "Test-Style Bearing Run", open_abd_family_run_bearing),
+            )
+        ),
     )
 
     vs_drills_menu = MenuScreen(
         app,
         "Visual Search Drills",
-        [
-            MenuItem(
-                "Target Preview - Build",
-                lambda: open_vs_target_preview(AntDrillMode.BUILD),
-            ),
-            MenuItem(
-                "Target Preview - Tempo",
-                lambda: open_vs_target_preview(AntDrillMode.TEMPO),
-            ),
-            MenuItem(
-                "Target Preview - Stress",
-                lambda: open_vs_target_preview(AntDrillMode.STRESS),
-            ),
-            MenuItem(
-                "Clean Scan - Build",
-                lambda: open_vs_clean_scan(AntDrillMode.BUILD),
-            ),
-            MenuItem(
-                "Clean Scan - Tempo",
-                lambda: open_vs_clean_scan(AntDrillMode.TEMPO),
-            ),
-            MenuItem(
-                "Clean Scan - Stress",
-                lambda: open_vs_clean_scan(AntDrillMode.STRESS),
-            ),
-            MenuItem(
-                "Letter Family Run - Build",
-                lambda: open_vs_family_run_letters(AntDrillMode.BUILD),
-            ),
-            MenuItem(
-                "Letter Family Run - Tempo",
-                lambda: open_vs_family_run_letters(AntDrillMode.TEMPO),
-            ),
-            MenuItem(
-                "Letter Family Run - Stress",
-                lambda: open_vs_family_run_letters(AntDrillMode.STRESS),
-            ),
-            MenuItem(
-                "Line Figure Family Run - Build",
-                lambda: open_vs_family_run_symbols(AntDrillMode.BUILD),
-            ),
-            MenuItem(
-                "Line Figure Family Run - Tempo",
-                lambda: open_vs_family_run_symbols(AntDrillMode.TEMPO),
-            ),
-            MenuItem(
-                "Line Figure Family Run - Stress",
-                lambda: open_vs_family_run_symbols(AntDrillMode.STRESS),
-            ),
-            MenuItem(
-                "Mixed Tempo - Build",
-                lambda: open_vs_mixed_tempo(AntDrillMode.BUILD),
-            ),
-            MenuItem(
-                "Mixed Tempo - Tempo",
-                lambda: open_vs_mixed_tempo(AntDrillMode.TEMPO),
-            ),
-            MenuItem(
-                "Mixed Tempo - Stress",
-                lambda: open_vs_mixed_tempo(AntDrillMode.STRESS),
-            ),
-            MenuItem(
-                "Pressure Run - Build",
-                lambda: open_vs_pressure_run(AntDrillMode.BUILD),
-            ),
-            MenuItem(
-                "Pressure Run - Tempo",
-                lambda: open_vs_pressure_run(AntDrillMode.TEMPO),
-            ),
-            MenuItem(
-                "Pressure Run - Stress",
-                lambda: open_vs_pressure_run(AntDrillMode.STRESS),
-            ),
-            MenuItem("Back", app.pop),
-        ],
+        _mode_menu_items(
+            (
+                ("vs_target_preview", "Target Preview", open_vs_target_preview),
+                ("vs_clean_scan", "Clean Scan", open_vs_clean_scan),
+                ("vs_family_run_letters", "Letter Family Run", open_vs_family_run_letters),
+                ("vs_family_run_symbols", "Line Figure Family Run", open_vs_family_run_symbols),
+                ("vs_mixed_tempo", "Mixed Tempo", open_vs_mixed_tempo),
+                ("vs_pressure_run", "Pressure Run", open_vs_pressure_run),
+            )
+        ),
     )
 
-    ic_drill_openers: tuple[tuple[str, Callable[[AntDrillMode], None]], ...] = (
-        ("Heading Anchor", open_ic_heading_anchor),
-        ("Attitude Frame", open_ic_attitude_frame),
-        ("Part 1 Orientation Run", open_ic_part1_orientation_run),
-        ("Reverse Panel Prime", open_ic_reverse_panel_prime),
-        ("Reverse Panel Run", open_ic_reverse_panel_run),
-        ("Description Prime", open_ic_description_prime),
-        ("Description Run", open_ic_description_run),
-        ("Mixed Part Run", open_ic_mixed_part_run),
-        ("Pressure Run", open_ic_pressure_run),
-    )
-    ic_drills_items: list[MenuItem] = []
-    for label, opener in ic_drill_openers:
-        ic_drills_items.extend(
-            (
-                MenuItem(f"{label} - Build", lambda open_fn=opener: open_fn(AntDrillMode.BUILD)),
-                MenuItem(f"{label} - Tempo", lambda open_fn=opener: open_fn(AntDrillMode.TEMPO)),
-                MenuItem(f"{label} - Stress", lambda open_fn=opener: open_fn(AntDrillMode.STRESS)),
-            )
-        )
-    ic_drills_items.append(MenuItem("Back", app.pop))
     ic_drills_menu = MenuScreen(
         app,
         "Instrument Comprehension Drills",
-        ic_drills_items,
+        _mode_menu_items(
+            (
+                ("ic_heading_anchor", "Heading Anchor", open_ic_heading_anchor),
+                ("ic_attitude_frame", "Attitude Frame", open_ic_attitude_frame),
+                ("ic_part1_orientation_run", "Part 1 Orientation Run", open_ic_part1_orientation_run),
+                ("ic_reverse_panel_prime", "Reverse Panel Prime", open_ic_reverse_panel_prime),
+                ("ic_reverse_panel_run", "Reverse Panel Run", open_ic_reverse_panel_run),
+                ("ic_description_prime", "Description Prime", open_ic_description_prime),
+                ("ic_description_run", "Description Run", open_ic_description_run),
+                ("ic_mixed_part_run", "Mixed Part Run", open_ic_mixed_part_run),
+                ("ic_pressure_run", "Pressure Run", open_ic_pressure_run),
+            )
+        ),
     )
 
-    tr_drill_openers: tuple[tuple[str, Callable[[AntDrillMode], None]], ...] = (
-        ("Scene Anchor", open_tr_scene_anchor),
-        ("Scene Modifier Run", open_tr_scene_modifier_run),
-        ("Light Anchor", open_tr_light_anchor),
-        ("Scan Anchor", open_tr_scan_anchor),
-        ("System Anchor", open_tr_system_anchor),
-        ("Panel Switch Run", open_tr_panel_switch_run),
-        ("Mixed Tempo", open_tr_mixed_tempo),
-        ("Pressure Run", open_tr_pressure_run),
-    )
-    tr_drills_items: list[MenuItem] = []
-    for label, opener in tr_drill_openers:
-        tr_drills_items.extend(
-            (
-                MenuItem(f"{label} - Build", lambda open_fn=opener: open_fn(AntDrillMode.BUILD)),
-                MenuItem(f"{label} - Tempo", lambda open_fn=opener: open_fn(AntDrillMode.TEMPO)),
-                MenuItem(f"{label} - Stress", lambda open_fn=opener: open_fn(AntDrillMode.STRESS)),
-            )
-        )
-    tr_drills_items.append(MenuItem("Back", app.pop))
     tr_drills_menu = MenuScreen(
         app,
         "Target Recognition Drills",
-        tr_drills_items,
+        _mode_menu_items(
+            (
+                ("tr_scene_anchor", "Scene Anchor", open_tr_scene_anchor),
+                ("tr_scene_modifier_run", "Scene Modifier Run", open_tr_scene_modifier_run),
+                ("tr_light_anchor", "Light Anchor", open_tr_light_anchor),
+                ("tr_scan_anchor", "Scan Anchor", open_tr_scan_anchor),
+                ("tr_system_anchor", "System Anchor", open_tr_system_anchor),
+                ("tr_panel_switch_run", "Panel Switch Run", open_tr_panel_switch_run),
+                ("tr_mixed_tempo", "Mixed Tempo", open_tr_mixed_tempo),
+                ("tr_pressure_run", "Pressure Run", open_tr_pressure_run),
+            )
+        ),
     )
 
-    sl_drill_openers: tuple[tuple[str, Callable[[AntDrillMode], None]], ...] = (
-        ("Quantitative Anchor", open_sl_quantitative_anchor),
-        ("Flow Trace Anchor", open_sl_flow_trace_anchor),
-        ("Graph + Rule Anchor", open_sl_graph_rule_anchor),
-        ("Fault Diagnosis Prime", open_sl_fault_diagnosis_prime),
-        ("Index Switch Run", open_sl_index_switch_run),
-        ("Family Run", open_sl_family_run),
-        ("Mixed Tempo", open_sl_mixed_tempo),
-        ("Pressure Run", open_sl_pressure_run),
-    )
-    sl_drills_items: list[MenuItem] = []
-    for label, opener in sl_drill_openers:
-        sl_drills_items.extend(
-            (
-                MenuItem(f"{label} - Build", lambda open_fn=opener: open_fn(AntDrillMode.BUILD)),
-                MenuItem(f"{label} - Tempo", lambda open_fn=opener: open_fn(AntDrillMode.TEMPO)),
-                MenuItem(f"{label} - Stress", lambda open_fn=opener: open_fn(AntDrillMode.STRESS)),
-            )
-        )
-    sl_drills_items.append(MenuItem("Back", app.pop))
     sl_drills_menu = MenuScreen(
         app,
         "System Logic Drills",
-        sl_drills_items,
+        _mode_menu_items(
+            (
+                ("sl_quantitative_anchor", "Quantitative Anchor", open_sl_quantitative_anchor),
+                ("sl_flow_trace_anchor", "Flow Trace Anchor", open_sl_flow_trace_anchor),
+                ("sl_graph_rule_anchor", "Graph + Rule Anchor", open_sl_graph_rule_anchor),
+                ("sl_fault_diagnosis_prime", "Fault Diagnosis Prime", open_sl_fault_diagnosis_prime),
+                ("sl_index_switch_run", "Index Switch Run", open_sl_index_switch_run),
+                ("sl_family_run", "Family Run", open_sl_family_run),
+                ("sl_mixed_tempo", "Mixed Tempo", open_sl_mixed_tempo),
+                ("sl_pressure_run", "Pressure Run", open_sl_pressure_run),
+            )
+        ),
     )
 
-    tbl_drill_openers: tuple[tuple[str, Callable[[AntDrillMode], None]], ...] = (
-        ("Part 1 Anchor", open_tbl_part1_anchor),
-        ("Part 1 Scan Run", open_tbl_part1_scan_run),
-        ("Part 2 Prime", open_tbl_part2_prime),
-        ("Part 2 Correction Run", open_tbl_part2_correction_run),
-        ("Part Switch Run", open_tbl_part_switch_run),
-        ("Card Family Run", open_tbl_card_family_run),
-        ("Mixed Tempo", open_tbl_mixed_tempo),
-        ("Pressure Run", open_tbl_pressure_run),
-    )
-    tbl_drills_items: list[MenuItem] = []
-    for label, opener in tbl_drill_openers:
-        tbl_drills_items.extend(
+    primitive_sl_drills_menu = MenuScreen(
+        app,
+        "Primitive Drills: Rule Extraction",
+        _mode_menu_items(
             (
-                MenuItem(f"{label} - Build", lambda open_fn=opener: open_fn(AntDrillMode.BUILD)),
-                MenuItem(f"{label} - Tempo", lambda open_fn=opener: open_fn(AntDrillMode.TEMPO)),
-                MenuItem(f"{label} - Stress", lambda open_fn=opener: open_fn(AntDrillMode.STRESS)),
+                ("sl_one_rule_identify", "One-Rule Identify", open_sl_one_rule_identify),
+                ("sl_missing_step_complete", "Missing-Step Complete", open_sl_missing_step_complete),
+                ("sl_two_source_reconcile", "Two-Source Reconcile", open_sl_two_source_reconcile),
+                ("sl_rule_match", "Rule Match", open_sl_rule_match),
+                ("sl_fast_reject", "Fast Reject", open_sl_fast_reject),
             )
-        )
-    tbl_drills_items.append(MenuItem("Back", app.pop))
+        ),
+    )
+
     tbl_drills_menu = MenuScreen(
         app,
         "Table Reading Drills",
-        tbl_drills_items,
+        _mode_menu_items(
+            (
+                ("tbl_part1_anchor", "Part 1 Anchor", open_tbl_part1_anchor),
+                ("tbl_part1_scan_run", "Part 1 Scan Run", open_tbl_part1_scan_run),
+                ("tbl_part2_prime", "Part 2 Prime", open_tbl_part2_prime),
+                ("tbl_part2_correction_run", "Part 2 Correction Run", open_tbl_part2_correction_run),
+                ("tbl_part_switch_run", "Part Switch Run", open_tbl_part_switch_run),
+                ("tbl_card_family_run", "Card Family Run", open_tbl_card_family_run),
+                ("tbl_mixed_tempo", "Mixed Tempo", open_tbl_mixed_tempo),
+                ("tbl_pressure_run", "Pressure Run", open_tbl_pressure_run),
+            )
+        ),
     )
 
-    sma_drill_openers: tuple[tuple[str, Callable[[AntDrillMode], None]], ...] = (
-        ("Joystick Horizontal Anchor", open_sma_joystick_horizontal_anchor),
-        ("Joystick Vertical Anchor", open_sma_joystick_vertical_anchor),
-        ("Joystick Hold Run", open_sma_joystick_hold_run),
-        ("Split Horizontal Prime", open_sma_split_horizontal_prime),
-        ("Split Coordination Run", open_sma_split_coordination_run),
-        ("Mode Switch Run", open_sma_mode_switch_run),
-        ("Disturbance Tempo", open_sma_disturbance_tempo),
-        ("Pressure Run", open_sma_pressure_run),
-    )
-    sma_drills_items: list[MenuItem] = []
-    for label, opener in sma_drill_openers:
-        sma_drills_items.extend(
+    primitive_tbl_drills_menu = MenuScreen(
+        app,
+        "Primitive Drills: Table Cross-Reference",
+        _mode_menu_items(
             (
-                MenuItem(f"{label} - Build", lambda open_fn=opener: open_fn(AntDrillMode.BUILD)),
-                MenuItem(f"{label} - Tempo", lambda open_fn=opener: open_fn(AntDrillMode.TEMPO)),
-                MenuItem(f"{label} - Stress", lambda open_fn=opener: open_fn(AntDrillMode.STRESS)),
+                ("tbl_single_lookup_anchor", "Single Lookup Anchor", open_tbl_single_lookup_anchor),
+                ("tbl_two_table_xref", "Two-Table Cross Reference", open_tbl_two_table_xref),
+                ("tbl_distractor_grid", "Distractor Grid", open_tbl_distractor_grid),
+                ("tbl_lookup_compute", "Lookup + Compute", open_tbl_lookup_compute),
+                ("tbl_shrinking_cap_run", "Shrinking Cap Run", open_tbl_shrinking_cap_run),
             )
-        )
-    sma_drills_items.append(MenuItem("Back", app.pop))
+        ),
+    )
+
     sma_drills_menu = MenuScreen(
         app,
         "Sensory Motor Apparatus Drills",
-        sma_drills_items,
+        _mode_menu_items(
+            (
+                ("sma_joystick_horizontal_anchor", "Joystick Horizontal Anchor", open_sma_joystick_horizontal_anchor),
+                ("sma_joystick_vertical_anchor", "Joystick Vertical Anchor", open_sma_joystick_vertical_anchor),
+                ("sma_joystick_hold_run", "Joystick Hold Run", open_sma_joystick_hold_run),
+                ("sma_split_horizontal_prime", "Split Horizontal Prime", open_sma_split_horizontal_prime),
+                ("sma_split_coordination_run", "Split Coordination Run", open_sma_split_coordination_run),
+                ("sma_mode_switch_run", "Mode Switch Run", open_sma_mode_switch_run),
+                ("sma_disturbance_tempo", "Disturbance Tempo", open_sma_disturbance_tempo),
+                ("sma_pressure_run", "Pressure Run", open_sma_pressure_run),
+            )
+        ),
     )
 
-    ac_drill_openers: tuple[tuple[str, Callable[[AntDrillMode], None]], ...] = (
-        ("Gate Anchor", open_ac_gate_anchor),
-        ("State Command Prime", open_ac_state_command_prime),
-        ("Gate Directive Run", open_ac_gate_directive_run),
-        ("Digit Sequence Prime", open_ac_digit_sequence_prime),
-        ("Trigger Cue Anchor", open_ac_trigger_cue_anchor),
-        ("Callsign Filter Run", open_ac_callsign_filter_run),
-        ("Mixed Tempo", open_ac_mixed_tempo),
-        ("Pressure Run", open_ac_pressure_run),
-    )
-    ac_drills_items: list[MenuItem] = []
-    for label, opener in ac_drill_openers:
-        ac_drills_items.extend(
-            (
-                MenuItem(f"{label} - Build", lambda open_fn=opener: open_fn(AntDrillMode.BUILD)),
-                MenuItem(f"{label} - Tempo", lambda open_fn=opener: open_fn(AntDrillMode.TEMPO)),
-                MenuItem(f"{label} - Stress", lambda open_fn=opener: open_fn(AntDrillMode.STRESS)),
-            )
-        )
-    ac_drills_items.append(MenuItem("Back", app.pop))
     ac_drills_menu = MenuScreen(
         app,
         "Auditory Capacity Drills",
-        ac_drills_items,
+        _mode_menu_items(
+            (
+                ("ac_gate_anchor", "Gate Anchor", open_ac_gate_anchor),
+                ("ac_state_command_prime", "State Command Prime", open_ac_state_command_prime),
+                ("ac_gate_directive_run", "Gate Directive Run", open_ac_gate_directive_run),
+                ("ac_digit_sequence_prime", "Digit Sequence Prime", open_ac_digit_sequence_prime),
+                ("ac_trigger_cue_anchor", "Trigger Cue Anchor", open_ac_trigger_cue_anchor),
+                ("ac_callsign_filter_run", "Callsign Filter Run", open_ac_callsign_filter_run),
+                ("ac_mixed_tempo", "Mixed Tempo", open_ac_mixed_tempo),
+                ("ac_pressure_run", "Pressure Run", open_ac_pressure_run),
+            )
+        ),
     )
 
-    cu_drill_openers: tuple[tuple[str, Callable[[AntDrillMode], None]], ...] = (
-        ("Controls Anchor", open_cu_controls_anchor),
-        ("Navigation Anchor", open_cu_navigation_anchor),
-        ("Engine Balance Run", open_cu_engine_balance_run),
-        ("Sensors Timing Prime", open_cu_sensors_timing_prime),
-        ("Objective Prime", open_cu_objective_prime),
-        ("State Code Run", open_cu_state_code_run),
-        ("Mixed Tempo", open_cu_mixed_tempo),
-        ("Pressure Run", open_cu_pressure_run),
-    )
-    cu_drills_items: list[MenuItem] = []
-    for label, opener in cu_drill_openers:
-        cu_drills_items.extend(
-            (
-                MenuItem(f"{label} - Build", lambda open_fn=opener: open_fn(AntDrillMode.BUILD)),
-                MenuItem(f"{label} - Tempo", lambda open_fn=opener: open_fn(AntDrillMode.TEMPO)),
-                MenuItem(f"{label} - Stress", lambda open_fn=opener: open_fn(AntDrillMode.STRESS)),
-            )
-        )
-    cu_drills_items.append(MenuItem("Back", app.pop))
     cu_drills_menu = MenuScreen(
         app,
         "Cognitive Updating Drills",
-        cu_drills_items,
+        _mode_menu_items(
+            (
+                ("cu_controls_anchor", "Controls Anchor", open_cu_controls_anchor),
+                ("cu_navigation_anchor", "Navigation Anchor", open_cu_navigation_anchor),
+                ("cu_engine_balance_run", "Engine Balance Run", open_cu_engine_balance_run),
+                ("cu_sensors_timing_prime", "Sensors Timing Prime", open_cu_sensors_timing_prime),
+                ("cu_objective_prime", "Objective Prime", open_cu_objective_prime),
+                ("cu_state_code_run", "State Code Run", open_cu_state_code_run),
+                ("cu_mixed_tempo", "Mixed Tempo", open_cu_mixed_tempo),
+                ("cu_pressure_run", "Pressure Run", open_cu_pressure_run),
+            )
+        ),
     )
 
-    sa_drill_openers: tuple[tuple[str, Callable[[AntDrillMode], None]], ...] = (
-        ("Picture Anchor", open_sa_picture_anchor),
-        ("Contact Identification Prime", open_sa_contact_identification_prime),
-        ("Status Recall Prime", open_sa_status_recall_prime),
-        ("Future Projection Run", open_sa_future_projection_run),
-        ("Action Selection Run", open_sa_action_selection_run),
-        ("Family Switch Run", open_sa_family_switch_run),
-        ("Mixed Tempo", open_sa_mixed_tempo),
-        ("Pressure Run", open_sa_pressure_run),
-    )
-    sa_drills_items: list[MenuItem] = []
-    for label, opener in sa_drill_openers:
-        sa_drills_items.extend(
-            (
-                MenuItem(f"{label} - Build", lambda open_fn=opener: open_fn(AntDrillMode.BUILD)),
-                MenuItem(f"{label} - Tempo", lambda open_fn=opener: open_fn(AntDrillMode.TEMPO)),
-                MenuItem(f"{label} - Stress", lambda open_fn=opener: open_fn(AntDrillMode.STRESS)),
-            )
-        )
-    sa_drills_items.append(MenuItem("Back", app.pop))
     sa_drills_menu = MenuScreen(
         app,
         "Situational Awareness Drills",
-        sa_drills_items,
+        _mode_menu_items(
+            (
+                ("sa_picture_anchor", "Picture Anchor", open_sa_picture_anchor),
+                ("sa_contact_identification_prime", "Contact Identification Prime", open_sa_contact_identification_prime),
+                ("sa_status_recall_prime", "Status Recall Prime", open_sa_status_recall_prime),
+                ("sa_future_projection_run", "Future Projection Run", open_sa_future_projection_run),
+                ("sa_action_selection_run", "Action Selection Run", open_sa_action_selection_run),
+                ("sa_family_switch_run", "Family Switch Run", open_sa_family_switch_run),
+                ("sa_mixed_tempo", "Mixed Tempo", open_sa_mixed_tempo),
+                ("sa_pressure_run", "Pressure Run", open_sa_pressure_run),
+            )
+        ),
     )
 
-    rt_drill_openers: tuple[tuple[str, Callable[[AntDrillMode], None]], ...] = (
-        ("Lock Anchor", open_rt_lock_anchor),
-        ("Building Handoff Prime", open_rt_building_handoff_prime),
-        ("Terrain Recovery Run", open_rt_terrain_recovery_run),
-        ("Capture Timing Prime", open_rt_capture_timing_prime),
-        ("Ground Tempo Run", open_rt_ground_tempo_run),
-        ("Air Speed Run", open_rt_air_speed_run),
-        ("Mixed Tempo", open_rt_mixed_tempo),
-        ("Pressure Run", open_rt_pressure_run),
-    )
-    rt_drills_items: list[MenuItem] = []
-    for label, opener in rt_drill_openers:
-        rt_drills_items.extend(
-            (
-                MenuItem(f"{label} - Build", lambda open_fn=opener: open_fn(AntDrillMode.BUILD)),
-                MenuItem(f"{label} - Tempo", lambda open_fn=opener: open_fn(AntDrillMode.TEMPO)),
-                MenuItem(f"{label} - Stress", lambda open_fn=opener: open_fn(AntDrillMode.STRESS)),
-            )
-        )
-    rt_drills_items.append(MenuItem("Back", app.pop))
     rt_drills_menu = MenuScreen(
         app,
         "Rapid Tracking Drills",
-        rt_drills_items,
+        _mode_menu_items(
+            (
+                ("rt_lock_anchor", "Lock Anchor", open_rt_lock_anchor),
+                ("rt_building_handoff_prime", "Building Handoff Prime", open_rt_building_handoff_prime),
+                ("rt_terrain_recovery_run", "Terrain Recovery Run", open_rt_terrain_recovery_run),
+                ("rt_capture_timing_prime", "Capture Timing Prime", open_rt_capture_timing_prime),
+                ("rt_ground_tempo_run", "Ground Tempo Run", open_rt_ground_tempo_run),
+                ("rt_air_speed_run", "Air Speed Run", open_rt_air_speed_run),
+                ("rt_mixed_tempo", "Mixed Tempo", open_rt_mixed_tempo),
+                ("rt_pressure_run", "Pressure Run", open_rt_pressure_run),
+            )
+        ),
     )
 
-    si_drill_openers: tuple[tuple[str, Callable[[AntDrillMode], None]], ...] = (
-        ("Landmark Anchor", open_si_landmark_anchor),
-        ("Reconstruction Run", open_si_reconstruction_run),
-        ("Static Mixed Run", open_si_static_mixed_run),
-        ("Route Anchor", open_si_route_anchor),
-        ("Continuation Prime", open_si_continuation_prime),
-        ("Aircraft Grid Run", open_si_aircraft_grid_run),
-        ("Mixed Tempo", open_si_mixed_tempo),
-        ("Pressure Run", open_si_pressure_run),
-    )
-    si_drills_items: list[MenuItem] = []
-    for label, opener in si_drill_openers:
-        si_drills_items.extend(
+    dtb_drills_menu = MenuScreen(
+        app,
+        "Primitive Drills: Dual-Task Bridge",
+        _mode_menu_items(
             (
-                MenuItem(f"{label} - Build", lambda open_fn=opener: open_fn(AntDrillMode.BUILD)),
-                MenuItem(f"{label} - Tempo", lambda open_fn=opener: open_fn(AntDrillMode.TEMPO)),
-                MenuItem(f"{label} - Stress", lambda open_fn=opener: open_fn(AntDrillMode.STRESS)),
+                ("dtb_tracking_recall", "Tracking + Recall", open_dtb_tracking_recall),
+                ("dtb_tracking_command_filter", "Tracking + Command Filter", open_dtb_tracking_command_filter),
+                ("dtb_tracking_filter_digit_report", "Tracking + Filter + Digit Report", open_dtb_tracking_filter_digit_report),
+                ("dtb_tracking_interference_recovery", "Tracking + Interference + Recovery", open_dtb_tracking_interference_recovery),
             )
-        )
-    si_drills_items.append(MenuItem("Back", app.pop))
+        ),
+    )
+
     si_drills_menu = MenuScreen(
         app,
         "Spatial Integration Drills",
-        si_drills_items,
+        _mode_menu_items(
+            (
+                ("si_landmark_anchor", "Landmark Anchor", open_si_landmark_anchor),
+                ("si_reconstruction_run", "Reconstruction Run", open_si_reconstruction_run),
+                ("si_static_mixed_run", "Static Mixed Run", open_si_static_mixed_run),
+                ("si_route_anchor", "Route Anchor", open_si_route_anchor),
+                ("si_continuation_prime", "Continuation Prime", open_si_continuation_prime),
+                ("si_aircraft_grid_run", "Aircraft Grid Run", open_si_aircraft_grid_run),
+                ("si_mixed_tempo", "Mixed Tempo", open_si_mixed_tempo),
+                ("si_pressure_run", "Pressure Run", open_si_pressure_run),
+            )
+        ),
     )
 
-    trace_drill_openers: tuple[tuple[str, Callable[[AntDrillMode], None]], ...] = (
-        ("TT1 Lateral Anchor", open_tt1_lateral_anchor),
-        ("TT1 Vertical Anchor", open_tt1_vertical_anchor),
-        ("TT1 Command Switch Run", open_tt1_command_switch_run),
-        ("TT2 Steady Anchor", open_tt2_steady_anchor),
-        ("TT2 Turn Trace Run", open_tt2_turn_trace_run),
-        ("TT2 Position Recall Run", open_tt2_position_recall_run),
-        ("Mixed Tempo", open_trace_mixed_tempo),
-        ("Pressure Run", open_trace_pressure_run),
-    )
-    trace_drills_items: list[MenuItem] = []
-    for label, opener in trace_drill_openers:
-        trace_drills_items.extend(
-            (
-                MenuItem(f"{label} - Build", lambda open_fn=opener: open_fn(AntDrillMode.BUILD)),
-                MenuItem(f"{label} - Tempo", lambda open_fn=opener: open_fn(AntDrillMode.TEMPO)),
-                MenuItem(f"{label} - Stress", lambda open_fn=opener: open_fn(AntDrillMode.STRESS)),
-            )
-        )
-    trace_drills_items.append(MenuItem("Back", app.pop))
     trace_drills_menu = MenuScreen(
         app,
         "Trace Drills",
-        trace_drills_items,
+        _mode_menu_items(
+            (
+                ("tt1_lateral_anchor", "TT1 Lateral Anchor", open_tt1_lateral_anchor),
+                ("tt1_vertical_anchor", "TT1 Vertical Anchor", open_tt1_vertical_anchor),
+                ("tt1_command_switch_run", "TT1 Command Switch Run", open_tt1_command_switch_run),
+                ("tt2_steady_anchor", "TT2 Steady Anchor", open_tt2_steady_anchor),
+                ("tt2_turn_trace_run", "TT2 Turn Trace Run", open_tt2_turn_trace_run),
+                ("tt2_position_recall_run", "TT2 Position Recall Run", open_tt2_position_recall_run),
+                ("trace_mixed_tempo", "Mixed Tempo", open_trace_mixed_tempo),
+                ("trace_pressure_run", "Pressure Run", open_trace_pressure_run),
+            )
+        ),
     )
 
-    vig_drill_openers: tuple[tuple[str, Callable[[AntDrillMode], None]], ...] = (
-        ("Entry Anchor", open_vig_entry_anchor),
-        ("Clean Scan", open_vig_clean_scan),
-        ("Steady Capture Run", open_vig_steady_capture_run),
-        ("Density Ladder", open_vig_density_ladder),
-        ("Tempo Sweep", open_vig_tempo_sweep),
-        ("Pressure Run", open_vig_pressure_run),
-    )
-    vig_drills_items: list[MenuItem] = []
-    for label, opener in vig_drill_openers:
-        vig_drills_items.extend(
-            (
-                MenuItem(f"{label} - Build", lambda open_fn=opener: open_fn(AntDrillMode.BUILD)),
-                MenuItem(f"{label} - Tempo", lambda open_fn=opener: open_fn(AntDrillMode.TEMPO)),
-                MenuItem(f"{label} - Stress", lambda open_fn=opener: open_fn(AntDrillMode.STRESS)),
-            )
-        )
-    vig_drills_items.append(MenuItem("Back", app.pop))
     vig_drills_menu = MenuScreen(
         app,
         "Vigilance Drills",
-        vig_drills_items,
+        _mode_menu_items(
+            (
+                ("vig_entry_anchor", "Entry Anchor", open_vig_entry_anchor),
+                ("vig_clean_scan", "Clean Scan", open_vig_clean_scan),
+                ("vig_steady_capture_run", "Steady Capture Run", open_vig_steady_capture_run),
+                ("vig_density_ladder", "Density Ladder", open_vig_density_ladder),
+                ("vig_tempo_sweep", "Tempo Sweep", open_vig_tempo_sweep),
+                ("vig_pressure_run", "Pressure Run", open_vig_pressure_run),
+            )
+        ),
+    )
+
+    primitive_drills_menu = MenuScreen(
+        app,
+        "Primitive Drills",
+        [
+            MenuItem("Mental Arithmetic", lambda: app.push(ma_drills_menu)),
+            MenuItem("Table Cross-Reference", lambda: app.push(primitive_tbl_drills_menu)),
+            MenuItem("Rule Extraction", lambda: app.push(primitive_sl_drills_menu)),
+            MenuItem("Dual-Task Bridge", lambda: app.push(dtb_drills_menu)),
+            MenuItem("Back", app.pop),
+        ],
     )
 
     workout_items = [
@@ -28719,6 +30646,7 @@ def run(
         app,
         "Individual drills",
         [
+            MenuItem("Primitive Drills", lambda: app.push(primitive_drills_menu)),
             MenuItem("Airborne Numerical Drills", lambda: app.push(ant_drills_menu)),
             MenuItem("Numerical Operations Drills", lambda: app.push(no_drills_menu)),
             MenuItem("Mathematics Reasoning Drills", lambda: app.push(mr_drills_menu)),
@@ -28749,6 +30677,7 @@ def run(
             lambda: app.push(drill_menu),
         ),
         MenuItem("Tests", lambda: app.push(tests_menu)),
+        MenuItem("Adaptive Session", open_adaptive_session),
         MenuItem("Settings", lambda: app.push(settings_hub)),
         MenuItem("Quit", app.quit),
     ]
@@ -28789,12 +30718,20 @@ def run(
                                     (next_w, next_h), active_window_flags
                                 )
                             except Exception:
-                                display_surface = pygame.display.set_mode(
-                                    (next_w, next_h), window_flags
-                                )
+                                try:
+                                    display_surface = pygame.display.set_mode(
+                                        (next_w, next_h), window_flags
+                                    )
+                                except Exception:
+                                    app.recover_to_menu(
+                                        reason="renderer_failure_abort",
+                                        detail="renderer failure",
+                                    )
+                                    continue
                                 gl_renderer = None
                                 active_window_flags = window_flags
                                 app.set_opengl_enabled(False)
+                                app.note_renderer_fallback()
                                 app.set_surface(display_surface)
                         else:
                             try:
@@ -28802,13 +30739,24 @@ def run(
                                     (next_w, next_h), active_window_flags
                                 )
                             except Exception:
-                                display_surface = pygame.display.set_mode(
-                                    (next_w, next_h), window_flags
-                                )
+                                try:
+                                    display_surface = pygame.display.set_mode(
+                                        (next_w, next_h), window_flags
+                                    )
+                                except Exception:
+                                    app.recover_to_menu(
+                                        reason="renderer_failure_abort",
+                                        detail="renderer failure",
+                                    )
+                                    continue
                                 active_window_flags = window_flags
                             app.set_surface(display_surface)
                 app.handle_event(event)
+                if not app.running:
+                    break
 
+            if not app.running:
+                break
             if gl_renderer is not None:
                 current_display = pygame.display.get_surface()
                 if current_display is not None:
@@ -28816,7 +30764,23 @@ def run(
                 window_size = display_surface.get_size()
                 if app.surface.get_size() != window_size:
                     app.set_surface(pygame.Surface(window_size, pygame.SRCALPHA))
-                gl_renderer.resize(window_size=window_size)
+                try:
+                    gl_renderer.resize(window_size=window_size)
+                except Exception:
+                    try:
+                        display_surface = pygame.display.set_mode(window_size, window_flags)
+                    except Exception:
+                        app.recover_to_menu(
+                            reason="renderer_failure_abort",
+                            detail="renderer failure",
+                        )
+                        continue
+                    active_window_flags = window_flags
+                    gl_renderer = None
+                    app.set_opengl_enabled(False)
+                    app.note_renderer_fallback()
+                    app.set_surface(display_surface)
+                    continue
                 app.surface.fill((0, 0, 0, 0))
             else:
                 current_display = pygame.display.get_surface()
@@ -28825,6 +30789,8 @@ def run(
                     app.set_surface(display_surface)
 
             app.render()
+            if not app.running:
+                break
 
             if gl_renderer is not None:
                 try:
@@ -28834,10 +30800,18 @@ def run(
                     )
                 except Exception:
                     window_size = display_surface.get_size()
-                    display_surface = pygame.display.set_mode(window_size, window_flags)
+                    try:
+                        display_surface = pygame.display.set_mode(window_size, window_flags)
+                    except Exception:
+                        app.recover_to_menu(
+                            reason="renderer_failure_abort",
+                            detail="renderer failure",
+                        )
+                        continue
                     active_window_flags = window_flags
                     gl_renderer = None
                     app.set_opengl_enabled(False)
+                    app.note_renderer_fallback()
                     display_surface.blit(app.surface, (0, 0))
                     app.set_surface(display_surface)
             pygame.display.flip()
@@ -28848,9 +30822,128 @@ def run(
 
             clock.tick(TARGET_FPS)
     finally:
+        if summary_sink is not None and app is not None:
+            state = app.current_run_state()
+            summary_sink.clear()
+            summary_sink.update(
+                {
+                    "shell_state": state.shell_state,
+                    "display_mode": state.display_mode,
+                    "renderer_path": state.renderer_path,
+                    "activity_label": state.activity_label,
+                    "warning": state.warning,
+                    "used_renderer_fallback": app.used_renderer_fallback(),
+                    "used_failure_recovery": app.used_failure_recovery(),
+                    "exit_reason": app.exit_reason,
+                    "exit_code": app.exit_code,
+                }
+            )
         pygame.quit()
+        if headless:
+            for key, value in headless_env_previous.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
 
-    return 0
+    return 0 if app is None else app.exit_code
+
+
+def _headless_key_event(frame: int, key: int, *, mod: int = 0) -> pygame.event.Event:
+    return pygame.event.Event(
+        pygame.KEYDOWN,
+        {"key": int(key), "unicode": "", "mod": int(mod)},
+    )
+
+
+def _build_headless_injector(scenario: str) -> tuple[Callable[[int], None], int]:
+    token = str(scenario).strip().lower()
+    sequence: dict[int, pygame.event.Event]
+    default_max_frames: int
+    if token == "boot":
+        sequence = {1: pygame.event.Event(pygame.QUIT)}
+        default_max_frames = 6
+    elif token == "tests_menu":
+        sequence = {
+            1: _headless_key_event(1, pygame.K_DOWN),
+            2: _headless_key_event(2, pygame.K_DOWN),
+            3: _headless_key_event(3, pygame.K_RETURN),
+            7: pygame.event.Event(pygame.QUIT),
+        }
+        default_max_frames = 16
+    elif token == "individual_drills_menu":
+        sequence = {
+            1: _headless_key_event(1, pygame.K_DOWN),
+            2: _headless_key_event(2, pygame.K_RETURN),
+            7: pygame.event.Event(pygame.QUIT),
+        }
+        default_max_frames = 16
+    elif token == "benchmark_intro":
+        sequence = {1: _headless_key_event(1, pygame.K_DOWN), 2: _headless_key_event(2, pygame.K_DOWN), 3: _headless_key_event(3, pygame.K_RETURN), 24: _headless_key_event(24, pygame.K_RETURN), 27: _headless_key_event(27, pygame.K_F12), 31: pygame.event.Event(pygame.QUIT)}
+        for frame in range(4, 24):
+            sequence[frame] = _headless_key_event(frame, pygame.K_DOWN)
+        default_max_frames = 40
+    elif token == "adaptive_entry":
+        sequence = {
+            1: _headless_key_event(1, pygame.K_DOWN),
+            2: _headless_key_event(2, pygame.K_DOWN),
+            3: _headless_key_event(3, pygame.K_DOWN),
+            4: _headless_key_event(4, pygame.K_RETURN),
+            10: pygame.event.Event(pygame.QUIT),
+        }
+        default_max_frames = 20
+    elif token == "drill_pause_cycle":
+        sequence = {
+            1: _headless_key_event(1, pygame.K_DOWN),
+            2: _headless_key_event(2, pygame.K_RETURN),
+            3: _headless_key_event(3, pygame.K_RETURN),
+            4: _headless_key_event(4, pygame.K_RETURN),
+            5: _headless_key_event(5, pygame.K_RETURN),
+            6: _headless_key_event(6, pygame.K_RETURN),
+            8: _headless_key_event(8, pygame.K_ESCAPE),
+            9: _headless_key_event(9, pygame.K_RETURN),
+            11: _headless_key_event(11, pygame.K_F12),
+            15: pygame.event.Event(pygame.QUIT),
+        }
+        default_max_frames = 28
+    else:
+        raise ValueError(f"Unknown headless scenario: {scenario}")
+
+    def _inject(frame: int) -> None:
+        event = sequence.get(int(frame))
+        if event is not None:
+            pygame.event.post(event)
+
+    return _inject, default_max_frames
+
+
+def run_headless_sim(scenario: str, *, max_frames: int | None = None) -> HeadlessSimResult:
+    injector, scenario_frames = _build_headless_injector(scenario)
+    resolved_max_frames = scenario_frames if max_frames is None else max(1, int(max_frames))
+    summary: dict[str, object] = {}
+    exit_code = run(
+        max_frames=resolved_max_frames,
+        event_injector=injector,
+        headless=True,
+        summary_sink=summary,
+    )
+    success = exit_code == 0
+    return HeadlessSimResult(
+        scenario=str(scenario),
+        success=success,
+        final_shell_state=str(summary.get("shell_state", "MENU")),
+        display_mode=str(summary.get("display_mode", "WINDOWED")),
+        renderer_path=str(summary.get("renderer_path", "2D")),
+        activity_label=(
+            None
+            if summary.get("activity_label") in (None, "")
+            else str(summary.get("activity_label"))
+        ),
+        used_renderer_fallback=bool(summary.get("used_renderer_fallback", False)),
+        used_failure_recovery=bool(summary.get("used_failure_recovery", False)),
+        exit_reason=str(summary.get("exit_reason", "app_quit")),
+        exit_code=int(exit_code),
+    )
 
 
 if __name__ == "__main__":

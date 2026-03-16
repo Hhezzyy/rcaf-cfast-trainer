@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from .clock import Clock
+from .content_variants import content_metadata_from_payload
 from .cognitive_core import (
     AttemptSummary,
     Phase,
@@ -772,6 +773,7 @@ class TraceTest1Engine:
                 raw=str(raw),
                 score=1.0 if is_correct else 0.0,
                 max_score=1.0,
+                content_metadata=content_metadata_from_payload(payload),
             )
         )
 
@@ -914,6 +916,7 @@ class TraceTest1Engine:
                 raw="",
                 score=0.0,
                 max_score=1.0,
+                content_metadata=content_metadata_from_payload(self._current_problem.payload),
             )
         )
         if self._phase is Phase.SCORED:

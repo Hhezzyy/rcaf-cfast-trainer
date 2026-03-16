@@ -5,6 +5,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from .clock import Clock
+from .content_variants import content_metadata_from_payload
 from .cognitive_core import Phase, QuestionEvent, SeededRng, TestSnapshot, clamp01, lerp_int
 from .rapid_tracking_view import (
     camera_pose_compat,
@@ -1241,8 +1242,6 @@ class RapidTrackingEngine:
         return self._seed
 
     def events(self) -> list[QuestionEvent]:
-        if not self._custom_segment_layout:
-            return []
         return list(self._events)
 
     def can_exit(self) -> bool:
@@ -2231,6 +2230,16 @@ class RapidTrackingEngine:
                 raw="",
                 score=float(window_score),
                 max_score=1.0,
+                content_metadata=content_metadata_from_payload(
+                    None,
+                    extras={
+                        "content_family": "rapid_tracking",
+                        "variant_id": f"{self._target_kind}:{self._target_variant}:{self._segment_route_kind}",
+                        "content_pack": "rapid_tracking",
+                        "kind": self._target_kind,
+                        "target_variant": self._target_variant,
+                    },
+                ),
             )
         )
 

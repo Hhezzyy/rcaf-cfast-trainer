@@ -4,6 +4,7 @@ from dataclasses import dataclass, replace
 from enum import StrEnum
 
 from .clock import Clock
+from .content_variants import content_metadata_from_payload, stable_variant_id
 from .cognitive_core import (
     AnswerScorer,
     AttemptSummary,
@@ -74,6 +75,9 @@ class InstrumentComprehensionPayload:
     zero_credit_error: int
     prompt_view_preset: InstrumentAircraftViewPreset | None = None
     option_render_mode: InstrumentOptionRenderMode = InstrumentOptionRenderMode.DESCRIPTION
+    content_family: str = ""
+    variant_id: str = ""
+    content_pack: str = "instrument_comprehension"
 
 
 _PART_ORDER = (
@@ -268,6 +272,8 @@ class InstrumentComprehensionGenerator:
                 else None
             ),
             option_render_mode=option_render_mode,
+            content_family=str(kind.value),
+            variant_id=stable_variant_id(kind.value, option_render_mode.value),
         )
         return Problem(
             prompt=self._prompt_for(kind=kind),
@@ -604,6 +610,7 @@ class InstrumentComprehensionEngine:
             raw=raw_in,
             score=score,
             max_score=1.0,
+            content_metadata=content_metadata_from_payload(self._current.payload),
         )
         self._events.append(event)
 

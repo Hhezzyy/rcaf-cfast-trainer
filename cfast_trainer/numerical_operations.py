@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .clock import Clock
+from .content_variants import stable_variant_id
 from .cognitive_core import Problem, SeededRng, TimedTextInputTest, lerp_int
 
 
@@ -18,6 +19,15 @@ class NumericalOperationsProblemProfile:
     operand_profile: str = "default"
 
 
+@dataclass(frozen=True, slots=True)
+class NumericalOperationsPayload:
+    operator_family: str
+    operand_profile: str
+    content_family: str
+    variant_id: str
+    content_pack: str = "numerical_operations"
+
+
 class NumericalOperationsGenerator:
     """Generates mental arithmetic problems (+ - × ÷) with integer results."""
 
@@ -29,28 +39,46 @@ class NumericalOperationsGenerator:
     ) -> None:
         self._rng = SeededRng(seed)
         self._profile = profile or NumericalOperationsProblemProfile()
+        self._recent_operand_profiles: list[str] = []
 
     def next_problem(self, *, difficulty: float) -> Problem:
         # difficulty 0..1 controls operand ranges and operator mix.
         difficulty = max(0.0, min(1.0, difficulty))
 
         op = self._pick_operator(difficulty)
+        operand_profile = self._effective_operand_profile(difficulty)
 
         if op == "+":
-            a, b = self._operands(difficulty)
-            return Problem(prompt=f"{a} + {b} =", answer=a + b)
+            a, b = self._operands(difficulty, operand_profile=operand_profile)
+            return Problem(
+                prompt=f"{a} + {b} =",
+                answer=a + b,
+                payload=self._payload(operator_family="+", operand_profile=operand_profile),
+            )
         if op == "-":
-            a, b = self._operands(difficulty)
+            a, b = self._operands(difficulty, operand_profile=operand_profile)
             if b > a:
                 a, b = b, a
-            return Problem(prompt=f"{a} - {b} =", answer=a - b)
+            return Problem(
+                prompt=f"{a} - {b} =",
+                answer=a - b,
+                payload=self._payload(operator_family="-", operand_profile=operand_profile),
+            )
         if op == "*":
-            a, b = self._operands_mult(difficulty)
-            return Problem(prompt=f"{a} × {b} =", answer=a * b)
+            a, b = self._operands_mult(difficulty, operand_profile=operand_profile)
+            return Problem(
+                prompt=f"{a} × {b} =",
+                answer=a * b,
+                payload=self._payload(operator_family="*", operand_profile=operand_profile),
+            )
 
         # Division: force clean integer quotient.
-        dividend, divisor, quotient = self.division_terms(difficulty)
-        return Problem(prompt=f"{dividend} ÷ {divisor} =", answer=quotient)
+        dividend, divisor, quotient = self.division_terms(difficulty, operand_profile=operand_profile)
+        return Problem(
+            prompt=f"{dividend} ÷ {divisor} =",
+            answer=quotient,
+            payload=self._payload(operator_family="/", operand_profile=operand_profile),
+        )
 
     def _pick_operator(self, difficulty: float) -> str:
         forced = (self._profile.operator_family or "").strip()
@@ -66,8 +94,25 @@ class NumericalOperationsGenerator:
             return "*"
         return "/"
 
-    def _operands(self, difficulty: float) -> tuple[int, int]:
-        profile = self._profile.operand_profile
+    def _effective_operand_profile(self, difficulty: float) -> str:
+        configured = str(self._profile.operand_profile).strip().lower()
+        if configured and configured != "default":
+            return configured
+        pool = ["default", "fact_prime"]
+        if difficulty >= 0.35:
+            pool.append("clean_compute")
+        profile = str(self._rng.choice(pool))
+        if len(pool) > 1 and profile in self._recent_operand_profiles[-2:]:
+            alternatives = [item for item in pool if item not in self._recent_operand_profiles[-2:]]
+            if alternatives:
+                profile = str(self._rng.choice(alternatives))
+        self._recent_operand_profiles.append(profile)
+        if len(self._recent_operand_profiles) > 3:
+            del self._recent_operand_profiles[:-3]
+        return profile
+
+    def _operands(self, difficulty: float, *, operand_profile: str) -> tuple[int, int]:
+        profile = operand_profile
         if profile == "fact_prime":
             return self._fact_prime_operands(difficulty)
         if profile == "clean_compute":
@@ -76,8 +121,8 @@ class NumericalOperationsGenerator:
         hi = lerp_int(9, 99, difficulty)
         return self._rng.randint(lo, hi), self._rng.randint(lo, hi)
 
-    def _operands_mult(self, difficulty: float) -> tuple[int, int]:
-        profile = self._profile.operand_profile
+    def _operands_mult(self, difficulty: float, *, operand_profile: str) -> tuple[int, int]:
+        profile = operand_profile
         if profile == "fact_prime":
             return self._fact_prime_mult_operands(difficulty)
         if profile == "clean_compute":
@@ -136,8 +181,8 @@ class NumericalOperationsGenerator:
         hi = lerp_int(9, 18, difficulty)
         return a, self._rng.randint(2, hi)
 
-    def division_terms(self, difficulty: float) -> tuple[int, int, int]:
-        profile = self._profile.operand_profile
+    def division_terms(self, difficulty: float, *, operand_profile: str) -> tuple[int, int, int]:
+        profile = operand_profile
         if profile == "fact_prime":
             divisor = self._rng.randint(2, 12)
             quotient = self._rng.randint(2, lerp_int(9, 14, difficulty))
@@ -149,6 +194,14 @@ class NumericalOperationsGenerator:
             quotient = self._rng.randint(2, lerp_int(9, 25, difficulty))
         dividend = divisor * quotient
         return dividend, divisor, quotient
+
+    def _payload(self, *, operator_family: str, operand_profile: str) -> NumericalOperationsPayload:
+        return NumericalOperationsPayload(
+            operator_family=operator_family,
+            operand_profile=operand_profile,
+            content_family=operator_family,
+            variant_id=stable_variant_id(operator_family, operand_profile),
+        )
 
 
 def build_numerical_operations_test(

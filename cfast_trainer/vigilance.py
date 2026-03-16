@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from .clock import Clock
+from .content_variants import content_metadata_from_payload
 from .cognitive_core import Phase, QuestionEvent, SeededRng, TestSnapshot, clamp01, lerp_int
 
 
@@ -341,6 +342,15 @@ class VigilanceEngine:
                 raw=f"{symbol.row},{symbol.col}",
                 score=float(symbol.points),
                 max_score=float(symbol.points),
+                content_metadata=content_metadata_from_payload(
+                    None,
+                    extras={
+                        "content_family": "vigilance",
+                        "variant_id": f"{symbol.kind.value}:{symbol.row}:{symbol.col}",
+                        "content_pack": "vigilance",
+                        "kind": symbol.kind.value,
+                    },
+                ),
             )
         )
 
@@ -362,6 +372,16 @@ class VigilanceEngine:
                 raw="",
                 score=0.0,
                 max_score=float(symbol.points),
+                is_timeout=True,
+                content_metadata=content_metadata_from_payload(
+                    None,
+                    extras={
+                        "content_family": "vigilance",
+                        "variant_id": f"{symbol.kind.value}:{symbol.row}:{symbol.col}",
+                        "content_pack": "vigilance",
+                        "kind": symbol.kind.value,
+                    },
+                ),
             )
         )
 

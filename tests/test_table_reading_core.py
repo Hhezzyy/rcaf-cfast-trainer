@@ -82,8 +82,20 @@ def test_generator_emits_both_parts() -> None:
 
 
 def test_generator_exposes_multiple_card_families_for_both_parts() -> None:
-    assert TableReadingGenerator.supported_part_one_families() == ("lookup", "station", "sector")
-    assert TableReadingGenerator.supported_part_two_families() == ("wind", "crosswind", "offset")
+    assert TableReadingGenerator.supported_part_one_families() == (
+        "lookup",
+        "station",
+        "sector",
+        "dispatch",
+        "range",
+    )
+    assert TableReadingGenerator.supported_part_two_families() == (
+        "wind",
+        "crosswind",
+        "offset",
+        "descent",
+        "timing",
+    )
 
 
 def test_generator_selection_hook_is_deterministic_for_same_family_and_part() -> None:
@@ -135,8 +147,8 @@ def test_default_generator_rotates_across_multiple_part_one_and_part_two_card_fa
         else:
             part_two_families.add(family)
 
-    assert part_one_families == {"lookup", "station", "sector"}
-    assert part_two_families == {"wind", "crosswind", "offset"}
+    assert part_one_families == {"lookup", "station", "sector", "dispatch", "range"}
+    assert part_two_families == {"wind", "crosswind", "offset", "descent", "timing"}
 
 
 def test_scorer_exact_and_estimation_behaviour() -> None:

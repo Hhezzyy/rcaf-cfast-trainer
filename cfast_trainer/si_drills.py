@@ -208,7 +208,7 @@ def _build_si_drill(
     practice_scenes_per_part = (
         int(cfg.practice_scenes_per_part)
         if cfg.practice_scenes_per_part is not None
-        else (1 if normalized_mode is AntDrillMode.BUILD else 0)
+        else (1 if normalized_mode in (AntDrillMode.FRESH, AntDrillMode.BUILD) else 0)
     )
     scored_duration_s = (
         float(cfg.scored_duration_s)

@@ -209,13 +209,34 @@ def _profile_for_mode(
     capture_cooldown_scale: float,
     segment_duration_scale: float,
 ) -> RapidTrackingTrainingProfile:
-    if mode is AntDrillMode.BUILD:
+    if mode is AntDrillMode.FRESH:
+        turbulence = turbulence_scale * 0.78
+        assist = camera_assist if camera_assist is None else max(camera_assist, 0.62)
+        preview = preview_scale * 1.20
+        box = capture_box_scale * 1.18
+        cooldown = capture_cooldown_scale * 0.90
+        duration = segment_duration_scale * 1.16
+    elif mode is AntDrillMode.BUILD:
         turbulence = turbulence_scale * 0.82
         assist = camera_assist if camera_assist is None else max(camera_assist, 0.55)
         preview = preview_scale * 1.16
         box = capture_box_scale * 1.14
         cooldown = capture_cooldown_scale * 0.92
         duration = segment_duration_scale * 1.12
+    elif mode is AntDrillMode.PRESSURE:
+        turbulence = turbulence_scale * 1.08
+        assist = camera_assist if camera_assist is None else min(camera_assist, 0.28)
+        preview = preview_scale * 0.92
+        box = capture_box_scale * 0.92
+        cooldown = capture_cooldown_scale * 0.92
+        duration = segment_duration_scale * 0.92
+    elif mode is AntDrillMode.RECOVERY:
+        turbulence = turbulence_scale * 0.90
+        assist = camera_assist if camera_assist is None else max(camera_assist, 0.50)
+        preview = preview_scale * 1.08
+        box = capture_box_scale * 1.10
+        cooldown = capture_cooldown_scale * 0.96
+        duration = segment_duration_scale * 1.04
     elif mode is AntDrillMode.STRESS:
         turbulence = turbulence_scale * 1.20
         assist = 0.0 if camera_assist is None else min(camera_assist, 0.10)

@@ -47,8 +47,12 @@ def _minutes_to_hhmm(minutes: int) -> int:
 
 
 class AntDrillMode(str, Enum):
+    FRESH = "fresh"
     BUILD = "build"
     TEMPO = "tempo"
+    PRESSURE = "pressure"
+    FATIGUE_PROBE = "fatigue_probe"
+    RECOVERY = "recovery"
     STRESS = "stress"
 
 
@@ -186,6 +190,14 @@ class AntDrillAttemptSummary:
 
 
 ANT_DRILL_MODE_PROFILES: dict[AntDrillMode, AntDrillModeProfile] = {
+    AntDrillMode.FRESH: AntDrillModeProfile(
+        label="Fresh",
+        practice_questions=7,
+        scored_duration_s=180.0,
+        cap_scale=1.40,
+        immediate_feedback=True,
+        note="Fresh-state calibration. Longer caps, visible correction, and adaptive pressure off by default.",
+    ),
     AntDrillMode.BUILD: AntDrillModeProfile(
         label="Build",
         practice_questions=6,
@@ -202,6 +214,30 @@ ANT_DRILL_MODE_PROFILES: dict[AntDrillMode, AntDrillModeProfile] = {
         immediate_feedback=False,
         note="Caps tighten. Throughput matters more than polishing every item.",
     ),
+    AntDrillMode.PRESSURE: AntDrillModeProfile(
+        label="Pressure",
+        practice_questions=3,
+        scored_duration_s=120.0,
+        cap_scale=0.92,
+        immediate_feedback=False,
+        note="Shorter caps and a slightly faster cadence. Commit cleanly and keep the pace.",
+    ),
+    AntDrillMode.FATIGUE_PROBE: AntDrillModeProfile(
+        label="Fatigue Probe",
+        practice_questions=0,
+        scored_duration_s=600.0,
+        cap_scale=1.0,
+        immediate_feedback=False,
+        note="Matched baseline, pressure loader, and late repeat for direct degradation checks.",
+    ),
+    AntDrillMode.RECOVERY: AntDrillModeProfile(
+        label="Recovery",
+        practice_questions=4,
+        scored_duration_s=150.0,
+        cap_scale=1.08,
+        immediate_feedback=True,
+        note="Post-error continuation. The next rep matters more than the last miss.",
+    ),
     AntDrillMode.STRESS: AntDrillModeProfile(
         label="Stress",
         practice_questions=3,
@@ -214,6 +250,13 @@ ANT_DRILL_MODE_PROFILES: dict[AntDrillMode, AntDrillModeProfile] = {
 
 
 ANT_ADAPTIVE_MODE_PROFILES: dict[AntDrillMode, AntAdaptiveModeProfile] = {
+    AntDrillMode.FRESH: AntAdaptiveModeProfile(
+        window_size=20,
+        accuracy_low=0.92,
+        accuracy_high=0.96,
+        fixation_ceiling=0.04,
+        raise_streak=14,
+    ),
     AntDrillMode.BUILD: AntAdaptiveModeProfile(
         window_size=20,
         accuracy_low=0.90,
@@ -226,6 +269,27 @@ ANT_ADAPTIVE_MODE_PROFILES: dict[AntDrillMode, AntAdaptiveModeProfile] = {
         accuracy_low=0.80,
         accuracy_high=0.90,
         fixation_ceiling=0.10,
+        raise_streak=0,
+    ),
+    AntDrillMode.PRESSURE: AntAdaptiveModeProfile(
+        window_size=12,
+        accuracy_low=0.78,
+        accuracy_high=0.88,
+        fixation_ceiling=0.12,
+        raise_streak=0,
+    ),
+    AntDrillMode.FATIGUE_PROBE: AntAdaptiveModeProfile(
+        window_size=15,
+        accuracy_low=0.80,
+        accuracy_high=0.90,
+        fixation_ceiling=0.10,
+        raise_streak=0,
+    ),
+    AntDrillMode.RECOVERY: AntAdaptiveModeProfile(
+        window_size=15,
+        accuracy_low=0.82,
+        accuracy_high=0.90,
+        fixation_ceiling=0.08,
         raise_streak=0,
     ),
     AntDrillMode.STRESS: AntAdaptiveModeProfile(
@@ -886,7 +950,10 @@ class TimedCapDrill:
         self._mode = mode
         self._mode_profile = ANT_DRILL_MODE_PROFILES[mode]
         self._adaptive_mode_profile = ANT_ADAPTIVE_MODE_PROFILES[mode]
-        self._adaptive_config = adaptive_config or AntAdaptiveDifficultyConfig()
+        adaptive = adaptive_config or AntAdaptiveDifficultyConfig()
+        if mode is AntDrillMode.FRESH and adaptive.enabled:
+            adaptive = replace(adaptive, enabled=False)
+        self._adaptive_config = adaptive
         self._base_caps_by_level = tuple(float(v) for v in base_caps_by_level)
         self._scorer = scorer
         self._immediate_feedback_override = (
@@ -915,6 +982,7 @@ class TimedCapDrill:
         self._difficulty_changes: list[AntDifficultyChange] = []
         self._scored_start_level: int | None = None
         self._last_feedback = ""
+        self._recovery_cap_grace_items = 0
 
     @property
     def phase(self) -> Phase:
@@ -1157,6 +1225,12 @@ class TimedCapDrill:
             adaptive_window_size=self._adaptive_window_size(),
         )
 
+    def result_metrics(self) -> dict[str, str]:
+        return {
+            "training_mode": self._mode.value,
+            "adaptive_enabled": "1" if self._adaptive_config.enabled else "0",
+        }
+
     def _input_hint(self) -> str:
         if self._phase not in (Phase.PRACTICE, Phase.SCORED):
             return "Press Enter to continue"
@@ -1174,19 +1248,19 @@ class TimedCapDrill:
     def _deal_new_problem(self) -> None:
         self._current = self._generator.next_problem(difficulty=self._difficulty)
         self._presented_at_s = self._clock.now()
+        resolved_cap_s: float | None = None
         cap_resolver = getattr(self._generator, "cap_for_problem", None)
         if callable(cap_resolver):
             resolved = cap_resolver(problem=self._current, level=self._current_level())
             if resolved is not None:
-                scaled = float(resolved) * self._mode_profile.cap_scale
-                self._current_cap_s = max(2.0, min(60.0, scaled))
-                return
-        meta = self._current.payload
-        if isinstance(meta, AntProblemRuntimeMeta) and meta.base_cap_s is not None:
-            scaled = float(meta.base_cap_s) * self._mode_profile.cap_scale
-            self._current_cap_s = max(2.0, min(60.0, scaled))
-            return
-        self._current_cap_s = self._cap_for_level(self._current_level())
+                resolved_cap_s = float(resolved) * self._mode_profile.cap_scale
+        if resolved_cap_s is None:
+            meta = self._current.payload
+            if isinstance(meta, AntProblemRuntimeMeta) and meta.base_cap_s is not None:
+                resolved_cap_s = float(meta.base_cap_s) * self._mode_profile.cap_scale
+        if resolved_cap_s is None:
+            resolved_cap_s = self._cap_for_level(self._current_level())
+        self._current_cap_s = self._apply_recovery_grace(resolved_cap_s)
 
     def _score_answer(self, *, problem: Problem, user_answer: int, raw: str) -> float:
         if self._scorer is not None:
@@ -1240,8 +1314,11 @@ class TimedCapDrill:
             self._scored_correct += 1
             self._correct_streak += 1
             self._timeout_streak = 0
+            self._recovery_cap_grace_items = 0
         else:
             self._correct_streak = 0
+            if self._mode is AntDrillMode.RECOVERY:
+                self._recovery_cap_grace_items = 1
             if is_timeout:
                 self._scored_timeouts += 1
                 self._timeout_streak += 1
@@ -1269,7 +1346,7 @@ class TimedCapDrill:
         window_size = self._adaptive_window_size()
         outcomes = list(self._recent_outcomes)
 
-        if self._mode is AntDrillMode.BUILD:
+        if self._mode in (AntDrillMode.FRESH, AntDrillMode.BUILD):
             if len(outcomes) >= window_size:
                 accuracy, fixation = self._window_metrics(outcomes)
                 if fixation > profile.fixation_ceiling or accuracy < profile.accuracy_low:
@@ -1347,6 +1424,7 @@ class TimedCapDrill:
                 raw="__timeout__",
                 score=0.0,
                 max_score=1.0,
+                is_timeout=True,
             )
         )
 
@@ -1375,6 +1453,13 @@ class TimedCapDrill:
             return
 
         self._deal_new_problem()
+
+    def _apply_recovery_grace(self, cap_s: float) -> float:
+        clamped = max(2.0, min(60.0, float(cap_s)))
+        if self._mode is not AntDrillMode.RECOVERY or self._recovery_cap_grace_items <= 0:
+            return clamped
+        self._recovery_cap_grace_items -= 1
+        return max(2.0, min(60.0, clamped * 1.20))
 
     def _finish_results(self) -> None:
         self._phase = Phase.RESULTS
