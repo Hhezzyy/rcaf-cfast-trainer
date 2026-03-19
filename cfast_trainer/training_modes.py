@@ -59,6 +59,7 @@ _FRESH_EXPLICIT_CODES = {
     "cln_math_prime",
     "cln_sequence_math_recall",
     "ma_one_step_fluency",
+    "ma_written_numerical_extraction",
     "ma_percentage_snap",
     "ma_rate_time_distance",
     "ma_fuel_endurance",
@@ -77,6 +78,8 @@ _FRESH_EXPLICIT_CODES = {
     "dtb_tracking_command_filter",
     "dtb_tracking_filter_digit_report",
     "dtb_tracking_interference_recovery",
+    "vs_multi_target_class_search",
+    "sma_split_axis_control",
 }
 
 

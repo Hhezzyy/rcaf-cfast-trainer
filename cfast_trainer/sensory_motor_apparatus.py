@@ -88,6 +88,8 @@ class SensoryMotorApparatusSummary:
     total_score: float
     max_score: float
     score_ratio: float
+    overshoot_count: int
+    reversal_count: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -270,6 +272,10 @@ class SensoryMotorApparatusEngine:
         self._scored_sum_error = 0.0
         self._scored_sum_error2 = 0.0
         self._scored_on_target_s = 0.0
+        self._scored_overshoot_count = 0
+        self._scored_reversal_count = 0
+        self._prev_dot_sign_x: int | None = None
+        self._prev_dot_sign_y: int | None = None
 
         self._window_elapsed_s = 0.0
         self._window_sum_error = 0.0
@@ -598,6 +604,8 @@ class SensoryMotorApparatusEngine:
             total_score=total_score,
             max_score=max_score,
             score_ratio=score_ratio,
+            overshoot_count=int(self._scored_overshoot_count),
+            reversal_count=int(self._scored_reversal_count),
         )
 
     def _build_blocks(
@@ -811,12 +819,37 @@ class SensoryMotorApparatusEngine:
         self._scored_sum_error = 0.0
         self._scored_sum_error2 = 0.0
         self._scored_on_target_s = 0.0
+        self._scored_overshoot_count = 0
+        self._scored_reversal_count = 0
+        self._prev_dot_sign_x = None
+        self._prev_dot_sign_y = None
         self._scored_attempted = 0
         self._scored_correct = 0
         self._scored_total_score = 0.0
         self._scored_max_score = 0.0
         self._total_scored_elapsed_s = 0.0
         self._window_results = []
+
+    def _error_sign(self, value: float) -> int:
+        deadband = max(float(self._config.on_target_radius) * 0.5, 1e-6)
+        if value > deadband:
+            return 1
+        if value < -deadband:
+            return -1
+        return 0
+
+    def _record_direction_change(self, *, axis: str, error_value: float) -> None:
+        current = self._error_sign(error_value)
+        previous = self._prev_dot_sign_x if axis == "x" else self._prev_dot_sign_y
+        if current != 0:
+            if previous is not None and previous != 0 and current != previous:
+                self._scored_reversal_count += 1
+                if abs(float(error_value)) > float(self._config.on_target_radius):
+                    self._scored_overshoot_count += 1
+            if axis == "x":
+                self._prev_dot_sign_x = current
+            else:
+                self._prev_dot_sign_y = current
 
     def _finalize_block_window(self) -> None:
         if self._window_samples > 0:
@@ -881,6 +914,10 @@ class SensoryMotorApparatusEngine:
         self._scored_samples += 1
         self._scored_sum_error += radial_error
         self._scored_sum_error2 += radial_error * radial_error
+        if block.axis_focus != "vertical":
+            self._record_direction_change(axis="x", error_value=self._dot_x)
+        if block.axis_focus != "horizontal":
+            self._record_direction_change(axis="y", error_value=self._dot_y)
 
         if radial_error <= self._config.on_target_radius:
             self._scored_block_on_target_s += dt

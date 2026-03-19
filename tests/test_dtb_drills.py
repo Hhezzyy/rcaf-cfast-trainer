@@ -90,6 +90,10 @@ def _advance_until(
     raise AssertionError("bridge condition was not reached")
 
 
+def _difficulty_for_level(level: int) -> float:
+    return float(level - 1) / 9.0
+
+
 @pytest.mark.parametrize(
     "builder",
     (
@@ -186,3 +190,54 @@ def test_dtb_interference_recovery_exposes_bursts_and_recovery_windows() -> None
     assert any(bool(frame[8]) for frame in frames)
     result = attempt_result_from_engine(drill, test_code="dtb_tracking_interference_recovery")
     assert any(event.family == "dual_task_bridge" for event in result.events)
+
+
+@pytest.mark.parametrize(
+    ("builder", "expect_recall", "expect_interference"),
+    (
+        (build_dtb_tracking_recall_drill, True, False),
+        (build_dtb_tracking_command_filter_drill, False, False),
+        (build_dtb_tracking_filter_digit_report_drill, True, False),
+        (build_dtb_tracking_interference_recovery_drill, False, True),
+    ),
+)
+def test_wave1_bridge_drills_l2_l5_l8_scale_materially(
+    builder,
+    expect_recall: bool,
+    expect_interference: bool,
+) -> None:
+    signatures: list[tuple[int, int, int, float | None, float]] = []
+    for level in (2, 5, 8):
+        clock = FakeClock()
+        drill = builder(
+            clock=clock,
+            seed=271,
+            difficulty=_difficulty_for_level(level),
+            config=DualTaskBridgeDrillConfig(scored_duration_s=36.0),
+        )
+        schedule = tuple(drill._cue_schedule)
+        recall_lengths = [len(cue.visible_digits) for cue in schedule if cue.cue_kind == "recall"]
+        interference_count = sum(1 for cue in schedule if cue.interference_active)
+        shortest_command_deadline = min(
+            (cue.deadline_s - cue.start_s) for cue in schedule if cue.cue_kind == "command"
+        ) if any(cue.cue_kind == "command" for cue in schedule) else None
+        signatures.append(
+            (
+                len(schedule),
+                max(recall_lengths, default=0),
+                interference_count,
+                None if shortest_command_deadline is None else round(float(shortest_command_deadline), 3),
+                round(float(drill.difficulty), 3),
+            )
+        )
+
+    low, mid, high = signatures
+    assert low[0] <= high[0]
+    if expect_recall:
+        assert low[1] <= mid[1] <= high[1]
+    if expect_interference:
+        assert low[2] <= mid[2] <= high[2]
+    if low[3] is not None and mid[3] is not None and high[3] is not None:
+        assert low[3] > mid[3] > high[3]
+    assert low[4] < mid[4] < high[4]
+    assert low != mid != high

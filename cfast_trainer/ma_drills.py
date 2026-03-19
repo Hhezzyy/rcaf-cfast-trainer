@@ -38,6 +38,10 @@ class MaProblemPayload:
     family: str
     variant: str
     base_cap_s: float | None = None
+    operand_size: int = 0
+    step_count: int = 0
+    unit_burden: int = 0
+    answer_closeness: int = 0
 
 
 class _BaseMaGenerator:
@@ -58,6 +62,10 @@ class _BaseMaGenerator:
         family: str,
         variant: str,
         base_cap_s: float | None = None,
+        operand_size: int = 0,
+        step_count: int = 0,
+        unit_burden: int = 0,
+        answer_closeness: int = 0,
     ) -> Problem:
         return Problem(
             prompt=prompt,
@@ -66,6 +74,10 @@ class _BaseMaGenerator:
                 family=str(family),
                 variant=str(variant),
                 base_cap_s=base_cap_s,
+                operand_size=max(0, int(operand_size)),
+                step_count=max(0, int(step_count)),
+                unit_burden=max(0, int(unit_burden)),
+                answer_closeness=max(0, int(answer_closeness)),
             ),
         )
 
@@ -210,6 +222,151 @@ class MaFuelEnduranceGenerator(_BaseMaGenerator):
             answer=burn_lph,
             family="fuel_endurance",
             variant=variant,
+        )
+
+
+class MaWrittenNumericalExtractionGenerator(_BaseMaGenerator):
+    def next_problem(self, *, difficulty: float) -> Problem:
+        level = _difficulty_to_level(difficulty)
+        if level <= 3:
+            return self._direct_lookup(level=level)
+        if level <= 6:
+            return self._single_transform(level=level)
+        return self._two_step_transform(level=level)
+
+    def _direct_lookup(self, *, level: int) -> Problem:
+        reserve_minutes = self._rng.choice((20, 25, 30, 35, 40, 45, 50))
+        cruise_speed = self._rng.choice(tuple(range(105, 181, 5)))
+        climb_speed = cruise_speed - self._rng.choice((10, 15, 20))
+        extra = reserve_minutes + self._rng.choice((5, 10))
+        prompt = (
+            "Flight note: "
+            f"climb speed {climb_speed} kt, cruise speed {cruise_speed} kt, "
+            f"reserve {reserve_minutes} min, diversion hold {extra} min. "
+            "Enter the reserve minutes only."
+        )
+        return self._problem(
+            prompt=prompt,
+            answer=reserve_minutes,
+            family="written_numerical_extraction",
+            variant="direct_lookup",
+            operand_size=max(len(str(climb_speed)), len(str(cruise_speed))),
+            step_count=0,
+            unit_burden=1,
+            answer_closeness=abs(extra - reserve_minutes),
+        )
+
+    def _single_transform(self, *, level: int) -> Problem:
+        variant = str(self._rng.choice(("minutes_total", "distance_nm", "ratio_percent")))
+        if variant == "minutes_total":
+            hours = self._rng.randint(1, 3 if level <= 4 else 5)
+            minutes = int(self._rng.choice((10, 15, 20, 25, 30, 35, 40, 45, 50)))
+            answer = (hours * 60) + minutes
+            nearby = answer + int(self._rng.choice((5, 10, 15)))
+            prompt = (
+                "Dispatch line: "
+                f"holding time {hours} h {minutes:02d} min, recovery window {nearby} min. "
+                "Enter the holding time in total minutes."
+            )
+            return self._problem(
+                prompt=prompt,
+                answer=answer,
+                family="written_numerical_extraction",
+                variant=variant,
+                operand_size=max(hours, minutes),
+                step_count=1,
+                unit_burden=2,
+                answer_closeness=abs(nearby - answer),
+            )
+        if variant == "distance_nm":
+            speed = int(self._rng.choice(tuple(range(90, 241, 10))))
+            minutes = int(self._rng.choice((30, 36, 40, 45, 48, 54, 60, 72, 84)))
+            answer = (speed * minutes) // 60
+            nearby = answer + int(self._rng.choice((6, 9, 12)))
+            prompt = (
+                "Route brief: "
+                f"cruise {speed} kt, leg time {minutes} min, alternate leg {nearby} nm. "
+                "Enter the main leg distance in nautical miles."
+            )
+            return self._problem(
+                prompt=prompt,
+                answer=answer,
+                family="written_numerical_extraction",
+                variant=variant,
+                operand_size=max(speed, minutes),
+                step_count=1,
+                unit_burden=2,
+                answer_closeness=abs(nearby - answer),
+            )
+        part = int(self._rng.choice((2, 3, 4, 5, 6, 8)))
+        whole = int(self._rng.choice((8, 10, 12, 16, 20, 24, 30, 40)))
+        answer = (part * 100) // whole
+        nearby = answer + int(self._rng.choice((5, 10)))
+        prompt = (
+            "Load sheet note: "
+            f"{part} serviceable pumps out of {whole}, backup target {nearby} percent. "
+            "Enter the serviceable percentage only."
+        )
+        return self._problem(
+            prompt=prompt,
+            answer=answer,
+            family="written_numerical_extraction",
+            variant=variant,
+            operand_size=max(part, whole),
+            step_count=1,
+            unit_burden=2,
+            answer_closeness=abs(nearby - answer),
+        )
+
+    def _two_step_transform(self, *, level: int) -> Problem:
+        variant = str(self._rng.choice(("fuel_endurance_margin", "distance_with_headwind")))
+        if variant == "fuel_endurance_margin":
+            burn_lph = int(self._rng.choice(tuple(range(30, 91, 5))))
+            usable = int(self._rng.choice(tuple(range(180, 421, 10))))
+            reserve = int(self._rng.choice((20, 25, 30, 35, 40, 45, 50)))
+            taxi = int(self._rng.choice((5, 10, 15, 20)))
+            answer = ((usable - reserve) * 60) // burn_lph
+            close = answer + int(self._rng.choice((5, 8, 10)))
+            prompt = (
+                "Fuel card: "
+                f"burn {burn_lph} L/hr, usable {usable} L, reserve {reserve} L, taxi buffer {taxi} min, "
+                f"alternate endurance {close} min. "
+                "Subtract reserve, ignore taxi, and enter endurance in minutes."
+            )
+            return self._problem(
+                prompt=prompt,
+                answer=answer,
+                family="written_numerical_extraction",
+                variant=variant,
+                base_cap_s=max(5.0, 13.5 - (level * 0.55)),
+                operand_size=max(burn_lph, usable),
+                step_count=2,
+                unit_burden=3,
+                answer_closeness=abs(close - answer),
+            )
+        airspeed = int(self._rng.choice(tuple(range(140, 281, 10))))
+        headwind = int(self._rng.choice((10, 15, 20, 25, 30, 35, 40)))
+        hours = int(self._rng.choice((1, 2, 3, 4)))
+        minutes = int(self._rng.choice((10, 15, 20, 30, 40, 45, 50)))
+        ground_speed = airspeed - headwind
+        answer = (ground_speed * ((hours * 60) + minutes)) // 60
+        nearby = answer + int(self._rng.choice((7, 11, 14)))
+        prompt = (
+            "Navigation note: "
+            f"airspeed {airspeed} kt, headwind {headwind} kt, leg {hours} h {minutes:02d} min, "
+            f"comparison leg {nearby} nm. "
+            "Subtract the headwind and enter the leg distance in nautical miles."
+        )
+        return self._problem(
+            prompt=prompt,
+            answer=answer,
+            family="written_numerical_extraction",
+            variant=variant,
+            base_cap_s=max(5.0, 13.5 - (level * 0.55)),
+            operand_size=max(airspeed, answer),
+            step_count=2,
+            unit_burden=3,
+            answer_closeness=abs(nearby - answer),
         )
 
 
@@ -412,6 +569,35 @@ def build_ma_fuel_endurance_drill(
         mode=mode,
         config=cfg,
         base_caps_by_level=(18.0, 17.0, 16.0, 15.0, 14.0, 13.0, 12.0, 11.0, 10.0, 9.0),
+    )
+
+
+def build_ma_written_numerical_extraction_drill(
+    *,
+    clock: Clock,
+    seed: int,
+    difficulty: float = 0.5,
+    mode: AntDrillMode | str = AntDrillMode.TEMPO,
+    config: MaDrillConfig | None = None,
+) -> TimedCapDrill:
+    cfg = config or MaDrillConfig()
+    profile = ANT_DRILL_MODE_PROFILES[_normalize_mode(mode)]
+    return _build_ma_drill(
+        title_base="Mental Arithmetic: Written Numerical Extraction",
+        instructions=(
+            "Mental Arithmetic: Written Numerical Extraction",
+            f"Mode: {profile.label}",
+            "Read a short operational note, extract only the relevant quantities, and type the requested number.",
+            "The numbers get larger, the units get noisier, and the cap tightens as the prose gets less forgiving.",
+            "Press Enter to begin practice.",
+        ),
+        generator=MaWrittenNumericalExtractionGenerator(seed=seed),
+        clock=clock,
+        seed=seed,
+        difficulty=difficulty,
+        mode=mode,
+        config=cfg,
+        base_caps_by_level=(18.0, 17.0, 16.0, 15.0, 13.5, 12.5, 11.5, 10.5, 9.5, 8.5),
     )
 
 

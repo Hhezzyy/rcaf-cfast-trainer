@@ -30,6 +30,10 @@ class FakeClock:
         self.t += dt
 
 
+def _difficulty_for_level(level: int) -> float:
+    return float(level - 1) / 9.0
+
+
 def _problem_signature(engine) -> tuple[object, ...]:
     current = engine._current
     assert current is not None
@@ -142,3 +146,32 @@ def test_ic_pressure_run_alternates_parts_item_by_item() -> None:
         InstrumentComprehensionTrialKind.AIRCRAFT_TO_INSTRUMENTS,
         InstrumentComprehensionTrialKind.INSTRUMENTS_TO_DESCRIPTION,
     ]
+
+
+def test_ic_attitude_frame_levels_l2_l5_l8_are_materially_different() -> None:
+    def summarize(level: int) -> tuple[set[int], float]:
+        clock = FakeClock()
+        engine = build_ic_attitude_frame_drill(
+            clock=clock,
+            seed=611,
+            difficulty=_difficulty_for_level(level),
+        )
+        engine.start_scored()
+        headings: set[int] = set()
+        nearest_distractor_errors: list[int] = []
+        for _ in range(16):
+            payload = engine._current.payload
+            assert isinstance(payload, InstrumentComprehensionPayload)
+            headings.add(payload.prompt_state.heading_deg % 360)
+            nearest_distractor_errors.append(min(error for error in payload.option_errors if error > 0))
+            assert engine.submit_answer(str(engine._current.answer)) is True
+        return headings, sum(nearest_distractor_errors) / len(nearest_distractor_errors)
+
+    low_headings, low_nearest = summarize(2)
+    mid_headings, mid_nearest = summarize(5)
+    high_headings, high_nearest = summarize(8)
+
+    assert all(heading % 90 == 0 for heading in low_headings)
+    assert all(heading % 90 == 0 for heading in mid_headings)
+    assert any(heading % 90 != 0 for heading in high_headings)
+    assert low_nearest > mid_nearest > high_nearest

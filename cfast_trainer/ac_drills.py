@@ -217,6 +217,18 @@ class AuditoryCapacityContinuousDrill:
             adaptive_window_size=0,
         )
 
+    def result_metrics(self) -> dict[str, str]:
+        metrics: dict[str, str] = {"training_mode": self._mode.value}
+        getter = getattr(self._engine, "result_metrics", None)
+        if not callable(getter):
+            return metrics
+        raw = getter()
+        if not isinstance(raw, dict):
+            return metrics
+        for key, value in raw.items():
+            metrics[str(key)] = str(value)
+        return metrics
+
     def _force_phase(self, phase: Phase) -> None:
         if not hasattr(self._engine, "_phase"):
             return

@@ -5,7 +5,9 @@ from typing import cast
 
 from cfast_trainer.abd_drills import (
     AbdAngleCalibrationGenerator,
+    AbdAngleAnchorsGenerator,
     AbdBearingCalibrationGenerator,
+    AbdBearingAnchorsGenerator,
     AbdCardinalAnchorsGenerator,
     AbdDrillConfig,
     AbdFamilyRunConfig,
@@ -13,6 +15,8 @@ from cfast_trainer.abd_drills import (
     AbdMixedTempoGenerator,
     AbdTestStyleFamilyRunGenerator,
     AbdTypedAnswerScorer,
+    build_abd_angle_anchor_drill,
+    build_abd_bearing_anchor_drill,
     build_abd_test_style_family_run_drill,
 )
 from cfast_trainer.angles_bearings_degrees import (
@@ -29,6 +33,10 @@ class FakeClock:
 
     def now(self) -> float:
         return self.t
+
+
+def _difficulty_for_level(level: int) -> float:
+    return float(level - 1) / 9.0
 
 
 def test_cardinal_anchors_low_level_emit_only_cardinals_and_straights() -> None:
@@ -167,6 +175,147 @@ def test_mixed_tempo_is_deterministic_for_same_seed() -> None:
         )
 
     assert [summarize(problem) for problem in seq1] == [summarize(problem) for problem in seq2]
+
+
+def test_angle_anchor_builder_emits_angle_only_payloads() -> None:
+    engine = build_abd_angle_anchor_drill(
+        clock=FakeClock(),
+        seed=211,
+        difficulty=0.5,
+        mode=AntDrillMode.BUILD,
+        config=AbdDrillConfig(practice_questions=0, scored_duration_s=30.0),
+    )
+    engine.start_scored()
+
+    payload = engine.snapshot().payload
+    assert isinstance(payload, AnglesBearingsTrainingPayload)
+    assert payload.kind is AnglesBearingsQuestionKind.ANGLE_BETWEEN_LINES
+
+
+def test_bearing_anchor_builder_emits_bearing_only_payloads() -> None:
+    engine = build_abd_bearing_anchor_drill(
+        clock=FakeClock(),
+        seed=223,
+        difficulty=0.5,
+        mode=AntDrillMode.BUILD,
+        config=AbdDrillConfig(practice_questions=0, scored_duration_s=30.0),
+    )
+    engine.start_scored()
+
+    payload = engine.snapshot().payload
+    assert isinstance(payload, AnglesBearingsTrainingPayload)
+    assert payload.kind is AnglesBearingsQuestionKind.BEARING_FROM_REFERENCE
+
+
+def test_angle_anchor_levels_l2_l5_l8_are_materially_different() -> None:
+    def samples(level: int) -> tuple[set[int], set[int], float]:
+        generator = AbdAngleAnchorsGenerator(seed=313)
+        exact_values: set[int] = set()
+        references: set[int] = set()
+        caps: list[float] = []
+        for _ in range(60):
+            payload = cast(
+                AnglesBearingsTrainingPayload,
+                generator.next_problem(difficulty=_difficulty_for_level(level)).payload,
+            )
+            exact_values.add(payload.exact_value_deg)
+            references.add(payload.reference_bearing_deg)
+            caps.append(float(payload.base_cap_s))
+        return exact_values, references, min(caps)
+
+    low_values, low_refs, low_cap = samples(2)
+    mid_values, mid_refs, mid_cap = samples(5)
+    high_values, high_refs, high_cap = samples(8)
+
+    assert low_values <= {0, 45, 90, 135, 180}
+    assert low_refs == {0}
+    assert mid_values & {30, 60, 120, 150}
+    assert mid_refs != {0}
+    assert high_values & {15, 75, 105, 165}
+    assert any(reference % 45 != 0 for reference in high_refs)
+    assert low_cap > mid_cap > high_cap
+
+
+def test_bearing_anchor_levels_l2_l5_l8_are_materially_different() -> None:
+    def samples(level: int) -> tuple[set[int], float, float]:
+        generator = AbdBearingAnchorsGenerator(seed=317)
+        exact_values: set[int] = set()
+        radii: list[float] = []
+        caps: list[float] = []
+        for _ in range(60):
+            payload = cast(
+                AnglesBearingsTrainingPayload,
+                generator.next_problem(difficulty=_difficulty_for_level(level)).payload,
+            )
+            exact_values.add(payload.exact_value_deg)
+            radii.append(float(payload.marker_radius_ratio))
+            caps.append(float(payload.base_cap_s))
+        return exact_values, min(radii), min(caps)
+
+    low_values, low_radius, low_cap = samples(2)
+    mid_values, mid_radius, mid_cap = samples(5)
+    high_values, high_radius, high_cap = samples(8)
+
+    assert all(value % 45 == 0 for value in low_values)
+    assert any(value % 45 != 0 for value in mid_values)
+    assert any(value % 30 != 0 for value in high_values)
+    assert low_radius > mid_radius > high_radius
+    assert low_cap > mid_cap > high_cap
+
+
+def test_angle_tempo_levels_l2_l5_l8_change_reference_rotation_and_caps() -> None:
+    def summarize(level: int) -> tuple[set[int], float]:
+        generator = AbdAngleCalibrationGenerator(seed=331)
+        refs = {
+            cast(
+                AnglesBearingsTrainingPayload,
+                generator.next_problem(difficulty=_difficulty_for_level(level)).payload,
+            ).reference_bearing_deg
+            for _ in range(25)
+        }
+        cap = min(
+            float(
+                cast(
+                    AnglesBearingsTrainingPayload,
+                    generator.next_problem(difficulty=_difficulty_for_level(level)).payload,
+                ).base_cap_s
+            )
+            for _ in range(8)
+        )
+        return refs, cap
+
+    low_refs, low_cap = summarize(2)
+    mid_refs, mid_cap = summarize(5)
+    high_refs, high_cap = summarize(8)
+
+    assert low_refs == {0}
+    assert mid_refs == {0}
+    assert high_refs != {0}
+    assert low_cap > mid_cap > high_cap
+
+
+def test_bearing_tempo_levels_l2_l5_l8_expand_precision_and_reduce_marker_radius() -> None:
+    def summarize(level: int) -> tuple[set[int], float]:
+        generator = AbdBearingCalibrationGenerator(seed=337)
+        values: set[int] = set()
+        radii: list[float] = []
+        for _ in range(25):
+            payload = cast(
+                AnglesBearingsTrainingPayload,
+                generator.next_problem(difficulty=_difficulty_for_level(level)).payload,
+            )
+            values.add(payload.exact_value_deg)
+            radii.append(float(payload.marker_radius_ratio))
+        return values, min(radii)
+
+    low_values, low_radius = summarize(2)
+    mid_values, mid_radius = summarize(5)
+    high_values, high_radius = summarize(8)
+
+    assert all(value % 90 == 0 for value in low_values)
+    assert any(value % 90 != 0 for value in mid_values)
+    assert any(value % 90 != 0 for value in high_values)
+    assert low_radius > mid_radius > high_radius
 
 
 def test_test_style_family_run_emits_only_requested_family() -> None:

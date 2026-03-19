@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 import pytest
 
+from cfast_trainer.adaptive_difficulty import build_resolved_difficulty_context, family_id_for_code
 from cfast_trainer.ant_drills import AntDifficultyChange
 from cfast_trainer.cognitive_core import AttemptSummary, Phase, QuestionEvent
 from cfast_trainer.numerical_operations import (
@@ -12,9 +13,37 @@ from cfast_trainer.numerical_operations import (
     NumericalOperationsGenerator,
     build_numerical_operations_test,
 )
-from cfast_trainer.persistence import ResultsStore, load_session_summary, record_attempt
+from cfast_trainer.persistence import SCHEMA_VERSION, ResultsStore, load_session_summary, record_attempt
 from cfast_trainer.rapid_tracking import RapidTrackingConfig, build_rapid_tracking_test
 from cfast_trainer.results import attempt_result_from_engine
+
+_COMMON_METRIC_KEYS = (
+    "attempted",
+    "correct",
+    "score_ratio",
+    "duration_s",
+    "completed",
+    "aborted",
+    "mean_rt_ms",
+    "median_rt_ms",
+    "rt_variance_ms2",
+    "timeout_count",
+    "timeout_rate",
+    "longest_lapse_streak",
+    "first_half_accuracy",
+    "second_half_accuracy",
+    "first_half_mean_rt_ms",
+    "second_half_mean_rt_ms",
+    "first_3m_accuracy",
+    "last_3m_accuracy",
+    "first_3m_timeout_rate",
+    "last_3m_timeout_rate",
+    "post_error_next_item_rt_inflation_ms",
+    "post_error_next_item_accuracy_drop",
+    "difficulty_level_start",
+    "difficulty_level_end",
+    "difficulty_change_count",
+)
 
 
 @dataclass
@@ -39,6 +68,8 @@ class _StaticTelemetryEngine:
     scored_duration_s: float = 120.0
     scored_started_at_s: float = 0.0
     difficulty_changes_seq: tuple[AntDifficultyChange, ...] = ()
+    _result_metrics_overrides: dict[str, str] | None = None
+    _resolved_difficulty_context: object | None = None
 
     @property
     def _difficulty(self) -> float:
@@ -291,6 +322,29 @@ def test_attempt_result_from_engine_handles_custom_summary_metrics_without_quest
     assert result.mean_rt_ms is not None
     assert result.metrics["mean_error"] == f"{summary.mean_error:.6f}"
     assert result.metrics["capture_points"] == str(summary.capture_points)
+    assert result.metrics["rms_tracking_error"] == f"{summary.rms_error:.6f}"
+    assert result.metrics["overshoot_count"] != ""
+    assert result.metrics["reversal_count"] != ""
+
+
+def test_attempt_result_from_engine_emits_required_common_metrics_for_completed_and_aborted() -> None:
+    completed = attempt_result_from_engine(
+        _build_static_telemetry_engine(),
+        test_code="telemetry_static",
+    )
+    aborted = attempt_result_from_engine(
+        _build_static_telemetry_engine(phase=Phase.SCORED),
+        test_code="telemetry_static",
+    )
+
+    for result in (completed, aborted):
+        for key in _COMMON_METRIC_KEYS:
+            assert key in result.metrics
+
+    assert completed.metrics["completed"] == "1"
+    assert completed.metrics["aborted"] == "0"
+    assert aborted.metrics["completed"] == "0"
+    assert aborted.metrics["aborted"] == "1"
 
 
 def test_attempt_result_from_engine_computes_short_run_telemetry_analytics() -> None:
@@ -316,6 +370,7 @@ def test_attempt_result_from_engine_computes_short_run_telemetry_analytics() -> 
     assert result.metrics["post_correct_next_item_mean_rt_ms"] == "600.000000"
     assert result.metrics["post_error_next_item_mean_rt_ms"] == "1900.000000"
     assert result.metrics["post_error_next_item_rt_inflation_ms"] == "1300.000000"
+    assert result.metrics["post_error_next_item_accuracy_drop"] == "-0.500000"
     assert result.metrics["difficulty_change_count"] == "1"
     assert result.metrics["first_half_attempted"] == "3"
     assert result.metrics["first_half_accuracy"] == "0.333333"
@@ -327,6 +382,48 @@ def test_attempt_result_from_engine_computes_short_run_telemetry_analytics() -> 
     assert result.metrics["second_half_timeout_rate"] == "0.000000"
     assert result.metrics["half_accuracy_drop"] == "-0.666667"
     assert result.metrics["half_mean_rt_inflation_ms"] == "1066.666667"
+
+
+def test_attempt_result_from_engine_emits_realized_difficulty_profile_metrics() -> None:
+    engine = _build_static_telemetry_engine()
+    engine._resolved_difficulty_context = build_resolved_difficulty_context(
+        "vs_target_preview",
+        mode="adaptive",
+        launch_level=5,
+        fixed_level=5,
+        adaptive_enabled=True,
+    )
+
+    result = attempt_result_from_engine(engine, test_code="vs_target_preview")
+
+    assert result.metrics["difficulty_family_id"] == family_id_for_code("vs_target_preview")
+    assert result.metrics["difficulty_profile_level_start"] == "5"
+    assert result.metrics["difficulty_profile_level_end"] == "7"
+    assert result.metrics["difficulty_profile_level"] == result.metrics["difficulty_profile_level_end"]
+    assert result.metrics["difficulty_profile_mode_start"] == "build"
+    assert result.metrics["difficulty_profile_mode_end"] == "build"
+    assert result.metrics["difficulty_profile_mode"] == result.metrics["difficulty_profile_mode_end"]
+
+    changed_axes = []
+    for axis in (
+        "content_complexity",
+        "time_pressure",
+        "distractor_density",
+        "multitask_concurrency",
+        "memory_span_delay",
+        "switch_frequency",
+        "control_sensitivity",
+        "spatial_ambiguity",
+        "source_integration_depth",
+    ):
+        start_key = f"difficulty_axis_{axis}_start"
+        end_key = f"difficulty_axis_{axis}_end"
+        assert start_key in result.metrics
+        assert end_key in result.metrics
+        assert result.metrics[f"difficulty_axis_{axis}"] == result.metrics[end_key]
+        if result.metrics[start_key] != result.metrics[end_key]:
+            changed_axes.append(axis)
+    assert changed_axes
 
 
 def test_results_store_persists_activity_sessions_telemetry_and_session_rollups(tmp_path) -> None:
@@ -469,6 +566,165 @@ def test_results_store_reuses_session_and_reads_session_summaries(tmp_path) -> N
     assert telemetry_row == (8,)
 
 
+def test_difficulty_state_updates_and_resets_code_family_and_primitive_scopes(tmp_path) -> None:
+    store = ResultsStore(tmp_path / "results.sqlite3")
+    result = attempt_result_from_engine(
+        _run_numerical_attempt(seed=444),
+        test_code="numerical_operations",
+    )
+
+    store.record_attempt(
+        result=result,
+        app_version="test",
+        input_profile_id="default",
+    )
+
+    code_state = store.difficulty_state(scope_kind="code", scope_key="numerical_operations")
+    family_state = store.difficulty_state(
+        scope_kind="family",
+        scope_key=family_id_for_code("numerical_operations"),
+    )
+    primitive_state = store.difficulty_state(
+        scope_kind="primitive",
+        scope_key="mental_arithmetic_automaticity",
+    )
+
+    assert code_state is not None
+    assert family_state is not None
+    assert primitive_state is not None
+    assert code_state.mastery is None
+    assert family_state.mastery is None
+    assert primitive_state.mastery is not None
+    assert primitive_state.speed is not None
+    assert primitive_state.confidence is not None
+    assert primitive_state.level_confidence is not None
+    assert primitive_state.leverage is not None
+
+    store.reset_difficulty_state(test_code="numerical_operations")
+
+    assert store.difficulty_state(scope_kind="code", scope_key="numerical_operations") is None
+    assert (
+        store.difficulty_state(
+            scope_kind="family",
+            scope_key=family_id_for_code("numerical_operations"),
+        )
+        is None
+    )
+    assert (
+        store.difficulty_state(
+            scope_kind="primitive",
+            scope_key="mental_arithmetic_automaticity",
+        )
+        is None
+    )
+
+
+def test_ranked_primitive_scope_keys_use_canonical_ids_for_persisted_state(tmp_path) -> None:
+    store = ResultsStore(tmp_path / "results.sqlite3")
+    result = attempt_result_from_engine(
+        _build_static_telemetry_engine(),
+        test_code="ant_time_flip",
+    )
+
+    store.record_attempt(
+        result=result,
+        app_version="test",
+        input_profile_id="default",
+    )
+
+    canonical = store.difficulty_state(
+        scope_kind="primitive",
+        scope_key="mental_arithmetic_automaticity",
+    )
+    legacy = store.difficulty_state(
+        scope_kind="primitive",
+        scope_key="airborne_numerical_applied_math",
+    )
+
+    assert canonical is not None
+    assert canonical.mastery is not None
+    assert legacy is None
+
+
+def test_replacement_alias_attempts_merge_under_canonical_code_scope(tmp_path) -> None:
+    store = ResultsStore(tmp_path / "results.sqlite3")
+
+    legacy = attempt_result_from_engine(
+        _build_static_telemetry_engine(),
+        test_code="ic_attitude_frame",
+    )
+    canonical = attempt_result_from_engine(
+        _build_static_telemetry_engine(),
+        test_code="ic_instrument_attitude_matching",
+    )
+
+    store.record_attempt(result=legacy, app_version="test", input_profile_id="default")
+    store.record_attempt(result=canonical, app_version="test", input_profile_id="default")
+
+    merged = store.difficulty_state(
+        scope_kind="code",
+        scope_key="ic_instrument_attitude_matching",
+    )
+    legacy_state = store.difficulty_state(
+        scope_kind="code",
+        scope_key="ic_attitude_frame",
+    )
+
+    assert merged is not None
+    assert merged.sample_count == 2
+    assert legacy_state is None
+
+
+def test_adaptive_session_variants_merge_under_shared_adaptive_code_scope(tmp_path) -> None:
+    store = ResultsStore(tmp_path / "results.sqlite3")
+
+    short = attempt_result_from_engine(
+        _build_static_telemetry_engine(),
+        test_code="adaptive_session_short",
+    )
+    micro = attempt_result_from_engine(
+        _build_static_telemetry_engine(),
+        test_code="adaptive_session_micro",
+    )
+
+    store.record_attempt(result=short, app_version="test", input_profile_id="default")
+    store.record_attempt(result=micro, app_version="test", input_profile_id="default")
+
+    merged = store.difficulty_state(scope_kind="code", scope_key="adaptive_session")
+    short_state = store.difficulty_state(scope_kind="code", scope_key="adaptive_session_short")
+    micro_state = store.difficulty_state(scope_kind="code", scope_key="adaptive_session_micro")
+
+    assert merged is not None
+    assert merged.sample_count == 2
+    assert short_state is None
+    assert micro_state is None
+
+
+def test_recent_attempt_history_preserves_block_metrics_for_adaptive_variants(tmp_path) -> None:
+    store = ResultsStore(tmp_path / "results.sqlite3")
+    engine = _build_static_telemetry_engine()
+    engine._result_metrics_overrides = {
+        "block.01.primitive_id": "mental_arithmetic_automaticity",
+        "block.01.drill_code": "ma_percentage_snap",
+        "block.01.target_area": "quantitative_core",
+        "block.01.form_factor": "micro",
+    }
+    result = attempt_result_from_engine(
+        engine,
+        test_code="adaptive_session_short",
+    )
+
+    store.record_attempt(result=result, app_version="test", input_profile_id="default")
+    history = store.recent_attempt_history(since_days=28)
+
+    assert len(history) == 1
+    assert history[0].test_code == "adaptive_session_short"
+    assert history[0].metrics["block.01.primitive_id"] == "mental_arithmetic_automaticity"
+    assert history[0].metrics["block.01.drill_code"] == "ma_percentage_snap"
+    assert history[0].metrics["block.01.target_area"] == "quantitative_core"
+    assert history[0].metrics["block.01.form_factor"] == "micro"
+
+
 def test_results_store_aborts_activity_sessions_without_attempt_rows(tmp_path) -> None:
     store = ResultsStore(tmp_path / "results.sqlite3")
     store.start_app_session(app_version="test")
@@ -606,7 +862,7 @@ def test_results_store_migrates_v1_database_and_continues_writing(tmp_path) -> N
 
     summary = load_session_summary(db_path=path, session_id=1)
 
-    assert user_version == (2,)
+    assert user_version == (SCHEMA_VERSION,)
     assert attempt_count == (2,)
     assert activity_count == (2,)
     assert legacy_link is not None

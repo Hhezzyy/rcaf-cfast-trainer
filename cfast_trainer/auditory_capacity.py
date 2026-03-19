@@ -1116,6 +1116,22 @@ class AuditoryCapacityEngine:
     def events(self) -> list[AuditoryCapacityEvent]:
         return list(self._events)
 
+    def result_metrics(self) -> dict[str, str]:
+        return {
+            "auditory.boundary_violations": str(int(self._collisions)),
+            "auditory.gate_hits": str(int(self._gate_hits)),
+            "auditory.gate_misses": str(int(self._gate_misses)),
+            "auditory.forbidden_gate_hits": str(int(self._forbidden_gate_hits)),
+            "auditory.false_alarms": str(int(self._false_alarms)),
+            "auditory.correct_command_executions": str(int(self._correct_command_executions)),
+            "auditory.false_responses_to_distractors": str(
+                int(self._false_responses_to_distractors)
+            ),
+            "auditory.missed_valid_commands": str(int(self._missed_valid_commands)),
+            "auditory.digit_recall_attempts": str(int(self._digit_recall_attempts)),
+            "auditory.digit_recall_accuracy": f"{self._digit_recall_accuracy():.6f}",
+        }
+
     @classmethod
     def _normalize_segments(
         cls, segments: tuple[AuditoryCapacityTrainingSegment, ...]

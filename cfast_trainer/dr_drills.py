@@ -41,6 +41,11 @@ def _format_digits(value: str, *, chunk: int = 1) -> str:
     return "   ".join(groups)
 
 
+def _format_interference(value: str, *, chunk: int = 2) -> str:
+    groups = [value[index : index + chunk] for index in range(0, len(value), chunk)]
+    return " ".join(groups)
+
+
 def _question_cap(level: int, caps: tuple[float, ...]) -> float:
     clamped = max(1, min(len(caps), int(level)))
     return float(caps[clamped - 1])
@@ -140,6 +145,133 @@ class DrPositionProbeGenerator(_BaseDigitRecognitionProblemGenerator):
                 initial_display_s=(1.8, 1.6, 1.4, 1.2, 1.0, 0.9, 0.8, 0.75, 0.7, 0.6)[level - 1],
                 mask_s=0.0,
                 keep_display_visible_during_question=True,
+            ),
+        )
+
+
+class DrVisualDigitQueryGenerator(_BaseDigitRecognitionProblemGenerator):
+    def __init__(self, *, seed: int) -> None:
+        self._rng = SeededRng(seed)
+        self._digits = DigitRecognitionGenerator(
+            SeededRng(seed + 101),
+            profile=DigitRecognitionProfile(
+                allowed_kinds=(DigitRecognitionQuestionKind.RECALL,),
+                min_length_easy=5,
+                min_length_hard=9,
+                max_length_easy=7,
+                max_length_hard=12,
+                display_s_easy=1.8,
+                display_s_hard=0.7,
+                mask_s_easy=0.35,
+                mask_s_hard=0.90,
+                string_profile="friendly",
+            ),
+        )
+
+    def next_problem(self, *, difficulty: float) -> Problem:
+        level = _difficulty_to_level(difficulty)
+        digits = self._digits.next_digit_string(difficulty=difficulty)
+        query_complexity = 1 if level <= 3 else 2 if level <= 6 else 3
+        if query_complexity == 1:
+            index = int(self._rng.randint(0, len(digits) - 1))
+            expected = digits[index]
+            prompt = f"Enter digit {index + 1} from the original string."
+        elif query_complexity == 2:
+            width = min(2, len(digits))
+            start = int(self._rng.randint(0, len(digits) - width))
+            expected = digits[start : start + width]
+            prompt = f"Enter digits {start + 1}-{start + width} from the original string."
+        else:
+            count_target = str(self._rng.randint(0, 9))
+            expected = str(sum(1 for ch in digits if ch == count_target))
+            prompt = f"How many {count_target}s were in the original string?"
+        interference_rate = 1 if level <= 3 else 2 if level <= 6 else 3
+        interference_lines = tuple(
+            _format_interference(self._digits.next_digit_string(difficulty=min(1.0, difficulty + 0.2)))
+            for _ in range(interference_rate)
+        )
+        mask_s = (0.30, 0.36, 0.42, 0.52, 0.60, 0.68, 0.76, 0.84, 0.92, 1.00)[level - 1]
+        display_s = (1.80, 1.65, 1.50, 1.35, 1.20, 1.05, 0.95, 0.85, 0.78, 0.70)[level - 1]
+        return Problem(
+            prompt=prompt,
+            answer=int(expected),
+            payload=DigitRecognitionTrainingSpec(
+                kind=DigitRecognitionQuestionKind.RECALL,
+                display_lines=(_format_digits(digits, chunk=2),),
+                question_prompt=prompt,
+                expected_digits=expected,
+                display_answer_text=expected,
+                input_digits=max(2, len(expected)),
+                answer_digits=len(expected),
+                initial_display_s=display_s,
+                mask_s=mask_s,
+                keep_display_visible_during_question=False,
+                question_cap_s=(13.0, 12.0, 11.0, 10.0, 9.0, 8.0, 7.0, 6.5, 6.0, 5.5)[
+                    level - 1
+                ],
+                mask_display_lines=interference_lines,
+                mask_prompt="Ignore the interference stream.",
+                family_tag="visual_digit_query",
+                span_length=len(digits),
+                delay_s=mask_s,
+                query_complexity=query_complexity,
+                interference_rate=interference_rate,
+            ),
+        )
+
+
+class DrRecallAfterInterferenceGenerator(_BaseDigitRecognitionProblemGenerator):
+    def __init__(self, *, seed: int) -> None:
+        self._digits = DigitRecognitionGenerator(
+            SeededRng(seed),
+            profile=DigitRecognitionProfile(
+                allowed_kinds=(DigitRecognitionQuestionKind.RECALL,),
+                min_length_easy=5,
+                min_length_hard=8,
+                max_length_easy=7,
+                max_length_hard=11,
+                display_s_easy=1.6,
+                display_s_hard=0.65,
+                mask_s_easy=0.45,
+                mask_s_hard=1.10,
+                string_profile="default",
+            ),
+        )
+
+    def next_problem(self, *, difficulty: float) -> Problem:
+        level = _difficulty_to_level(difficulty)
+        digits = self._digits.next_digit_string(difficulty=difficulty)
+        interference_rate = 1 if level <= 3 else 2 if level <= 6 else 4
+        interference_lines = tuple(
+            _format_interference(self._digits.next_digit_string(difficulty=min(1.0, difficulty + 0.25)))
+            for _ in range(interference_rate)
+        )
+        mask_s = (0.45, 0.52, 0.60, 0.70, 0.82, 0.92, 1.00, 1.10, 1.18, 1.25)[level - 1]
+        display_s = (1.60, 1.50, 1.40, 1.28, 1.15, 1.00, 0.90, 0.80, 0.72, 0.65)[level - 1]
+        return Problem(
+            prompt="After the interference, enter the original digit string.",
+            answer=int(digits),
+            payload=DigitRecognitionTrainingSpec(
+                kind=DigitRecognitionQuestionKind.RECALL,
+                display_lines=(_format_digits(digits, chunk=2),),
+                question_prompt="After the interference, enter the original digit string.",
+                expected_digits=digits,
+                display_answer_text=digits,
+                input_digits=max(4, len(digits)),
+                answer_digits=len(digits),
+                initial_display_s=display_s,
+                mask_s=mask_s,
+                keep_display_visible_during_question=False,
+                question_cap_s=(14.0, 13.0, 12.0, 11.0, 10.0, 9.0, 8.0, 7.0, 6.5, 6.0)[
+                    level - 1
+                ],
+                mask_display_lines=interference_lines,
+                mask_prompt="Ignore the interference digits and hold the original string.",
+                family_tag="recall_after_interference",
+                span_length=len(digits),
+                delay_s=mask_s,
+                query_complexity=1,
+                interference_rate=interference_rate,
             ),
         )
 
@@ -567,7 +699,7 @@ class DigitRecognitionTimedDrill:
         if self._stage is _DrStage.SHOW:
             return "MEMORIZE"
         if self._stage is _DrStage.MASK:
-            return ""
+            return self._current.payload.mask_prompt
         return self._current.payload.question_prompt
 
     def time_remaining_s(self) -> float | None:
@@ -717,16 +849,16 @@ class DigitRecognitionTimedDrill:
                 accepting_input=False,
                 prompt_text="",
                 input_digits=spec.input_digits,
-                family=spec.kind.value,
+                family=spec.family_tag or spec.kind.value,
             )
         if self._stage is _DrStage.MASK:
             return DigitRecognitionPayload(
-                display_digits=None,
-                display_lines=None,
+                display_digits=spec.mask_display_lines[0] if spec.mask_display_lines else None,
+                display_lines=spec.mask_display_lines or None,
                 accepting_input=False,
-                prompt_text="",
+                prompt_text=spec.mask_prompt,
                 input_digits=spec.input_digits,
-                family=spec.kind.value,
+                family=spec.family_tag or spec.kind.value,
             )
         display_lines = spec.display_lines if spec.keep_display_visible_during_question else None
         return DigitRecognitionPayload(
@@ -735,7 +867,7 @@ class DigitRecognitionTimedDrill:
             accepting_input=True,
             prompt_text=spec.question_prompt,
             input_digits=spec.input_digits,
-            family=spec.kind.value,
+            family=spec.family_tag or spec.kind.value,
         )
 
     def _display_answer(self, problem: Problem) -> str:
@@ -877,6 +1009,35 @@ def build_dr_visible_family_primer_drill(
     )
 
 
+def build_dr_visual_digit_query_drill(
+    *,
+    clock: Clock,
+    seed: int,
+    difficulty: float = 0.5,
+    mode: AntDrillMode | str = AntDrillMode.BUILD,
+    config: DigitRecognitionDrillConfig | None = None,
+) -> DigitRecognitionTimedDrill:
+    cfg = config or DigitRecognitionDrillConfig()
+    profile = ANT_DRILL_MODE_PROFILES[_normalize_mode(mode)]
+    return _build_drill(
+        title_base="Digit Recognition: Visual Digit Query",
+        instructions=(
+            "Digit Recognition: Visual Digit Query",
+            f"Mode: {profile.label}",
+            "Memorize the string, ignore the interference stream, then answer a specific digit query from memory.",
+            "Span length, delay, query complexity, and interference density all rise with level.",
+            "Press Enter to begin practice.",
+        ),
+        generator=DrVisualDigitQueryGenerator(seed=seed),
+        clock=clock,
+        seed=seed,
+        difficulty=difficulty,
+        mode=mode,
+        config=cfg,
+        base_question_caps_by_level=(13.0, 12.0, 11.0, 10.0, 9.0, 8.0, 7.0, 6.5, 6.0, 5.5),
+    )
+
+
 def build_dr_recall_run_drill(
     *,
     clock: Clock,
@@ -903,6 +1064,35 @@ def build_dr_recall_run_drill(
         mode=mode,
         config=cfg,
         base_question_caps_by_level=(12.0, 11.0, 10.0, 9.5, 9.0, 8.0, 7.0, 6.0, 5.5, 5.0),
+    )
+
+
+def build_dr_recall_after_interference_drill(
+    *,
+    clock: Clock,
+    seed: int,
+    difficulty: float = 0.5,
+    mode: AntDrillMode | str = AntDrillMode.TEMPO,
+    config: DigitRecognitionDrillConfig | None = None,
+) -> DigitRecognitionTimedDrill:
+    cfg = config or DigitRecognitionDrillConfig()
+    profile = ANT_DRILL_MODE_PROFILES[_normalize_mode(mode)]
+    return _build_drill(
+        title_base="Digit Recognition: Recall After Interference",
+        instructions=(
+            "Digit Recognition: Recall After Interference",
+            f"Mode: {profile.label}",
+            "Hold the original string through an explicit interference burst, then type the full recall exactly.",
+            "Later levels lengthen the string, extend the delay, and raise the interference rate before the answer window opens.",
+            "Press Enter to begin practice.",
+        ),
+        generator=DrRecallAfterInterferenceGenerator(seed=seed),
+        clock=clock,
+        seed=seed,
+        difficulty=difficulty,
+        mode=mode,
+        config=cfg,
+        base_question_caps_by_level=(14.0, 13.0, 12.0, 11.0, 10.0, 9.0, 8.0, 7.0, 6.5, 6.0),
     )
 
 

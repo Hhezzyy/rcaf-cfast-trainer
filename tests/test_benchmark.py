@@ -10,6 +10,7 @@ os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 import pygame
 import pytest
 
+from cfast_trainer.adaptive_difficulty import difficulty_ratio_for_level
 from cfast_trainer.app import (
     App,
     BenchmarkScreen,
@@ -342,6 +343,13 @@ def test_benchmark_attempt_persists_as_one_activity_with_prefixed_probe_metrics(
     assert telemetry_kinds.count("probe_completed") == 2
     assert "activity_completed" in telemetry_kinds
 
+    alpha_state = store.difficulty_state(scope_kind="code", scope_key="alpha")
+    beta_state = store.difficulty_state(scope_kind="code", scope_key="beta")
+    assert alpha_state is not None
+    assert beta_state is not None
+    assert alpha_state.last_end_level == 5
+    assert beta_state.last_end_level == 4
+
 
 def test_benchmark_launch_ignores_difficulty_and_seed_overrides(tmp_path) -> None:
     pygame.init()
@@ -377,7 +385,9 @@ def test_benchmark_launch_ignores_difficulty_and_seed_overrides(tmp_path) -> Non
         engine = session.current_engine()
         assert engine is not None
         assert getattr(engine, "seed", None) == 1101
-        assert getattr(engine, "difficulty", None) == pytest.approx((5 - 1) / 9.0)
+        assert getattr(engine, "difficulty", None) == pytest.approx(
+            difficulty_ratio_for_level("numerical_operations", 5)
+        )
     finally:
         pygame.quit()
 

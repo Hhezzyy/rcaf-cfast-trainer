@@ -260,6 +260,68 @@ class AbdIntermediateAnchorsGenerator(_AbdTypedGenerator):
         return Problem(prompt=stem, answer=angle, payload=payload)
 
 
+class AbdAngleAnchorsGenerator(_AbdTypedGenerator):
+    def __init__(self, *, seed: int) -> None:
+        self._rng = SeededRng(seed)
+
+    def next_problem(self, *, difficulty: float) -> Problem:
+        level = _difficulty_to_level(difficulty)
+        if level <= 3:
+            exact_values = _anchor_angle_values(level, intermediate=False)
+        else:
+            exact_values = _anchor_angle_values(level, intermediate=True)
+        exact = int(self._rng.choice(exact_values))
+        if level <= 4:
+            reference = 0
+        elif level <= 7:
+            reference = int(self._rng.choice((0, 45, 90, 135, 180, 225, 270, 315)))
+        else:
+            reference = int(self._rng.choice(tuple(range(0, 360, 15))))
+        clockwise = self._rng.random() < 0.5
+        target = (reference + exact) % 360 if clockwise else (reference - exact) % 360
+        stem = "Estimate the smaller angle between the rays and enter it exactly."
+        payload = _training_payload(
+            kind=AnglesBearingsQuestionKind.ANGLE_BETWEEN_LINES,
+            stem=stem,
+            reference_bearing_deg=reference,
+            target_bearing_deg=target,
+            rounded_value_deg=exact,
+            exact_value_deg=exact,
+            base_cap_s=max(6.0, _angle_base_cap(level)),
+        )
+        return Problem(prompt=stem, answer=exact, payload=payload)
+
+
+class AbdBearingAnchorsGenerator(_AbdTypedGenerator):
+    def __init__(self, *, seed: int) -> None:
+        self._rng = SeededRng(seed)
+
+    def next_problem(self, *, difficulty: float) -> Problem:
+        level = _difficulty_to_level(difficulty)
+        value = int(
+            self._rng.choice(
+                _anchor_bearing_values(level, intermediate=level >= 4)
+            )
+        )
+        stem = (
+            "Find the bearing of the point. North may be entered as 000 or 360."
+            if value % 360 == 0
+            else "Find the bearing of the point and enter it exactly."
+        )
+        payload = _training_payload(
+            kind=AnglesBearingsQuestionKind.BEARING_FROM_REFERENCE,
+            stem=stem,
+            reference_bearing_deg=0,
+            target_bearing_deg=value,
+            rounded_value_deg=value % 360,
+            exact_value_deg=value % 360,
+            base_cap_s=max(6.0, _bearing_base_cap(level)),
+            allow_north_360_alias=value % 360 == 0,
+            marker_radius_ratio=_bearing_marker_radius_ratio(self._rng, level),
+        )
+        return Problem(prompt=stem, answer=value % 360, payload=payload)
+
+
 class AbdAngleCalibrationGenerator(_AbdTypedGenerator):
     def __init__(self, *, seed: int) -> None:
         self._rng = SeededRng(seed)
@@ -433,6 +495,64 @@ def build_abd_cardinal_anchors_drill(
             "Press Enter to begin practice.",
         ),
         generator=AbdCardinalAnchorsGenerator(seed=seed),
+        clock=clock,
+        seed=seed,
+        difficulty=difficulty,
+        mode=mode,
+        config=cfg,
+        base_caps_by_level=(16.0, 15.0, 14.0, 13.0, 12.0, 11.0, 10.0, 9.0, 8.0, 7.0),
+    )
+
+
+def build_abd_angle_anchor_drill(
+    *,
+    clock: Clock,
+    seed: int,
+    difficulty: float = 0.5,
+    mode: AntDrillMode | str = AntDrillMode.BUILD,
+    config: AbdDrillConfig | None = None,
+) -> TimedCapDrill:
+    cfg = config or AbdDrillConfig()
+    profile = ANT_DRILL_MODE_PROFILES[_normalize_mode(mode)]
+    return _build_abd_drill(
+        title_base="Angles, Bearings and Degrees: Angle Anchor",
+        instructions=(
+            "Angles, Bearings and Degrees: Angle Anchor",
+            f"Mode: {profile.label}",
+            "Angle-only anchor stream. Build the fixed reference angles first, then absorb rotated references as the level rises.",
+            "Type the exact smaller angle and use the next-item flash to keep tempo.",
+            "Press Enter to begin practice.",
+        ),
+        generator=AbdAngleAnchorsGenerator(seed=seed),
+        clock=clock,
+        seed=seed,
+        difficulty=difficulty,
+        mode=mode,
+        config=cfg,
+        base_caps_by_level=(16.0, 15.0, 14.0, 13.0, 12.0, 11.0, 10.0, 9.0, 8.0, 7.0),
+    )
+
+
+def build_abd_bearing_anchor_drill(
+    *,
+    clock: Clock,
+    seed: int,
+    difficulty: float = 0.5,
+    mode: AntDrillMode | str = AntDrillMode.BUILD,
+    config: AbdDrillConfig | None = None,
+) -> TimedCapDrill:
+    cfg = config or AbdDrillConfig()
+    profile = ANT_DRILL_MODE_PROFILES[_normalize_mode(mode)]
+    return _build_abd_drill(
+        title_base="Angles, Bearings and Degrees: Bearing Anchor",
+        instructions=(
+            "Angles, Bearings and Degrees: Bearing Anchor",
+            f"Mode: {profile.label}",
+            "Bearing-only anchor stream. Start with the clean compass landmarks, then absorb finer increments and tighter marker placement.",
+            "Type the exact bearing and accept north as 000 or 360 only when the prompt says so.",
+            "Press Enter to begin practice.",
+        ),
+        generator=AbdBearingAnchorsGenerator(seed=seed),
         clock=clock,
         seed=seed,
         difficulty=difficulty,

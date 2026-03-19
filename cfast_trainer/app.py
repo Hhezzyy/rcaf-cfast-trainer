@@ -138,6 +138,13 @@ from .auditory_capacity_panda3d import (
     AuditoryCapacityPanda3DRenderer,
     panda3d_auditory_rendering_available,
 )
+from .adaptive_difficulty import (
+    AdaptiveDifficultyController,
+    AdaptiveDifficultyDecision,
+    ResolvedDifficultyContext,
+    apply_level_to_engine,
+    policy_for_activity_kind,
+)
 from .adaptive_scheduler import AdaptiveSession, AdaptiveStage, build_adaptive_session_plan
 from .benchmark import BenchmarkSession, BenchmarkStage, build_benchmark_plan
 from .clock import PausableClock, RealClock
@@ -8372,6 +8379,7 @@ class AdaptiveSessionScreen:
         app: App,
         *,
         session: AdaptiveSession | None,
+        test_code: str = "adaptive_session",
         screen_factory: Callable[[], Screen] | None = None,
         benchmark_screen_factory: Callable[[], Screen] | None = None,
     ) -> None:
@@ -8379,7 +8387,7 @@ class AdaptiveSessionScreen:
         self._session = session
         self._screen_factory = screen_factory
         self._benchmark_screen_factory = benchmark_screen_factory
-        self._test_code = "adaptive_session"
+        self._test_code = str(test_code).strip() or "adaptive_session"
         self._test_version = 1
         self._results_persisted = False
         self._results_persistence_lines: list[str] = []
@@ -11531,6 +11539,189 @@ class TestSeedSettingsScreen:
             )
 
 
+class _AdaptiveRuntimeTracker:
+    _WINDOW_INTERVAL_MS = 25_000
+
+    def __init__(
+        self,
+        *,
+        engine: object,
+        test_code: str,
+        activity_kind: str,
+        context: ResolvedDifficultyContext,
+    ) -> None:
+        self._engine = engine
+        self._test_code = str(test_code)
+        self._activity_kind = str(activity_kind)
+        self._context = context
+        self._controller = (
+            AdaptiveDifficultyController(
+                launch_level=int(context.launch_level),
+                policy=policy_for_activity_kind(
+                    self._activity_kind,
+                    intended_use=getattr(engine, "_mode", None),
+                ),
+            )
+            if context.adaptive_enabled
+            else None
+        )
+        self._last_event_count = 0
+        self._last_window_tick_ms = pygame.time.get_ticks()
+        self._last_summary_attempted = 0
+        self._last_summary_correct = 0
+        self._last_summary_timeouts = 0
+
+        setattr(self._engine, "_difficulty_code", self._test_code)
+        setattr(self._engine, "_adaptive_start_level", int(context.launch_level))
+        setattr(self._engine, "_adaptive_end_level", int(context.launch_level))
+        setattr(self._engine, "_adaptive_change_count", 0)
+        setattr(self._engine, "_difficulty_changes", [])
+        apply_level_to_engine(self._engine, test_code=self._test_code, level=context.launch_level)
+        self._disable_builtin_adaptation()
+        self._refresh_metric_overrides()
+
+    def sync(self) -> None:
+        if self._controller is None:
+            return
+        if getattr(self._engine, "phase", None) is not Phase.SCORED:
+            return
+        if not self._consume_new_scored_events():
+            self._consume_summary_window()
+
+    def _disable_builtin_adaptation(self) -> None:
+        adaptive_config = getattr(self._engine, "_adaptive_config", None)
+        if adaptive_config is None or not hasattr(adaptive_config, "enabled"):
+            return
+        try:
+            setattr(adaptive_config, "enabled", False)
+        except Exception:
+            return
+
+    def _consume_new_scored_events(self) -> bool:
+        getter = getattr(self._engine, "events", None)
+        if not callable(getter):
+            return False
+        try:
+            events = getter()
+        except Exception:
+            return False
+        if not isinstance(events, (list, tuple)):
+            return False
+
+        saw_scored = False
+        start = max(0, int(self._last_event_count))
+        self._last_event_count = len(events)
+        for event in events[start:]:
+            if getattr(event, "phase", None) is not Phase.SCORED:
+                continue
+            is_correct = bool(getattr(event, "is_correct", False))
+            is_timeout = bool(getattr(event, "is_timeout", False))
+            score = getattr(event, "score", None)
+            max_score = getattr(event, "max_score", None)
+            score_ratio = None
+            try:
+                if score is not None and max_score not in (None, 0, 0.0):
+                    score_ratio = float(score) / float(max_score)
+            except Exception:
+                score_ratio = None
+            response_time_ms = None
+            try:
+                raw_rt = getattr(event, "response_time_s", None)
+                if raw_rt is not None:
+                    response_time_ms = float(raw_rt) * 1000.0
+            except Exception:
+                response_time_ms = None
+            decision = self._controller.record_item(
+                is_correct=is_correct,
+                is_timeout=is_timeout,
+                score_ratio=score_ratio,
+                response_time_ms=response_time_ms,
+            )
+            saw_scored = True
+            if decision is not None:
+                self._apply_decision(decision)
+        return saw_scored
+
+    def _consume_summary_window(self) -> None:
+        scorer = getattr(self._engine, "scored_summary", None)
+        if not callable(scorer):
+            return
+        now_ms = pygame.time.get_ticks()
+        try:
+            summary = scorer()
+        except Exception:
+            return
+        attempted = int(getattr(summary, "attempted", 0) or 0)
+        correct = int(getattr(summary, "correct", 0) or 0)
+        timeouts = int(getattr(summary, "timeouts", 0) or 0)
+        attempted_delta = attempted - self._last_summary_attempted
+        if attempted_delta <= 0:
+            return
+        if attempted_delta < 3 and (now_ms - self._last_window_tick_ms) < self._WINDOW_INTERVAL_MS:
+            return
+        correct_delta = max(0, correct - self._last_summary_correct)
+        timeout_delta = max(0, timeouts - self._last_summary_timeouts)
+        timeout_rate = 0.0 if attempted_delta <= 0 else float(timeout_delta) / float(attempted_delta)
+        mean_rt_ms = None
+        try:
+            mean_rt = getattr(summary, "mean_response_time_s", None)
+            if mean_rt is not None:
+                mean_rt_ms = float(mean_rt) * 1000.0
+        except Exception:
+            mean_rt_ms = None
+        score_ratio = None
+        try:
+            raw_score_ratio = getattr(summary, "score_ratio", None)
+            if raw_score_ratio is not None:
+                score_ratio = float(raw_score_ratio)
+        except Exception:
+            score_ratio = None
+
+        decision = self._controller.record_window(
+            attempted=attempted_delta,
+            correct=correct_delta,
+            timeout_rate=timeout_rate,
+            score_ratio=score_ratio,
+            mean_rt_ms=mean_rt_ms,
+        )
+        self._last_summary_attempted = attempted
+        self._last_summary_correct = correct
+        self._last_summary_timeouts = timeouts
+        self._last_window_tick_ms = now_ms
+        if decision is not None:
+            self._apply_decision(decision)
+
+    def _apply_decision(self, decision: AdaptiveDifficultyDecision) -> None:
+        changes = getattr(self._engine, "_difficulty_changes", None)
+        if not isinstance(changes, list):
+            changes = []
+            setattr(self._engine, "_difficulty_changes", changes)
+        changes.append(decision)
+        setattr(self._engine, "_adaptive_end_level", int(decision.new_level))
+        setattr(self._engine, "_adaptive_change_count", len(changes))
+        apply_level_to_engine(self._engine, test_code=self._test_code, level=decision.new_level)
+        self._refresh_metric_overrides()
+
+    def _refresh_metric_overrides(self) -> None:
+        end_level = int(getattr(self._engine, "_adaptive_end_level", self._context.launch_level))
+        change_count = int(getattr(self._engine, "_adaptive_change_count", 0))
+        overrides = getattr(self._engine, "_result_metrics_overrides", None)
+        if not isinstance(overrides, dict):
+            overrides = {}
+            setattr(self._engine, "_result_metrics_overrides", overrides)
+        overrides.update(
+            {
+                "adaptive_mode": str(self._context.mode),
+                "adaptive_start_level": str(int(self._context.launch_level)),
+                "adaptive_end_level": str(int(end_level)),
+                "adaptive_change_count": str(int(change_count)),
+                "adaptive_scope_code": self._context.code_scope_key,
+                "adaptive_scope_family": self._context.family_scope_key,
+                "adaptive_scope_primitive": self._context.primitive_scope_key,
+            }
+        )
+
+
 class CognitiveTestScreen:
     def __init__(
         self,
@@ -11722,6 +11913,19 @@ class CognitiveTestScreen:
         self._intro_loading_frames_rendered = 0
         self._intro_loading_ready = True
         self._camera_keyboard_state: set[int] = set()
+        self._adaptive_tracker: _AdaptiveRuntimeTracker | None = None
+
+        resolved_test_code = self._test_code or str(
+            getattr(self._engine, "_difficulty_code", "") or ""
+        ).strip() or None
+        raw_context = getattr(self._engine, "_resolved_difficulty_context", None)
+        if resolved_test_code is not None and isinstance(raw_context, ResolvedDifficultyContext):
+            self._adaptive_tracker = _AdaptiveRuntimeTracker(
+                engine=self._engine,
+                test_code=resolved_test_code,
+                activity_kind="cognitive_test",
+                context=raw_context,
+            )
 
         self._target_recognition_reset_practice_breakdown()
         self._target_recognition_reset_scene_subtask()
@@ -13892,6 +14096,8 @@ class CognitiveTestScreen:
 
             # Update engine and take a fresh snapshot.
             self._engine.update()
+            if self._adaptive_tracker is not None:
+                self._adaptive_tracker.sync()
             live_snap = self._engine.snapshot()
             snap = live_snap
 
@@ -13914,6 +14120,8 @@ class CognitiveTestScreen:
                 if not self._review_state_active():
                     self._input = ""
                     self._engine.update()
+                    if self._adaptive_tracker is not None:
+                        self._adaptive_tracker.sync()
                     live_snap = self._engine.snapshot()
                     snap = live_snap
                 else:
@@ -28898,7 +29106,19 @@ def run(
             target_factory=_build_screen,
         )
 
-    def open_adaptive_session() -> None:
+    def open_adaptive_session_variant(variant: str) -> None:
+        resolved_variant = str(variant or "full").strip().lower()
+        variant_title = {
+            "micro": "Adaptive Micro",
+            "short": "Adaptive Short",
+            "full": "Adaptive Session",
+        }.get(resolved_variant, "Adaptive Session")
+        variant_code = {
+            "micro": "adaptive_session_micro",
+            "short": "adaptive_session_short",
+            "full": "adaptive_session",
+        }.get(resolved_variant, "adaptive_session")
+
         def _build_screen() -> Screen:
             history = []
             try:
@@ -28906,7 +29126,7 @@ def run(
             except Exception:
                 history = []
             session_seed = _new_seed()
-            plan = build_adaptive_session_plan(history=history, seed=session_seed)
+            plan = build_adaptive_session_plan(history=history, seed=session_seed, variant=resolved_variant)
             session = None if plan is None else AdaptiveSession(
                 clock=real_clock,
                 seed=session_seed,
@@ -28915,14 +29135,29 @@ def run(
             return AdaptiveSessionScreen(
                 app,
                 session=session,
+                test_code=variant_code if plan is None else plan.code,
                 screen_factory=_build_screen,
                 benchmark_screen_factory=_build_benchmark_screen,
             )
 
         open_loading_screen(
-            title="Adaptive Session",
+            title=variant_title,
             detail="Ranking recent primitive evidence",
             target_factory=_build_screen,
+        )
+
+    def open_adaptive_session() -> None:
+        app.push(
+            MenuScreen(
+                app,
+                "Adaptive Session",
+                [
+                    MenuItem("Adaptive Micro", lambda: open_adaptive_session_variant("micro")),
+                    MenuItem("Adaptive Short", lambda: open_adaptive_session_variant("short")),
+                    MenuItem("Adaptive Full", lambda: open_adaptive_session_variant("full")),
+                    MenuItem("Back", app.pop),
+                ],
+            )
         )
 
     def open_vigilance() -> None:

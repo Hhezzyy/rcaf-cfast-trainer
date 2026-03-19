@@ -83,6 +83,13 @@ class DigitRecognitionTrainingSpec:
     mask_s: float
     keep_display_visible_during_question: bool
     question_cap_s: float | None = None
+    mask_display_lines: tuple[str, ...] = ()
+    mask_prompt: str = ""
+    family_tag: str = ""
+    span_length: int = 0
+    delay_s: float = 0.0
+    query_complexity: int = 0
+    interference_rate: int = 0
 
 
 class _Stage(StrEnum):

@@ -567,12 +567,13 @@ def _build_tracking_recall_schedule(
     difficulty: float,
 ) -> tuple[_DualTaskCue, ...]:
     cues: list[_DualTaskCue] = []
-    spacing = 24.0
-    start_s = 9.0
-    reveal_s = 2.3
-    delay_s = 3.5
-    response_window_s = 6.0
-    digit_length = 3 if difficulty <= 0.35 else 4 if difficulty <= 0.7 else 5
+    level = _difficulty_to_level(difficulty)
+    spacing = 26.0 if level <= 3 else 21.0 if level <= 6 else 16.0
+    start_s = 9.5 if level <= 3 else 8.5 if level <= 6 else 7.5
+    reveal_s = 2.4 if level <= 3 else 2.0 if level <= 6 else 1.6
+    delay_s = 2.8 if level <= 3 else 3.6 if level <= 6 else 4.4
+    response_window_s = 6.5 if level <= 3 else 5.4 if level <= 6 else 4.4
+    digit_length = 3 if level <= 3 else 4 if level <= 6 else 5 if level <= 8 else 6
     cue_index = 0
     while start_s + reveal_s + delay_s + response_window_s < scored_duration_s:
         digits = _digits_for(rng, length=digit_length)
@@ -602,6 +603,7 @@ def _build_command_schedule(
     include_recall: bool,
     include_interference: bool,
 ) -> tuple[_DualTaskCue, ...]:
+    level = _difficulty_to_level(difficulty)
     filters = ("BLUE/GREEN", "YELLOW/RED")
     filter_targets = {
         "BLUE/GREEN": ("BLUE", "GREEN"),
@@ -612,30 +614,40 @@ def _build_command_schedule(
     start_s = 7.0
     cue_index = 0
     filter_label = str(rng.choice(filters))
-    recall_digit_length = 4 if difficulty <= 0.65 else 5
+    recall_digit_length = 4 if level <= 4 else 5 if level <= 7 else 6
+    switch_every = 6 if level <= 3 else 4 if level <= 6 else 2
+    recall_every = 5 if level <= 3 else 4 if level <= 6 else 3
+    base_stride = 6.2 if level <= 3 else 5.2 if level <= 6 else 4.3
+    interference_stride = 4.6 if level <= 3 else 3.9 if level <= 6 else 3.2
+    normal_deadline_s = 3.0 if level <= 3 else 2.6 if level <= 6 else 2.2
+    interference_deadline_s = 2.2 if level <= 3 else 1.9 if level <= 6 else 1.6
     while start_s + 4.0 < scored_duration_s:
-        if include_recall and (cue_index % 4 == 3):
+        if include_recall and (cue_index % recall_every == recall_every - 1):
             digits = _digits_for(rng, length=recall_digit_length)
             cues.append(
                 _DualTaskCue(
                     cue_index=cue_index,
                     cue_kind="recall",
                     start_s=start_s,
-                    response_start_s=start_s + 2.0 + 3.0,
-                    deadline_s=start_s + 2.0 + 3.0 + 5.5,
+                    response_start_s=start_s + 2.0 + (2.8 if level <= 3 else 3.5 if level <= 6 else 4.2),
+                    deadline_s=start_s
+                    + 2.0
+                    + (2.8 if level <= 3 else 3.5 if level <= 6 else 4.2)
+                    + (5.8 if level <= 3 else 5.0 if level <= 6 else 4.2),
                     prompt_text=f"Remember {digits}. Keep tracking through the delay, then report the digits.",
                     filter_label=filter_label,
                     expected_response=digits,
                     visible_digits=digits,
                 )
             )
-            start_s += 11.5
+            start_s += 12.0 if level <= 3 else 10.5 if level <= 6 else 9.0
             cue_index += 1
             continue
 
-        interference_active = include_interference and (cue_index % 5 in {1, 2})
-        recovery_active = include_interference and (cue_index % 5 == 3)
-        if cue_index % 6 == 0:
+        burst_mod = 6 if level <= 3 else 5 if level <= 6 else 4
+        interference_active = include_interference and (cue_index % burst_mod in {1, 2})
+        recovery_active = include_interference and (cue_index % burst_mod == 3)
+        if cue_index % switch_every == 0:
             filter_label = str(rng.choice(filters))
         color = str(rng.choice(colors))
         targets = filter_targets[filter_label]
@@ -656,7 +668,7 @@ def _build_command_schedule(
                 cue_kind="command",
                 start_s=start_s,
                 response_start_s=start_s,
-                deadline_s=start_s + (2.0 if interference_active else 3.0),
+                deadline_s=start_s + (interference_deadline_s if interference_active else normal_deadline_s),
                 prompt_text=prompt,
                 filter_label=filter_label,
                 expected_response=expected,
@@ -664,7 +676,7 @@ def _build_command_schedule(
                 recovery_active=recovery_active,
             )
         )
-        start_s += 4.2 if interference_active else 6.0
+        start_s += interference_stride if interference_active else base_stride
         cue_index += 1
     return tuple(cues)
 

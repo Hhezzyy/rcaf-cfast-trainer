@@ -1,86 +1,59 @@
 from __future__ import annotations
 
-import math
-from collections import defaultdict
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import Enum
+from typing import cast
 
 from .ant_drills import AntDrillMode
+from .adaptive_difficulty import (
+    LaunchDifficultyMode,
+    ResolvedDifficultyContext,
+    build_resolved_difficulty_context,
+    clamp_level,
+)
 from .ant_workouts import AntWorkoutBlockPlan, build_workout_block_engine
+from .canonical_drill_registry import CANONICAL_DRILL_BY_CODE, resolved_canonical_drill_code
 from .clock import Clock
 from .cognitive_core import Phase
 from .persistence import AttemptHistoryEntry
+from .primitive_ranking import (
+    PRIMITIVES as _RANKED_PRIMITIVES,
+    PRIMITIVE_BY_ID as _RANKED_PRIMITIVE_BY_ID,
+    PrimitiveDomainSummary,
+    PrimitiveRankingItem,
+    collect_primitive_evidence,
+    rank_primitives,
+)
 from .results import AttemptResult, attempt_result_from_engine
 from .telemetry import TelemetryEvent, telemetry_analytics_from_events
 from .training_modes import split_half_note_fragment, supports_training_mode
 
-_SCHEDULER_VERSION = 1
-_SESSION_DURATION_S = 60.0 * 60.0
-_BLOCK_DURATION_S = 10.0 * 60.0
-_MAX_EVIDENCE_TOTAL = 24
-_MAX_EVIDENCE_PER_PRIMITIVE = 6
-_EVIDENCE_LOOKBACK_DAYS = 28
-_PROFILE_MULTIPLIERS = {
-    "mental_arithmetic_automaticity": 1.35,
-    "table_cross_reference_speed": 1.25,
-    "visual_scan_discipline": 1.20,
-    "symbolic_rule_extraction": 1.15,
-    "tracking_stability_low_load": 1.00,
-    "dual_task_stability_fatigue": 1.30,
-}
-_BLOCK_ROLE_LEVEL = {
-    "anchor": 4,
-    "reset": 4,
-    "tempo": 5,
-    "fatigue_pressure": 6,
-}
+_SCHEDULER_VERSION = 2
+_ROLE_SEQUENCE = (
+    "target_anchor",
+    "target_tempo",
+    "adjacent_cross_train",
+    "reassessment_probe",
+    "target_pressure_fatigue",
+    "late_repeat_transfer",
+)
+ADAPTIVE_SESSION_CODES = frozenset(
+    {
+        "adaptive_session",
+        "adaptive_session_short",
+        "adaptive_session_micro",
+    }
+)
+
+
 def _utc_now_iso() -> str:
     return datetime.now(UTC).replace(microsecond=0).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _parse_utc_iso(value: str) -> datetime:
     return datetime.strptime(str(value), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
-
-
-def _epoch_s(value: str) -> float:
-    return _parse_utc_iso(value).timestamp()
-
-
-def _metric_float(metrics: dict[str, str], key: str) -> float | None:
-    raw = metrics.get(key)
-    if raw is None:
-        return None
-    token = str(raw).strip()
-    if token == "":
-        return None
-    try:
-        value = float(token)
-    except Exception:
-        return None
-    if not math.isfinite(value):
-        return None
-    return float(value)
-
-
-def _metric_bool(metrics: dict[str, str], key: str) -> bool:
-    raw = str(metrics.get(key, "")).strip().lower()
-    return raw in {"1", "true", "yes", "on"}
-
-
-def _clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
-    return max(low, min(high, float(value)))
-
-
-def _ewma(values: Iterable[float], *, alpha: float = 0.55) -> float | None:
-    current: float | None = None
-    for value in values:
-        if current is None:
-            current = float(value)
-            continue
-        current = (float(alpha) * float(value)) + ((1.0 - float(alpha)) * current)
-    return current
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,6 +116,10 @@ class AdaptiveSessionBlock:
     priority: float
     drill_mode: AntDrillMode
     builder: Callable[[], object] | None = None
+    form_factor: str = "short"
+    target_area: str = ""
+    linked_primitive_id: str | None = None
+    comparable_level: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,6 +132,8 @@ class AdaptiveSessionPlan:
     notes: tuple[str, ...]
     ranked_primitives: tuple[AdaptivePriorityBreakdown, ...]
     blocks: tuple[AdaptiveSessionBlock, ...]
+    variant: str = "full"
+    domain_summaries: tuple[PrimitiveDomainSummary, ...] = ()
 
     @property
     def scored_duration_s(self) -> float:
@@ -226,291 +205,267 @@ class AdaptiveSummary:
     scheduler_version: int = _SCHEDULER_VERSION
 
 
-_PRIMITIVES: tuple[AdaptivePrimitive, ...] = (
-    AdaptivePrimitive(
-        primitive_id="mental_arithmetic_automaticity",
-        label="Mental Arithmetic Automaticity",
-        benchmark_probe_codes=("numerical_operations",),
-        direct_test_codes=(
-            "numerical_operations",
-            "ma_one_step_fluency",
-            "ma_percentage_snap",
-            "ma_rate_time_distance",
-            "ma_fuel_endurance",
-            "ma_mixed_conversion_caps",
-            "no_fact_prime",
-            "no_operator_ladders",
-            "no_clean_compute",
-            "no_mixed_tempo",
-            "no_pressure_run",
-            "mr_unit_relation_prime",
-            "mr_one_step_solve",
-            "ant_snap_facts_sprint",
-            "ant_time_flip",
-            "ant_route_time_solve",
-            "ant_endurance_solve",
-            "ant_fuel_burn_solve",
+_PRIMITIVES = _RANKED_PRIMITIVES
+_PRIMITIVE_BY_ID = _RANKED_PRIMITIVE_BY_ID
+
+
+@dataclass(frozen=True, slots=True)
+class AdaptiveVariantSpec:
+    variant: str
+    code: str
+    title: str
+    block_duration_s: float
+    allowed_form_factors: frozenset[str]
+
+
+@dataclass(frozen=True, slots=True)
+class AdaptiveDrillCandidate:
+    drill_code: str
+    primitive_id: str
+    target_area: str
+    form_factor: str
+    role_support: tuple[str, ...]
+    canonical_preferred: bool
+
+
+@dataclass(frozen=True, slots=True)
+class AdaptiveSkillLink:
+    linked_primitive_id: str
+    linked_target_areas: tuple[tuple[str, str], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class AdaptiveHistorySessionSummary:
+    completed_at_utc: str
+    completed_at_epoch_s: float
+    primary_primitive_id: str | None
+    primary_domain_id: str | None
+    drill_codes: tuple[str, ...]
+    target_areas: tuple[str, ...]
+
+
+ADAPTIVE_VARIANT_SPECS = {
+    "micro": AdaptiveVariantSpec(
+        variant="micro",
+        code="adaptive_session_micro",
+        title="Adaptive Micro (15m)",
+        block_duration_s=150.0,
+        allowed_form_factors=frozenset({"micro"}),
+    ),
+    "short": AdaptiveVariantSpec(
+        variant="short",
+        code="adaptive_session_short",
+        title="Adaptive Short (30m)",
+        block_duration_s=300.0,
+        allowed_form_factors=frozenset({"micro", "short"}),
+    ),
+    "full": AdaptiveVariantSpec(
+        variant="full",
+        code="adaptive_session",
+        title="Adaptive Session (60m)",
+        block_duration_s=600.0,
+        allowed_form_factors=frozenset({"micro", "short", "block_component"}),
+    ),
+}
+
+
+ADAPTIVE_SKILL_GRAPH = {
+    "mental_arithmetic_automaticity": (
+        AdaptiveSkillLink(
+            linked_primitive_id="table_cross_reference_speed",
+            linked_target_areas=(
+                ("quantitative_core", "single_lookup"),
+                ("written_extraction", "two_source_xref"),
+                ("applied_rate_fuel", "distractor_table_pressure"),
+                ("interference_resilience", "distractor_table_pressure"),
+            ),
         ),
-        coarse_workout_codes=("numerical_operations_workout",),
-        bottleneck_test_codes=(
-            "numerical_operations",
-            "airborne_numerical",
-            "math_reasoning",
-            "colours_letters_numbers",
+        AdaptiveSkillLink(
+            linked_primitive_id="visual_scan_discipline",
+            linked_target_areas=(
+                ("quantitative_core", "class_search"),
+                ("written_extraction", "priority_switch"),
+                ("interference_resilience", "routine_priority_switch"),
+            ),
         ),
-        profile_multiplier=_PROFILE_MULTIPLIERS["mental_arithmetic_automaticity"],
-        anchor_templates=(
-            "ma_one_step_fluency",
-            "ma_percentage_snap",
-            "ma_rate_time_distance",
-            "ma_fuel_endurance",
-            "no_fact_prime",
-        ),
-        tempo_templates=(
-            "ma_percentage_snap",
-            "ma_rate_time_distance",
-            "ma_fuel_endurance",
-            "ma_mixed_conversion_caps",
-            "no_mixed_tempo",
-        ),
-        reset_templates=(
-            "ma_one_step_fluency",
-            "ma_mixed_conversion_caps",
-            "ma_rate_time_distance",
-            "ma_percentage_snap",
-            "no_clean_compute",
-        ),
-        fatigue_templates=(
-            "ma_fuel_endurance",
-            "ma_mixed_conversion_caps",
-            "ma_rate_time_distance",
-            "ma_percentage_snap",
-            "no_pressure_run",
+        AdaptiveSkillLink(
+            linked_primitive_id="dual_task_stability_fatigue",
+            linked_target_areas=(
+                ("applied_rate_fuel", "tracking_recall_bridge"),
+                ("interference_resilience", "interference_recovery"),
+            ),
         ),
     ),
-    AdaptivePrimitive(
-        primitive_id="table_cross_reference_speed",
-        label="Table Cross-Reference Speed",
-        benchmark_probe_codes=("table_reading",),
-        direct_test_codes=(
-            "table_reading",
-            "tbl_single_lookup_anchor",
-            "tbl_two_table_xref",
-            "tbl_distractor_grid",
-            "tbl_lookup_compute",
-            "tbl_shrinking_cap_run",
-            "tbl_part1_anchor",
-            "tbl_part1_scan_run",
-            "tbl_part2_prime",
-            "tbl_part2_correction_run",
-            "tbl_part_switch_run",
-            "tbl_card_family_run",
-            "tbl_mixed_tempo",
-            "tbl_pressure_run",
+    "table_cross_reference_speed": (
+        AdaptiveSkillLink(
+            linked_primitive_id="mental_arithmetic_automaticity",
+            linked_target_areas=(
+                ("single_lookup", "quantitative_core"),
+                ("two_source_xref", "written_extraction"),
+                ("distractor_table_pressure", "interference_resilience"),
+            ),
         ),
-        coarse_workout_codes=("table_reading_workout",),
-        bottleneck_test_codes=("table_reading", "airborne_numerical", "system_logic"),
-        profile_multiplier=_PROFILE_MULTIPLIERS["table_cross_reference_speed"],
-        anchor_templates=(
-            "tbl_single_lookup_anchor",
-            "tbl_two_table_xref",
-            "tbl_distractor_grid",
-            "tbl_lookup_compute",
-            "tbl_part1_anchor",
+        AdaptiveSkillLink(
+            linked_primitive_id="visual_scan_discipline",
+            linked_target_areas=(
+                ("single_lookup", "class_search"),
+                ("distractor_table_pressure", "priority_switch"),
+                ("two_source_xref", "routine_priority_switch"),
+            ),
         ),
-        tempo_templates=(
-            "tbl_two_table_xref",
-            "tbl_lookup_compute",
-            "tbl_distractor_grid",
-            "tbl_shrinking_cap_run",
-            "tbl_mixed_tempo",
-        ),
-        reset_templates=(
-            "tbl_lookup_compute",
-            "tbl_distractor_grid",
-            "tbl_two_table_xref",
-            "tbl_shrinking_cap_run",
-            "tbl_part2_correction_run",
-        ),
-        fatigue_templates=(
-            "tbl_shrinking_cap_run",
-            "tbl_lookup_compute",
-            "tbl_distractor_grid",
-            "tbl_two_table_xref",
-            "tbl_pressure_run",
+        AdaptiveSkillLink(
+            linked_primitive_id="symbolic_rule_extraction",
+            linked_target_areas=(
+                ("single_lookup", "single_rule"),
+                ("two_source_xref", "two_source_reconcile"),
+                ("distractor_table_pressure", "distractor_reject"),
+            ),
         ),
     ),
-    AdaptivePrimitive(
-        primitive_id="visual_scan_discipline",
-        label="Visual Scan Discipline",
-        benchmark_probe_codes=("visual_search",),
-        direct_test_codes=(
-            "visual_search",
-            "vs_target_preview",
-            "vs_clean_scan",
-            "vs_family_run_letters",
-            "vs_family_run_symbols",
-            "vs_mixed_tempo",
-            "vs_pressure_run",
+    "visual_scan_discipline": (
+        AdaptiveSkillLink(
+            linked_primitive_id="table_cross_reference_speed",
+            linked_target_areas=(
+                ("class_search", "single_lookup"),
+                ("priority_switch", "two_source_xref"),
+                ("routine_priority_switch", "distractor_table_pressure"),
+            ),
         ),
-        coarse_workout_codes=("visual_search_workout",),
-        bottleneck_test_codes=("visual_search", "vigilance", "target_recognition"),
-        profile_multiplier=_PROFILE_MULTIPLIERS["visual_scan_discipline"],
-        anchor_templates=("vs_target_preview", "vs_clean_scan"),
-        tempo_templates=("__vs_family_run__", "vs_mixed_tempo"),
-        reset_templates=("vs_clean_scan", "__vs_family_run__"),
-        fatigue_templates=("vs_pressure_run",),
-    ),
-    AdaptivePrimitive(
-        primitive_id="symbolic_rule_extraction",
-        label="Symbolic Rule Extraction",
-        benchmark_probe_codes=("sl_graph_rule_anchor",),
-        direct_test_codes=(
-            "system_logic",
-            "sl_one_rule_identify",
-            "sl_missing_step_complete",
-            "sl_two_source_reconcile",
-            "sl_rule_match",
-            "sl_fast_reject",
-            "sl_quantitative_anchor",
-            "sl_flow_trace_anchor",
-            "sl_graph_rule_anchor",
-            "sl_fault_diagnosis_prime",
-            "sl_index_switch_run",
-            "sl_family_run",
-            "sl_mixed_tempo",
-            "sl_pressure_run",
+        AdaptiveSkillLink(
+            linked_primitive_id="mental_arithmetic_automaticity",
+            linked_target_areas=(
+                ("class_search", "quantitative_core"),
+                ("priority_switch", "written_extraction"),
+                ("routine_priority_switch", "interference_resilience"),
+            ),
         ),
-        coarse_workout_codes=("system_logic_workout",),
-        bottleneck_test_codes=("system_logic", "table_reading"),
-        profile_multiplier=_PROFILE_MULTIPLIERS["symbolic_rule_extraction"],
-        anchor_templates=(
-            "sl_one_rule_identify",
-            "sl_rule_match",
-            "sl_two_source_reconcile",
-            "sl_missing_step_complete",
-            "sl_graph_rule_anchor",
-        ),
-        tempo_templates=(
-            "sl_two_source_reconcile",
-            "sl_rule_match",
-            "sl_missing_step_complete",
-            "sl_fast_reject",
-            "sl_mixed_tempo",
-        ),
-        reset_templates=(
-            "sl_missing_step_complete",
-            "sl_fast_reject",
-            "sl_rule_match",
-            "sl_two_source_reconcile",
-            "sl_index_switch_run",
-        ),
-        fatigue_templates=(
-            "sl_fast_reject",
-            "sl_rule_match",
-            "sl_two_source_reconcile",
-            "sl_missing_step_complete",
-            "sl_pressure_run",
+        AdaptiveSkillLink(
+            linked_primitive_id="dual_task_stability_fatigue",
+            linked_target_areas=(
+                ("class_search", "tracking_recall_bridge"),
+                ("priority_switch", "command_filter"),
+                ("routine_priority_switch", "filtered_digit_report"),
+            ),
         ),
     ),
-    AdaptivePrimitive(
-        primitive_id="tracking_stability_low_load",
-        label="Tracking Stability Under Low Load",
-        benchmark_probe_codes=("rt_lock_anchor",),
-        direct_test_codes=(
-            "rapid_tracking",
-            "rt_lock_anchor",
-            "rt_building_handoff_prime",
-            "rt_terrain_recovery_run",
-            "rt_capture_timing_prime",
-            "rt_ground_tempo_run",
-            "rt_air_speed_run",
-            "rt_mixed_tempo",
-            "rt_pressure_run",
+    "symbolic_rule_extraction": (
+        AdaptiveSkillLink(
+            linked_primitive_id="table_cross_reference_speed",
+            linked_target_areas=(
+                ("single_rule", "single_lookup"),
+                ("two_source_reconcile", "two_source_xref"),
+                ("distractor_reject", "distractor_table_pressure"),
+            ),
         ),
-        coarse_workout_codes=("rapid_tracking_workout",),
-        bottleneck_test_codes=("rapid_tracking",),
-        profile_multiplier=_PROFILE_MULTIPLIERS["tracking_stability_low_load"],
-        anchor_templates=("rt_lock_anchor",),
-        tempo_templates=("rt_ground_tempo_run", "rt_mixed_tempo"),
-        reset_templates=("rt_ground_tempo_run",),
-        fatigue_templates=("rt_pressure_run",),
-    ),
-    AdaptivePrimitive(
-        primitive_id="dual_task_stability_fatigue",
-        label="Dual-Task Stability Under Fatigue",
-        benchmark_probe_codes=("cln_sequence_math_recall",),
-        direct_test_codes=(
-            "colours_letters_numbers",
-            "dtb_tracking_recall",
-            "dtb_tracking_command_filter",
-            "dtb_tracking_filter_digit_report",
-            "dtb_tracking_interference_recovery",
-            "cln_sequence_copy",
-            "cln_sequence_match",
-            "cln_math_prime",
-            "cln_colour_lane",
-            "cln_memory_math",
-            "cln_memory_colour",
-            "cln_full_steady",
-            "cln_full_pressure",
-            "cln_sequence_math_recall",
+        AdaptiveSkillLink(
+            linked_primitive_id="mental_arithmetic_automaticity",
+            linked_target_areas=(
+                ("single_rule", "quantitative_core"),
+                ("two_source_reconcile", "written_extraction"),
+                ("distractor_reject", "interference_resilience"),
+            ),
         ),
-        coarse_workout_codes=("colours_letters_numbers_workout",),
-        bottleneck_test_codes=(
-            "colours_letters_numbers",
-            "auditory_capacity",
-            "cognitive_updating",
-            "situational_awareness",
-        ),
-        profile_multiplier=_PROFILE_MULTIPLIERS["dual_task_stability_fatigue"],
-        anchor_templates=(
-            "dtb_tracking_recall",
-            "dtb_tracking_command_filter",
-            "dtb_tracking_filter_digit_report",
-            "dtb_tracking_interference_recovery",
-            "cln_memory_math",
-        ),
-        tempo_templates=(
-            "dtb_tracking_command_filter",
-            "dtb_tracking_filter_digit_report",
-            "dtb_tracking_recall",
-            "dtb_tracking_interference_recovery",
-            "cln_full_steady",
-        ),
-        reset_templates=(
-            "dtb_tracking_recall",
-            "dtb_tracking_command_filter",
-            "dtb_tracking_filter_digit_report",
-            "dtb_tracking_interference_recovery",
-            "cln_memory_math",
-        ),
-        fatigue_templates=(
-            "dtb_tracking_interference_recovery",
-            "dtb_tracking_filter_digit_report",
-            "dtb_tracking_command_filter",
-            "dtb_tracking_recall",
-            "cln_full_pressure",
+        AdaptiveSkillLink(
+            linked_primitive_id="dual_task_stability_fatigue",
+            linked_target_areas=(
+                ("single_rule", "command_filter"),
+                ("two_source_reconcile", "filtered_digit_report"),
+                ("distractor_reject", "interference_recovery"),
+            ),
         ),
     ),
+    "tracking_stability_low_load": (
+        AdaptiveSkillLink(
+            linked_primitive_id="dual_task_stability_fatigue",
+            linked_target_areas=(
+                ("split_axis_control", "tracking_recall_bridge"),
+                ("overshoot_recovery", "command_filter"),
+                ("obscured_prediction", "interference_recovery"),
+            ),
+        ),
+        AdaptiveSkillLink(
+            linked_primitive_id="visual_scan_discipline",
+            linked_target_areas=(
+                ("split_axis_control", "class_search"),
+                ("overshoot_recovery", "priority_switch"),
+                ("obscured_prediction", "routine_priority_switch"),
+            ),
+        ),
+    ),
+    "dual_task_stability_fatigue": (
+        AdaptiveSkillLink(
+            linked_primitive_id="tracking_stability_low_load",
+            linked_target_areas=(
+                ("tracking_recall_bridge", "split_axis_control"),
+                ("command_filter", "overshoot_recovery"),
+                ("interference_recovery", "obscured_prediction"),
+            ),
+        ),
+        AdaptiveSkillLink(
+            linked_primitive_id="visual_scan_discipline",
+            linked_target_areas=(
+                ("tracking_recall_bridge", "class_search"),
+                ("command_filter", "priority_switch"),
+                ("filtered_digit_report", "routine_priority_switch"),
+            ),
+        ),
+        AdaptiveSkillLink(
+            linked_primitive_id="mental_arithmetic_automaticity",
+            linked_target_areas=(
+                ("tracking_recall_bridge", "quantitative_core"),
+                ("filtered_digit_report", "written_extraction"),
+                ("interference_recovery", "interference_resilience"),
+            ),
+        ),
+    ),
+}
+
+
+def _candidate(
+    drill_code: str,
+    primitive_id: str,
+    target_area: str,
+    form_factor: str,
+    role_support: tuple[str, ...],
+) -> AdaptiveDrillCandidate:
+    return AdaptiveDrillCandidate(
+        drill_code=drill_code,
+        primitive_id=primitive_id,
+        target_area=target_area,
+        form_factor=form_factor,
+        role_support=tuple(role_support),
+        canonical_preferred=(str(drill_code).strip().lower() in CANONICAL_DRILL_BY_CODE),
+    )
+
+
+ADAPTIVE_DRILL_CATALOG: tuple[AdaptiveDrillCandidate, ...] = (
+    _candidate("ma_one_step_fluency", "mental_arithmetic_automaticity", "quantitative_core", "micro", ("target_anchor", "adjacent_cross_train", "reassessment_probe")),
+    _candidate("ma_percentage_snap", "mental_arithmetic_automaticity", "quantitative_core", "micro", ("target_anchor", "target_tempo", "adjacent_cross_train", "reassessment_probe", "target_pressure_fatigue", "late_repeat_transfer")),
+    _candidate("ma_written_numerical_extraction", "mental_arithmetic_automaticity", "written_extraction", "micro", ("target_anchor", "target_tempo", "adjacent_cross_train", "reassessment_probe", "target_pressure_fatigue", "late_repeat_transfer")),
+    _candidate("ma_rate_time_distance", "mental_arithmetic_automaticity", "applied_rate_fuel", "short", ("target_tempo", "adjacent_cross_train", "reassessment_probe", "target_pressure_fatigue", "late_repeat_transfer")),
+    _candidate("ma_fuel_endurance", "mental_arithmetic_automaticity", "applied_rate_fuel", "short", ("target_tempo", "adjacent_cross_train", "reassessment_probe", "target_pressure_fatigue", "late_repeat_transfer")),
+    _candidate("ma_mixed_conversion_caps", "mental_arithmetic_automaticity", "interference_resilience", "block_component", ("adjacent_cross_train", "target_pressure_fatigue", "late_repeat_transfer")),
+    _candidate("tbl_single_lookup_anchor", "table_cross_reference_speed", "single_lookup", "micro", ("target_anchor", "target_tempo", "adjacent_cross_train", "reassessment_probe", "target_pressure_fatigue", "late_repeat_transfer")),
+    _candidate("tbl_two_table_xref", "table_cross_reference_speed", "two_source_xref", "short", ("target_tempo", "adjacent_cross_train", "reassessment_probe", "late_repeat_transfer")),
+    _candidate("tbl_distractor_grid", "table_cross_reference_speed", "distractor_table_pressure", "short", ("target_tempo", "adjacent_cross_train", "target_pressure_fatigue", "late_repeat_transfer")),
+    _candidate("tbl_lookup_compute", "table_cross_reference_speed", "two_source_xref", "block_component", ("adjacent_cross_train", "target_pressure_fatigue", "late_repeat_transfer")),
+    _candidate("tbl_shrinking_cap_run", "table_cross_reference_speed", "distractor_table_pressure", "block_component", ("target_pressure_fatigue", "late_repeat_transfer")),
+    _candidate("vs_multi_target_class_search", "visual_scan_discipline", "class_search", "micro", ("target_anchor", "target_tempo", "adjacent_cross_train", "reassessment_probe", "target_pressure_fatigue", "late_repeat_transfer")),
+    _candidate("vs_priority_switch_search", "visual_scan_discipline", "priority_switch", "short", ("target_tempo", "adjacent_cross_train", "late_repeat_transfer")),
+    _candidate("vs_matrix_routine_priority_switch", "visual_scan_discipline", "routine_priority_switch", "block_component", ("adjacent_cross_train", "target_pressure_fatigue", "late_repeat_transfer")),
+    _candidate("sl_one_rule_identify", "symbolic_rule_extraction", "single_rule", "micro", ("target_anchor", "target_tempo", "adjacent_cross_train", "reassessment_probe", "target_pressure_fatigue", "late_repeat_transfer")),
+    _candidate("sl_rule_match", "symbolic_rule_extraction", "single_rule", "short", ("target_tempo", "adjacent_cross_train", "reassessment_probe", "late_repeat_transfer")),
+    _candidate("sl_two_source_reconcile", "symbolic_rule_extraction", "two_source_reconcile", "short", ("target_tempo", "adjacent_cross_train", "late_repeat_transfer")),
+    _candidate("sl_missing_step_complete", "symbolic_rule_extraction", "two_source_reconcile", "block_component", ("adjacent_cross_train", "target_pressure_fatigue", "late_repeat_transfer")),
+    _candidate("sl_fast_reject", "symbolic_rule_extraction", "distractor_reject", "block_component", ("adjacent_cross_train", "target_pressure_fatigue", "late_repeat_transfer")),
+    _candidate("sma_split_axis_control", "tracking_stability_low_load", "split_axis_control", "micro", ("target_anchor", "target_tempo", "adjacent_cross_train", "reassessment_probe", "target_pressure_fatigue", "late_repeat_transfer")),
+    _candidate("sma_overshoot_recovery", "tracking_stability_low_load", "overshoot_recovery", "short", ("target_tempo", "adjacent_cross_train", "target_pressure_fatigue", "late_repeat_transfer")),
+    _candidate("rt_obscured_target_prediction", "tracking_stability_low_load", "obscured_prediction", "block_component", ("adjacent_cross_train", "target_pressure_fatigue", "late_repeat_transfer")),
+    _candidate("dtb_tracking_recall", "dual_task_stability_fatigue", "tracking_recall_bridge", "micro", ("target_anchor", "target_tempo", "adjacent_cross_train", "reassessment_probe", "target_pressure_fatigue", "late_repeat_transfer")),
+    _candidate("dtb_tracking_command_filter", "dual_task_stability_fatigue", "command_filter", "short", ("target_tempo", "adjacent_cross_train", "target_pressure_fatigue", "late_repeat_transfer")),
+    _candidate("dtb_tracking_filter_digit_report", "dual_task_stability_fatigue", "filtered_digit_report", "short", ("target_tempo", "adjacent_cross_train", "target_pressure_fatigue", "late_repeat_transfer")),
+    _candidate("dtb_tracking_interference_recovery", "dual_task_stability_fatigue", "interference_recovery", "block_component", ("adjacent_cross_train", "target_pressure_fatigue", "late_repeat_transfer")),
 )
-_PRIMITIVE_BY_ID = {primitive.primitive_id: primitive for primitive in _PRIMITIVES}
-_DIRECT_CODE_TO_PRIMITIVE = {
-    code: primitive.primitive_id
-    for primitive in _PRIMITIVES
-    for code in primitive.direct_test_codes
-}
-_WORKOUT_CODE_TO_PRIMITIVE = {
-    code: primitive.primitive_id
-    for primitive in _PRIMITIVES
-    for code in primitive.coarse_workout_codes
-}
-_BENCHMARK_PROBE_TO_PRIMITIVE = {
-    code: primitive.primitive_id
-    for primitive in _PRIMITIVES
-    for code in primitive.benchmark_probe_codes
-}
-_MAX_BOTTLENECK_COUNT = max(len(primitive.bottleneck_test_codes) for primitive in _PRIMITIVES)
 
 
 def collect_adaptive_evidence(
@@ -518,108 +473,445 @@ def collect_adaptive_evidence(
     *,
     now_utc: str | None = None,
 ) -> list[AdaptiveEvidence]:
-    _ = now_utc
-    mapped: list[AdaptiveEvidence] = []
-    for entry in history:
-        mapped.extend(_evidence_from_attempt(entry))
-
-    mapped.sort(key=lambda evidence: (evidence.completed_at_epoch_s, evidence.source_code), reverse=True)
-    per_primitive_counts: dict[str, int] = defaultdict(int)
-    limited: list[AdaptiveEvidence] = []
-    for evidence in mapped:
-        if len(limited) >= _MAX_EVIDENCE_TOTAL:
-            break
-        if per_primitive_counts[evidence.primitive_id] >= _MAX_EVIDENCE_PER_PRIMITIVE:
-            continue
-        limited.append(evidence)
-        per_primitive_counts[evidence.primitive_id] += 1
-    return limited
+    return cast(list[AdaptiveEvidence], collect_primitive_evidence(history, now_utc=now_utc))
 
 
 def rank_adaptive_primitives(
     history: list[AttemptHistoryEntry],
     *,
     now_utc: str | None = None,
+    seed: int = 0,
 ) -> tuple[AdaptivePriorityBreakdown, ...]:
-    now_token = now_utc or _utc_now_iso()
-    now_epoch = _epoch_s(now_token)
-    evidence = collect_adaptive_evidence(history, now_utc=now_token)
-    grouped: dict[str, list[AdaptiveEvidence]] = {primitive.primitive_id: [] for primitive in _PRIMITIVES}
-    for item in evidence:
-        grouped[item.primitive_id].append(item)
+    ranking = rank_primitives(history, now_utc=now_utc, seed=seed)
+    return cast(tuple[AdaptivePriorityBreakdown, ...], ranking.weakest_primitives)
 
-    ranked: list[AdaptivePriorityBreakdown] = []
-    for primitive in _PRIMITIVES:
-        items = sorted(grouped.get(primitive.primitive_id, ()), key=lambda item: item.completed_at_epoch_s)
-        performance_values = [
-            float(item.performance_score)
-            for item in items
-            if item.performance_score is not None
-        ]
-        weakness = 0.35
-        perf_ewma = _ewma(performance_values)
-        if perf_ewma is not None:
-            weakness = _clamp(1.0 - perf_ewma)
 
-        fatigue_values = [float(item.fatigue_score) for item in items if item.fatigue_score is not None]
-        fatigue = 0.0 if not fatigue_values else _clamp(_ewma(fatigue_values) or 0.0)
+def _variant_spec(variant: str) -> AdaptiveVariantSpec:
+    token = str(variant or "full").strip().lower()
+    return ADAPTIVE_VARIANT_SPECS.get(token, ADAPTIVE_VARIANT_SPECS["full"])
 
-        post_error_values = [
-            float(item.post_error_score)
-            for item in items
-            if item.post_error_score is not None
-        ]
-        post_error = 0.0 if not post_error_values else _clamp(_ewma(post_error_values) or 0.0)
 
-        retention = _retention_score(items, now_epoch=now_epoch)
-        bottleneck = float(len(primitive.bottleneck_test_codes)) / float(_MAX_BOTTLENECK_COUNT)
-        priority = (
-            (0.35 * weakness)
-            + (0.20 * fatigue)
-            + (0.15 * post_error)
-            + (0.20 * retention)
-            + (0.10 * bottleneck)
-        ) * float(primitive.profile_multiplier)
-        last_item = items[-1] if items else None
-        coarse_count = sum(1 for item in items if item.coarse)
+def _hours_since(last_trained_at_utc: str | None, *, now_utc: str | None = None) -> float:
+    if not last_trained_at_utc:
+        return float("inf")
+    try:
+        baseline = _parse_utc_iso(now_utc) if now_utc else datetime.now(UTC)
+        return max(0.0, (baseline - _parse_utc_iso(last_trained_at_utc)).total_seconds() / 3600.0)
+    except Exception:
+        return float("inf")
 
-        contributions = (
-            ("weak", 0.35 * weakness),
-            ("fatigue", 0.20 * fatigue),
-            ("post-error", 0.15 * post_error),
-            ("retention", 0.20 * retention),
-            ("bottleneck", 0.10 * bottleneck),
+
+def _seed_tiebreak(token: str, *, seed: int) -> float:
+    acc = int(seed) * 131
+    for index, ch in enumerate(str(token)):
+        acc += (index + 1) * ord(ch)
+    return float((acc % 1000) / 1_000_000.0)
+
+
+def _recent_adaptive_sessions(history: list[AttemptHistoryEntry]) -> list[AdaptiveHistorySessionSummary]:
+    out: list[AdaptiveHistorySessionSummary] = []
+    for entry in history:
+        token = str(entry.test_code or "").strip().lower()
+        if token not in ADAPTIVE_SESSION_CODES:
+            continue
+        drill_codes: list[str] = []
+        target_areas: list[str] = []
+        block_numbers = sorted(
+            {
+                key.split(".")[1]
+                for key in entry.metrics
+                if key.startswith("block.") and len(key.split(".")) >= 3
+            }
         )
-        ordered_reasons = sorted(contributions, key=lambda pair: (pair[1], pair[0]), reverse=True)
-        reason_tags = tuple(
-            tag
-            for tag, weight in ordered_reasons
-            if weight >= 0.05
-        )[:3]
-        if not reason_tags:
-            reason_tags = tuple(tag for tag, _weight in ordered_reasons[:2])
-
-        ranked.append(
-            AdaptivePriorityBreakdown(
-                primitive_id=primitive.primitive_id,
-                label=primitive.label,
-                profile_multiplier=float(primitive.profile_multiplier),
-                weakness=float(weakness),
-                fatigue=float(fatigue),
-                post_error=float(post_error),
-                retention=float(retention),
-                bottleneck=float(bottleneck),
-                priority=float(priority),
-                evidence_count=len(items),
-                coarse_evidence_count=coarse_count,
-                reason_tags=reason_tags,
-                last_trained_at_utc=None if last_item is None else last_item.completed_at_utc,
-                last_source_code=None if last_item is None else last_item.source_code,
+        primary_primitive_id = None
+        for index, number in enumerate(block_numbers):
+            prefix = f"block.{number}."
+            primitive_id = str(entry.metrics.get(f"{prefix}primitive_id", "")).strip().lower() or None
+            if index == 0:
+                primary_primitive_id = primitive_id
+            drill_code = str(entry.metrics.get(f"{prefix}drill_code", "")).strip().lower()
+            if drill_code != "":
+                drill_codes.append(drill_code)
+            target_area = str(entry.metrics.get(f"{prefix}target_area", "")).strip().lower()
+            if target_area != "":
+                target_areas.append(target_area)
+        primary_domain_id = None
+        if primary_primitive_id in _PRIMITIVE_BY_ID:
+            primary_domain_id = _PRIMITIVE_BY_ID[primary_primitive_id].domain_id
+        out.append(
+            AdaptiveHistorySessionSummary(
+                completed_at_utc=entry.completed_at_utc,
+                completed_at_epoch_s=_parse_utc_iso(entry.completed_at_utc).timestamp(),
+                primary_primitive_id=primary_primitive_id,
+                primary_domain_id=primary_domain_id,
+                drill_codes=tuple(drill_codes),
+                target_areas=tuple(target_areas),
             )
         )
+    out.sort(key=lambda item: item.completed_at_epoch_s, reverse=True)
+    return out
 
-    ranked.sort(key=lambda item: (item.priority, item.evidence_count, item.primitive_id), reverse=True)
-    return tuple(ranked)
+
+def _domain_dominated_in_recent_sessions(
+    recent_sessions: list[AdaptiveHistorySessionSummary],
+    *,
+    domain_id: str,
+    now_utc: str,
+) -> bool:
+    recent = [
+        session
+        for session in recent_sessions[:3]
+        if _hours_since(session.completed_at_utc, now_utc=now_utc) <= 72.0
+    ]
+    if len(recent) < 3:
+        return False
+    return sum(1 for session in recent if session.primary_domain_id == domain_id) >= 2
+
+
+def _adjusted_priority(
+    item: PrimitiveRankingItem,
+    *,
+    recent_sessions: list[AdaptiveHistorySessionSummary],
+    now_utc: str,
+) -> float:
+    adjusted = float(item.priority)
+    recent_primary = recent_sessions[0] if recent_sessions else None
+    if (
+        recent_primary is not None
+        and recent_primary.primary_primitive_id == item.primitive_id
+        and _hours_since(recent_primary.completed_at_utc, now_utc=now_utc) <= 24.0
+    ):
+        adjusted -= 0.18
+    if _domain_dominated_in_recent_sessions(recent_sessions, domain_id=item.domain_id, now_utc=now_utc):
+        adjusted -= 0.08
+    age_h = _hours_since(item.last_trained_at_utc, now_utc=now_utc)
+    if 48.0 <= age_h <= 72.0 and item.retention >= 0.45:
+        adjusted += 0.10
+    return max(0.0, adjusted)
+
+
+def _dominant_penalty_name(item: PrimitiveRankingItem) -> str:
+    components = (
+        ("fatigue", float(item.fatigue_penalty)),
+        ("post_error", float(item.post_error_penalty)),
+        ("lapse", float(item.lapse_penalty)),
+        ("distractor", float(item.distractor_penalty)),
+        ("switch", float(item.switch_penalty)),
+        ("control", float(item.control_penalty)),
+        ("interference", float(item.interference_penalty)),
+        ("retention", float(item.retention)),
+        ("weakness", float(item.weakness)),
+    )
+    ordered = sorted(components, key=lambda pair: (pair[1], pair[0]), reverse=True)
+    return ordered[0][0]
+
+
+def _target_area_for_primitive(item: PrimitiveRankingItem) -> str:
+    dominant = _dominant_penalty_name(item)
+    per_primitive = {
+        "mental_arithmetic_automaticity": {
+            "interference": "interference_resilience",
+            "post_error": "interference_resilience",
+            "lapse": "written_extraction",
+            "distractor": "written_extraction",
+            "fatigue": "applied_rate_fuel",
+            "retention": "applied_rate_fuel",
+            "weakness": "quantitative_core",
+        },
+        "table_cross_reference_speed": {
+            "distractor": "distractor_table_pressure",
+            "switch": "two_source_xref",
+            "retention": "two_source_xref",
+            "weakness": "single_lookup",
+        },
+        "visual_scan_discipline": {
+            "switch": "priority_switch",
+            "distractor": "routine_priority_switch",
+            "fatigue": "routine_priority_switch",
+            "weakness": "class_search",
+        },
+        "symbolic_rule_extraction": {
+            "switch": "two_source_reconcile",
+            "distractor": "distractor_reject",
+            "interference": "distractor_reject",
+            "weakness": "single_rule",
+        },
+        "tracking_stability_low_load": {
+            "control": "overshoot_recovery",
+            "fatigue": "obscured_prediction",
+            "weakness": "split_axis_control",
+        },
+        "dual_task_stability_fatigue": {
+            "interference": "interference_recovery",
+            "switch": "command_filter",
+            "distractor": "filtered_digit_report",
+            "fatigue": "interference_recovery",
+            "lapse": "tracking_recall_bridge",
+            "weakness": "tracking_recall_bridge",
+        },
+    }
+    defaults = {
+        "mental_arithmetic_automaticity": "quantitative_core",
+        "table_cross_reference_speed": "single_lookup",
+        "visual_scan_discipline": "class_search",
+        "symbolic_rule_extraction": "single_rule",
+        "tracking_stability_low_load": "split_axis_control",
+        "dual_task_stability_fatigue": "tracking_recall_bridge",
+    }
+    mapping = per_primitive.get(item.primitive_id, {})
+    return mapping.get(dominant, defaults.get(item.primitive_id, ""))
+
+
+def _select_primary_target(
+    ranked: tuple[AdaptivePriorityBreakdown, ...],
+    *,
+    recent_sessions: list[AdaptiveHistorySessionSummary],
+    now_utc: str,
+) -> AdaptivePriorityBreakdown:
+    adjusted = sorted(
+        (
+            (
+                _adjusted_priority(item, recent_sessions=recent_sessions, now_utc=now_utc),
+                float(item.priority),
+                item,
+            )
+            for item in ranked
+        ),
+        key=lambda triple: (triple[0], triple[1], triple[2].primitive_id),
+        reverse=True,
+    )
+    top = adjusted[0][2]
+    recent_primary = recent_sessions[0] if recent_sessions else None
+    if (
+        recent_primary is not None
+        and recent_primary.primary_primitive_id == top.primitive_id
+        and _hours_since(recent_primary.completed_at_utc, now_utc=now_utc) <= 24.0
+        and len(adjusted) > 1
+    ):
+        second_score = adjusted[1][0]
+        if second_score > 0.0 and adjusted[0][0] < (second_score * 1.15):
+            return adjusted[1][2]
+    return top
+
+
+def _adjacent_links_for_primitive(primitive_id: str) -> tuple[AdaptiveSkillLink, ...]:
+    return tuple(ADAPTIVE_SKILL_GRAPH.get(primitive_id, ()))
+
+
+def _link_for_target_area(
+    primitive_id: str,
+    *,
+    target_area: str,
+    ranked_by_id: dict[str, AdaptivePriorityBreakdown],
+    recent_sessions: list[AdaptiveHistorySessionSummary],
+    now_utc: str,
+) -> tuple[AdaptiveSkillLink, str] | None:
+    scored: list[tuple[float, str, AdaptiveSkillLink]] = []
+    recent_primary = recent_sessions[0] if recent_sessions else None
+    for link in _adjacent_links_for_primitive(primitive_id):
+        neighbor = ranked_by_id.get(link.linked_primitive_id)
+        if neighbor is None:
+            continue
+        linked_area = ""
+        area_boost = 0.0
+        for source_area, candidate_area in link.linked_target_areas:
+            if source_area == target_area:
+                linked_area = candidate_area
+                area_boost = 0.18
+                break
+        if linked_area == "" and link.linked_target_areas:
+            linked_area = link.linked_target_areas[0][1]
+        score = _adjusted_priority(neighbor, recent_sessions=recent_sessions, now_utc=now_utc) + area_boost
+        if (
+            recent_primary is not None
+            and recent_primary.primary_primitive_id == neighbor.primitive_id
+            and _hours_since(recent_primary.completed_at_utc, now_utc=now_utc) <= 24.0
+        ):
+            score -= 0.05
+        scored.append((score, linked_area, link))
+    if not scored:
+        return None
+    scored.sort(key=lambda item: (item[0], item[1], item[2].linked_primitive_id), reverse=True)
+    best = scored[0]
+    return (best[2], best[1])
+
+
+def _retention_repeat_needed(item: PrimitiveRankingItem, *, now_utc: str) -> bool:
+    age_h = _hours_since(item.last_trained_at_utc, now_utc=now_utc)
+    return bool(item.retention >= 0.45 or 48.0 <= age_h <= 72.0)
+
+
+def _meltdown_cap_applies(item: PrimitiveRankingItem, *, base_level: int) -> bool:
+    meltdown = item.last_meltdown_level
+    return meltdown is not None and int(meltdown) >= int(base_level)
+
+
+def _comparable_probe_level(item: PrimitiveRankingItem, *, base_level: int) -> int:
+    candidate = item.last_successful_level
+    if candidate is not None and abs(int(candidate) - int(base_level)) <= 1:
+        return clamp_level(int(candidate))
+    return clamp_level(int(base_level))
+
+
+def _level_for_role(
+    *,
+    role: str,
+    target_item: PrimitiveRankingItem,
+    target_base_level: int,
+    adjacent_item: PrimitiveRankingItem | None = None,
+    retention_repeat: bool = False,
+) -> tuple[int, int | None]:
+    target_confidence = float(target_item.confidence)
+    meltdown_cap = _meltdown_cap_applies(target_item, base_level=target_base_level)
+    if role == "target_anchor":
+        level = target_base_level - 2 if (target_confidence < 0.50 or meltdown_cap) else target_base_level - 1
+        return (clamp_level(level), None)
+    if role == "target_tempo":
+        return (clamp_level(target_base_level), None)
+    if role == "adjacent_cross_train":
+        assert adjacent_item is not None
+        adjacent_base = clamp_level(int(adjacent_item.recommended_level))
+        level = min(int(target_base_level), int(adjacent_base))
+        if float(adjacent_item.confidence) < 0.55 or target_confidence < 0.55:
+            level -= 1
+        return (clamp_level(level), None)
+    if role == "reassessment_probe":
+        comparable = _comparable_probe_level(target_item, base_level=target_base_level)
+        return (clamp_level(comparable), int(comparable))
+    if role == "target_pressure_fatigue":
+        level = target_base_level + 1 if (float(target_item.level_confidence) >= 0.45 and not meltdown_cap) else target_base_level
+        return (clamp_level(level), None)
+    if role == "late_repeat_transfer":
+        if retention_repeat:
+            comparable = _comparable_probe_level(target_item, base_level=target_base_level)
+            return (clamp_level(comparable), int(comparable))
+        assert adjacent_item is not None
+        return _level_for_role(
+            role="adjacent_cross_train",
+            target_item=target_item,
+            target_base_level=target_base_level,
+            adjacent_item=adjacent_item,
+            retention_repeat=False,
+        )
+    return (clamp_level(target_base_level), None)
+
+
+def _pressure_is_fatigue_dominant(item: PrimitiveRankingItem) -> bool:
+    fatigue_cluster = max(float(item.fatigue_penalty), float(item.lapse_penalty))
+    other_cluster = max(
+        float(item.post_error_penalty),
+        float(item.distractor_penalty),
+        float(item.switch_penalty),
+        float(item.control_penalty),
+        float(item.interference_penalty),
+    )
+    return fatigue_cluster >= other_cluster
+
+
+def _training_mode_for_role(
+    drill_code: str,
+    *,
+    role: str,
+    target_confidence: float | None = None,
+    fatigue_dominant: bool = False,
+    retention_repeat: bool = False,
+) -> AntDrillMode:
+    if role == "target_anchor":
+        if supports_training_mode(drill_code, AntDrillMode.FRESH):
+            return AntDrillMode.FRESH
+        return AntDrillMode.BUILD
+    if role == "target_tempo":
+        return AntDrillMode.TEMPO if supports_training_mode(drill_code, AntDrillMode.TEMPO) else AntDrillMode.PRESSURE
+    if role == "adjacent_cross_train":
+        if target_confidence is not None and target_confidence < 0.55:
+            return AntDrillMode.BUILD
+        return AntDrillMode.TEMPO
+    if role == "reassessment_probe":
+        return AntDrillMode.BUILD
+    if role == "target_pressure_fatigue":
+        if fatigue_dominant and supports_training_mode(drill_code, AntDrillMode.FATIGUE_PROBE):
+            return AntDrillMode.FATIGUE_PROBE
+        return AntDrillMode.PRESSURE
+    if role == "late_repeat_transfer":
+        return AntDrillMode.BUILD if retention_repeat else AntDrillMode.TEMPO
+    return AntDrillMode.BUILD
+
+
+def _preferred_form_factors_for_role(
+    role: str,
+    *,
+    variant_spec: AdaptiveVariantSpec,
+    retention_repeat: bool,
+) -> tuple[str, ...]:
+    if variant_spec.variant == "micro":
+        return ("micro",)
+    if variant_spec.variant == "short":
+        if role in {"target_anchor", "reassessment_probe"}:
+            return ("micro", "short")
+        return ("short", "micro")
+    if role in {"target_anchor", "reassessment_probe"}:
+        return ("micro", "short", "block_component")
+    if role == "late_repeat_transfer" and retention_repeat:
+        return ("short", "micro", "block_component")
+    if role in {"adjacent_cross_train", "target_pressure_fatigue", "late_repeat_transfer"}:
+        return ("block_component", "short", "micro")
+    return ("short", "micro", "block_component")
+
+
+def _select_candidate(
+    *,
+    primitive_id: str,
+    role: str,
+    target_area: str,
+    variant_spec: AdaptiveVariantSpec,
+    seed: int,
+    recent_session: AdaptiveHistorySessionSummary | None,
+    previous_target_area: str | None,
+    retention_repeat: bool,
+) -> AdaptiveDrillCandidate:
+    candidates = [
+        candidate
+        for candidate in ADAPTIVE_DRILL_CATALOG
+        if candidate.primitive_id == primitive_id and role in candidate.role_support
+    ]
+    if not candidates:
+        candidates = [
+            candidate
+            for candidate in ADAPTIVE_DRILL_CATALOG
+            if candidate.primitive_id == primitive_id
+        ]
+    allowed = variant_spec.allowed_form_factors
+    filtered = [candidate for candidate in candidates if candidate.form_factor in allowed]
+    if filtered:
+        candidates = filtered
+    preferred_forms = _preferred_form_factors_for_role(
+        role,
+        variant_spec=variant_spec,
+        retention_repeat=retention_repeat,
+    )
+    recent_drill_codes = set() if recent_session is None else set(recent_session.drill_codes)
+    scored: list[tuple[float, str, AdaptiveDrillCandidate]] = []
+    for candidate in candidates:
+        score = 0.0
+        if candidate.target_area == target_area:
+            score += 5.0
+        form_index = preferred_forms.index(candidate.form_factor) if candidate.form_factor in preferred_forms else len(preferred_forms)
+        score += max(0.0, 2.0 - (0.5 * float(form_index)))
+        if candidate.canonical_preferred:
+            score += 1.0
+        if candidate.drill_code in recent_drill_codes:
+            score -= 0.8
+        if (
+            previous_target_area
+            and previous_target_area == candidate.target_area
+            and role not in {"reassessment_probe"}
+            and not (role == "late_repeat_transfer" and retention_repeat)
+        ):
+            score -= 0.6
+        score += _seed_tiebreak(candidate.drill_code, seed=seed)
+        scored.append((score, candidate.drill_code, candidate))
+    scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return scored[0][2]
 
 
 def build_adaptive_session_plan(
@@ -627,72 +919,150 @@ def build_adaptive_session_plan(
     history: list[AttemptHistoryEntry],
     seed: int,
     now_utc: str | None = None,
+    recommended_level: int | None = None,
+    fixed_mode: bool = False,
+    variant: str = "full",
 ) -> AdaptiveSessionPlan | None:
     now_token = now_utc or _utc_now_iso()
-    ranked = rank_adaptive_primitives(history, now_utc=now_token)
+    variant_spec = _variant_spec(variant)
+    ranking = rank_primitives(history, now_utc=now_token, seed=seed)
+    ranked = cast(tuple[AdaptivePriorityBreakdown, ...], ranking.weakest_primitives)
     if not any(item.evidence_count > 0 for item in ranked):
         return None
-
-    selected = list(ranked[:3])
-    if len(selected) == 1:
-        allocations = [6]
-    elif len(selected) == 2:
-        allocations = [4, 2]
-    elif selected[2].priority < 0.35:
-        selected = selected[:2]
-        allocations = [4, 2]
-    else:
-        allocations = [3, 2, 1]
-
+    ranked_by_id = {item.primitive_id: item for item in ranked}
+    recent_sessions = _recent_adaptive_sessions(history)
+    recent_session = recent_sessions[0] if recent_sessions else None
+    target = _select_primary_target(ranked, recent_sessions=recent_sessions, now_utc=now_token)
+    target_area = _target_area_for_primitive(target)
+    target_base_level = clamp_level(recommended_level or int(target.recommended_level))
+    adjacent_selection = _link_for_target_area(
+        target.primitive_id,
+        target_area=target_area,
+        ranked_by_id=ranked_by_id,
+        recent_sessions=recent_sessions,
+        now_utc=now_token,
+    )
+    adjacent_link = None if adjacent_selection is None else adjacent_selection[0]
+    adjacent_area = "" if adjacent_selection is None else adjacent_selection[1]
+    adjacent_item = None if adjacent_link is None else ranked_by_id.get(adjacent_link.linked_primitive_id)
+    retention_repeat = _retention_repeat_needed(target, now_utc=now_token)
     blocks: list[AdaptiveSessionBlock] = []
-    for primitive_index, (breakdown, block_count) in enumerate(zip(selected, allocations, strict=True)):
-        primitive = _PRIMITIVE_BY_ID[breakdown.primitive_id]
-        for local_index in range(block_count):
-            role = _select_block_role(
-                breakdown=breakdown,
-                local_index=local_index,
-                block_count=block_count,
-            )
-            drill_code = _select_drill_code(
-                primitive=primitive,
-                role=role,
-                local_index=local_index,
-                breakdown=breakdown,
-            )
-            block_index = len(blocks)
-            blocks.append(
-                AdaptiveSessionBlock(
-                    block_index=block_index,
-                    primitive_id=primitive.primitive_id,
-                    primitive_label=primitive.label,
-                    drill_code=drill_code,
-                    mode=role,
-                    duration_s=_BLOCK_DURATION_S,
-                    difficulty_level=_BLOCK_ROLE_LEVEL[role],
-                    seed=int(seed) + ((block_index + 1) * 131),
-                    reason_tags=tuple(breakdown.reason_tags),
-                    priority=float(breakdown.priority),
-                    drill_mode=_training_mode_for_role(drill_code, role=role),
+    previous_target_area: str | None = None
+    for block_index, role in enumerate(_ROLE_SEQUENCE):
+        if role in {"target_anchor", "target_tempo", "reassessment_probe", "target_pressure_fatigue"}:
+            block_item = target
+            block_primitive = _PRIMITIVE_BY_ID[target.primitive_id]
+            block_target_area = target_area
+            linked_primitive_id = None
+            candidate_retention_repeat = False
+            block_adjacent_item = None
+        elif role == "adjacent_cross_train":
+            if adjacent_item is None:
+                continue
+            block_item = adjacent_item
+            block_primitive = _PRIMITIVE_BY_ID[adjacent_item.primitive_id]
+            block_target_area = adjacent_area or _target_area_for_primitive(adjacent_item)
+            linked_primitive_id = target.primitive_id
+            candidate_retention_repeat = False
+            block_adjacent_item = adjacent_item
+        else:
+            if retention_repeat:
+                block_item = target
+                block_primitive = _PRIMITIVE_BY_ID[target.primitive_id]
+                block_target_area = target_area
+                linked_primitive_id = None
+                candidate_retention_repeat = True
+                block_adjacent_item = None
+            else:
+                late_link_selection = _link_for_target_area(
+                    target.primitive_id,
+                    target_area=target_area,
+                    ranked_by_id=ranked_by_id,
+                    recent_sessions=recent_sessions,
+                    now_utc=now_token,
                 )
-            )
+                late_link = None if late_link_selection is None else late_link_selection[0]
+                late_area = "" if late_link_selection is None else late_link_selection[1]
+                late_item = adjacent_item if adjacent_item is not None else None
+                if late_link is not None and late_link.linked_primitive_id in ranked_by_id:
+                    late_item = ranked_by_id[late_link.linked_primitive_id]
+                if late_item is None:
+                    late_item = target
+                block_item = late_item
+                block_primitive = _PRIMITIVE_BY_ID[late_item.primitive_id]
+                block_target_area = late_area or _target_area_for_primitive(late_item)
+                linked_primitive_id = target.primitive_id if late_item.primitive_id != target.primitive_id else None
+                candidate_retention_repeat = False
+                block_adjacent_item = late_item if late_item.primitive_id != target.primitive_id else None
 
-    title = "Adaptive Session (60m)"
+        difficulty_level, comparable_level = _level_for_role(
+            role=role,
+            target_item=target,
+            target_base_level=target_base_level,
+            adjacent_item=block_adjacent_item,
+            retention_repeat=candidate_retention_repeat,
+        )
+        candidate = _select_candidate(
+            primitive_id=block_item.primitive_id,
+            role=role,
+            target_area=block_target_area,
+            variant_spec=variant_spec,
+            seed=int(seed) + (block_index * 17),
+            recent_session=recent_session,
+            previous_target_area=previous_target_area,
+            retention_repeat=candidate_retention_repeat,
+        )
+        drill_code = resolved_canonical_drill_code(candidate.drill_code, for_adaptive=True) or candidate.drill_code
+        drill_mode = _training_mode_for_role(
+            drill_code,
+            role=role,
+            target_confidence=float(target.confidence if role != "adjacent_cross_train" else min(target.confidence, block_item.confidence)),
+            fatigue_dominant=_pressure_is_fatigue_dominant(target),
+            retention_repeat=candidate_retention_repeat,
+        )
+        blocks.append(
+            AdaptiveSessionBlock(
+                block_index=block_index,
+                primitive_id=block_primitive.primitive_id,
+                primitive_label=block_primitive.label,
+                drill_code=drill_code,
+                mode=role,
+                duration_s=variant_spec.block_duration_s,
+                difficulty_level=difficulty_level,
+                seed=int(seed) + ((block_index + 1) * 131),
+                reason_tags=tuple(block_item.reason_tags),
+                priority=float(block_item.priority),
+                drill_mode=drill_mode,
+                form_factor=candidate.form_factor,
+                target_area=block_target_area,
+                linked_primitive_id=linked_primitive_id,
+                comparable_level=comparable_level,
+            )
+        )
+        previous_target_area = block_target_area
+
+    title = variant_spec.title
     description = (
         "Built from recent benchmark and training history. "
-        "This session concentrates on the top weak primitives instead of spreading work evenly."
+        "This session uses a fixed six-block sequence: target anchor, target tempo, adjacent cross-train, "
+        "reassessment probe, target under pressure or fatigue, and a late repeat or mixed transfer."
     )
+    if fixed_mode:
+        description += " This launch is using fixed mode."
     notes = tuple(
         f"{item.label}: priority {item.priority:.2f} [{', '.join(item.reason_tags)}]"
-        for item in selected
+        for item in ranked[:3]
     )
     return AdaptiveSessionPlan(
-        code="adaptive_session",
+        code=variant_spec.code,
         title=title,
         version=_SCHEDULER_VERSION,
         generated_at_utc=now_token,
         description=description,
         notes=notes,
         ranked_primitives=tuple(ranked),
+        variant=variant_spec.variant,
+        domain_summaries=tuple(ranking.domain_summaries),
         blocks=tuple(blocks),
     )
 
@@ -700,10 +1070,27 @@ def build_adaptive_session_plan(
 class AdaptiveSession:
     _NOMINAL_DIFFICULTY = 0.5
 
-    def __init__(self, *, clock: Clock, seed: int, plan: AdaptiveSessionPlan) -> None:
+    def __init__(
+        self,
+        *,
+        clock: Clock,
+        seed: int,
+        plan: AdaptiveSessionPlan,
+        difficulty_mode: LaunchDifficultyMode = "adaptive",
+        difficulty_context: ResolvedDifficultyContext | None = None,
+    ) -> None:
         self._clock = clock
         self._seed = int(seed)
         self._plan = plan
+        self._difficulty_mode = "adaptive" if difficulty_mode == "adaptive" else "fixed"
+        baseline_level = 5 if not self._plan.blocks else int(self._plan.blocks[0].difficulty_level)
+        self._difficulty_context = difficulty_context or build_resolved_difficulty_context(
+            self._plan.code,
+            mode=cast(LaunchDifficultyMode, self._difficulty_mode),
+            launch_level=baseline_level,
+            fixed_level=baseline_level,
+            adaptive_enabled=(self._difficulty_mode == "adaptive"),
+        )
         self._stage = AdaptiveStage.INTRO
         self._current_block_index = 0
         self._current_engine: object | None = None
@@ -844,7 +1231,7 @@ class AdaptiveSession:
             prompt="",
             note_lines=(
                 "Session-wide pause and restart only.",
-                "This block was chosen from recent weakness, fatigue, retention, and post-error data.",
+                "This block was chosen from weakness, fatigue, lapses, interference, and adjacent transfer data.",
             ),
             block_index=self._current_block_index + 1,
             block_total=len(self._plan.blocks),
@@ -911,10 +1298,30 @@ class AdaptiveSession:
             "scheduler.generated_at_utc": self._plan.generated_at_utc,
             "scheduler.block_count": str(len(self._plan.blocks)),
             "scheduler.total_duration_s": f"{self._plan.scored_duration_s:.6f}",
+            "adaptive_mode": str(self._difficulty_mode),
+            "adaptive_start_level": str(int(self._difficulty_context.launch_level)),
+            "adaptive_end_level": str(
+                int(self.scored_summary().difficulty_level_end or self._difficulty_context.launch_level)
+            ),
+            "adaptive_change_count": str(int(self.scored_summary().difficulty_change_count)),
+            "adaptive_scope_code": self._difficulty_context.code_scope_key,
+            "adaptive_scope_primitive": self._difficulty_context.primitive_scope_key,
         }
         for breakdown in self._plan.ranked_primitives:
             metrics[f"scheduler.priority.{breakdown.primitive_id}"] = f"{breakdown.priority:.6f}"
             metrics[f"scheduler.reason.{breakdown.primitive_id}"] = ",".join(breakdown.reason_tags)
+            metrics[f"scheduler.recommended_level.{breakdown.primitive_id}"] = str(
+                int(breakdown.recommended_level)
+            )
+            metrics[f"scheduler.level_confidence.{breakdown.primitive_id}"] = (
+                f"{breakdown.level_confidence:.6f}"
+            )
+        for summary in self._plan.domain_summaries:
+            prefix = f"scheduler.domain.{summary.domain_id}."
+            metrics[f"{prefix}priority_sum"] = f"{summary.priority_sum:.6f}"
+            metrics[f"{prefix}mean_composite_score"] = f"{summary.mean_composite_score:.6f}"
+            metrics[f"{prefix}mean_confidence"] = f"{summary.mean_confidence:.6f}"
+            metrics[f"{prefix}weakest_primitive_id"] = summary.weakest_primitive_id
 
         attempt_lookup = {
             block.block_index: (block, result, completed)
@@ -930,6 +1337,12 @@ class AdaptiveSession:
             metrics[f"{prefix}difficulty_level"] = str(int(block.difficulty_level))
             metrics[f"{prefix}reason_tags"] = ",".join(block.reason_tags)
             metrics[f"{prefix}priority"] = f"{block.priority:.6f}"
+            metrics[f"{prefix}form_factor"] = block.form_factor
+            metrics[f"{prefix}target_area"] = block.target_area
+            metrics[f"{prefix}linked_primitive_id"] = block.linked_primitive_id or ""
+            metrics[f"{prefix}comparable_level"] = (
+                "" if block.comparable_level is None else str(int(block.comparable_level))
+            )
             saved = attempt_lookup.get(block.block_index)
             metrics[f"{prefix}completed"] = "1" if saved and saved[2] else "0"
             if not saved:
@@ -950,6 +1363,13 @@ class AdaptiveSession:
                 "drill_code": block.drill_code,
                 "mode": block.mode,
                 "difficulty_level": int(block.difficulty_level),
+                "training_mode": block.drill_mode.value,
+                "form_factor": block.form_factor,
+                "target_area": block.target_area,
+                "linked_primitive_id": block.linked_primitive_id or "",
+                "comparable_level": (
+                    None if block.comparable_level is None else int(block.comparable_level)
+                ),
             }
             events.append(
                 TelemetryEvent(
@@ -1049,6 +1469,12 @@ class AdaptiveSession:
     def _build_block_engine(self, block: AdaptiveSessionBlock) -> object:
         if block.builder is not None:
             engine = block.builder()
+            setattr(engine, "_difficulty_code", str(block.drill_code))
+            setattr(
+                engine,
+                "_resolved_difficulty_context",
+                self._block_difficulty_context(block),
+            )
             starter = getattr(engine, "start_scored", None)
             if callable(starter):
                 starter()
@@ -1062,13 +1488,16 @@ class AdaptiveSession:
             mode=block.drill_mode,
             duration_min=float(block.duration_s) / 60.0,
         )
-        return build_workout_block_engine(
+        engine = build_workout_block_engine(
             clock=self._clock,
             block_seed=block.seed,
             difficulty_level=block.difficulty_level,
             block=workout_block,
             block_index=0,
         )
+        setattr(engine, "_difficulty_code", str(block.drill_code))
+        setattr(engine, "_resolved_difficulty_context", self._block_difficulty_context(block))
+        return engine
 
     def _complete_current_block(self) -> None:
         block = self.current_block_plan()
@@ -1208,19 +1637,28 @@ class AdaptiveSession:
     def _intro_note_lines(self) -> tuple[str, ...]:
         lines = [
             "The scheduler recomputes on open from the last 28 days of mapped evidence.",
-            "Allocation: top primitive 3 blocks, second 2, third 1 unless the third is too weakly supported.",
+            "Block order: anchor -> tempo -> adjacent cross-train -> probe -> pressure/fatigue -> late repeat/transfer.",
             "",
             "Ranked primitives:",
         ]
         for breakdown in self._plan.ranked_primitives[:3]:
             lines.append(
-                f"{breakdown.label}: {breakdown.priority:.2f} [{', '.join(breakdown.reason_tags)}]"
+                f"{breakdown.label}: {breakdown.priority:.2f} [{', '.join(breakdown.reason_tags)}], "
+                f"level {breakdown.recommended_level} ({breakdown.level_confidence:.2f})"
             )
+        if self._plan.domain_summaries:
+            lines.append("")
+            lines.append("Domain rollup:")
+            for summary in self._plan.domain_summaries[:3]:
+                lines.append(
+                    f"{summary.label}: {summary.priority_sum:.2f} -> {summary.weakest_primitive_label}"
+                )
         lines.append("")
         lines.append("Planned blocks:")
         for block in self._plan.blocks:
             lines.append(
-                f"{block.block_index + 1}. {block.primitive_label} -> {block.drill_code} ({block.mode})"
+                f"{block.block_index + 1}. {block.primitive_label} -> {block.drill_code} "
+                f"({block.mode}, L{block.difficulty_level}, {block.form_factor}, {block.target_area})"
             )
         return tuple(lines)
 
@@ -1242,244 +1680,18 @@ class AdaptiveSession:
         for breakdown in self._plan.ranked_primitives[:3]:
             lines.append(
                 f"{breakdown.label}: weak {breakdown.weakness:.2f}, fatigue {breakdown.fatigue:.2f}, "
-                f"post-error {breakdown.post_error:.2f}, retention {breakdown.retention:.2f}"
+                f"lapse {breakdown.lapse:.2f}, control {breakdown.control:.2f}, retention {breakdown.retention:.2f}"
             )
         return tuple(lines)
 
-
-def _training_mode_for_role(drill_code: str, *, role: str) -> AntDrillMode:
-    if role == "anchor":
-        if supports_training_mode(drill_code, AntDrillMode.FRESH):
-            return AntDrillMode.FRESH
-        return AntDrillMode.BUILD
-    if role == "reset":
-        return AntDrillMode.RECOVERY
-    if role == "fatigue_pressure":
-        if supports_training_mode(drill_code, AntDrillMode.FATIGUE_PROBE):
-            return AntDrillMode.FATIGUE_PROBE
-        return AntDrillMode.PRESSURE
-    return AntDrillMode.PRESSURE
-
-
-def _select_block_role(
-    *,
-    breakdown: AdaptivePriorityBreakdown,
-    local_index: int,
-    block_count: int,
-) -> str:
-    last_trained_age_h = _hours_since(breakdown.last_trained_at_utc)
-    high_retention = breakdown.retention >= 0.45 or last_trained_age_h >= 48.0
-    high_post_error = breakdown.post_error >= 0.45
-    high_fatigue = breakdown.fatigue >= 0.35
-    if local_index == 0 and high_retention:
-        return "anchor"
-    if local_index == (block_count - 1) and high_fatigue:
-        return "fatigue_pressure"
-    if local_index > 0 and high_post_error:
-        return "reset"
-    return "tempo"
-
-
-def _select_drill_code(
-    *,
-    primitive: AdaptivePrimitive,
-    role: str,
-    local_index: int,
-    breakdown: AdaptivePriorityBreakdown,
-) -> str:
-    if role == "anchor":
-        templates = primitive.anchor_templates
-    elif role == "reset":
-        templates = primitive.reset_templates
-    elif role == "fatigue_pressure":
-        templates = primitive.fatigue_templates
-    else:
-        templates = primitive.tempo_templates
-    if not templates:
-        raise RuntimeError(f"primitive {primitive.primitive_id} has no templates for role {role}")
-    selected = templates[min(local_index, len(templates) - 1)]
-    if selected == "__vs_family_run__":
-        last = breakdown.last_source_code or ""
-        if last == "vs_family_run_letters":
-            return "vs_family_run_symbols"
-        return "vs_family_run_letters"
-    return selected
-
-
-def _evidence_from_attempt(entry: AttemptHistoryEntry) -> list[AdaptiveEvidence]:
-    if entry.test_code == "benchmark_battery":
-        return _benchmark_evidence_from_attempt(entry)
-    if entry.test_code == "adaptive_session":
-        return _adaptive_block_evidence_from_attempt(entry)
-
-    direct_primitive = _DIRECT_CODE_TO_PRIMITIVE.get(entry.test_code)
-    if direct_primitive is not None:
-        evidence = _build_evidence(
-            primitive_id=direct_primitive,
-            source_code=entry.test_code,
-            source_kind="direct",
-            completed_at_utc=entry.completed_at_utc,
-            metrics=entry.metrics,
-            coarse=False,
+    def _block_difficulty_context(self, block: AdaptiveSessionBlock) -> ResolvedDifficultyContext:
+        return build_resolved_difficulty_context(
+            block.drill_code,
+            mode=cast(LaunchDifficultyMode, self._difficulty_mode),
+            launch_level=int(block.difficulty_level),
+            fixed_level=int(block.difficulty_level),
+            adaptive_enabled=(self._difficulty_mode == "adaptive"),
         )
-        return [] if evidence is None else [evidence]
-
-    coarse_primitive = _WORKOUT_CODE_TO_PRIMITIVE.get(entry.test_code)
-    if coarse_primitive is not None:
-        evidence = _build_evidence(
-            primitive_id=coarse_primitive,
-            source_code=entry.test_code,
-            source_kind="coarse_workout",
-            completed_at_utc=entry.completed_at_utc,
-            metrics=entry.metrics,
-            coarse=True,
-        )
-        return [] if evidence is None else [evidence]
-    return []
-
-
-def _benchmark_evidence_from_attempt(entry: AttemptHistoryEntry) -> list[AdaptiveEvidence]:
-    out: list[AdaptiveEvidence] = []
-    for probe_code, primitive_id in _BENCHMARK_PROBE_TO_PRIMITIVE.items():
-        prefix = f"probe.{probe_code}."
-        if not _metric_bool(entry.metrics, f"{prefix}completed"):
-            continue
-        metrics = {
-            key[len(prefix) :]: value
-            for key, value in entry.metrics.items()
-            if key.startswith(prefix)
-        }
-        evidence = _build_evidence(
-            primitive_id=primitive_id,
-            source_code=probe_code,
-            source_kind="benchmark_probe",
-            completed_at_utc=entry.completed_at_utc,
-            metrics=metrics,
-            coarse=False,
-        )
-        if evidence is not None:
-            out.append(evidence)
-    return out
-
-
-def _adaptive_block_evidence_from_attempt(entry: AttemptHistoryEntry) -> list[AdaptiveEvidence]:
-    block_numbers = sorted(
-        {
-            key.split(".")[1]
-            for key in entry.metrics
-            if key.startswith("block.") and len(key.split(".")) >= 3
-        }
-    )
-    out: list[AdaptiveEvidence] = []
-    for number in block_numbers:
-        prefix = f"block.{number}."
-        primitive_id = entry.metrics.get(f"{prefix}primitive_id", "").strip()
-        if primitive_id not in _PRIMITIVE_BY_ID:
-            continue
-        metrics = {
-            key[len(prefix) :]: value
-            for key, value in entry.metrics.items()
-            if key.startswith(prefix)
-        }
-        source_code = metrics.get("drill_code", f"adaptive_block_{number}")
-        evidence = _build_evidence(
-            primitive_id=primitive_id,
-            source_code=source_code,
-            source_kind="adaptive_block",
-            completed_at_utc=entry.completed_at_utc,
-            metrics=metrics,
-            coarse=False,
-        )
-        if evidence is not None:
-            out.append(evidence)
-    return out
-
-
-def _build_evidence(
-    *,
-    primitive_id: str,
-    source_code: str,
-    source_kind: str,
-    completed_at_utc: str,
-    metrics: dict[str, str],
-    coarse: bool,
-) -> AdaptiveEvidence | None:
-    score_ratio = _metric_float(metrics, "score_ratio")
-    accuracy = _metric_float(metrics, "accuracy")
-    performance_score = score_ratio if score_ratio is not None else accuracy
-    fatigue_score = _fatigue_score_from_metrics(metrics)
-    post_error_score = _post_error_score_from_metrics(metrics)
-    if performance_score is None and fatigue_score is None and post_error_score is None:
-        return None
-    return AdaptiveEvidence(
-        primitive_id=primitive_id,
-        source_code=str(source_code),
-        source_kind=str(source_kind),
-        completed_at_utc=str(completed_at_utc),
-        completed_at_epoch_s=_epoch_s(completed_at_utc),
-        performance_score=None if performance_score is None else _clamp(performance_score),
-        fatigue_score=fatigue_score,
-        post_error_score=post_error_score,
-        coarse=bool(coarse),
-    )
-
-
-def _fatigue_score_from_metrics(metrics: dict[str, str]) -> float | None:
-    first_accuracy = _metric_float(metrics, "first_half_accuracy")
-    last_accuracy = _metric_float(metrics, "second_half_accuracy")
-    first_timeout = _metric_float(metrics, "first_half_timeout_rate")
-    last_timeout = _metric_float(metrics, "second_half_timeout_rate")
-    if first_accuracy is None and last_accuracy is None and first_timeout is None and last_timeout is None:
-        first_accuracy = _metric_float(metrics, "first_3m_accuracy")
-        last_accuracy = _metric_float(metrics, "last_3m_accuracy")
-        first_timeout = _metric_float(metrics, "first_3m_timeout_rate")
-        last_timeout = _metric_float(metrics, "last_3m_timeout_rate")
-    if first_accuracy is None and last_accuracy is None and first_timeout is None and last_timeout is None:
-        return None
-    score = max(0.0, (first_accuracy or 0.0) - (last_accuracy or 0.0))
-    score += 0.5 * max(0.0, (last_timeout or 0.0) - (first_timeout or 0.0))
-    return _clamp(score)
-
-
-def _post_error_score_from_metrics(metrics: dict[str, str]) -> float | None:
-    inflation = _metric_float(metrics, "post_error_next_item_rt_inflation_ms")
-    if inflation is None:
-        return None
-    return _clamp(float(inflation) / 1500.0)
-
-
-def _retention_score(items: list[AdaptiveEvidence], *, now_epoch: float) -> float:
-    performance_items = [item for item in items if item.performance_score is not None]
-    for newer_index in range(len(performance_items) - 1, 0, -1):
-        newer = performance_items[newer_index]
-        for older_index in range(newer_index - 1, -1, -1):
-            older = performance_items[older_index]
-            delta_h = (newer.completed_at_epoch_s - older.completed_at_epoch_s) / 3600.0
-            if delta_h < 48.0:
-                continue
-            if delta_h > 72.0:
-                break
-            return _clamp((older.performance_score or 0.0) - (newer.performance_score or 0.0))
-    if not items:
-        return 0.0
-    age_h = max(0.0, (now_epoch - items[-1].completed_at_epoch_s) / 3600.0)
-    if age_h < 48.0:
-        return 0.0
-    if age_h <= 72.0:
-        return 0.5 * ((age_h - 48.0) / 24.0)
-    if age_h <= 120.0:
-        return 0.5 + (0.5 * ((age_h - 72.0) / 48.0))
-    return 1.0
-
-
-def _hours_since(last_trained_at_utc: str | None) -> float:
-    if not last_trained_at_utc:
-        return float("inf")
-    try:
-        return max(0.0, (datetime.now(UTC) - _parse_utc_iso(last_trained_at_utc)).total_seconds() / 3600.0)
-    except Exception:
-        return float("inf")
-
 
 def _local_item_index_map(*, result: AttemptResult, item_offset: int) -> dict[int, int]:
     mapping: dict[int, int] = {}

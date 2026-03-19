@@ -4,6 +4,7 @@ import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+from .adaptive_difficulty import difficulty_level_for_ratio, difficulty_profile_for_code
 from .clock import Clock
 from .content_variants import content_metadata_from_payload
 from .cognitive_core import Phase, QuestionEvent, SeededRng, TestSnapshot, clamp01, lerp_int
@@ -260,6 +261,8 @@ class RapidTrackingSummary:
     capture_accuracy: float
     capture_max_points: int
     capture_score_ratio: float
+    overshoot_count: int
+    reversal_count: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -1136,6 +1139,10 @@ class RapidTrackingEngine:
         self._scored_obscured_s = 0.0
         self._scored_obscured_on_target_s = 0.0
         self._scored_moving_target_s = 0.0
+        self._scored_overshoot_count = 0
+        self._scored_reversal_count = 0
+        self._prev_err_sign_x: int | None = None
+        self._prev_err_sign_y: int | None = None
 
         self._window_elapsed_s = 0.0
         self._window_sum_error = 0.0
@@ -1373,29 +1380,33 @@ class RapidTrackingEngine:
             self._reset_scene_state(reset_capture_totals=False)
 
     def _difficulty_profile(self) -> RapidTrackingDifficultyProfile:
-        d = clamp01(self._difficulty)
-        if d <= 0.25:
+        level = difficulty_level_for_ratio("rapid_tracking", clamp01(self._difficulty))
+        shared = difficulty_profile_for_code("rapid_tracking", level, mode="build")
+        pressure = shared.axes.time_pressure
+        sensitivity = shared.axes.control_sensitivity
+        concurrency = shared.axes.multitask_concurrency
+        if level <= 3:
             return RapidTrackingDifficultyProfile(
                 tier="low",
                 scene_script=self._scenario.ground_script,
                 practice_script=self._scenario.ground_script,
                 loop_limit=1,
                 practice_loop_limit=0,
-                duration_scale=4.2,
-                turbulence_strength=0.0,
-                drift_duration_scale=3.0,
-                camera_assist_strength=0.90,
+                duration_scale=max(2.6, 4.4 - (pressure * 1.8)),
+                turbulence_strength=max(0.0, sensitivity * 0.12),
+                drift_duration_scale=max(1.8, 3.1 - (sensitivity * 0.8)),
+                camera_assist_strength=max(0.55, 0.95 - (sensitivity * 0.35)),
             )
-        if d >= 0.75:
+        if level >= 8:
             return RapidTrackingDifficultyProfile(
                 tier="high",
                 scene_script=self._scenario.scored_script,
                 practice_script=self._scenario.practice_script,
                 loop_limit=3,
                 practice_loop_limit=0,
-                duration_scale=0.72,
-                turbulence_strength=1.30,
-                drift_duration_scale=0.58,
+                duration_scale=max(0.62, 1.20 - (pressure * 0.62)),
+                turbulence_strength=max(0.78, 0.82 + (sensitivity * 0.62)),
+                drift_duration_scale=max(0.52, 1.02 - (pressure * 0.56) - (sensitivity * 0.10)),
                 camera_assist_strength=0.0,
             )
         return RapidTrackingDifficultyProfile(
@@ -1404,9 +1415,9 @@ class RapidTrackingEngine:
             practice_script=self._scenario.practice_script,
             loop_limit=1,
             practice_loop_limit=0,
-            duration_scale=1.55,
-            turbulence_strength=0.58,
-            drift_duration_scale=1.18,
+            duration_scale=max(1.00, 2.0 - (pressure * 1.10)),
+            turbulence_strength=max(0.24, 0.22 + (sensitivity * 0.46) + (concurrency * 0.08)),
+            drift_duration_scale=max(0.90, 1.45 - (pressure * 0.42)),
             camera_assist_strength=0.0,
         )
 
@@ -1669,6 +1680,8 @@ class RapidTrackingEngine:
             capture_accuracy=float(capture_accuracy),
             capture_max_points=capture_max_points,
             capture_score_ratio=float(capture_score_ratio),
+            overshoot_count=int(self._scored_overshoot_count),
+            reversal_count=int(self._scored_reversal_count),
         )
 
     def _reset_runtime_state(self, *, reset_scores: bool) -> None:
@@ -1703,6 +1716,10 @@ class RapidTrackingEngine:
             self._scored_obscured_s = 0.0
             self._scored_obscured_on_target_s = 0.0
             self._scored_moving_target_s = 0.0
+            self._scored_overshoot_count = 0
+            self._scored_reversal_count = 0
+            self._prev_err_sign_x = None
+            self._prev_err_sign_y = None
 
             self._window_elapsed_s = 0.0
             self._window_sum_error = 0.0
@@ -1712,6 +1729,27 @@ class RapidTrackingEngine:
             self._scored_correct = 0
             self._scored_total_score = 0.0
             self._scored_max_score = 0.0
+
+    def _error_sign(self, value: float) -> int:
+        deadband = max(float(self._cfg.on_target_radius) * 0.5, 1e-6)
+        if value > deadband:
+            return 1
+        if value < -deadband:
+            return -1
+        return 0
+
+    def _record_direction_change(self, *, axis: str, error_value: float) -> None:
+        current = self._error_sign(error_value)
+        previous = self._prev_err_sign_x if axis == "x" else self._prev_err_sign_y
+        if current != 0:
+            if previous is not None and previous != 0 and current != previous:
+                self._scored_reversal_count += 1
+                if abs(float(error_value)) > float(self._cfg.on_target_radius):
+                    self._scored_overshoot_count += 1
+            if axis == "x":
+                self._prev_err_sign_x = current
+            else:
+                self._prev_err_sign_y = current
 
     def _reset_scene_state(self, *, reset_capture_totals: bool) -> None:
         self._camera_x = 0.0
@@ -1810,6 +1848,8 @@ class RapidTrackingEngine:
         self._scored_samples += 1
         self._scored_sum_error += tracking_error
         self._scored_sum_error2 += tracking_error * tracking_error
+        self._record_direction_change(axis="x", error_value=err_x)
+        self._record_direction_change(axis="y", error_value=err_y)
 
         if on_target:
             self._scored_on_target_s += dt

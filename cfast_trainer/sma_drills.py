@@ -141,6 +141,18 @@ class SensoryMotorContinuousDrill:
             adaptive_window_size=0,
         )
 
+    def result_metrics(self) -> dict[str, str]:
+        base = self._engine.scored_summary()
+        return {
+            "training_mode": self._mode.value,
+            "mean_error": f"{float(base.mean_error):.6f}",
+            "rms_error": f"{float(base.rms_error):.6f}",
+            "on_target_s": f"{float(base.on_target_s):.6f}",
+            "on_target_ratio": f"{float(base.on_target_ratio):.6f}",
+            "overshoot_count": str(int(base.overshoot_count)),
+            "reversal_count": str(int(base.reversal_count)),
+        }
+
 
 def _repeat_segments(
     *,
@@ -172,6 +184,22 @@ def replace_segment_duration(segment: SensoryMotorSegment, duration_s: float) ->
     )
 
 
+def _scaled_psychomotor_config(
+    *,
+    scored_duration_s: float,
+    difficulty: float,
+) -> SensoryMotorApparatusConfig:
+    d = clamp01(difficulty)
+    return SensoryMotorApparatusConfig(
+        practice_duration_s=0.0,
+        scored_duration_s=float(scored_duration_s),
+        control_gain=1.08 + (0.30 * d),
+        on_target_radius=max(0.055, 0.14 - (0.05 * d)),
+        good_window_error=max(0.12, 0.26 - (0.09 * d)),
+        guide_band_half_width=max(0.05, 0.16 - (0.07 * d)),
+    )
+
+
 def _build_sma_drill(
     *,
     title_base: str,
@@ -182,6 +210,7 @@ def _build_sma_drill(
     difficulty: float,
     mode: AntDrillMode | str,
     config: SmaDrillConfig,
+    apparatus_config: SensoryMotorApparatusConfig | None = None,
 ) -> SensoryMotorContinuousDrill:
     normalized_mode = _normalize_mode(mode)
     profile = ANT_DRILL_MODE_PROFILES[normalized_mode]
@@ -190,15 +219,16 @@ def _build_sma_drill(
         if config.scored_duration_s is None
         else float(config.scored_duration_s)
     )
+    engine_config = apparatus_config or SensoryMotorApparatusConfig(
+        practice_duration_s=0.0,
+        scored_duration_s=scored_duration_s,
+    )
     engine = build_sensory_motor_apparatus_test(
         clock=clock,
         seed=seed,
         difficulty=difficulty,
         title=title_base,
-        config=SensoryMotorApparatusConfig(
-            practice_duration_s=0.0,
-            scored_duration_s=scored_duration_s,
-        ),
+        config=engine_config,
         practice_segments=(),
         scored_segments=scored_segments,
     )
@@ -251,6 +281,60 @@ def build_sma_joystick_horizontal_anchor_drill(
     )
 
 
+def build_sma_split_axis_control_drill(
+    *,
+    clock: Clock,
+    seed: int,
+    difficulty: float = 0.5,
+    mode: AntDrillMode | str = AntDrillMode.BUILD,
+    config: SmaDrillConfig | None = None,
+) -> SensoryMotorContinuousDrill:
+    cfg = config or SmaDrillConfig()
+    profile = ANT_DRILL_MODE_PROFILES[_normalize_mode(mode)]
+    scored_duration_s = float(profile.scored_duration_s if cfg.scored_duration_s is None else cfg.scored_duration_s)
+    segments = _repeat_segments(
+        total_duration_s=scored_duration_s,
+        templates=(
+            SensoryMotorSegment(
+                control_mode="split",
+                axis_focus="horizontal",
+                disturbance_profile="axis_bias_horizontal",
+                duration_s=30.0,
+                label="Split Axis - Horizontal",
+                pause_after=False,
+            ),
+            SensoryMotorSegment(
+                control_mode="split",
+                axis_focus="vertical",
+                disturbance_profile="axis_bias_vertical",
+                duration_s=30.0,
+                label="Split Axis - Vertical",
+                pause_after=False,
+            ),
+        ),
+    )
+    return _build_sma_drill(
+        title_base="Sensory Motor Apparatus: Split Axis Control",
+        instructions=(
+            "Sensory Motor Apparatus: Split Axis Control",
+            f"Mode: {profile.label}",
+            "Alternate split-control horizontal and vertical segments so rudder and stick channel assignment stays explicit.",
+            "Use the guide band to center one axis cleanly before the next split-axis switch lands.",
+            "Press Enter to begin.",
+        ),
+        scored_segments=segments,
+        clock=clock,
+        seed=seed,
+        difficulty=difficulty,
+        mode=mode,
+        config=cfg,
+        apparatus_config=_scaled_psychomotor_config(
+            scored_duration_s=scored_duration_s,
+            difficulty=difficulty,
+        ),
+    )
+
+
 def build_sma_joystick_vertical_anchor_drill(
     *,
     clock: Clock,
@@ -286,6 +370,60 @@ def build_sma_joystick_vertical_anchor_drill(
         difficulty=difficulty,
         mode=mode,
         config=cfg,
+    )
+
+
+def build_sma_overshoot_recovery_drill(
+    *,
+    clock: Clock,
+    seed: int,
+    difficulty: float = 0.5,
+    mode: AntDrillMode | str = AntDrillMode.TEMPO,
+    config: SmaDrillConfig | None = None,
+) -> SensoryMotorContinuousDrill:
+    cfg = config or SmaDrillConfig()
+    profile = ANT_DRILL_MODE_PROFILES[_normalize_mode(mode)]
+    scored_duration_s = float(profile.scored_duration_s if cfg.scored_duration_s is None else cfg.scored_duration_s)
+    segments = _repeat_segments(
+        total_duration_s=scored_duration_s,
+        templates=(
+            SensoryMotorSegment(
+                control_mode="joystick_only",
+                axis_focus="both",
+                disturbance_profile="pulse",
+                duration_s=24.0,
+                label="Overshoot Recovery - Joystick Pulse",
+                pause_after=False,
+            ),
+            SensoryMotorSegment(
+                control_mode="split",
+                axis_focus="both",
+                disturbance_profile="pressure",
+                duration_s=24.0,
+                label="Overshoot Recovery - Split Pressure",
+                pause_after=False,
+            ),
+        ),
+    )
+    return _build_sma_drill(
+        title_base="Sensory Motor Apparatus: Overshoot Recovery",
+        instructions=(
+            "Sensory Motor Apparatus: Overshoot Recovery",
+            f"Mode: {profile.label}",
+            "Recover from strong pulse and pressure disturbances without chasing the dot past center.",
+            "This block biases quick settle-and-correct behavior instead of steady-state holding.",
+            "Press Enter to begin.",
+        ),
+        scored_segments=segments,
+        clock=clock,
+        seed=seed,
+        difficulty=difficulty,
+        mode=mode,
+        config=cfg,
+        apparatus_config=_scaled_psychomotor_config(
+            scored_duration_s=scored_duration_s,
+            difficulty=difficulty,
+        ),
     )
 
 

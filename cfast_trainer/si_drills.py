@@ -420,6 +420,35 @@ def build_si_aircraft_grid_run_drill(
     )
 
 
+def build_si_aircraft_multiview_integration_drill(
+    *,
+    clock: Clock,
+    seed: int,
+    difficulty: float = 0.5,
+    mode: AntDrillMode | str = AntDrillMode.TEMPO,
+    config: SiDrillConfig | None = None,
+) -> SpatialIntegrationDrill:
+    normalized_mode = _normalize_mode(mode)
+    mode_profile = ANT_DRILL_MODE_PROFILES[normalized_mode]
+    return _build_si_drill(
+        title_base="Spatial Integration: Aircraft Multiview Integration",
+        instructions=(
+            "Spatial Integration: Aircraft Multiview Integration",
+            f"Mode: {mode_profile.label}",
+            "Aircraft part only. Route-map, continuation, and aircraft-location questions stay mixed on the same studied route views.",
+            "Treat this as the moving-scene integration block rather than a single aircraft question subtype.",
+            "Press Enter to begin.",
+        ),
+        clock=clock,
+        seed=seed,
+        difficulty=difficulty,
+        mode=normalized_mode,
+        config=config,
+        parts=(SpatialIntegrationPart.AIRCRAFT,),
+        allowed_question_kinds=_AIRCRAFT_KINDS,
+    )
+
+
 def build_si_mixed_tempo_drill(
     *,
     clock: Clock,

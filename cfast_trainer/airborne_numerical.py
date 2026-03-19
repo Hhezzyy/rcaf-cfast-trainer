@@ -4,6 +4,7 @@ import math
 from dataclasses import dataclass
 from typing import cast
 
+from .adaptive_difficulty import difficulty_level_for_ratio, difficulty_profile_for_code
 from .clock import Clock
 from .content_variants import stable_variant_id
 from .cognitive_core import (
@@ -417,7 +418,7 @@ def _clamp01(value: float) -> float:
 
 
 def _difficulty_to_level(difficulty: float) -> int:
-    return max(1, min(10, int(round(_clamp01(difficulty) * 9.0)) + 1))
+    return difficulty_level_for_ratio("airborne_numerical", _clamp01(difficulty))
 
 
 def _normalize_question_weights(
@@ -439,6 +440,19 @@ def build_ant_airborne_difficulty_profile(
 ) -> AirborneDifficultyProfile:
     clamped = max(1, min(10, int(level)))
     token = str(family).strip().lower() or "full"
+    shared = difficulty_profile_for_code("airborne_numerical", clamped, mode="build")
+    allow_minute_resolution = shared.axes.time_pressure >= 0.42
+    allow_chart_references = shared.axes.source_integration_depth >= 0.28
+    prefer_chart_references = shared.axes.source_integration_depth >= 0.58
+    high_leg_floor = 3 if shared.axes.content_complexity >= 0.72 else 1
+    advanced_speed_minutes = (60, 1) if allow_minute_resolution else (60,)
+    advanced_fuel_minutes = (60, 1) if allow_minute_resolution else (60,)
+    advanced_parcel_formats = (
+        ("chart",)
+        if prefer_chart_references
+        else ("table", "chart") if allow_chart_references else ("table",)
+    )
+    advanced_fuel_formats = ("table", "chart") if allow_chart_references else ("table",)
 
     if token == "route_time":
         if clamped <= 2:
@@ -477,10 +491,10 @@ def build_ant_airborne_difficulty_profile(
             question_kinds=_normalize_question_weights(
                 (("arrival_time", 0.5), ("takeoff_time", 0.5))
             ),
-            min_legs=3 if clamped >= 9 else 1,
+            min_legs=high_leg_floor,
             max_legs=4,
-            speed_minutes=(60, 1),
-            parcel_reference_formats=("table", "chart"),
+            speed_minutes=advanced_speed_minutes,
+            parcel_reference_formats=advanced_parcel_formats,
         )
 
     if token == "endurance":
@@ -519,8 +533,8 @@ def build_ant_airborne_difficulty_profile(
             level=clamped,
             question_kinds=_normalize_question_weights((("fuel_endurance", 0.45), ("empty_time", 0.55))),
             max_legs=4,
-            fuel_minutes=(60, 1),
-            fuel_reference_formats=("table", "chart"),
+            fuel_minutes=advanced_fuel_minutes,
+            fuel_reference_formats=advanced_fuel_formats,
         )
 
     if token == "fuel_burn":
@@ -561,12 +575,12 @@ def build_ant_airborne_difficulty_profile(
             family=token,
             level=clamped,
             question_kinds=(("fuel_burned", 1.0),),
-            min_legs=3 if clamped >= 9 else 1,
+            min_legs=high_leg_floor,
             max_legs=4,
-            speed_minutes=(60, 1),
-            fuel_minutes=(60, 1),
-            parcel_reference_formats=("table", "chart"),
-            fuel_reference_formats=("table", "chart"),
+            speed_minutes=advanced_speed_minutes,
+            fuel_minutes=advanced_fuel_minutes,
+            parcel_reference_formats=advanced_parcel_formats,
+            fuel_reference_formats=advanced_fuel_formats,
         )
 
     if token == "distance":
@@ -601,10 +615,10 @@ def build_ant_airborne_difficulty_profile(
             family=token,
             level=clamped,
             question_kinds=(("distance_travelled", 1.0),),
-            min_legs=4 if clamped >= 9 else 1,
+            min_legs=max(1, high_leg_floor + 1),
             max_legs=4,
-            speed_minutes=(60, 1),
-            fuel_minutes=(60, 1),
+            speed_minutes=advanced_speed_minutes,
+            fuel_minutes=advanced_fuel_minutes,
         )
 
     if token == "payload":
@@ -642,8 +656,8 @@ def build_ant_airborne_difficulty_profile(
             level=clamped,
             question_kinds=_normalize_question_weights((("parcel_weight", 0.45), ("parcel_effect", 0.55))),
             max_legs=4,
-            speed_minutes=(60, 1),
-            parcel_reference_formats=("chart",) if clamped >= 9 else ("table", "chart"),
+            speed_minutes=advanced_speed_minutes,
+            parcel_reference_formats=advanced_parcel_formats,
         )
 
     if token != "full":
@@ -724,20 +738,20 @@ def build_ant_airborne_difficulty_profile(
             level=clamped,
             question_kinds=kinds,
             max_legs=4,
-            speed_minutes=(60, 1),
-            fuel_minutes=(60, 1),
-            parcel_reference_formats=("table", "chart"),
-            fuel_reference_formats=("table", "chart"),
+            speed_minutes=advanced_speed_minutes,
+            fuel_minutes=advanced_fuel_minutes,
+            parcel_reference_formats=advanced_parcel_formats,
+            fuel_reference_formats=advanced_fuel_formats,
         )
     return AirborneDifficultyProfile(
         family=token,
         level=clamped,
         question_kinds=_normalize_question_weights(QUESTION_KINDS),
         max_legs=4,
-        speed_minutes=(60, 1),
-        fuel_minutes=(60, 1),
-        parcel_reference_formats=("table", "chart"),
-        fuel_reference_formats=("table", "chart"),
+        speed_minutes=advanced_speed_minutes,
+        fuel_minutes=advanced_fuel_minutes,
+        parcel_reference_formats=advanced_parcel_formats,
+        fuel_reference_formats=advanced_fuel_formats,
     )
 
 

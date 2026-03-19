@@ -167,6 +167,27 @@ class RapidTrackingContinuousDrill:
             adaptive_window_size=0,
         )
 
+    def result_metrics(self) -> dict[str, str]:
+        base = self._engine.scored_summary()
+        return {
+            "training_mode": self._mode.value,
+            "mean_error": f"{float(base.mean_error):.6f}",
+            "rms_error": f"{float(base.rms_error):.6f}",
+            "on_target_s": f"{float(base.on_target_s):.6f}",
+            "on_target_ratio": f"{float(base.on_target_ratio):.6f}",
+            "obscured_time_s": f"{float(base.obscured_time_s):.6f}",
+            "obscured_tracking_ratio": f"{float(base.obscured_tracking_ratio):.6f}",
+            "moving_target_ratio": f"{float(base.moving_target_ratio):.6f}",
+            "capture_points": str(int(base.capture_points)),
+            "capture_hits": str(int(base.capture_hits)),
+            "capture_attempts": str(int(base.capture_attempts)),
+            "capture_accuracy": f"{float(base.capture_accuracy):.6f}",
+            "capture_max_points": str(int(base.capture_max_points)),
+            "capture_score_ratio": f"{float(base.capture_score_ratio):.6f}",
+            "overshoot_count": str(int(base.overshoot_count)),
+            "reversal_count": str(int(base.reversal_count)),
+        }
+
 
 def _repeat_segments(
     *,
@@ -467,6 +488,53 @@ def build_rt_terrain_recovery_run_drill(
                 capture_box_scale=1.0,
                 capture_cooldown_scale=0.94,
                 segment_duration_scale=0.96,
+            ),
+            duration_s=scored_duration_s,
+        ),
+    )
+
+
+def build_rt_obscured_target_prediction_drill(
+    *,
+    clock: Clock,
+    seed: int,
+    difficulty: float,
+    mode: AntDrillMode | str = AntDrillMode.TEMPO,
+    config: RtDrillConfig | None = None,
+) -> RapidTrackingContinuousDrill:
+    normalized_mode = _normalize_mode(mode)
+    _, scored_duration_s = _drill_config(normalized_mode, config)
+    return _build_rt_drill(
+        clock=clock,
+        seed=seed,
+        difficulty=difficulty,
+        mode=normalized_mode,
+        config=config,
+        test_code="rt_obscured_target_prediction",
+        title="Rapid Tracking: Obscured Target Prediction",
+        instructions=(
+            "Rapid Tracking: Obscured Target Prediction",
+            "",
+            "Terrain-only occlusion block. Stay ahead of the hidden path and reacquire on the expected emergence line.",
+            "This strip removes the handoff mix so the cost is predicting motion through obscured segments.",
+            "Capture remains live, but the main score comes from predictive tracking through cover.",
+        ),
+        segments=_single_segment(
+            label="Obscured Prediction",
+            focus_label="Obscured target prediction",
+            active_target_kinds=("soldier", "truck", "helicopter"),
+            active_challenges=("occlusion_recovery",),
+            profile=_profile_for_mode(
+                normalized_mode,
+                target_kinds=("soldier", "truck", "helicopter"),
+                cover_modes=("terrain",),
+                handoff_modes=("smooth",),
+                turbulence_scale=0.90,
+                camera_assist=0.18,
+                preview_scale=0.84,
+                capture_box_scale=0.92,
+                capture_cooldown_scale=0.88,
+                segment_duration_scale=0.84,
             ),
             duration_s=scored_duration_s,
         ),

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import pygame
 import pytest
 
+from cfast_trainer.adaptive_difficulty import difficulty_ratio_for_level
 from cfast_trainer.app import App, AntWorkoutScreen, MenuItem, MenuScreen
 from cfast_trainer.ant_drills import AntDrillMode
 from cfast_trainer.ant_workouts import (
@@ -85,7 +86,9 @@ def _complete_small_workout(clock: FakeClock) -> AntWorkoutSession:
     assert session.stage is AntWorkoutStage.INTRO
     assert session.can_exit() is True
     session.adjust_starting_level(1)
-    assert session.difficulty == pytest.approx((6 - 1) / 9.0)
+    assert session.difficulty == pytest.approx(
+        difficulty_ratio_for_level("airborne_numerical_workout", 6)
+    )
 
     session.activate()
     assert session.stage is AntWorkoutStage.PRE_REFLECTION
@@ -217,6 +220,11 @@ def test_real_airborne_numerical_workout_matches_standard_90_minute_structure() 
     ("drill_code", "expected_title_prefix"),
     (
         ("ma_one_step_fluency", "Mental Arithmetic: One-Step Fluency"),
+        ("ma_written_numerical_extraction", "Mental Arithmetic: Written Numerical Extraction"),
+        ("vs_multi_target_class_search", "Visual Search: Multi-Target Class Search"),
+        ("dr_visual_digit_query", "Digit Recognition: Visual Digit Query"),
+        ("sma_split_axis_control", "Sensory Motor Apparatus: Split Axis Control"),
+        ("rt_obscured_target_prediction", "Rapid Tracking: Obscured Target Prediction"),
         ("tbl_single_lookup_anchor", "Table Reading: Single Lookup Anchor"),
         ("sl_one_rule_identify", "System Logic: One-Rule Identify"),
         ("dtb_tracking_recall", "Dual-Task Bridge: Tracking + Recall"),
@@ -246,6 +254,67 @@ def test_build_workout_block_engine_supports_new_primitive_drill_codes(
     snap = engine.snapshot()
 
     assert str(snap.title).startswith(expected_title_prefix)
+
+
+@pytest.mark.parametrize(
+    ("legacy_code", "canonical_code"),
+    (
+        ("abd_angle_calibration", "abd_angle_tempo"),
+        ("abd_bearing_calibration", "abd_bearing_tempo"),
+        ("ic_attitude_frame", "ic_instrument_attitude_matching"),
+        ("si_static_mixed_run", "si_static_multiview_integration"),
+        ("si_aircraft_multiview_integration", "si_moving_aircraft_multiview_integration"),
+        ("tt1_command_switch_run", "trace_orientation_decode"),
+        ("tt2_position_recall_run", "trace_movement_recall"),
+    ),
+)
+def test_build_workout_block_engine_routes_replacement_aliases_through_canonical_builders(
+    legacy_code: str,
+    canonical_code: str,
+) -> None:
+    clock = FakeClock()
+    legacy_block = AntWorkoutBlockPlan(
+        block_id=f"legacy_{legacy_code}",
+        label=legacy_code,
+        description="Legacy alias block.",
+        focus_skills=("Primitive",),
+        drill_code=legacy_code,
+        mode=AntDrillMode.BUILD,
+        duration_min=0.25,
+    )
+    canonical_block = AntWorkoutBlockPlan(
+        block_id=f"canonical_{canonical_code}",
+        label=canonical_code,
+        description="Canonical block.",
+        focus_skills=("Primitive",),
+        drill_code=canonical_code,
+        mode=AntDrillMode.BUILD,
+        duration_min=0.25,
+    )
+
+    legacy_engine = build_workout_block_engine(
+        clock=clock,
+        block_seed=4321,
+        difficulty_level=5,
+        block=legacy_block,
+    )
+    canonical_engine = build_workout_block_engine(
+        clock=clock,
+        block_seed=4321,
+        difficulty_level=5,
+        block=canonical_block,
+    )
+    legacy_snapshot = legacy_engine.snapshot()
+    canonical_snapshot = canonical_engine.snapshot()
+    legacy_result = attempt_result_from_engine(legacy_engine, test_code=legacy_block.drill_code)
+
+    assert legacy_block.drill_code == legacy_code
+    assert legacy_snapshot.title == canonical_snapshot.title
+    assert legacy_snapshot.prompt == canonical_snapshot.prompt
+    assert legacy_engine.difficulty == pytest.approx(canonical_engine.difficulty)
+    assert getattr(legacy_engine, "_difficulty_code") == legacy_code
+    assert legacy_result.test_code == legacy_code
+    assert getattr(legacy_engine, "_resolved_difficulty_context").code_scope_key == canonical_code
 
 
 def test_workout_dev_skip_hotkeys_advance_shell_skip_block_and_finish(

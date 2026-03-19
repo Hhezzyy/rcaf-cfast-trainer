@@ -36,6 +36,10 @@ class FakeClock:
         self.t += float(dt)
 
 
+def _difficulty_for_level(level: int) -> float:
+    return float(level - 1) / 9.0
+
+
 def _wait_for_answer_ready(
     *,
     drill: object,
@@ -233,3 +237,56 @@ def test_trace_mixed_drill_aggregates_events_and_summary_across_segments() -> No
     assert summary.correct >= 2
     assert summary.duration_s == pytest.approx(12.0)
     assert len(events) >= summary.attempted
+
+
+def test_trace_orientation_decode_levels_l2_l5_l8_are_materially_different() -> None:
+    def summarize(level: int) -> tuple[int, float, float]:
+        clock = FakeClock()
+        drill = build_tt1_command_switch_run_drill(
+            clock=clock,
+            seed=811,
+            difficulty=_difficulty_for_level(level),
+            mode=AntDrillMode.BUILD,
+            config=TraceDrillConfig(scored_duration_s=24.0),
+        )
+        drill.start_practice()
+        payload = _wait_for_answer_ready(drill=drill, clock=clock)
+        assert isinstance(payload, TraceTest1Payload)
+        return (
+            len(payload.scene.blue_frames),
+            float(payload.speed_multiplier),
+            float(payload.answer_open_progress),
+        )
+
+    low_blue, low_speed, low_open = summarize(2)
+    mid_blue, mid_speed, mid_open = summarize(5)
+    high_blue, high_speed, high_open = summarize(8)
+
+    assert low_blue < mid_blue < high_blue
+    assert low_speed < mid_speed < high_speed
+    assert low_open > mid_open > high_open
+
+
+def test_trace_movement_recall_levels_l2_l5_l8_are_materially_different() -> None:
+    def summarize(level: int) -> tuple[float, float]:
+        clock = FakeClock()
+        drill = build_tt2_position_recall_run_drill(
+            clock=clock,
+            seed=823,
+            difficulty=_difficulty_for_level(level),
+            mode=AntDrillMode.BUILD,
+            config=TraceDrillConfig(scored_duration_s=24.0),
+        )
+        drill.start_practice()
+        payload = _wait_for_answer_ready(drill=drill, clock=clock)
+        assert isinstance(payload, TraceTest2Payload)
+        ended_xs = [track.ended_screen_x for track in payload.aircraft]
+        ended_altitudes = [track.ended_altitude_z for track in payload.aircraft]
+        return (max(ended_xs) - min(ended_xs), max(ended_altitudes) - min(ended_altitudes))
+
+    low_x_span, low_alt_span = summarize(2)
+    mid_x_span, mid_alt_span = summarize(5)
+    high_x_span, high_alt_span = summarize(8)
+
+    assert low_x_span > mid_x_span > high_x_span
+    assert low_alt_span > mid_alt_span > high_alt_span

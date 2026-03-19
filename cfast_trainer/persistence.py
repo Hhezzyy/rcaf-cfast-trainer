@@ -7,11 +7,19 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from .adaptive_difficulty import (
+    AdaptiveDifficultyState,
+    family_id_for_code,
+    merge_adaptive_state,
+    metric_float,
+    scope_keys_for_code,
+)
+from .primitive_ranking import rank_primitives
 from .results import AttemptResult
 from .telemetry import TelemetryEvent, lifecycle_event
 
 RESULTS_DB_ENV = "CFAST_RESULTS_DB_PATH"
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 4
 
 
 def open_db(path: Path) -> sqlite3.Connection:
@@ -85,6 +93,32 @@ class TestSessionSummary:
     best_accuracy: float | None
     latest_score_ratio: float | None
     best_score_ratio: float | None
+
+
+@dataclass(frozen=True, slots=True)
+class DifficultyStateSummary:
+    scope_kind: str
+    scope_key: str
+    recommended_level: int
+    last_start_level: int | None
+    last_end_level: int | None
+    ewma_accuracy: float | None
+    ewma_score_ratio: float | None
+    ewma_timeout_rate: float | None
+    ewma_mean_rt_ms: float | None
+    sample_count: int
+    updated_at_utc: str
+    mastery: float | None = None
+    speed: float | None = None
+    fatigue_penalty: float | None = None
+    post_error_penalty: float | None = None
+    instability_penalty: float | None = None
+    retention_need: float | None = None
+    confidence: float | None = None
+    leverage: float | None = None
+    level_confidence: float | None = None
+    last_successful_level: int | None = None
+    last_meltdown_level: int | None = None
 
 
 class ResultsStore:
@@ -207,6 +241,7 @@ class ResultsStore:
                 activity_session_id=activity_session_id,
                 result=result,
             )
+            _update_difficulty_states(conn=conn, result=result)
             _write_telemetry_events(
                 conn=conn,
                 session_id=int(row["session_id"]),
@@ -253,6 +288,7 @@ class ResultsStore:
                     activity_session_id=activity_session_id,
                     result=result,
                 )
+                _update_difficulty_states(conn=conn, result=result)
                 _write_telemetry_events(
                     conn=conn,
                     session_id=int(row["session_id"]),
@@ -328,6 +364,53 @@ class ResultsStore:
             since_days=since_days,
             limit=limit,
         )
+
+    def difficulty_state(
+        self,
+        *,
+        scope_kind: str,
+        scope_key: str,
+    ) -> DifficultyStateSummary | None:
+        conn = open_db(self._path)
+        try:
+            return _load_difficulty_state(
+                conn=conn,
+                scope_kind=str(scope_kind),
+                scope_key=str(scope_key),
+            )
+        finally:
+            conn.close()
+
+    def reset_difficulty_state(
+        self,
+        *,
+        test_code: str | None = None,
+        scope_key: str | None = None,
+        clear_all: bool = False,
+    ) -> None:
+        conn = open_db(self._path)
+        try:
+            with conn:
+                if clear_all:
+                    conn.execute("DELETE FROM difficulty_state")
+                    return
+                if test_code:
+                    code_scope, primitive_scope = scope_keys_for_code(test_code)
+                    family_scope = family_id_for_code(test_code)
+                    conn.execute(
+                        "DELETE FROM difficulty_state "
+                        "WHERE (scope_kind=? AND scope_key=?) "
+                        "OR (scope_kind=? AND scope_key=?) "
+                        "OR (scope_kind=? AND scope_key=?)",
+                        ("code", code_scope, "family", family_scope, "primitive", primitive_scope),
+                    )
+                if scope_key:
+                    conn.execute(
+                        "DELETE FROM difficulty_state WHERE scope_key=?",
+                        (str(scope_key),),
+                    )
+        finally:
+            conn.close()
 
 
 class _AttemptResultEngineShim:
@@ -480,6 +563,330 @@ def _load_recent_attempt_history(
             )
         )
     return out
+
+
+def _load_difficulty_state(
+    *,
+    conn: sqlite3.Connection,
+    scope_kind: str,
+    scope_key: str,
+) -> DifficultyStateSummary | None:
+    row = conn.execute(
+        """
+        SELECT
+            scope_kind,
+            scope_key,
+            recommended_level,
+            last_start_level,
+            last_end_level,
+            ewma_accuracy,
+            ewma_score_ratio,
+            ewma_timeout_rate,
+            ewma_mean_rt_ms,
+            sample_count,
+            updated_at_utc,
+            mastery,
+            speed,
+            fatigue_penalty,
+            post_error_penalty,
+            instability_penalty,
+            retention_need,
+            confidence,
+            leverage,
+            level_confidence,
+            last_successful_level,
+            last_meltdown_level
+        FROM difficulty_state
+        WHERE scope_kind=? AND scope_key=?
+        """,
+        (str(scope_kind), str(scope_key)),
+    ).fetchone()
+    if row is None:
+        return None
+    return DifficultyStateSummary(
+        scope_kind=str(row[0]),
+        scope_key=str(row[1]),
+        recommended_level=int(row[2]),
+        last_start_level=None if row[3] is None else int(row[3]),
+        last_end_level=None if row[4] is None else int(row[4]),
+        ewma_accuracy=None if row[5] is None else float(row[5]),
+        ewma_score_ratio=None if row[6] is None else float(row[6]),
+        ewma_timeout_rate=None if row[7] is None else float(row[7]),
+        ewma_mean_rt_ms=None if row[8] is None else float(row[8]),
+        sample_count=int(row[9]),
+        updated_at_utc=str(row[10]),
+        mastery=None if row[11] is None else float(row[11]),
+        speed=None if row[12] is None else float(row[12]),
+        fatigue_penalty=None if row[13] is None else float(row[13]),
+        post_error_penalty=None if row[14] is None else float(row[14]),
+        instability_penalty=None if row[15] is None else float(row[15]),
+        retention_need=None if row[16] is None else float(row[16]),
+        confidence=None if row[17] is None else float(row[17]),
+        leverage=None if row[18] is None else float(row[18]),
+        level_confidence=None if row[19] is None else float(row[19]),
+        last_successful_level=None if row[20] is None else int(row[20]),
+        last_meltdown_level=None if row[21] is None else int(row[21]),
+    )
+
+
+def _update_difficulty_states(
+    *,
+    conn: sqlite3.Connection,
+    result: AttemptResult,
+) -> None:
+    updated_at_utc = _utc_now_iso()
+    recent_history = _load_recent_attempt_history(
+        conn=conn,
+        since_days=28,
+        limit=None,
+    )
+    ranking = rank_primitives(recent_history, now_utc=updated_at_utc)
+    ranked_states = {state.primitive_id: state for state in ranking.primitive_states}
+    for item in _difficulty_state_inputs_from_result(result):
+        code_scope, primitive_scope = scope_keys_for_code(item["test_code"])
+        family_scope = family_id_for_code(item["test_code"])
+        for scope_kind, scope_key in (
+            ("code", code_scope),
+            ("family", family_scope),
+            ("primitive", primitive_scope),
+        ):
+            if scope_kind == "primitive" and scope_key in ranked_states:
+                ranked = ranked_states[str(scope_key)]
+                merged = AdaptiveDifficultyState(
+                    scope_kind="primitive",
+                    scope_key=str(scope_key),
+                    recommended_level=int(ranked.recommended_level),
+                    last_start_level=ranked.last_start_level,
+                    last_end_level=ranked.last_end_level,
+                    ewma_accuracy=ranked.ewma_accuracy,
+                    ewma_score_ratio=ranked.ewma_score_ratio,
+                    ewma_timeout_rate=ranked.ewma_timeout_rate,
+                    ewma_mean_rt_ms=ranked.ewma_mean_rt_ms,
+                    sample_count=int(ranked.evidence_count),
+                    updated_at_utc=str(updated_at_utc),
+                    mastery=ranked.mastery,
+                    speed=ranked.speed,
+                    fatigue_penalty=ranked.fatigue_penalty,
+                    post_error_penalty=ranked.post_error_penalty,
+                    instability_penalty=ranked.instability_penalty,
+                    retention_need=ranked.retention_need,
+                    confidence=ranked.confidence,
+                    leverage=ranked.leverage,
+                    level_confidence=ranked.level_confidence,
+                    last_successful_level=ranked.last_successful_level,
+                    last_meltdown_level=ranked.last_meltdown_level,
+                )
+            else:
+                previous = _load_difficulty_state(
+                    conn=conn,
+                    scope_kind=str(scope_kind),
+                    scope_key=str(scope_key),
+                )
+                merged = merge_adaptive_state(
+                    previous=None
+                    if previous is None
+                    else AdaptiveDifficultyState(
+                        scope_kind=previous.scope_kind,  # type: ignore[arg-type]
+                        scope_key=previous.scope_key,
+                        recommended_level=previous.recommended_level,
+                        last_start_level=previous.last_start_level,
+                        last_end_level=previous.last_end_level,
+                        ewma_accuracy=previous.ewma_accuracy,
+                        ewma_score_ratio=previous.ewma_score_ratio,
+                        ewma_timeout_rate=previous.ewma_timeout_rate,
+                        ewma_mean_rt_ms=previous.ewma_mean_rt_ms,
+                        sample_count=previous.sample_count,
+                        updated_at_utc=previous.updated_at_utc,
+                        mastery=previous.mastery,
+                        speed=previous.speed,
+                        fatigue_penalty=previous.fatigue_penalty,
+                        post_error_penalty=previous.post_error_penalty,
+                        instability_penalty=previous.instability_penalty,
+                        retention_need=previous.retention_need,
+                        confidence=previous.confidence,
+                        leverage=previous.leverage,
+                        level_confidence=previous.level_confidence,
+                        last_successful_level=previous.last_successful_level,
+                        last_meltdown_level=previous.last_meltdown_level,
+                    ),
+                    scope_kind=scope_kind,  # type: ignore[arg-type]
+                    scope_key=scope_key,
+                    start_level=item["start_level"],
+                    end_level=item["end_level"],
+                    accuracy=item["accuracy"],
+                    score_ratio=item["score_ratio"],
+                    timeout_rate=item["timeout_rate"],
+                    mean_rt_ms=item["mean_rt_ms"],
+                    updated_at_utc=updated_at_utc,
+                    training_mode=item.get("training_mode"),
+                )
+            with conn:
+                conn.execute(
+                    """
+                    INSERT INTO difficulty_state(
+                        scope_kind,
+                        scope_key,
+                        recommended_level,
+                        last_start_level,
+                        last_end_level,
+                        ewma_accuracy,
+                        ewma_score_ratio,
+                        ewma_timeout_rate,
+                        ewma_mean_rt_ms,
+                        sample_count,
+                        updated_at_utc,
+                        mastery,
+                        speed,
+                        fatigue_penalty,
+                        post_error_penalty,
+                        instability_penalty,
+                        retention_need,
+                        confidence,
+                        leverage,
+                        level_confidence,
+                        last_successful_level,
+                        last_meltdown_level
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(scope_kind, scope_key) DO UPDATE SET
+                        recommended_level=excluded.recommended_level,
+                        last_start_level=excluded.last_start_level,
+                        last_end_level=excluded.last_end_level,
+                        ewma_accuracy=excluded.ewma_accuracy,
+                        ewma_score_ratio=excluded.ewma_score_ratio,
+                        ewma_timeout_rate=excluded.ewma_timeout_rate,
+                        ewma_mean_rt_ms=excluded.ewma_mean_rt_ms,
+                        sample_count=excluded.sample_count,
+                        updated_at_utc=excluded.updated_at_utc,
+                        mastery=excluded.mastery,
+                        speed=excluded.speed,
+                        fatigue_penalty=excluded.fatigue_penalty,
+                        post_error_penalty=excluded.post_error_penalty,
+                        instability_penalty=excluded.instability_penalty,
+                        retention_need=excluded.retention_need,
+                        confidence=excluded.confidence,
+                        leverage=excluded.leverage,
+                        level_confidence=excluded.level_confidence,
+                        last_successful_level=excluded.last_successful_level,
+                        last_meltdown_level=excluded.last_meltdown_level
+                    """,
+                    (
+                        str(merged.scope_kind),
+                        str(merged.scope_key),
+                        int(merged.recommended_level),
+                        None if merged.last_start_level is None else int(merged.last_start_level),
+                        None if merged.last_end_level is None else int(merged.last_end_level),
+                        None if merged.ewma_accuracy is None else float(merged.ewma_accuracy),
+                        None if merged.ewma_score_ratio is None else float(merged.ewma_score_ratio),
+                        None if merged.ewma_timeout_rate is None else float(merged.ewma_timeout_rate),
+                        None if merged.ewma_mean_rt_ms is None else float(merged.ewma_mean_rt_ms),
+                        int(merged.sample_count),
+                        str(merged.updated_at_utc),
+                        None if merged.mastery is None else float(merged.mastery),
+                        None if merged.speed is None else float(merged.speed),
+                        None if merged.fatigue_penalty is None else float(merged.fatigue_penalty),
+                        None if merged.post_error_penalty is None else float(merged.post_error_penalty),
+                        None if merged.instability_penalty is None else float(merged.instability_penalty),
+                        None if merged.retention_need is None else float(merged.retention_need),
+                        None if merged.confidence is None else float(merged.confidence),
+                        None if merged.leverage is None else float(merged.leverage),
+                        None if merged.level_confidence is None else float(merged.level_confidence),
+                        None if merged.last_successful_level is None else int(merged.last_successful_level),
+                        None if merged.last_meltdown_level is None else int(merged.last_meltdown_level),
+                    ),
+                )
+
+
+def _difficulty_state_inputs_from_result(result: AttemptResult) -> list[dict[str, object]]:
+    def _base_item(
+        *,
+        test_code: str,
+        metrics: dict[str, str],
+        start_level: int | None,
+        end_level: int | None,
+        default_accuracy: float | None = None,
+        default_score_ratio: float | None = None,
+    ) -> dict[str, object]:
+        accuracy = metric_float(metrics, "accuracy")
+        score_ratio = metric_float(metrics, "score_ratio")
+        return {
+            "test_code": str(test_code),
+            "start_level": start_level,
+            "end_level": end_level,
+            "accuracy": default_accuracy if accuracy is None else accuracy,
+            "score_ratio": default_score_ratio if score_ratio is None else score_ratio,
+            "timeout_rate": metric_float(metrics, "timeout_rate"),
+            "mean_rt_ms": metric_float(metrics, "mean_rt_ms"),
+            "training_mode": str(metrics.get("training_mode", "")).strip().lower() or None,
+        }
+
+    items = [
+        _base_item(
+            test_code=result.test_code,
+            metrics=result.metrics,
+            start_level=result.difficulty_level_start,
+            end_level=result.difficulty_level_end,
+            default_accuracy=float(result.accuracy),
+            default_score_ratio=result.score_ratio,
+        )
+    ]
+
+    probe_groups: dict[str, dict[str, str]] = {}
+    block_groups: dict[str, dict[str, str]] = {}
+    for key, value in result.metrics.items():
+        token = str(key)
+        if token.startswith("probe."):
+            rest = token[len("probe.") :]
+            probe_code, sep, subkey = rest.partition(".")
+            if sep and probe_code:
+                probe_groups.setdefault(probe_code, {})[subkey] = str(value)
+        elif token.startswith("block."):
+            rest = token[len("block.") :]
+            block_key, sep, subkey = rest.partition(".")
+            if sep and block_key:
+                block_groups.setdefault(block_key, {})[subkey] = str(value)
+
+    for probe_code, metrics in probe_groups.items():
+        if metrics.get("completed", "") not in {"1", "true", "True"}:
+            continue
+        difficulty_level = metrics.get("difficulty_level")
+        start_level = metric_float(metrics, "difficulty_level_start")
+        end_level = metric_float(metrics, "difficulty_level_end")
+        if start_level is None and difficulty_level not in (None, ""):
+            start_level = metric_float({"v": str(difficulty_level)}, "v")
+        if end_level is None and difficulty_level not in (None, ""):
+            end_level = metric_float({"v": str(difficulty_level)}, "v")
+        items.append(
+            _base_item(
+                test_code=probe_code,
+                metrics=metrics,
+                start_level=None if start_level is None else int(start_level),
+                end_level=None if end_level is None else int(end_level),
+            )
+        )
+
+    for _block_key, metrics in block_groups.items():
+        if metrics.get("completed", "") not in {"1", "true", "True"}:
+            continue
+        drill_code = str(metrics.get("drill_code", "")).strip()
+        if drill_code == "":
+            continue
+        difficulty_level = metrics.get("difficulty_level")
+        start_level = metric_float(metrics, "difficulty_level_start")
+        end_level = metric_float(metrics, "difficulty_level_end")
+        if start_level is None and difficulty_level not in (None, ""):
+            start_level = metric_float({"v": str(difficulty_level)}, "v")
+        if end_level is None and difficulty_level not in (None, ""):
+            end_level = metric_float({"v": str(difficulty_level)}, "v")
+        items.append(
+            _base_item(
+                test_code=drill_code,
+                metrics=metrics,
+                start_level=None if start_level is None else int(start_level),
+                end_level=None if end_level is None else int(end_level),
+            )
+        )
+    return items
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
@@ -674,6 +1081,50 @@ def _migrate(conn: sqlite3.Connection) -> None:
                 PRIMARY KEY (session_id, key)
             );
             """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS difficulty_state (
+                scope_kind TEXT NOT NULL,
+                scope_key TEXT NOT NULL,
+                recommended_level INTEGER NOT NULL,
+                last_start_level INTEGER,
+                last_end_level INTEGER,
+                ewma_accuracy REAL,
+                ewma_score_ratio REAL,
+                ewma_timeout_rate REAL,
+                ewma_mean_rt_ms REAL,
+                sample_count INTEGER NOT NULL,
+                updated_at_utc TEXT NOT NULL,
+                mastery REAL,
+                speed REAL,
+                fatigue_penalty REAL,
+                post_error_penalty REAL,
+                instability_penalty REAL,
+                retention_need REAL,
+                confidence REAL,
+                leverage REAL,
+                level_confidence REAL,
+                last_successful_level INTEGER,
+                last_meltdown_level INTEGER,
+                PRIMARY KEY (scope_kind, scope_key)
+            );
+            """
+        )
+        _add_column_if_missing(conn, "difficulty_state", "mastery REAL")
+        _add_column_if_missing(conn, "difficulty_state", "speed REAL")
+        _add_column_if_missing(conn, "difficulty_state", "fatigue_penalty REAL")
+        _add_column_if_missing(conn, "difficulty_state", "post_error_penalty REAL")
+        _add_column_if_missing(conn, "difficulty_state", "instability_penalty REAL")
+        _add_column_if_missing(conn, "difficulty_state", "retention_need REAL")
+        _add_column_if_missing(conn, "difficulty_state", "confidence REAL")
+        _add_column_if_missing(conn, "difficulty_state", "leverage REAL")
+        _add_column_if_missing(conn, "difficulty_state", "level_confidence REAL")
+        _add_column_if_missing(conn, "difficulty_state", "last_successful_level INTEGER")
+        _add_column_if_missing(conn, "difficulty_state", "last_meltdown_level INTEGER")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_difficulty_state_scope "
+            "ON difficulty_state(scope_key, scope_kind);"
         )
 
         conn.execute(

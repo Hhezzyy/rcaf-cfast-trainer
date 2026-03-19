@@ -4,6 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 
+from .adaptive_difficulty import build_resolved_difficulty_context, difficulty_ratio_for_level
 from .ant_drills import AntDrillMode
 from .clock import Clock
 from .cognitive_core import Phase
@@ -16,13 +17,6 @@ from .table_reading import TableReadingConfig, build_table_reading_test
 from .telemetry import TelemetryAnalytics, TelemetryEvent, telemetry_analytics_from_events
 from .training_modes import split_half_note_fragment
 from .visual_search import VisualSearchConfig, build_visual_search_test
-
-
-def _difficulty_ratio_for_level(level: int) -> float:
-    clamped = max(1, min(10, int(level)))
-    return float(clamped - 1) / 9.0
-
-
 @dataclass(frozen=True, slots=True)
 class BenchmarkProbePlan:
     probe_code: str
@@ -466,6 +460,18 @@ class BenchmarkSession:
         self._current_probe_index = int(index)
         probe = self._plan.probes[self._current_probe_index]
         engine = probe.builder()
+        setattr(engine, "_difficulty_code", str(probe.probe_code))
+        setattr(
+            engine,
+            "_resolved_difficulty_context",
+            build_resolved_difficulty_context(
+                probe.probe_code,
+                mode="fixed",
+                launch_level=int(probe.difficulty_level),
+                fixed_level=int(probe.difficulty_level),
+                adaptive_enabled=False,
+            ),
+        )
         self._current_engine = engine
         self._stage = BenchmarkStage.PROBE
         starter = getattr(engine, "start_scored", None)
@@ -677,7 +683,7 @@ def build_benchmark_plan(*, clock: Clock) -> BenchmarkPlan:
                 builder=lambda: build_numerical_operations_test(
                     clock=clock,
                     seed=1101,
-                    difficulty=_difficulty_ratio_for_level(5),
+                    difficulty=difficulty_ratio_for_level("numerical_operations", 5),
                     config=NumericalOperationsConfig(
                         scored_duration_s=120.0,
                         practice_questions=0,
@@ -693,7 +699,7 @@ def build_benchmark_plan(*, clock: Clock) -> BenchmarkPlan:
                 builder=lambda: build_table_reading_test(
                     clock=clock,
                     seed=1201,
-                    difficulty=_difficulty_ratio_for_level(5),
+                    difficulty=difficulty_ratio_for_level("table_reading", 5),
                     config=TableReadingConfig(
                         scored_duration_s=120.0,
                         practice_questions=0,
@@ -709,7 +715,7 @@ def build_benchmark_plan(*, clock: Clock) -> BenchmarkPlan:
                 builder=lambda: build_visual_search_test(
                     clock=clock,
                     seed=1301,
-                    difficulty=_difficulty_ratio_for_level(5),
+                    difficulty=difficulty_ratio_for_level("visual_search", 5),
                     config=VisualSearchConfig(
                         scored_duration_s=120.0,
                         practice_questions=0,
@@ -725,7 +731,7 @@ def build_benchmark_plan(*, clock: Clock) -> BenchmarkPlan:
                 builder=lambda: build_sl_graph_rule_anchor_drill(
                     clock=clock,
                     seed=1401,
-                    difficulty=_difficulty_ratio_for_level(4),
+                    difficulty=difficulty_ratio_for_level("sl_graph_rule_anchor", 4),
                     mode=AntDrillMode.BUILD,
                     config=SlDrillConfig(
                         practice_questions=0,
@@ -742,7 +748,7 @@ def build_benchmark_plan(*, clock: Clock) -> BenchmarkPlan:
                 builder=lambda: build_rt_lock_anchor_drill(
                     clock=clock,
                     seed=1501,
-                    difficulty=_difficulty_ratio_for_level(4),
+                    difficulty=difficulty_ratio_for_level("rt_lock_anchor", 4),
                     mode=AntDrillMode.BUILD,
                     config=RtDrillConfig(scored_duration_s=120.0),
                 ),
@@ -756,7 +762,7 @@ def build_benchmark_plan(*, clock: Clock) -> BenchmarkPlan:
                 builder=lambda: build_cln_sequence_math_recall_drill(
                     clock=clock,
                     seed=1601,
-                    difficulty=_difficulty_ratio_for_level(4),
+                    difficulty=difficulty_ratio_for_level("cln_sequence_math_recall", 4),
                     mode=AntDrillMode.BUILD,
                     config=ClnDrillConfig(
                         practice_rounds=0,

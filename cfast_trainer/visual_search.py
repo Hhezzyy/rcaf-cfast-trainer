@@ -52,6 +52,11 @@ class VisualSearchPayload:
     cell_codes: tuple[int, ...]  # row-major numeric labels shown in each block
     full_credit_error: int
     zero_credit_error: int
+    class_count: int = 1
+    active_classes: tuple[str, ...] = ()
+    salience_level: float = 0.0
+    switch_mode: str = ""
+    priority_label: str = ""
 
 
 class VisualSearchScorer(AnswerScorer):
@@ -115,9 +120,7 @@ class VisualSearchGenerator:
     def next_problem(self, *, difficulty: float) -> Problem:
         normalized_difficulty = clamp01(difficulty)
         kind = self._pick_kind(difficulty=normalized_difficulty)
-
-        rows = 3
-        cols = 4
+        rows, cols = self._grid_shape(difficulty=normalized_difficulty)
         cell_count = rows * cols
 
         bank = self._token_bank(kind)
@@ -157,6 +160,15 @@ class VisualSearchGenerator:
             answer=correct_code,
             payload=payload,
         )
+
+    def _grid_shape(self, *, difficulty: float) -> tuple[int, int]:
+        if difficulty < 0.25:
+            return (2, 3)
+        if difficulty < 0.60:
+            return (3, 4)
+        if difficulty < 0.85:
+            return (4, 4)
+        return (4, 5)
 
     def _pick_kind(self, *, difficulty: float) -> VisualSearchTaskKind:
         if len(self._kinds) == 1:

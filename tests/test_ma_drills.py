@@ -13,6 +13,7 @@ from cfast_trainer.ma_drills import (
     build_ma_one_step_fluency_drill,
     build_ma_percentage_snap_drill,
     build_ma_rate_time_distance_drill,
+    build_ma_written_numerical_extraction_drill,
 )
 
 
@@ -64,6 +65,7 @@ def _capture_signatures(builder, *, seed: int, count: int = 6) -> tuple[tuple[ob
         build_ma_percentage_snap_drill,
         build_ma_rate_time_distance_drill,
         build_ma_fuel_endurance_drill,
+        build_ma_written_numerical_extraction_drill,
         build_ma_mixed_conversion_caps_drill,
     ),
 )
@@ -78,6 +80,7 @@ def test_ma_drills_are_deterministic_for_same_seed(builder) -> None:
         (build_ma_percentage_snap_drill, "percentage_snap"),
         (build_ma_rate_time_distance_drill, "rate_time_distance"),
         (build_ma_fuel_endurance_drill, "fuel_endurance"),
+        (build_ma_written_numerical_extraction_drill, "written_numerical_extraction"),
         (build_ma_mixed_conversion_caps_drill, "mixed_conversion_caps"),
     ),
 )
@@ -146,3 +149,38 @@ def test_ma_mixed_conversion_caps_use_payload_caps_and_keep_typed_hint() -> None
         assert engine.submit_answer(str(current.answer)) is True
 
     assert all(cap > 0.0 for cap in caps)
+
+
+def _difficulty_for_level(level: int) -> float:
+    return float(level - 1) / 9.0
+
+
+def test_written_numerical_extraction_l2_l5_l8_scale_materially() -> None:
+    signatures: list[tuple[int, int, int, int, float | None]] = []
+    for level in (2, 5, 8):
+        clock = FakeClock()
+        engine = build_ma_written_numerical_extraction_drill(
+            clock=clock,
+            seed=313,
+            difficulty=_difficulty_for_level(level),
+            config=MaDrillConfig(practice_questions=0, scored_duration_s=18.0),
+        )
+        engine.start_scored()
+        payload = engine._current.payload
+        assert isinstance(payload, MaProblemPayload)
+        signatures.append(
+            (
+                payload.operand_size,
+                payload.step_count,
+                payload.unit_burden,
+                payload.answer_closeness,
+                None if engine._current_cap_s is None else round(float(engine._current_cap_s), 3),
+            )
+        )
+
+    low, mid, high = signatures
+    assert low[1] <= mid[1] <= high[1]
+    assert low[2] <= mid[2] <= high[2]
+    assert low[4] is not None and mid[4] is not None and high[4] is not None
+    assert low[4] > mid[4] > high[4]
+    assert low != mid != high

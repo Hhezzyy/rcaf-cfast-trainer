@@ -9,10 +9,12 @@ from .ant_drills import (
     TimedCapDrill,
 )
 from .clock import Clock
+from .cognitive_core import Problem, SeededRng
 from .visual_search import (
     VisualSearchGenerator,
     VisualSearchProfile,
     VisualSearchScorer,
+    VisualSearchPayload,
     VisualSearchTaskKind,
 )
 
@@ -32,6 +34,16 @@ def _level_to_difficulty(level: int) -> float:
 
 def _normalize_mode(mode: AntDrillMode | str) -> AntDrillMode:
     return mode if isinstance(mode, AntDrillMode) else AntDrillMode(str(mode).strip().lower())
+
+
+def _kind_label(kind: VisualSearchTaskKind) -> str:
+    if kind is VisualSearchTaskKind.ALPHANUMERIC:
+        return "letters"
+    if kind is VisualSearchTaskKind.SYMBOL_CODE:
+        return "line figures"
+    if kind is VisualSearchTaskKind.WARNING_SIGN:
+        return "warning signs"
+    return "color codes"
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,6 +153,184 @@ class VsPressureRunGenerator:
         level = _difficulty_to_level(difficulty)
         local_level = min(10, level + 1)
         return self._base.next_problem(difficulty=_level_to_difficulty(local_level))
+
+
+class _Wave1SearchGenerator:
+    _CLASS_POOL = (
+        VisualSearchTaskKind.ALPHANUMERIC,
+        VisualSearchTaskKind.SYMBOL_CODE,
+        VisualSearchTaskKind.WARNING_SIGN,
+        VisualSearchTaskKind.COLOR_PATTERN,
+    )
+
+    def __init__(self, *, seed: int) -> None:
+        self._rng = SeededRng(seed)
+        self._helper = VisualSearchGenerator(seed=seed + 701)
+        self._item_index = 0
+        self._last_kind: VisualSearchTaskKind | None = None
+
+    def _class_count(self, *, level: int) -> int:
+        if level <= 3:
+            return 2
+        if level <= 7:
+            return 3
+        return 4
+
+    def _grid_shape(self, *, level: int) -> tuple[int, int]:
+        if level <= 3:
+            return (3, 4)
+        if level <= 6:
+            return (4, 4)
+        return (4, 5)
+
+    def _salience_level(self, *, level: int) -> float:
+        if level <= 3:
+            return 0.25
+        if level <= 6:
+            return 0.55
+        return 0.82
+
+    def _target_classes(self, *, level: int) -> tuple[VisualSearchTaskKind, ...]:
+        class_count = self._class_count(level=level)
+        offset = self._item_index % len(self._CLASS_POOL)
+        ordered = self._CLASS_POOL[offset:] + self._CLASS_POOL[:offset]
+        return ordered[:class_count]
+
+    def _pick_target_kind(
+        self,
+        *,
+        classes: tuple[VisualSearchTaskKind, ...],
+        switch_every: int,
+    ) -> VisualSearchTaskKind:
+        if self._last_kind is None or self._item_index % max(1, switch_every) == 0:
+            if self._last_kind in classes and len(classes) > 1:
+                options = tuple(kind for kind in classes if kind is not self._last_kind)
+                chosen = options[self._item_index % len(options)]
+            else:
+                chosen = classes[self._item_index % len(classes)]
+            self._last_kind = chosen
+        assert self._last_kind is not None
+        return self._last_kind
+
+    def _token_bank(self, kind: VisualSearchTaskKind) -> tuple[str, ...]:
+        return self._helper._token_bank(kind)
+
+    def _confusable(self, *, kind: VisualSearchTaskKind, target: str) -> tuple[str, ...]:
+        return self._helper._confusable_members(kind=kind, target=target)
+
+    def _build_problem(
+        self,
+        *,
+        level: int,
+        active_classes: tuple[VisualSearchTaskKind, ...],
+        target_kind: VisualSearchTaskKind,
+        prompt_prefix: str,
+        switch_mode: str,
+        priority_label: str,
+    ) -> Problem:
+        rows, cols = self._grid_shape(level=level)
+        cell_count = rows * cols
+        target_bank = self._token_bank(target_kind)
+        target = str(target_bank[self._item_index % len(target_bank)])
+        salience = self._salience_level(level=level)
+        confusable = tuple(token for token in self._confusable(kind=target_kind, target=target) if token != target)
+        cross_class: list[str] = []
+        for kind in active_classes:
+            if kind is target_kind:
+                continue
+            cross_class.extend(self._token_bank(kind))
+        same_class = tuple(token for token in target_bank if token != target)
+        fallback_same = confusable or same_class
+        distractors: list[str] = []
+        cross_ratio = 0.28 if level <= 3 else 0.42 if level <= 6 else 0.56
+        for idx in range(cell_count):
+            if cross_class and self._rng.random() < cross_ratio:
+                distractors.append(str(self._rng.choice(cross_class)))
+                continue
+            if fallback_same and self._rng.random() < salience:
+                distractors.append(str(self._rng.choice(fallback_same)))
+                continue
+            distractors.append(str(self._rng.choice(same_class if same_class else target_bank)))
+        target_idx = int(self._rng.randint(0, cell_count - 1))
+        distractors[target_idx] = target
+        code_pool = tuple(range(10, 10 + cell_count))
+        cell_codes = tuple(int(v) for v in self._rng.sample(code_pool, k=cell_count))
+        correct_code = int(cell_codes[target_idx])
+        self._item_index += 1
+        return Problem(
+            prompt=f"{prompt_prefix} Find {target} in the {_kind_label(target_kind)} class and enter its block number.",
+            answer=correct_code,
+            payload=VisualSearchPayload(
+                kind=target_kind,
+                rows=rows,
+                cols=cols,
+                target=target,
+                cells=tuple(distractors),
+                cell_codes=cell_codes,
+                full_credit_error=0,
+                zero_credit_error=1,
+                class_count=len(active_classes),
+                active_classes=tuple(kind.value for kind in active_classes),
+                salience_level=salience,
+                switch_mode=switch_mode,
+                priority_label=priority_label,
+            ),
+        )
+
+
+class VsMultiTargetClassSearchGenerator(_Wave1SearchGenerator):
+    def next_problem(self, *, difficulty: float):
+        level = _difficulty_to_level(difficulty)
+        active_classes = self._target_classes(level=level)
+        switch_every = 3 if level <= 3 else 2 if level <= 6 else 1
+        target_kind = self._pick_target_kind(classes=active_classes, switch_every=switch_every)
+        return self._build_problem(
+            level=level,
+            active_classes=active_classes,
+            target_kind=target_kind,
+            prompt_prefix=f"Multi-class scan across {len(active_classes)} classes.",
+            switch_mode="class_cycle",
+            priority_label="routine",
+        )
+
+
+class VsPrioritySwitchSearchGenerator(_Wave1SearchGenerator):
+    def next_problem(self, *, difficulty: float):
+        level = _difficulty_to_level(difficulty)
+        active_classes = self._target_classes(level=level)
+        switch_every = 4 if level <= 3 else 2 if level <= 6 else 1
+        target_kind = self._pick_target_kind(classes=active_classes, switch_every=switch_every)
+        mode = "priority_hold" if self._item_index % max(1, switch_every) else "priority_switch"
+        return self._build_problem(
+            level=level,
+            active_classes=active_classes,
+            target_kind=target_kind,
+            prompt_prefix=f"Priority search: {_kind_label(target_kind).title()} are live; ignore routine classes.",
+            switch_mode=mode,
+            priority_label=_kind_label(target_kind),
+        )
+
+
+class VsMatrixRoutinePrioritySwitchGenerator(_Wave1SearchGenerator):
+    def next_problem(self, *, difficulty: float):
+        level = _difficulty_to_level(difficulty)
+        active_classes = self._target_classes(level=level)
+        switch_every = 3 if level <= 4 else 2 if level <= 7 else 1
+        target_kind = self._pick_target_kind(classes=active_classes, switch_every=switch_every)
+        is_priority = (self._item_index % max(1, switch_every)) == 0
+        prefix = (
+            f"Priority interrupt on the scan matrix. {_kind_label(target_kind).title()} now take priority."
+            if is_priority
+            else f"Routine matrix sweep. Stay on the {_kind_label(target_kind)} class."
+        )
+        return self._build_problem(
+            level=level,
+            active_classes=active_classes,
+            target_kind=target_kind,
+            prompt_prefix=prefix,
+            switch_mode="priority_interrupt" if is_priority else "routine_sweep",
+            priority_label="priority" if is_priority else "routine",
+        )
 
 
 def _build_vs_drill(
@@ -329,4 +519,91 @@ def build_vs_pressure_run_drill(
         mode=mode,
         config=cfg,
         base_caps_by_level=(9.0, 8.5, 8.0, 7.5, 7.0, 6.0, 5.5, 4.8, 4.2, 3.8),
+    )
+
+
+def build_vs_multi_target_class_search_drill(
+    *,
+    clock: Clock,
+    seed: int,
+    difficulty: float = 0.5,
+    mode: AntDrillMode | str = AntDrillMode.BUILD,
+    config: VsDrillConfig | None = None,
+) -> TimedCapDrill:
+    cfg = config or VsDrillConfig()
+    profile = ANT_DRILL_MODE_PROFILES[_normalize_mode(mode)]
+    return _build_vs_drill(
+        title_base="Visual Search: Multi-Target Class Search",
+        instructions=(
+            "Visual Search: Multi-Target Class Search",
+            f"Mode: {profile.label}",
+            "Mixed classes share the same board, but only one class is currently live.",
+            "As level rises, more classes appear, same-class distractors get closer, and the cap tightens.",
+            "Press Enter to begin practice.",
+        ),
+        generator=VsMultiTargetClassSearchGenerator(seed=seed),
+        clock=clock,
+        seed=seed,
+        difficulty=difficulty,
+        mode=mode,
+        config=cfg,
+        base_caps_by_level=(15.0, 14.0, 13.0, 12.0, 11.0, 10.0, 9.0, 8.0, 7.0, 6.0),
+    )
+
+
+def build_vs_priority_switch_search_drill(
+    *,
+    clock: Clock,
+    seed: int,
+    difficulty: float = 0.5,
+    mode: AntDrillMode | str = AntDrillMode.TEMPO,
+    config: VsDrillConfig | None = None,
+) -> TimedCapDrill:
+    cfg = config or VsDrillConfig()
+    profile = ANT_DRILL_MODE_PROFILES[_normalize_mode(mode)]
+    return _build_vs_drill(
+        title_base="Visual Search: Priority Switch Search",
+        instructions=(
+            "Visual Search: Priority Switch Search",
+            f"Mode: {profile.label}",
+            "Routine classes remain on the board while the live priority class changes underneath you.",
+            "Higher levels raise switch frequency, distractor density, and cap pressure without changing the typed answer flow.",
+            "Press Enter to begin practice.",
+        ),
+        generator=VsPrioritySwitchSearchGenerator(seed=seed),
+        clock=clock,
+        seed=seed,
+        difficulty=difficulty,
+        mode=mode,
+        config=cfg,
+        base_caps_by_level=(14.0, 13.0, 12.0, 11.0, 10.0, 9.0, 8.0, 7.0, 6.5, 6.0),
+    )
+
+
+def build_vs_matrix_routine_priority_switch_drill(
+    *,
+    clock: Clock,
+    seed: int,
+    difficulty: float = 0.5,
+    mode: AntDrillMode | str = AntDrillMode.STRESS,
+    config: VsDrillConfig | None = None,
+) -> TimedCapDrill:
+    cfg = config or VsDrillConfig()
+    profile = ANT_DRILL_MODE_PROFILES[_normalize_mode(mode)]
+    return _build_vs_drill(
+        title_base="Visual Search: Matrix Routine/Priority Switch",
+        instructions=(
+            "Visual Search: Matrix Routine/Priority Switch",
+            f"Mode: {profile.label}",
+            "Sweep the matrix in routine mode until a priority interrupt changes the live class.",
+            "Later levels widen the matrix, reduce salience, and force faster routine/priority switching.",
+            "Press Enter to begin practice.",
+        ),
+        generator=VsMatrixRoutinePrioritySwitchGenerator(seed=seed),
+        clock=clock,
+        seed=seed,
+        difficulty=difficulty,
+        mode=mode,
+        config=cfg,
+        base_caps_by_level=(13.0, 12.0, 11.0, 10.0, 9.0, 8.0, 7.0, 6.5, 6.0, 5.5),
     )

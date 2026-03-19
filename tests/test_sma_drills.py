@@ -13,7 +13,9 @@ from cfast_trainer.sma_drills import (
     build_sma_joystick_horizontal_anchor_drill,
     build_sma_joystick_vertical_anchor_drill,
     build_sma_mode_switch_run_drill,
+    build_sma_overshoot_recovery_drill,
     build_sma_pressure_run_drill,
+    build_sma_split_axis_control_drill,
     build_sma_split_coordination_run_drill,
     build_sma_split_horizontal_prime_drill,
 )
@@ -29,6 +31,10 @@ class FakeClock:
 
     def advance(self, dt: float) -> None:
         self.t += dt
+
+
+def _difficulty_for_level(level: int) -> float:
+    return float(level - 1) / 9.0
 
 
 def _run_drill(drill, clock: FakeClock, *, duration_s: float = 3.0) -> tuple[list[tuple], object]:
@@ -76,6 +82,8 @@ def _run_drill(drill, clock: FakeClock, *, duration_s: float = 3.0) -> tuple[lis
         (build_sma_mode_switch_run_drill, 3.0),
         (build_sma_disturbance_tempo_drill, 3.0),
         (build_sma_pressure_run_drill, 3.0),
+        (build_sma_split_axis_control_drill, 3.0),
+        (build_sma_overshoot_recovery_drill, 3.0),
     ),
 )
 def test_sma_drills_are_deterministic_for_same_seed_and_control_script(builder, duration) -> None:
@@ -130,6 +138,36 @@ def test_sma_focused_drills_emit_expected_control_mode_and_axis_focus(
     assert isinstance(payload, SensoryMotorApparatusPayload)
     assert payload.control_mode == control_mode
     assert payload.axis_focus == axis_focus
+
+
+def test_sma_split_axis_control_repeats_horizontal_then_vertical_split_segments() -> None:
+    clock = FakeClock()
+    drill = build_sma_split_axis_control_drill(
+        clock=clock,
+        seed=41,
+        difficulty=0.5,
+        mode=AntDrillMode.TEMPO,
+        config=SmaDrillConfig(scored_duration_s=65.0),
+    )
+    drill.start_practice()
+
+    observed: list[tuple[str, str]] = []
+    for _ in range(140):
+        payload = drill.snapshot().payload
+        assert isinstance(payload, SensoryMotorApparatusPayload)
+        marker = (payload.segment_label, payload.axis_focus)
+        if not observed or observed[-1] != marker:
+            observed.append(marker)
+        clock.advance(0.5)
+        drill.update()
+        if len(observed) >= 3:
+            break
+
+    assert observed[:3] == [
+        ("Split Axis - Horizontal", "horizontal"),
+        ("Split Axis - Vertical", "vertical"),
+        ("Split Axis - Horizontal", "horizontal"),
+    ]
 
 
 def test_sma_mode_switch_run_repeats_joystick_then_split_segments() -> None:
@@ -225,3 +263,43 @@ def test_sma_pressure_run_alternates_control_modes_with_pressure_profile() -> No
         ("Pressure - Joystick", "joystick_only"),
     ]
     assert all("Pressure" in label for label, _mode in seen[:3])
+
+
+@pytest.mark.parametrize(
+    "builder",
+    (
+        build_sma_split_axis_control_drill,
+        build_sma_overshoot_recovery_drill,
+    ),
+)
+def test_wave2_psychomotor_drills_levels_l2_l5_l8_are_materially_different(builder) -> None:
+    def summarize(level: int) -> tuple[float, float, float, float]:
+        clock = FakeClock()
+        drill = builder(
+            clock=clock,
+            seed=919,
+            difficulty=_difficulty_for_level(level),
+            mode=AntDrillMode.BUILD,
+            config=SmaDrillConfig(scored_duration_s=4.0),
+        )
+        drill.start_practice()
+        payload = drill.snapshot().payload
+        assert isinstance(payload, SensoryMotorApparatusPayload)
+        frames, _summary = _run_drill(drill, clock, duration_s=2.5)
+        mean_abs_disturbance = sum(abs(frame[7]) + abs(frame[8]) for frame in frames) / len(frames)
+        engine_cfg = drill._engine._config
+        return (
+            float(engine_cfg.control_gain),
+            float(engine_cfg.on_target_radius),
+            float(engine_cfg.guide_band_half_width),
+            float(mean_abs_disturbance),
+        )
+
+    low_gain, low_radius, low_guide, low_disturbance = summarize(2)
+    mid_gain, mid_radius, mid_guide, mid_disturbance = summarize(5)
+    high_gain, high_radius, high_guide, high_disturbance = summarize(8)
+
+    assert low_gain < mid_gain < high_gain
+    assert low_radius > mid_radius > high_radius
+    assert low_guide > mid_guide > high_guide
+    assert low_disturbance < mid_disturbance < high_disturbance

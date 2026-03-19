@@ -66,6 +66,7 @@ class TelemetryAnalytics:
     post_error_next_item_mean_rt_ms: float | None
     post_correct_next_item_mean_rt_ms: float | None
     post_error_next_item_rt_inflation_ms: float | None
+    post_error_next_item_accuracy_drop: float | None
     difficulty_level_start: int | None
     difficulty_level_end: int | None
     difficulty_change_count: int
@@ -108,6 +109,9 @@ class TelemetryAnalytics:
             ),
             "post_error_next_item_rt_inflation_ms": _fmt_float(
                 self.post_error_next_item_rt_inflation_ms
+            ),
+            "post_error_next_item_accuracy_drop": _fmt_float(
+                self.post_error_next_item_accuracy_drop
             ),
             "difficulty_level_start": _fmt_int(self.difficulty_level_start),
             "difficulty_level_end": _fmt_int(self.difficulty_level_end),
@@ -208,15 +212,22 @@ def telemetry_analytics_from_events(
 
     post_error_rts: list[int] = []
     post_correct_rts: list[int] = []
+    post_error_accuracy: list[float] = []
+    post_correct_accuracy: list[float] = []
     previous: TelemetryEvent | None = None
     for event in scored_items:
         if previous is None or event.response_time_ms is None:
             previous = event
             continue
+        if previous.is_correct is None or event.is_correct is None:
+            previous = event
+            continue
         if bool(previous.is_correct):
             post_correct_rts.append(int(event.response_time_ms))
+            post_correct_accuracy.append(1.0 if bool(event.is_correct) else 0.0)
         else:
             post_error_rts.append(int(event.response_time_ms))
+            post_error_accuracy.append(1.0 if bool(event.is_correct) else 0.0)
         previous = event
 
     post_error_mean = _mean(post_error_rts)
@@ -224,6 +235,11 @@ def telemetry_analytics_from_events(
     post_error_inflation = None
     if post_error_mean is not None and post_correct_mean is not None:
         post_error_inflation = post_error_mean - post_correct_mean
+    post_error_accuracy_drop = None
+    post_error_accuracy_mean = _mean(post_error_accuracy)
+    post_correct_accuracy_mean = _mean(post_correct_accuracy)
+    if post_error_accuracy_mean is not None and post_correct_accuracy_mean is not None:
+        post_error_accuracy_drop = post_correct_accuracy_mean - post_error_accuracy_mean
 
     half_accuracy_drop = None
     if first_half_stats["accuracy"] is not None and second_half_stats["accuracy"] is not None:
@@ -262,6 +278,7 @@ def telemetry_analytics_from_events(
         post_error_next_item_mean_rt_ms=post_error_mean,
         post_correct_next_item_mean_rt_ms=post_correct_mean,
         post_error_next_item_rt_inflation_ms=post_error_inflation,
+        post_error_next_item_accuracy_drop=post_error_accuracy_drop,
         difficulty_level_start=difficulty_level_start,
         difficulty_level_end=difficulty_level_end,
         difficulty_change_count=difficulty_change_count,
@@ -273,6 +290,14 @@ def difficulty_level_summary_from_engine(engine: object, *, summary: object | No
     end = _lookup_optional_int(summary, "difficulty_level_end")
     current = _lookup_optional_int(summary, "difficulty_level")
     summary_change_count = _lookup_optional_int(summary, "difficulty_change_count")
+    context_launch_level = _lookup_optional_int(engine, "_resolved_difficulty_context.launch_level")
+    context_fixed_level = _lookup_optional_int(engine, "_resolved_difficulty_context.fixed_level")
+    if summary_change_count is None:
+        summary_change_count = _lookup_optional_int(engine, "_adaptive_change_count")
+    if start is None:
+        start = _lookup_optional_int(engine, "_adaptive_start_level")
+    if end is None:
+        end = _lookup_optional_int(engine, "_adaptive_end_level")
     if start is None:
         start = current
     if end is None:
@@ -281,12 +306,15 @@ def difficulty_level_summary_from_engine(engine: object, *, summary: object | No
     changes = _difficulty_changes_from_engine(engine)
     if changes:
         if start is None:
-            start = int(changes[0].old_level)
+            start = context_launch_level if context_launch_level is not None else int(changes[0].old_level)
         if end is None:
             end = int(changes[-1].new_level)
         return start, end, len(changes)
 
     if summary_change_count is not None:
+        if summary_change_count <= 0 and context_launch_level is not None:
+            start = context_launch_level
+            end = context_fixed_level if context_fixed_level is not None else context_launch_level
         if start is None:
             start = difficulty_level_from_ratio(
                 _lookup_attr_path(engine, "_difficulty"),
@@ -295,6 +323,11 @@ def difficulty_level_summary_from_engine(engine: object, *, summary: object | No
         if end is None:
             end = start
         return start, end, max(0, int(summary_change_count))
+
+    if context_launch_level is not None:
+        start = context_launch_level
+        end = context_fixed_level if context_fixed_level is not None else context_launch_level
+        return start, end, 0
 
     if start is None:
         start = difficulty_level_from_ratio(
@@ -565,15 +598,31 @@ def _normalize_difficulty_changes(
 
 def _difficulty_changes_from_engine(engine: object) -> list[AntDifficultyChange]:
     getter = getattr(engine, "difficulty_changes", None)
-    if not callable(getter):
-        return []
-    try:
-        raw = getter()
-    except Exception:
-        return []
+    raw: object
+    if callable(getter):
+        try:
+            raw = getter()
+        except Exception:
+            raw = getattr(engine, "_difficulty_changes", ())
+    else:
+        raw = getattr(engine, "_difficulty_changes", ())
     if not isinstance(raw, (list, tuple)):
         return []
-    return [change for change in raw if type(change).__name__ == "AntDifficultyChange"]
+    out: list[AntDifficultyChange] = []
+    for change in raw:
+        if all(hasattr(change, field) for field in ("after_units", "old_level", "new_level", "reason")):
+            class _Shim:
+                def __init__(self, source: object) -> None:
+                    self.after_attempt = int(getattr(source, "after_units"))
+                    self.old_level = int(getattr(source, "old_level"))
+                    self.new_level = int(getattr(source, "new_level"))
+                    self.reason = str(getattr(source, "reason"))
+
+            out.append(_Shim(change))  # type: ignore[arg-type]
+            continue
+        if all(hasattr(change, field) for field in ("after_attempt", "old_level", "new_level", "reason")):
+            out.append(change)  # type: ignore[arg-type]
+    return out
 
 
 def _difficulty_level_for_item(

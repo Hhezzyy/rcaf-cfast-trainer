@@ -14,6 +14,7 @@ from cfast_trainer.rt_drills import (
     build_rt_ground_tempo_run_drill,
     build_rt_lock_anchor_drill,
     build_rt_mixed_tempo_drill,
+    build_rt_obscured_target_prediction_drill,
     build_rt_pressure_run_drill,
     build_rt_terrain_recovery_run_drill,
 )
@@ -29,6 +30,10 @@ class FakeClock:
 
     def advance(self, dt: float) -> None:
         self.t += float(dt)
+
+
+def _difficulty_for_level(level: int) -> float:
+    return float(level - 1) / 9.0
 
 
 def _run_drill(drill, clock: FakeClock, *, duration_s: float) -> tuple[list[tuple], object]:
@@ -75,6 +80,7 @@ def _run_drill(drill, clock: FakeClock, *, duration_s: float) -> tuple[list[tupl
         build_rt_air_speed_run_drill,
         build_rt_mixed_tempo_drill,
         build_rt_pressure_run_drill,
+        build_rt_obscured_target_prediction_drill,
     ),
 )
 def test_rt_drills_are_deterministic_for_same_seed_and_controls(builder) -> None:
@@ -115,6 +121,11 @@ def test_rt_drills_are_deterministic_for_same_seed_and_controls(builder) -> None
         (build_rt_capture_timing_prime_drill, ("soldier", "truck", "helicopter"), ("capture_timing",)),
         (build_rt_ground_tempo_run_drill, ("soldier", "truck"), ("ground_tempo", "lock_quality")),
         (build_rt_air_speed_run_drill, ("helicopter", "jet"), ("air_speed", "capture_timing")),
+        (
+            build_rt_obscured_target_prediction_drill,
+            ("soldier", "truck", "helicopter"),
+            ("occlusion_recovery",),
+        ),
     ),
 )
 def test_rt_focused_drills_emit_expected_target_kinds_and_challenges(
@@ -197,3 +208,32 @@ def test_rt_pressure_run_keeps_all_targets_and_challenges_active() -> None:
         )
         clock.advance(0.5)
         drill.update()
+
+
+def test_rt_obscured_target_prediction_levels_l2_l5_l8_are_materially_different() -> None:
+    def summarize(level: int) -> tuple[float, float, float]:
+        clock = FakeClock()
+        drill = build_rt_obscured_target_prediction_drill(
+            clock=clock,
+            seed=1001,
+            difficulty=_difficulty_for_level(level),
+            mode=AntDrillMode.BUILD,
+            config=RtDrillConfig(scored_duration_s=18.0),
+        )
+        drill.start_practice()
+        payload = drill.snapshot().payload
+        assert isinstance(payload, RapidTrackingPayload)
+        return (
+            float(payload.turbulence_strength),
+            float(payload.target_time_to_switch_s),
+            float(payload.target_switch_preview_s),
+        )
+
+    low_turbulence, low_switch_time, low_preview = summarize(2)
+    mid_turbulence, mid_switch_time, mid_preview = summarize(5)
+    high_turbulence, high_switch_time, high_preview = summarize(8)
+
+    assert low_turbulence < mid_turbulence < high_turbulence
+    assert low_switch_time > mid_switch_time > high_switch_time
+    assert low_preview == pytest.approx(mid_preview)
+    assert mid_preview == pytest.approx(high_preview)

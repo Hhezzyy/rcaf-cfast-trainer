@@ -50,6 +50,16 @@ def test_supported_manual_modes_limits_fresh_to_foundational_drills() -> None:
     assert cln_warmup_modes[0] == "fresh"
 
 
+def test_supported_manual_modes_keeps_canonical_anchor_drills_in_fresh_mode() -> None:
+    quantitative_modes = tuple(mode.value for mode in supported_manual_modes("ma_written_numerical_extraction"))
+    visual_modes = tuple(mode.value for mode in supported_manual_modes("vs_multi_target_class_search"))
+    psychomotor_modes = tuple(mode.value for mode in supported_manual_modes("sma_split_axis_control"))
+
+    assert quantitative_modes[0] == "fresh"
+    assert visual_modes[0] == "fresh"
+    assert psychomotor_modes[0] == "fresh"
+
+
 def test_fatigue_probe_drill_reuses_seed_for_baseline_and_late_repeat() -> None:
     clock = FakeClock()
     calls: list[tuple[str, int, float]] = []

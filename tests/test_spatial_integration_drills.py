@@ -8,6 +8,7 @@ from cfast_trainer.ant_drills import AntDrillMode
 from cfast_trainer.cognitive_core import Phase
 from cfast_trainer.si_drills import (
     SiDrillConfig,
+    build_si_aircraft_multiview_integration_drill,
     build_si_aircraft_grid_run_drill,
     build_si_continuation_prime_drill,
     build_si_landmark_anchor_drill,
@@ -35,6 +36,10 @@ class FakeClock:
 
     def advance(self, dt: float) -> None:
         self.t += float(dt)
+
+
+def _difficulty_for_level(level: int) -> float:
+    return float(level - 1) / 9.0
 
 
 def _wait_for_question(
@@ -95,6 +100,15 @@ def _answer_current(payload: SpatialIntegrationPayload) -> str:
             build_si_continuation_prime_drill,
             SpatialIntegrationPart.AIRCRAFT,
             (SpatialIntegrationQuestionKind.AIRCRAFT_CONTINUATION_SELECTION,),
+        ),
+        (
+            build_si_aircraft_multiview_integration_drill,
+            SpatialIntegrationPart.AIRCRAFT,
+            (
+                SpatialIntegrationQuestionKind.AIRCRAFT_ROUTE_SELECTION,
+                SpatialIntegrationQuestionKind.AIRCRAFT_CONTINUATION_SELECTION,
+                SpatialIntegrationQuestionKind.AIRCRAFT_LOCATION_GRID,
+            ),
         ),
         (
             build_si_aircraft_grid_run_drill,
@@ -186,3 +200,49 @@ def test_si_mixed_tempo_runs_static_then_aircraft() -> None:
         SpatialIntegrationPart.STATIC,
         SpatialIntegrationPart.AIRCRAFT,
     ]
+
+
+@pytest.mark.parametrize(
+    "builder",
+    (
+        build_si_static_mixed_run_drill,
+        build_si_aircraft_multiview_integration_drill,
+    ),
+)
+def test_wave2_spatial_drills_levels_l2_l5_l8_are_materially_different(builder) -> None:
+    def summarize(level: int) -> tuple[int, int]:
+        clock = FakeClock()
+        drill = builder(
+            clock=clock,
+            seed=733,
+            difficulty=_difficulty_for_level(level),
+            mode=AntDrillMode.BUILD,
+            config=SiDrillConfig(scored_duration_s=24.0),
+        )
+        drill.start_practice()
+        payload = _wait_for_question(drill=drill, clock=clock)
+        assert payload is not None
+        scene = drill._engine._current_scene
+        assert scene is not None
+        if builder is build_si_static_mixed_run_drill:
+            question = next(
+                item
+                for item in scene.questions
+                if item.kind is SpatialIntegrationQuestionKind.LANDMARK_GRID
+            )
+            return (len(question.answer_map_landmarks), len(scene.landmarks))
+        question = next(
+            item
+            for item in scene.questions
+            if item.kind is SpatialIntegrationQuestionKind.AIRCRAFT_LOCATION_GRID
+        )
+        return (len(question.answer_map_route_points), len(question.answer_map_landmarks))
+
+    low_primary, low_secondary = summarize(2)
+    mid_primary, mid_secondary = summarize(5)
+    high_primary, high_secondary = summarize(8)
+
+    assert low_primary >= mid_primary >= high_primary
+    assert low_secondary >= mid_secondary >= high_secondary
+    assert (low_primary, low_secondary) != (mid_primary, mid_secondary)
+    assert (mid_primary, mid_secondary) != (high_primary, high_secondary)
