@@ -3,12 +3,18 @@ from __future__ import annotations
 from cfast_trainer.canonical_drill_registry import (
     CANONICAL_DRILL_REGISTRY,
     canonical_drill_convergence,
+    canonical_replacement_for_drill,
     canonical_drill_spec,
     canonical_wave_drills,
+    difficulty_axes_for_drill,
+    difficulty_family_for_drill,
+    drills_for_subskill,
     is_hidden_redundant_drill,
     resolved_canonical_drill_code,
     resolved_canonical_drill_spec,
+    supported_granularities_for_subskill,
 )
+from cfast_trainer.guide_skill_catalog import subskill_coverage_expectations
 
 
 def test_wave1_registry_contains_expected_high_leverage_codes() -> None:
@@ -99,3 +105,21 @@ def test_hidden_redundant_drills_stay_executable_but_do_not_resolve_as_canonical
     assert resolved_canonical_drill_code("vs_target_preview") == "vs_target_preview"
     assert resolved_canonical_drill_code("vs_target_preview", for_adaptive=True) == "vs_multi_target_class_search"
     assert resolved_canonical_drill_spec("vs_target_preview") is None
+
+
+def test_registry_entries_cover_catalog_linked_subskills() -> None:
+    for subskill_id in subskill_coverage_expectations():
+        assert drills_for_subskill(subskill_id)
+
+
+def test_registry_compatibility_aliases_and_helpers_remain_stable() -> None:
+    spec = canonical_drill_spec("ma_percentage_snap")
+
+    assert spec is not None
+    assert spec.code == spec.drill_code
+    assert spec.label == spec.title
+    assert spec.family_id == spec.difficulty_family_id
+    assert canonical_replacement_for_drill("ic_attitude_frame") == "ic_instrument_attitude_matching"
+    assert supported_granularities_for_subskill("quantitative_core") == ("block_component", "micro")
+    assert difficulty_family_for_drill("visual_search") == "search_vigilance"
+    assert "time_pressure" in difficulty_axes_for_drill("vs_multi_target_class_search")

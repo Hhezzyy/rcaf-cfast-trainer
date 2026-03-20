@@ -1,0 +1,3790 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+TEST_DIFFICULTY_OPTIONS: tuple[tuple[str, str], ...] = (
+    ("numerical_operations", "Numerical Operations"),
+    ("no_fact_prime", "Numerical Operations: Fact Prime"),
+    ("no_operator_ladders", "Numerical Operations: Operator Ladders"),
+    ("no_clean_compute", "Numerical Operations: Clean Compute"),
+    ("no_mixed_tempo", "Numerical Operations: Mixed Tempo"),
+    ("no_pressure_run", "Numerical Operations: Pressure Run"),
+    ("ma_one_step_fluency", "Mental Arithmetic: One-Step Fluency"),
+    ("ma_percentage_snap", "Mental Arithmetic: Percentage Snap"),
+    ("ma_rate_time_distance", "Mental Arithmetic: Rate Time Distance"),
+    ("ma_fuel_endurance", "Mental Arithmetic: Fuel Burn And Endurance"),
+    ("ma_mixed_conversion_caps", "Mental Arithmetic: Mixed Conversion Caps"),
+    ("numerical_operations_workout", "Numerical Operations Workout"),
+    ("math_reasoning", "Mathematics Reasoning"),
+    ("mr_relevant_info_scan", "Mathematics Reasoning: Relevant Info Scan"),
+    ("mr_unit_relation_prime", "Mathematics Reasoning: Unit And Relation Prime"),
+    ("mr_one_step_solve", "Mathematics Reasoning: One-Step Solve"),
+    ("mr_multi_step_solve", "Mathematics Reasoning: Multi-Step Solve"),
+    ("mr_domain_run", "Mathematics Reasoning: Domain Run"),
+    ("mr_mixed_pressure_set", "Mathematics Reasoning: Mixed Pressure Set"),
+    ("math_reasoning_workout", "Mathematics Reasoning Workout"),
+    ("airborne_numerical", "Airborne Numerical Test"),
+    ("ant_snap_facts_sprint", "Airborne Numerical: Snap Facts Sprint"),
+    ("ant_time_flip", "Airborne Numerical: Time Flip"),
+    ("ant_mixed_tempo_set", "Airborne Numerical: Mixed Tempo Set"),
+    ("ant_route_time_solve", "Airborne Numerical: Route Time Solve"),
+    ("ant_endurance_solve", "Airborne Numerical: Endurance Solve"),
+    ("ant_fuel_burn_solve", "Airborne Numerical: Fuel Burn Solve"),
+    ("ant_distance_scan", "Airborne Numerical: Distance Scan"),
+    ("ant_payload_reference", "Airborne Numerical: Payload Reference"),
+    ("ant_info_grabber", "Airborne Numerical: Info Grabber"),
+    ("airborne_numerical_workout", "Airborne Numerical Workout"),
+    ("digit_recognition", "Digit Recognition"),
+    ("dr_visible_copy", "Digit Recognition: Visible Copy"),
+    ("dr_position_probe", "Digit Recognition: Position Probe"),
+    ("dr_visible_family_primer", "Digit Recognition: Visible Family Primer"),
+    ("dr_recall_run", "Digit Recognition: Recall Run"),
+    ("dr_count_target", "Digit Recognition: Count Target"),
+    ("dr_different_digit", "Digit Recognition: Different Digit"),
+    ("dr_grouped_family_run", "Digit Recognition: Grouped Family Run"),
+    ("dr_mixed_pressure", "Digit Recognition: Mixed Pressure"),
+    ("digit_recognition_workout", "Digit Recognition Workout"),
+    ("colours_letters_numbers", "Colours, Letters and Numbers"),
+    ("cln_sequence_copy", "Colours, Letters and Numbers: Sequence Copy"),
+    ("cln_sequence_match", "Colours, Letters and Numbers: Sequence Match"),
+    ("cln_sequence_math_recall", "Colours, Letters and Numbers: Sequence Hold + One Math"),
+    ("cln_math_prime", "Colours, Letters and Numbers: Math Prime"),
+    ("cln_colour_lane", "Colours, Letters and Numbers: Colour Lane Warm-Up"),
+    ("cln_memory_math", "Colours, Letters and Numbers: Memory + Math"),
+    ("cln_memory_colour", "Colours, Letters and Numbers: Memory + Colour"),
+    ("cln_full_steady", "Colours, Letters and Numbers: Full Steady"),
+    ("cln_full_pressure", "Colours, Letters and Numbers: Full Pressure"),
+    ("colours_letters_numbers_workout", "Colours, Letters and Numbers Workout"),
+    ("angles_bearings_degrees", "Angles, Bearings and Degrees"),
+    ("abd_cardinal_anchors", "Angles, Bearings and Degrees: Cardinal Anchors"),
+    ("abd_intermediate_anchors", "Angles, Bearings and Degrees: Intermediate Anchors"),
+    ("abd_angle_calibration", "Angles, Bearings and Degrees: Angle Calibration"),
+    ("abd_bearing_calibration", "Angles, Bearings and Degrees: Bearing Calibration"),
+    ("abd_mixed_tempo", "Angles, Bearings and Degrees: Mixed Tempo"),
+    ("abd_family_run_angle", "Angles, Bearings and Degrees: Test-Style Angle Run"),
+    ("abd_family_run_bearing", "Angles, Bearings and Degrees: Test-Style Bearing Run"),
+    ("angles_bearings_degrees_workout", "Angles, Bearings and Degrees Workout"),
+    ("visual_search", "Visual Search"),
+    ("vs_target_preview", "Visual Search: Target Preview"),
+    ("vs_clean_scan", "Visual Search: Clean Scan"),
+    ("vs_family_run_letters", "Visual Search: Letter Family Run"),
+    ("vs_family_run_symbols", "Visual Search: Line Figure Family Run"),
+    ("vs_mixed_tempo", "Visual Search: Mixed Tempo"),
+    ("vs_pressure_run", "Visual Search: Pressure Run"),
+    ("visual_search_workout", "Visual Search Workout"),
+    ("instrument_comprehension", "Instrument Comprehension"),
+    ("ic_heading_anchor", "Instrument Comprehension: Heading Anchor"),
+    ("ic_attitude_frame", "Instrument Comprehension: Attitude Frame"),
+    ("ic_part1_orientation_run", "Instrument Comprehension: Part 1 Orientation Run"),
+    ("ic_reverse_panel_prime", "Instrument Comprehension: Reverse Panel Prime"),
+    ("ic_reverse_panel_run", "Instrument Comprehension: Reverse Panel Run"),
+    ("ic_description_prime", "Instrument Comprehension: Description Prime"),
+    ("ic_description_run", "Instrument Comprehension: Description Run"),
+    ("ic_mixed_part_run", "Instrument Comprehension: Mixed Part Run"),
+    ("ic_pressure_run", "Instrument Comprehension: Pressure Run"),
+    ("instrument_comprehension_workout", "Instrument Comprehension Workout"),
+    ("target_recognition", "Target Recognition"),
+    ("tr_scene_anchor", "Target Recognition: Scene Anchor"),
+    ("tr_scene_modifier_run", "Target Recognition: Scene Modifier Run"),
+    ("tr_light_anchor", "Target Recognition: Light Anchor"),
+    ("tr_scan_anchor", "Target Recognition: Scan Anchor"),
+    ("tr_system_anchor", "Target Recognition: System Anchor"),
+    ("tr_panel_switch_run", "Target Recognition: Panel Switch Run"),
+    ("tr_mixed_tempo", "Target Recognition: Mixed Tempo"),
+    ("tr_pressure_run", "Target Recognition: Pressure Run"),
+    ("target_recognition_workout", "Target Recognition Workout"),
+    ("system_logic", "System Logic"),
+    ("sl_quantitative_anchor", "System Logic: Quantitative Anchor"),
+    ("sl_flow_trace_anchor", "System Logic: Flow Trace Anchor"),
+    ("sl_graph_rule_anchor", "System Logic: Graph + Rule Anchor"),
+    ("sl_fault_diagnosis_prime", "System Logic: Fault Diagnosis Prime"),
+    ("sl_index_switch_run", "System Logic: Index Switch Run"),
+    ("sl_family_run", "System Logic: Family Run"),
+    ("sl_mixed_tempo", "System Logic: Mixed Tempo"),
+    ("sl_pressure_run", "System Logic: Pressure Run"),
+    ("sl_one_rule_identify", "System Logic: One-Rule Identify"),
+    ("sl_missing_step_complete", "System Logic: Missing-Step Complete"),
+    ("sl_two_source_reconcile", "System Logic: Two-Source Reconcile"),
+    ("sl_rule_match", "System Logic: Rule Match"),
+    ("sl_fast_reject", "System Logic: Fast Reject"),
+    ("system_logic_workout", "System Logic Workout"),
+    ("table_reading", "Table Reading"),
+    ("tbl_part1_anchor", "Table Reading: Part 1 Anchor"),
+    ("tbl_part1_scan_run", "Table Reading: Part 1 Scan Run"),
+    ("tbl_part2_prime", "Table Reading: Part 2 Prime"),
+    ("tbl_part2_correction_run", "Table Reading: Part 2 Correction Run"),
+    ("tbl_part_switch_run", "Table Reading: Part Switch Run"),
+    ("tbl_card_family_run", "Table Reading: Card Family Run"),
+    ("tbl_mixed_tempo", "Table Reading: Mixed Tempo"),
+    ("tbl_pressure_run", "Table Reading: Pressure Run"),
+    ("tbl_single_lookup_anchor", "Table Reading: Single Lookup Anchor"),
+    ("tbl_two_table_xref", "Table Reading: Two-Table Cross Reference"),
+    ("tbl_distractor_grid", "Table Reading: Distractor Grid"),
+    ("tbl_lookup_compute", "Table Reading: Lookup + Compute"),
+    ("tbl_shrinking_cap_run", "Table Reading: Shrinking Cap Run"),
+    ("table_reading_workout", "Table Reading Workout"),
+    ("sensory_motor_apparatus", "Sensory Motor Apparatus"),
+    ("sma_joystick_horizontal_anchor", "Sensory Motor Apparatus: Joystick Horizontal Anchor"),
+    ("sma_joystick_vertical_anchor", "Sensory Motor Apparatus: Joystick Vertical Anchor"),
+    ("sma_joystick_hold_run", "Sensory Motor Apparatus: Joystick Hold Run"),
+    ("sma_split_horizontal_prime", "Sensory Motor Apparatus: Split Horizontal Prime"),
+    ("sma_split_coordination_run", "Sensory Motor Apparatus: Split Coordination Run"),
+    ("sma_mode_switch_run", "Sensory Motor Apparatus: Mode Switch Run"),
+    ("sma_disturbance_tempo", "Sensory Motor Apparatus: Disturbance Tempo"),
+    ("sma_pressure_run", "Sensory Motor Apparatus: Pressure Run"),
+    ("sensory_motor_apparatus_workout", "Sensory Motor Apparatus Workout"),
+    ("auditory_capacity", "Auditory Capacity"),
+    ("ac_gate_anchor", "Auditory Capacity: Gate Anchor"),
+    ("ac_state_command_prime", "Auditory Capacity: State Command Prime"),
+    ("ac_gate_directive_run", "Auditory Capacity: Gate Directive Run"),
+    ("ac_digit_sequence_prime", "Auditory Capacity: Digit Sequence Prime"),
+    ("ac_trigger_cue_anchor", "Auditory Capacity: Trigger Cue Anchor"),
+    ("ac_callsign_filter_run", "Auditory Capacity: Callsign Filter Run"),
+    ("ac_mixed_tempo", "Auditory Capacity: Mixed Tempo"),
+    ("ac_pressure_run", "Auditory Capacity: Pressure Run"),
+    ("auditory_capacity_workout", "Auditory Capacity Workout"),
+    ("cognitive_updating", "Cognitive Updating"),
+    ("cu_controls_anchor", "Cognitive Updating: Controls Anchor"),
+    ("cu_navigation_anchor", "Cognitive Updating: Navigation Anchor"),
+    ("cu_engine_balance_run", "Cognitive Updating: Engine Balance Run"),
+    ("cu_sensors_timing_prime", "Cognitive Updating: Sensors Timing Prime"),
+    ("cu_objective_prime", "Cognitive Updating: Objective Prime"),
+    ("cu_state_code_run", "Cognitive Updating: State Code Run"),
+    ("cu_mixed_tempo", "Cognitive Updating: Mixed Tempo"),
+    ("cu_pressure_run", "Cognitive Updating: Pressure Run"),
+    ("cognitive_updating_workout", "Cognitive Updating Workout"),
+    ("situational_awareness", "Situational Awareness"),
+    ("sa_picture_anchor", "Situational Awareness: Picture Anchor"),
+    ("sa_contact_identification_prime", "Situational Awareness: Contact Identification Prime"),
+    ("sa_status_recall_prime", "Situational Awareness: Status Recall Prime"),
+    ("sa_future_projection_run", "Situational Awareness: Future Projection Run"),
+    ("sa_action_selection_run", "Situational Awareness: Action Selection Run"),
+    ("sa_family_switch_run", "Situational Awareness: Family Switch Run"),
+    ("sa_mixed_tempo", "Situational Awareness: Mixed Tempo"),
+    ("sa_pressure_run", "Situational Awareness: Pressure Run"),
+    ("situational_awareness_workout", "Situational Awareness Workout"),
+    ("rapid_tracking", "Rapid Tracking"),
+    ("rt_lock_anchor", "Rapid Tracking: Lock Anchor"),
+    ("rt_building_handoff_prime", "Rapid Tracking: Building Handoff Prime"),
+    ("rt_terrain_recovery_run", "Rapid Tracking: Terrain Recovery Run"),
+    ("rt_capture_timing_prime", "Rapid Tracking: Capture Timing Prime"),
+    ("rt_ground_tempo_run", "Rapid Tracking: Ground Tempo Run"),
+    ("rt_air_speed_run", "Rapid Tracking: Air Speed Run"),
+    ("rt_mixed_tempo", "Rapid Tracking: Mixed Tempo"),
+    ("rt_pressure_run", "Rapid Tracking: Pressure Run"),
+    ("dtb_tracking_recall", "Dual-Task Bridge: Tracking + Recall"),
+    ("dtb_tracking_command_filter", "Dual-Task Bridge: Tracking + Command Filter"),
+    ("dtb_tracking_filter_digit_report", "Dual-Task Bridge: Tracking + Filter + Digit Report"),
+    ("dtb_tracking_interference_recovery", "Dual-Task Bridge: Tracking + Interference + Recovery"),
+    ("rapid_tracking_workout", "Rapid Tracking Workout"),
+    ("spatial_integration", "Spatial Integration"),
+    ("si_landmark_anchor", "Spatial Integration: Landmark Anchor"),
+    ("si_reconstruction_run", "Spatial Integration: Reconstruction Run"),
+    ("si_static_mixed_run", "Spatial Integration: Static Mixed Run"),
+    ("si_route_anchor", "Spatial Integration: Route Anchor"),
+    ("si_continuation_prime", "Spatial Integration: Continuation Prime"),
+    ("si_aircraft_grid_run", "Spatial Integration: Aircraft Grid Run"),
+    ("si_mixed_tempo", "Spatial Integration: Mixed Tempo"),
+    ("si_pressure_run", "Spatial Integration: Pressure Run"),
+    ("spatial_integration_workout", "Spatial Integration Workout"),
+    ("trace_test_1", "Trace Test 1"),
+    ("trace_test_2", "Trace Test 2"),
+    ("vigilance", "Vigilance"),
+    ("tt1_lateral_anchor", "Trace Test 1: Lateral Anchor"),
+    ("tt1_vertical_anchor", "Trace Test 1: Vertical Anchor"),
+    ("tt1_command_switch_run", "Trace Test 1: Command Switch Run"),
+    ("tt2_steady_anchor", "Trace Test 2: Steady Anchor"),
+    ("tt2_turn_trace_run", "Trace Test 2: Turn Trace Run"),
+    ("tt2_position_recall_run", "Trace Test 2: Position Recall Run"),
+    ("trace_mixed_tempo", "Trace Tests: Mixed Tempo"),
+    ("trace_pressure_run", "Trace Tests: Pressure Run"),
+    ("trace_test_1_workout", "Trace Test 1 Workout"),
+    ("trace_test_2_workout", "Trace Test 2 Workout"),
+    ("vig_entry_anchor", "Vigilance: Entry Anchor"),
+    ("vig_clean_scan", "Vigilance: Clean Scan"),
+    ("vig_steady_capture_run", "Vigilance: Steady Capture Run"),
+    ("vig_density_ladder", "Vigilance: Density Ladder"),
+    ("vig_tempo_sweep", "Vigilance: Tempo Sweep"),
+    ("vig_pressure_run", "Vigilance: Pressure Run"),
+    ("vigilance_workout", "Vigilance Workout"),
+)
+
+
+@dataclass(frozen=True)
+class TestGuideBriefing:
+    label: str
+    assessment: str
+    tasks: tuple[str, ...]
+    timing: str
+    prep: str
+    controls: str
+    app_flow: str
+
+
+TEST_GUIDE_BRIEFS: dict[str, TestGuideBriefing] = {
+    "numerical_operations": TestGuideBriefing(
+        label="Numerical Operations",
+        assessment="Reasoning test for rapid mental arithmetic under time pressure.",
+        tasks=(
+            "Solve addition, subtraction, multiplication, and division mentally.",
+            "Work quickly and accurately without stopping on one item for too long.",
+        ),
+        timing="Guide time including instructions: about 2 minutes.",
+        prep="Guide preparation: practice mental arithmetic.",
+        controls="Type the answer digits and press Enter to submit.",
+        app_flow="This trainer gives you a short practice block first, then a timed block.",
+    ),
+    "no_fact_prime": TestGuideBriefing(
+        label="Numerical Operations: Fact Prime",
+        assessment="Timed Numerical Operations drill for priming memoized arithmetic families before harder work.",
+        tasks=(
+            "Use doubles, near-doubles, complements, halves, and clean multiplication or division facts to warm up fast.",
+            "Let the next-item flash correct misses without breaking your rhythm.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: treat this as a pattern-priming block, not a grind block.",
+        controls="Type the answer digits and press Enter. Each item has its own hard cap.",
+        app_flow="This drill reuses the full-screen Numerical Operations layout with per-item caps and immediate workout-style feedback.",
+    ),
+    "no_operator_ladders": TestGuideBriefing(
+        label="Numerical Operations: Operator Ladders",
+        assessment="Timed Numerical Operations drill for grouped operator-family repetition.",
+        tasks=(
+            "Stay on one operator family long enough to reinforce the pattern before the ladder rotates.",
+            "Use the grouped runs to make the arithmetic feel automatic before mixed-tempo work.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: know the basic fact families first.",
+        controls="Type the answer digits and press Enter.",
+        app_flow="This drill reuses the full-screen Numerical Operations layout with per-item caps and immediate workout-style feedback.",
+    ),
+    "no_clean_compute": TestGuideBriefing(
+        label="Numerical Operations: Clean Compute",
+        assessment="Timed Numerical Operations drill for clean operand shapes that transfer into harder mixed arithmetic.",
+        tasks=(
+            "Work through arithmetic patterns that reward chunking and memoized transforms.",
+            "Build confidence before tempo and crunch blocks tighten the caps.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: focus on smooth mental setup, not only on final accuracy.",
+        controls="Type the answer digits and press Enter.",
+        app_flow="This drill reuses the full-screen Numerical Operations layout with per-item caps and immediate workout-style feedback.",
+    ),
+    "no_mixed_tempo": TestGuideBriefing(
+        label="Numerical Operations: Mixed Tempo",
+        assessment="Timed Numerical Operations drill for easy-easy-hard arithmetic cadence under cap pressure.",
+        tasks=(
+            "Accept misses fast and recover without changing your tempo on the next item.",
+            "Practice mixed arithmetic under the same typed-answer format as the live test.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: know the warm-up patterns first so the cadence can do its job.",
+        controls="Type the answer digits and press Enter.",
+        app_flow="This drill reuses the full-screen Numerical Operations layout with per-item caps and immediate workout-style feedback.",
+    ),
+    "no_pressure_run": TestGuideBriefing(
+        label="Numerical Operations: Pressure Run",
+        assessment="Late-workout Numerical Operations drill for the hardest cap profile in this family.",
+        tasks=(
+            "Keep solving typed arithmetic cleanly when the caps get tight and misses start to cluster.",
+            "Use this as a pressure-tolerance block rather than a perfection block.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: arrive warmed up; this block assumes your patterns are already active.",
+        controls="Type the answer digits and press Enter.",
+        app_flow="This drill reuses the full-screen Numerical Operations layout with per-item caps and immediate workout-style feedback.",
+    ),
+    "ma_one_step_fluency": TestGuideBriefing(
+        label="Mental Arithmetic: One-Step Fluency",
+        assessment="Primitive arithmetic drill for making one-step solving automatic without routing through a named test family.",
+        tasks=(
+            "Work direct addition, subtraction, multiplication, and division until setup time drops.",
+            "Stay typed and exact under the same hard-cap rhythm used by the rest of the arithmetic microdrills.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: none beyond basic arithmetic facts.",
+        controls="Type the answer digits and press Enter.",
+        app_flow="This primitive drill uses the same full-screen typed cap shell as the other arithmetic drill families.",
+    ),
+    "ma_percentage_snap": TestGuideBriefing(
+        label="Mental Arithmetic: Percentage Snap",
+        assessment="Primitive arithmetic drill for fast percentage transforms that support several task families at once.",
+        tasks=(
+            "Snap to common percentage transforms instead of recomputing the whole item from first principles.",
+            "Keep the retrieval clean enough that later symbolic and aviation-style tasks can spend attention elsewhere.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: be comfortable with 5, 10, 20, 25, 50, and 75 percent anchors.",
+        controls="Type the answer digits and press Enter.",
+        app_flow="This primitive drill stays on the typed cap shell and keeps immediate correction in the lower-pressure modes.",
+    ),
+    "ma_rate_time_distance": TestGuideBriefing(
+        label="Mental Arithmetic: Rate Time Distance",
+        assessment="Primitive arithmetic drill for one-step speed, distance, and time transforms.",
+        tasks=(
+            "Solve the requested unit directly without reading the item like a full word problem.",
+            "Keep units stable enough that later route-time work does not pay a setup penalty.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: know the rate-time-distance relationship cold.",
+        controls="Type the answer digits and press Enter.",
+        app_flow="This primitive drill uses the typed cap shell rather than the Mathematics Reasoning multiple-choice layout.",
+    ),
+    "ma_fuel_endurance": TestGuideBriefing(
+        label="Mental Arithmetic: Fuel Burn And Endurance",
+        assessment="Primitive arithmetic drill for fuel-used, endurance, and burn-rate transforms.",
+        tasks=(
+            "Keep fuel-time relationships automatic before the larger scenario layer returns.",
+            "Recover immediately after a slow item instead of carrying the delay into the next calculation.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: know the fuel-used, burn-rate, and endurance relationships well enough to solve them in one pass.",
+        controls="Type the answer digits and press Enter.",
+        app_flow="This primitive drill stays on the full-screen typed cap shell with no extra overlays.",
+    ),
+    "ma_mixed_conversion_caps": TestGuideBriefing(
+        label="Mental Arithmetic: Mixed Conversion Caps",
+        assessment="Primitive arithmetic drill for exact mixed-unit conversion under tighter time pressure.",
+        tasks=(
+            "Flip between time, mass, volume, and distance conversions without paying extra orientation cost.",
+            "Treat the cap as part of the task and move on quickly after small misses.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: be comfortable with exact base-unit conversions and HHMM-to-minutes transforms.",
+        controls="Type the answer digits and press Enter.",
+        app_flow="This primitive drill uses the typed cap shell with tighter conversion-heavy item caps than the easier arithmetic blocks.",
+    ),
+    "numerical_operations_workout": TestGuideBriefing(
+        label="Numerical Operations Workout",
+        assessment="Chained Numerical Operations workout with reflection, arithmetic priming, mixed tempo, and late pressure runs.",
+        tasks=(
+            "Start with typed reflections, then warm up fact families and grouped operator runs before the core tempo blocks.",
+            "Finish with crunch and pressure blocks that keep the real typed Numerical Operations answer mode throughout.",
+        ),
+        timing="Workout drill time: 90 minutes, plus opening and closing reflection outside the timed blocks.",
+        prep="Guide preparation: know the typed control flow first; the workout is for chaining arithmetic tempo under one structure.",
+        controls="Use Left and Right to set workout or block difficulty, type reflections, and use digits plus Enter during all blocks.",
+        app_flow="Each block gets an untimed setup screen, and changing difficulty from workout settings restarts the workout from the beginning.",
+    ),
+    "math_reasoning": TestGuideBriefing(
+        label="Mathematics Reasoning",
+        assessment="Reasoning test for solving written numerical problems.",
+        tasks=(
+            "Interpret short numerical word problems.",
+            "Use time, speed, and distance reasoning to choose the best answer.",
+        ),
+        timing="Guide time including instructions: about 18 minutes.",
+        prep="Guide preparation: practice time, speed, and distance calculations.",
+        controls="Use A/S/D/F/G to choose, or 1-5 then Enter when needed.",
+        app_flow="Practice confirms the response format before the timed block starts.",
+    ),
+    "mr_relevant_info_scan": TestGuideBriefing(
+        label="Mathematics Reasoning: Relevant Info Scan",
+        assessment="Timed Mathematics Reasoning drill for extracting the one relevant value from filler-heavy word problems.",
+        tasks=(
+            "Read the whole stem and isolate the requested value without solving early.",
+            "Ignore the filler numbers and enter only the value the prompt asks for.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: practice reading the ask before you start any calculation.",
+        controls="Type the answer digits and press Enter.",
+        app_flow="This drill uses the Mathematics Reasoning full-screen layout with typed input instead of multiple-choice options.",
+    ),
+    "mr_unit_relation_prime": TestGuideBriefing(
+        label="Mathematics Reasoning: Unit And Relation Prime",
+        assessment="Timed Mathematics Reasoning drill for fast unit conversions and clean setup relations.",
+        tasks=(
+            "Prime the small conversions and one-step setup relations that support later word problems.",
+            "Keep the answers crisp so the later solve blocks can spend attention on interpretation instead of basics.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: be comfortable moving between minutes, hours, rates, and percentages.",
+        controls="Type the answer digits and press Enter.",
+        app_flow="This drill uses the Mathematics Reasoning full-screen layout with typed input instead of multiple-choice options.",
+    ),
+    "mr_one_step_solve": TestGuideBriefing(
+        label="Mathematics Reasoning: One-Step Solve",
+        assessment="Timed Mathematics Reasoning drill for exact typed answers on cleaner one-step scenarios.",
+        tasks=(
+            "Solve the cleaner versions of the live Mathematics Reasoning domains without filler noise.",
+            "Build exact setup discipline before the longer multi-step stems arrive.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: know the basic domain formulas well enough to apply them quickly.",
+        controls="Type the answer digits and press Enter.",
+        app_flow="This drill uses the Mathematics Reasoning full-screen layout with typed input instead of multiple-choice options.",
+    ),
+    "mr_multi_step_solve": TestGuideBriefing(
+        label="Mathematics Reasoning: Multi-Step Solve",
+        assessment="Timed Mathematics Reasoning drill for longer word problems with filler and stricter tempo.",
+        tasks=(
+            "Hold the ask, ignore filler, set the problem up correctly, and still move at pace.",
+            "Recover quickly after a slow setup instead of letting it poison the rest of the block.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: practice reading the ask first and keeping units straight.",
+        controls="Type the answer digits and press Enter.",
+        app_flow="This drill uses the Mathematics Reasoning full-screen layout with typed input instead of multiple-choice options.",
+    ),
+    "mr_domain_run": TestGuideBriefing(
+        label="Mathematics Reasoning: Domain Run",
+        assessment="Timed Mathematics Reasoning drill for grouped multiple-choice domain runs.",
+        tasks=(
+            "Work through real multiple-choice motion and fuel items first, then rotate into percentages, averages, and rates.",
+            "Use grouped family runs to stabilize setup before the mixed pressure block.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: know the multiple-choice response keys before starting.",
+        controls="Use A/S/D/F/G to choose, or 1-5 then Enter when needed.",
+        app_flow="This drill reuses the real Mathematics Reasoning multiple-choice layout with per-item caps and workout-style feedback.",
+    ),
+    "mr_mixed_pressure_set": TestGuideBriefing(
+        label="Mathematics Reasoning: Mixed Pressure Set",
+        assessment="Timed Mathematics Reasoning drill for late-workout mixed-domain multiple-choice pressure work.",
+        tasks=(
+            "Switch across domains under the tightest cap profile in this family.",
+            "Take the best answer fast and recover immediately on the next prompt.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: arrive warmed up; this is a pressure block, not a learning block.",
+        controls="Use A/S/D/F/G to choose, or 1-5 then Enter when needed.",
+        app_flow="This drill reuses the real Mathematics Reasoning multiple-choice layout with per-item caps and workout-style feedback.",
+    ),
+    "math_reasoning_workout": TestGuideBriefing(
+        label="Mathematics Reasoning Workout",
+        assessment="Chained Mathematics Reasoning workout with reflection, extraction and setup warm-ups, typed solve blocks, and late multiple-choice pressure work.",
+        tasks=(
+            "Start with typed reflections, then train relevant-information extraction, unit and relation priming, and typed solve blocks.",
+            "Finish with grouped real multiple-choice runs and a late mixed pressure block.",
+        ),
+        timing="Workout drill time: 90 minutes, plus opening and closing reflection outside the timed blocks.",
+        prep="Guide preparation: know both the typed and multiple-choice control flows first; the workout uses both.",
+        controls="Use Left and Right to set workout or block difficulty, type reflections and typed answers, and use A/S/D/F/G or 1-5 then Enter during late blocks.",
+        app_flow="Each block gets an untimed setup screen, and changing difficulty from workout settings restarts the workout from the beginning.",
+    ),
+    "airborne_numerical": TestGuideBriefing(
+        label="Airborne Numerical",
+        assessment="Reasoning test for airborne-style route, endurance, fuel, and payload estimation under time pressure.",
+        tasks=(
+            "Estimate route time, empty time, fuel endurance, fuel burned, distance, parcel weight, and parcel effect mentally.",
+            "Use the mixed table and chart overlays cleanly without paper or a calculator.",
+        ),
+        timing="Guide time including instructions: about 35 minutes.",
+        prep="Guide preparation: mental arithmetic plus time, speed, distance, endurance, and payload-effect work.",
+        controls="Type the 4-digit answer. Hold A for route distances, D for speed and fuel reference, and F for speed and parcel reference.",
+        app_flow="Use practice to learn the live table/chart overlays and the 4-digit answer format before the timed block.",
+    ),
+    "ant_snap_facts_sprint": TestGuideBriefing(
+        label="Airborne Numerical: Snap Facts Sprint",
+        assessment="Timed Airborne Numerical drill for fast arithmetic retrieval under hard per-item caps.",
+        tasks=(
+            "Answer single-step arithmetic facts quickly without freezing on one item.",
+            "Treat every timeout as a fixation miss and reset immediately on the next prompt.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: practice direct retrieval, not full re-computation.",
+        controls="Type the answer digits and press Enter. Each item auto-advances when its cap expires.",
+        app_flow="The mode sets cap pressure and feedback timing. Practice teaches the pace before the timed block.",
+    ),
+    "ant_time_flip": TestGuideBriefing(
+        label="Airborne Numerical: Time Flip",
+        assessment="Timed Airborne Numerical drill for fast time and rate-unit conversion under hard per-item caps.",
+        tasks=(
+            "Convert clean HHMM and minute values without freezing on the arithmetic.",
+            "Flip between per-hour and per-minute rates quickly enough to preserve tempo.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: practice minute-hour conversion and clean 60-based rate changes.",
+        controls="Type the answer digits and press Enter. Each item auto-advances when its cap expires.",
+        app_flow="Practice teaches the conversion style first. The timed block then adapts around your recent accuracy and fixation.",
+    ),
+    "ant_mixed_tempo_set": TestGuideBriefing(
+        label="Airborne Numerical: Mixed Tempo Set",
+        assessment="Timed mixed Airborne Numerical drill that rotates retrieval, time/rate, route-time, endurance, fuel-burn, distance, and payload families under hard per-item caps.",
+        tasks=(
+            "Switch between arithmetic retrieval, time conversion, and airborne scenario prompts without warning.",
+            "Keep moving when the family changes instead of spending extra time re-orienting.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: use the single-family drills first if family switches are still causing freezes.",
+        controls="Type the answer digits and press Enter. Airborne items keep the same A/D/F overlays, and caps still auto-advance by family.",
+        app_flow="This is the reusable mixed Airborne Numerical kernel for integration work. It carries the live caps, overlays, and scoring rules for every implemented Airborne Numerical family.",
+    ),
+    "ant_route_time_solve": TestGuideBriefing(
+        label="Airborne Numerical: Route Time Solve",
+        assessment="Timed Airborne Numerical drill for route-time and arrival/takeoff calculation using the live airborne scenario framework.",
+        tasks=(
+            "Read the airborne scenario, use route distances and parcel-speed reference, and answer with 4-digit HHMM.",
+            "Keep moving when parcel speed comes from a chart instead of a clean table value.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: be comfortable with HHMM arithmetic and distance-speed-time transforms.",
+        controls="Type 4 digits and press Enter. Hold A for distances and F for speed and parcel reference, matching the Airborne Numerical screen.",
+        app_flow="This drill reuses the airborne scenario UI and scoring conventions from the Airborne Numerical Test.",
+    ),
+    "ant_endurance_solve": TestGuideBriefing(
+        label="Airborne Numerical: Endurance Solve",
+        assessment="Timed Airborne Numerical drill for empty-time and fuel-endurance solving using the live airborne scenario framework.",
+        tasks=(
+            "Convert start fuel and burn rate into endurance or empty time without losing the 4-digit Airborne Numerical format.",
+            "Handle table-exact and chart-estimate fuel references using the same live Airborne Numerical tolerance rules.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: know the fuel-time relationship and be comfortable with HHMM output.",
+        controls="Type 4 digits and press Enter. Hold D for speed and fuel reference, matching the Airborne Numerical screen.",
+        app_flow="This drill reuses the airborne scenario UI and scoring conventions from the Airborne Numerical Test.",
+    ),
+    "ant_fuel_burn_solve": TestGuideBriefing(
+        label="Airborne Numerical: Fuel Burn Solve",
+        assessment="Timed Airborne Numerical drill for fuel-burn calculation using the live airborne scenario framework.",
+        tasks=(
+            "Use route time plus fuel-burn reference to compute fuel used under the 4-digit Airborne Numerical answer format.",
+            "Handle table-exact and chart-estimate items using the same tolerance logic as the live Airborne Numerical test.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: know the route-time formula and basic fuel-burn transforms.",
+        controls="Type 4 digits and press Enter. Hold A for distances, D for speed and fuel reference, and F for parcel speed reference.",
+        app_flow="This drill reuses the airborne scenario UI and scoring conventions from the Airborne Numerical Test.",
+    ),
+    "ant_distance_scan": TestGuideBriefing(
+        label="Airborne Numerical: Distance Scan",
+        assessment="Timed Airborne Numerical drill for route scanning and distance summing using the live airborne scenario framework.",
+        tasks=(
+            "Trace the active route quickly, extract the leg distances, and total them once.",
+            "Stay decisive when the route gets longer or the unit profile changes.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: practice one-pass route tracing and simple running totals.",
+        controls="Type 4 digits and press Enter. Hold A for distances, matching the Airborne Numerical screen.",
+        app_flow="This drill reuses the airborne scenario UI and scoring conventions from the Airborne Numerical Test.",
+    ),
+    "ant_payload_reference": TestGuideBriefing(
+        label="Airborne Numerical: Payload Reference",
+        assessment="Timed Airborne Numerical drill for parcel-weight and parcel-effect reference work using the live airborne scenario framework.",
+        tasks=(
+            "Read the parcel-speed reference cleanly and decide when the answer is exact versus estimated.",
+            "Handle both parcel weight and parcel effect prompts without freezing on the reference page.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: be comfortable moving between the summary table and the parcel reference page.",
+        controls="Type 4 digits and press Enter. Hold F for speed and parcel reference, matching the Airborne Numerical screen.",
+        app_flow="This drill reuses the airborne scenario UI and scoring conventions from the Airborne Numerical Test.",
+    ),
+    "ant_info_grabber": TestGuideBriefing(
+        label="Airborne Numerical: Info Grabber",
+        assessment="Timed Airborne Numerical drill for rapid information extraction and retention using the live airborne scenario framework.",
+        tasks=(
+            "The prompt tells you exactly what to find; find that one value first, then enter it.",
+            "At higher levels, keep the original value alive through a short delay or interference step before you answer.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: know the Airborne Numerical overlays first; this drill is about finding and holding the right value fast.",
+        controls="Read the first line of the prompt, find that value, then type it and press Enter. Use A, D, and F exactly as you would in Airborne Numerical. This drill allows a wider input field if you need more than four digits.",
+        app_flow="This version is a straight lookup-and-retain drill: the prompt says what to find, the live Airborne screen gives you the references, and you enter the original value from memory.",
+    ),
+    "airborne_numerical_workout": TestGuideBriefing(
+        label="Airborne Numerical Workout",
+        assessment="Chained Airborne Numerical workout with typed reflection, warm-up blocks, tempo calculations, and full-question scenario sets.",
+        tasks=(
+            "Start with typed focus prompts, then warm up search, retention, arithmetic, unit conversion, and distance scanning under low pressure.",
+            "Build into tempo calculation blocks, then finish with grouped full-question Airborne Numerical scenario sets under steady and pressure conditions.",
+        ),
+        timing="Workout drill time: 90 minutes, plus opening and closing reflection outside the timed blocks.",
+        prep="Guide preparation: know the drill controls first; the workout is for chaining them under one structure.",
+        controls="Use Left and Right to set workout or block difficulty, type reflections, and use digits plus Enter during blocks.",
+        app_flow="Each block gets an untimed setup screen, and changing difficulty from workout settings restarts the workout from the beginning.",
+    ),
+    "digit_recognition": TestGuideBriefing(
+        label="Digit Recognition",
+        assessment="Short-term visual memory test.",
+        tasks=(
+            "Remember strings of digits of varying lengths.",
+            "Answer questions about the digits you were shown.",
+        ),
+        timing="Guide time including instructions: about 4 minutes.",
+        prep="Guide preparation: none required.",
+        controls="Watch the display, then type the answer digits and press Enter.",
+        app_flow="Practice shows the display and recall rhythm before the timed block.",
+    ),
+    "dr_visible_copy": TestGuideBriefing(
+        label="Digit Recognition: Visible Copy",
+        assessment="Timed Digit Recognition drill for visible-supported full-string typing.",
+        tasks=(
+            "Type the full string while it remains visible so the encoding rhythm turns on before hidden-memory work.",
+            "Use the block to reinforce chunking and clean digit reproduction, not hidden recall yet.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: none required.",
+        controls="Type the digits and press Enter. The string stays visible while you answer.",
+        app_flow="This drill reuses the Digit Recognition full-screen layout and flashes the previous exact answer with the next prompt.",
+    ),
+    "dr_position_probe": TestGuideBriefing(
+        label="Digit Recognition: Position Probe",
+        assessment="Timed Digit Recognition drill for serial-position anchoring and short-slice recall.",
+        tasks=(
+            "Scan the string left to right, then answer a position or short-slice prompt without losing the order.",
+            "Use it to stabilize internal anchors before the hidden-memory blocks remove the visible support.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: none required.",
+        controls="Type the requested digits and press Enter.",
+        app_flow="The digits stay visible when the prompt opens, so the block trains serial anchoring rather than pure hidden recall.",
+    ),
+    "dr_visible_family_primer": TestGuideBriefing(
+        label="Digit Recognition: Visible Family Primer",
+        assessment="Timed Digit Recognition drill for visible-supported count-target and different-digit questions.",
+        tasks=(
+            "Touch the non-recall Digit Recognition families while the strings are still visible.",
+            "Learn the family prompts before hidden-memory timing pressure starts.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: none required.",
+        controls="Type the answer digits and press Enter.",
+        app_flow="This drill keeps the strings visible while you answer and uses the same next-item feedback banner as the workouts.",
+    ),
+    "dr_recall_run": TestGuideBriefing(
+        label="Digit Recognition: Recall Run",
+        assessment="Timed Digit Recognition drill for hidden-memory full-string recall.",
+        tasks=(
+            "Memorize the string, survive the mask, and retype the full sequence exactly.",
+            "Reset immediately after misses so the next display still gets full attention.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: none required.",
+        controls="Watch the display, then type the full digit string and press Enter.",
+        app_flow="This drill reuses the real Digit Recognition show, mask, and question rhythm with workout-style feedback.",
+    ),
+    "dr_count_target": TestGuideBriefing(
+        label="Digit Recognition: Count Target",
+        assessment="Timed Digit Recognition drill for hidden-memory target counting.",
+        tasks=(
+            "Count one target digit after the display disappears.",
+            "Hold the right total when repeated digits and short timing windows make the count feel noisy.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: none required.",
+        controls="Type the count digits and press Enter.",
+        app_flow="This drill reuses the real Digit Recognition show, mask, and question rhythm with workout-style feedback.",
+    ),
+    "dr_different_digit": TestGuideBriefing(
+        label="Digit Recognition: Different Digit",
+        assessment="Timed Digit Recognition drill for hidden-memory different-digit detection.",
+        tasks=(
+            "Compare two near-matching strings from memory and identify the one digit that changed.",
+            "Keep your pace when the two strings feel more similar and the dot of difference is harder to hold.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: none required.",
+        controls="Type the changed digit and press Enter.",
+        app_flow="This drill reuses the real Digit Recognition show, mask, and question rhythm with workout-style feedback.",
+    ),
+    "dr_grouped_family_run": TestGuideBriefing(
+        label="Digit Recognition: Grouped Family Run",
+        assessment="Timed Digit Recognition drill for grouped hidden-memory family runs.",
+        tasks=(
+            "Run the live families in a fixed order: recall, count target, then different digit.",
+            "Use the grouped order to stabilize each family before the final mixed pressure block.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: know the three family prompts first.",
+        controls="Type the answer digits and press Enter.",
+        app_flow="This drill keeps the real hidden-memory Digit Recognition rhythm but groups families instead of mixing them.",
+    ),
+    "dr_mixed_pressure": TestGuideBriefing(
+        label="Digit Recognition: Mixed Pressure",
+        assessment="Timed Digit Recognition drill for late-workout mixed-family hidden-memory pressure work.",
+        tasks=(
+            "Switch across recall, count target, and different-digit prompts under the tightest timings in this library.",
+            "Accept misses fast and re-encode the next display immediately.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: arrive warmed up; this is a pressure block, not a teaching block.",
+        controls="Type the answer digits and press Enter.",
+        app_flow="This drill keeps the real hidden-memory Digit Recognition rhythm and uses the next-item banner instead of a stop screen.",
+    ),
+    "digit_recognition_workout": TestGuideBriefing(
+        label="Digit Recognition Workout",
+        assessment="Chained Digit Recognition workout with typed reflection, visible scaffold blocks, hidden-memory family runs, and a final mixed pressure block.",
+        tasks=(
+            "Start with typed focus prompts, then warm up with visible copy, position probes, and visible family primers.",
+            "Build into real hidden-memory recall, count-target, and different-digit work before ending on grouped and mixed pressure blocks.",
+        ),
+        timing="Workout drill time: 90 minutes, plus opening and closing reflection outside the timed blocks.",
+        prep="Guide preparation: know the Digit Recognition show, mask, and question rhythm first; the workout layers visible support before removing it.",
+        controls="Use Left and Right to set workout or block difficulty, type reflections, then type digits plus Enter during all blocks.",
+        app_flow="Each block gets an untimed setup screen, and changing difficulty from workout settings restarts the workout from the beginning.",
+    ),
+    "colours_letters_numbers": TestGuideBriefing(
+        label="Colours, Letters and Numbers",
+        assessment="Multitask test for shifting attention between different tasks.",
+        tasks=(
+            "Remember letter sequences while blank gaps interrupt the display.",
+            "Solve simple mental arithmetic and react to colour-lane cues at the same time.",
+        ),
+        timing="Guide time including instructions: about 20 minutes.",
+        prep="Guide preparation: practice mental arithmetic.",
+        controls="Memory uses A/S/D/F/G or mouse, colours use Q/W/E/R, and math uses digits plus Enter.",
+        app_flow="Practice lets you feel the three concurrent tasks before the timed block.",
+    ),
+    "cln_sequence_copy": TestGuideBriefing(
+        label="Colours, Letters and Numbers: Sequence Copy",
+        assessment="Visible-supported CLN memory drill for encoding rhythm and chunking.",
+        tasks=(
+            "Type the full sequence while it remains visible.",
+            "Use the visible support to turn on clean letter chunking before delayed recall starts.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: none required.",
+        controls="Type letters and press Enter.",
+        app_flow="This drill reuses the CLN full-screen layout but keeps the sequence visible while you answer.",
+    ),
+    "cln_sequence_match": TestGuideBriefing(
+        label="Colours, Letters and Numbers: Sequence Match",
+        assessment="Bridge CLN memory drill for short-delay delayed recall with the real corner-choice response format.",
+        tasks=(
+            "Hold the sequence through a short delay, then pick the matching corner.",
+            "Rehearse the real A/S/D/F/G memory response flow before the multitask blocks start stacking channels together.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: know the corner mapping first.",
+        controls="Use A/S/D/F/G or click the matching corner.",
+        app_flow="This drill reuses the CLN full-screen layout and the live delayed-choice memory grid.",
+    ),
+    "cln_sequence_math_recall": TestGuideBriefing(
+        label="Colours, Letters and Numbers: Sequence Hold + One Math",
+        assessment="Bridge CLN drill for holding a sequence through one math item before recall opens.",
+        tasks=(
+            "Store the sequence, solve exactly one math question, then recall the sequence.",
+            "Lower levels use exact typed recall; higher levels switch back to the live corner-choice memory response.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: know the typed math flow and the basic CLN memory response format first.",
+        controls="Use digits plus Enter for the math answer, then either type the sequence or use A/S/D/F/G depending on difficulty.",
+        app_flow="This drill reuses the CLN full-screen layout and gates the memory answer until one math response has been completed.",
+    ),
+    "cln_math_prime": TestGuideBriefing(
+        label="Colours, Letters and Numbers: Math Prime",
+        assessment="Math-only CLN drill for low-pressure arithmetic priming inside the CLN shell.",
+        tasks=(
+            "Solve typed arithmetic without the memory or colour channels competing yet.",
+            "Use it to warm up the arithmetic lane before the real multitask interference blocks.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: none required.",
+        controls="Type the math answer and press Enter.",
+        app_flow="This drill reuses the CLN full-screen layout and math panel while muting the other channels.",
+    ),
+    "cln_colour_lane": TestGuideBriefing(
+        label="Colours, Letters and Numbers: Colour Lane Warm-Up",
+        assessment="Colour-only CLN drill for lane mapping, scan rhythm, and hit timing.",
+        tasks=(
+            "Clear matching diamonds while they pass through the coloured lane zone.",
+            "Build automatic Q/W/E/R responses before memory and math start competing for the same attention.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: know the colour-to-key mapping.",
+        controls="Use Q/W/E/R to clear the matching lane.",
+        app_flow="This drill reuses the CLN full-screen lane layout while muting the memory and math channels.",
+    ),
+    "cln_memory_math": TestGuideBriefing(
+        label="Colours, Letters and Numbers: Memory + Math",
+        assessment="Paired-channel CLN drill for delayed recall plus typed arithmetic.",
+        tasks=(
+            "Hold the sequence through the blank delay while still solving the math cleanly.",
+            "Build cross-channel stability before the colour stream joins the block.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: be comfortable with the CLN memory response flow and typed math on their own first.",
+        controls="Use A/S/D/F/G or mouse for memory and digits plus Enter for math.",
+        app_flow="This drill reuses the CLN full-screen layout with memory and math active together, but no colour lane stream.",
+    ),
+    "cln_memory_colour": TestGuideBriefing(
+        label="Colours, Letters and Numbers: Memory + Colour",
+        assessment="Paired-channel CLN drill for delayed recall while clearing the colour lanes.",
+        tasks=(
+            "Hold the sequence while keeping the lane stream alive.",
+            "Learn to protect memory quality while a live reactive channel competes for your attention.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: know both the memory corner mapping and the Q/W/E/R lane mapping first.",
+        controls="Use A/S/D/F/G or mouse for memory and Q/W/E/R for colour lanes.",
+        app_flow="This drill reuses the CLN full-screen layout with memory and colour active together, but no math channel.",
+    ),
+    "cln_full_steady": TestGuideBriefing(
+        label="Colours, Letters and Numbers: Full Steady",
+        assessment="Three-channel CLN drill with moderate overlap pressure.",
+        tasks=(
+            "Run memory, math, and colour together in the full CLN structure.",
+            "Use it as the steady integration block before the hardest pressure timings.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: arrive warmed up on each individual channel first.",
+        controls="Use A/S/D/F/G or mouse for memory, digits plus Enter for math, and Q/W/E/R for colour lanes.",
+        app_flow="This drill reuses the full CLN screen and keeps all three channels live at once.",
+    ),
+    "cln_full_pressure": TestGuideBriefing(
+        label="Colours, Letters and Numbers: Full Pressure",
+        assessment="Late-workout three-channel CLN pressure drill with denser overlap and harder timings.",
+        tasks=(
+            "Keep the full CLN structure running when diamonds, math, and delayed recall all get more disruptive.",
+            "Treat it as a pressure-tolerance block, not a perfection block.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: warm up the split-channel and paired-channel blocks first.",
+        controls="Use A/S/D/F/G or mouse for memory, digits plus Enter for math, and Q/W/E/R for colour lanes.",
+        app_flow="This drill reuses the full CLN screen and uses the next-item feedback banner instead of a stop screen.",
+    ),
+    "colours_letters_numbers_workout": TestGuideBriefing(
+        label="Colours, Letters and Numbers Workout",
+        assessment="Chained CLN workout with typed reflection, split-channel warm-ups, paired interference blocks, and late full multitask pressure.",
+        tasks=(
+            "Start with typed focus prompts, then warm up the sequence, math, and colour channels separately before the paired blocks.",
+            "Finish with memory-plus-math, memory-plus-colour, and full three-channel CLN pressure blocks.",
+        ),
+        timing="Workout drill time: 90 minutes, plus opening and closing reflection outside the timed blocks.",
+        prep="Guide preparation: know the three CLN control channels first; the workout is for chaining them under one structure.",
+        controls="Use Left and Right to set workout or block difficulty, type reflections, then use A/S/D/F/G or mouse for memory, digits plus Enter for math, and Q/W/E/R for colour lanes.",
+        app_flow="Each block gets an untimed setup screen, and changing difficulty from workout settings restarts the workout from the beginning.",
+    ),
+    "angles_bearings_degrees": TestGuideBriefing(
+        label="Angles, Bearings and Degrees",
+        assessment="Spatial test for judging angles and bearings.",
+        tasks=(
+            "Estimate the angle between two lines.",
+            "Estimate the bearing of an object from a reference point.",
+        ),
+        timing="Guide time including instructions: about 10 minutes.",
+        prep="Guide preparation: get comfortable estimating common angles.",
+        controls="A/S/D/F/G selects, Up/Down moves the highlight, and Enter submits.",
+        app_flow="Practice introduces both angle and bearing item styles before timed work.",
+    ),
+    "abd_cardinal_anchors": TestGuideBriefing(
+        label="Angles, Bearings and Degrees: Cardinal Anchors",
+        assessment="Typed ABD drill for locking in the clean cardinal and 45-degree landmarks before finer estimates.",
+        tasks=(
+            "Answer exact anchor angles and bearings from the basic cardinal and diagonal set.",
+            "Use the next-item flash to correct misses without breaking tempo.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: think in clean landmark values first rather than arbitrary guesses.",
+        controls="Type the digits and press Enter. Some north prompts allow either 000 or 360.",
+        app_flow="This drill uses typed workout-style answers with per-item caps and immediate feedback on the next prompt.",
+    ),
+    "abd_intermediate_anchors": TestGuideBriefing(
+        label="Angles, Bearings and Degrees: Intermediate Anchors",
+        assessment="Typed ABD drill for adding intermediate landmarks like 30, 60, 120, and 150 degrees.",
+        tasks=(
+            "Answer exact intermediate landmarks after the clean cardinals and diagonals.",
+            "Keep the typed rhythm steady while the next prompt shows the correction.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: keep the bigger anchor points stable first.",
+        controls="Type the digits and press Enter.",
+        app_flow="This drill uses typed workout-style answers with per-item caps and immediate feedback on the next prompt.",
+    ),
+    "abd_angle_calibration": TestGuideBriefing(
+        label="Angles, Bearings and Degrees: Angle Calibration",
+        assessment="Typed ABD drill for calibrating nearest-5 angle estimates under cap pressure.",
+        tasks=(
+            "Estimate the smaller angle between the rays and type the nearest 5 degrees.",
+            "Use the exact flash on the next prompt to recalibrate quickly.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: focus on fast calibration, not on perfect streaks.",
+        controls="Type the digits and press Enter.",
+        app_flow="This drill uses typed workout-style answers with per-item caps and immediate feedback on the next prompt.",
+    ),
+    "abd_bearing_calibration": TestGuideBriefing(
+        label="Angles, Bearings and Degrees: Bearing Calibration",
+        assessment="Typed ABD drill for calibrating nearest-5 bearing estimates under cap pressure.",
+        tasks=(
+            "Estimate the bearing from the reference and type the nearest 5 degrees.",
+            "Use the exact flash on the next prompt to recalibrate quickly.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: keep north and the major diagonals visually stable first.",
+        controls="Type the digits and press Enter.",
+        app_flow="This drill uses typed workout-style answers with per-item caps and immediate feedback on the next prompt.",
+    ),
+    "abd_mixed_tempo": TestGuideBriefing(
+        label="Angles, Bearings and Degrees: Mixed Tempo",
+        assessment="Typed ABD drill for alternating angle and bearing estimates with a changing cadence.",
+        tasks=(
+            "Switch between angle and bearing estimates without re-centering too long after a miss.",
+            "Hold a steady response rhythm while the cadence tightens.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: treat misses as calibration data and move to the next prompt immediately.",
+        controls="Type the digits and press Enter.",
+        app_flow="This drill uses typed workout-style answers with per-item caps and immediate feedback on the next prompt.",
+    ),
+    "abd_family_run_angle": TestGuideBriefing(
+        label="Angles, Bearings and Degrees: Test-Style Angle Run",
+        assessment="ABD drill that switches back to the real multiple-choice angle-between-lines format.",
+        tasks=(
+            "Answer only angle-between-lines items using the real ABD option layout.",
+            "Keep multiple-choice tempo while the workout still flashes feedback on the next prompt.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: know the option layout before starting the block.",
+        controls="A/S/D/F/G selects, Up/Down moves the highlight, and Enter submits.",
+        app_flow="This drill reuses the real ABD multiple-choice screen with workout-style immediate feedback.",
+    ),
+    "abd_family_run_bearing": TestGuideBriefing(
+        label="Angles, Bearings and Degrees: Test-Style Bearing Run",
+        assessment="ABD drill that switches back to the real multiple-choice bearing format.",
+        tasks=(
+            "Answer only bearing-from-reference items using the real ABD option layout.",
+            "Keep multiple-choice tempo while the workout still flashes feedback on the next prompt.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: keep north, cardinals, and diagonals stable before the block starts.",
+        controls="A/S/D/F/G selects, Up/Down moves the highlight, and Enter submits.",
+        app_flow="This drill reuses the real ABD multiple-choice screen with workout-style immediate feedback.",
+    ),
+    "angles_bearings_degrees_workout": TestGuideBriefing(
+        label="Angles, Bearings and Degrees Workout",
+        assessment="Chained ABD workout with typed reflection, anchor warm-ups, typed calibration, and test-style pressure blocks.",
+        tasks=(
+            "Start with typed focus prompts, then warm up cardinal and diagonal angle and bearing anchors under low pressure.",
+            "Build into typed nearest-5 calibration blocks, then finish with real multiple-choice angle and bearing family runs.",
+        ),
+        timing="Workout drill time: 90 minutes, plus opening and closing reflection outside the timed blocks.",
+        prep="Guide preparation: know the ABD screen first; the workout is for calibrating your eye and then holding tempo under pressure.",
+        controls="Use Left and Right to set workout or block difficulty, type digits plus Enter in warm-up blocks, and use A/S/D/F/G or Up/Down in the final test-style runs.",
+        app_flow="Each block gets an untimed setup screen, and changing difficulty from workout settings restarts the workout from the beginning.",
+    ),
+    "visual_search": TestGuideBriefing(
+        label="Visual Search",
+        assessment="Scanning test for finding targets under time pressure.",
+        tasks=(
+            "Search for a target among letters or line-figure distractors.",
+            "Work quickly and accurately while scanning the whole display.",
+        ),
+        timing="Guide time including instructions: about 4 minutes.",
+        prep="Guide preparation: none required.",
+        controls="Scan the board, type the matching block number, and press Enter.",
+        app_flow="Practice lets you learn the board layout before the timed block unlocks.",
+    ),
+    "vs_target_preview": TestGuideBriefing(
+        label="Visual Search: Target Preview",
+        assessment="Timed Visual Search drill for reacquiring the target cleanly before the scan starts.",
+        tasks=(
+            "Use the real 3x4 board and type the numbered block that matches the target.",
+            "Preview the target first, then settle into a stable board scan instead of guessing from the center.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: choose one scan order and keep it consistent.",
+        controls="Type the two-digit block number and press Enter. Each item has its own hard cap.",
+        app_flow="This drill reuses the real Visual Search board and uses the next-item feedback banner instead of a stop screen.",
+    ),
+    "vs_clean_scan": TestGuideBriefing(
+        label="Visual Search: Clean Scan",
+        assessment="Timed Visual Search drill for disciplined left-to-right or row-by-row search rhythm.",
+        tasks=(
+            "Run the full board with easier distractors so the scan pattern becomes automatic.",
+            "Type the correct numbered block without skipping tiles or bouncing around the board.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: pick the scan path before the target appears.",
+        controls="Type the two-digit block number and press Enter.",
+        app_flow="This drill stays on the real board and keeps feedback on the next item so the pace does not stop.",
+    ),
+    "vs_family_run_letters": TestGuideBriefing(
+        label="Visual Search: Letter Family Run",
+        assessment="Timed Visual Search drill for alphanumeric targets only.",
+        tasks=(
+            "Stay on the letter family and clean up confusions before switching back to mixed boards.",
+            "Use the full 3x4 board and the same typed answer mode as the test.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: know the common confusable letter groups first.",
+        controls="Type the two-digit block number and press Enter.",
+        app_flow="This drill reuses the real Visual Search board and keeps the next-item feedback banner active.",
+    ),
+    "vs_family_run_symbols": TestGuideBriefing(
+        label="Visual Search: Line Figure Family Run",
+        assessment="Timed Visual Search drill for line-figure targets only.",
+        tasks=(
+            "Stay on the symbol family and sharpen the line-figure confusions before returning to mixed boards.",
+            "Use the full 3x4 board and the same typed answer mode as the test.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: use a stable scan order so similar figures do not stall the search.",
+        controls="Type the two-digit block number and press Enter.",
+        app_flow="This drill reuses the real Visual Search board and keeps the next-item feedback banner active.",
+    ),
+    "vs_mixed_tempo": TestGuideBriefing(
+        label="Visual Search: Mixed Tempo",
+        assessment="Timed Visual Search drill for mixed-family recovery under cap pressure.",
+        tasks=(
+            "Rotate letters and line figures in an easy-easy-hard cadence.",
+            "Miss fast, reset fast, and keep typing the correct block number on the next item without spiraling.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: keep the same scan discipline even when the family changes.",
+        controls="Type the two-digit block number and press Enter.",
+        app_flow="This drill keeps the real board and uses next-item feedback instead of a separate correction screen.",
+    ),
+    "vs_pressure_run": TestGuideBriefing(
+        label="Visual Search: Pressure Run",
+        assessment="Timed Visual Search drill for the hardest caps and closest distractor similarity.",
+        tasks=(
+            "Use the real mixed board and answer mode while the distractors tighten around the target cluster.",
+            "Train commitment and recovery, not perfection on every board.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: know that misses are expected; the useful skill is recovering immediately.",
+        controls="Type the two-digit block number and press Enter.",
+        app_flow="This drill reuses the real Visual Search board and keeps the next-item feedback banner active.",
+    ),
+    "visual_search_workout": TestGuideBriefing(
+        label="Visual Search Workout",
+        assessment="Chained Visual Search workout with typed reflection, full-board warm-ups, family runs, mixed tempo, and late pressure.",
+        tasks=(
+            "Start with typed focus prompts, then reacquire the target and clean up your board scan before the family runs start.",
+            "Finish with mixed tempo and a final pressure block that keeps the same real 3x4 board and typed answer mode as the test.",
+        ),
+        timing="Workout drill time: 90 minutes, plus opening and closing reflection outside the timed blocks.",
+        prep="Guide preparation: the workout stays inside the live Visual Search scope only: letters and line figures.",
+        controls="Use Left and Right to set workout or block difficulty, then type the two-digit block number and press Enter.",
+        app_flow="Each block gets an untimed setup screen, and changing difficulty from workout settings restarts the workout from the beginning.",
+    ),
+    "ic_heading_anchor": TestGuideBriefing(
+        label="Instrument Comprehension: Heading Anchor",
+        assessment="Timed Instrument Comprehension drill for clean heading-picture matching with nearly level attitude.",
+        tasks=(
+            "Use Part 1 only and make the compass-rose / aircraft-heading relation automatic before heavier attitude changes return.",
+            "Stay on the real aircraft-image answer cards and commit with the normal multiple-choice flow.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: read the heading instrument as a rotating rose under a fixed aircraft symbol.",
+        controls="Use A/S/D/F/G to choose, or 1-5 then Enter when needed.",
+        app_flow="This drill reuses the real Instrument Comprehension Part 1 layout and keeps workout-style next-item feedback active.",
+    ),
+    "ic_attitude_frame": TestGuideBriefing(
+        label="Instrument Comprehension: Attitude Frame",
+        assessment="Timed Instrument Comprehension drill for bank/pitch discrimination before full Part 1 mixing.",
+        tasks=(
+            "Use Part 1 only with coarser heading so the attitude picture becomes cleaner first.",
+            "Train aircraft-image discrimination without leaving the live instrument layout or answer flow.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: treat bank and pitch as the main cue; heading is secondary in this block.",
+        controls="Use A/S/D/F/G to choose, or 1-5 then Enter when needed.",
+        app_flow="This drill reuses the real Instrument Comprehension Part 1 layout and keeps workout-style next-item feedback active.",
+    ),
+    "ic_part1_orientation_run": TestGuideBriefing(
+        label="Instrument Comprehension: Part 1 Orientation Run",
+        assessment="Timed Instrument Comprehension drill for full instrument-to-aircraft orientation matching.",
+        tasks=(
+            "Use the full Part 1 aircraft-card family with heading, bank, and pitch changing together.",
+            "Build speed on the real guide-style image choices instead of training on surrogate cards.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: be comfortable with the Part 1 aircraft-card viewpoints first.",
+        controls="Use A/S/D/F/G to choose, or 1-5 then Enter when needed.",
+        app_flow="This drill reuses the real Instrument Comprehension Part 1 layout and keeps workout-style next-item feedback active.",
+    ),
+    "ic_reverse_panel_prime": TestGuideBriefing(
+        label="Instrument Comprehension: Reverse Panel Prime",
+        assessment="Timed Instrument Comprehension drill for easier aircraft-image-to-instrument-panel matching before the full reverse run.",
+        tasks=(
+            "Use Part 2 only and clean up one-dimension distractors before the heavier reverse-match block.",
+            "Read one aircraft image, then commit to the best full instrument panel without changing the live multiple-choice flow.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: know the Part 1 aircraft viewpoints first so you can reverse them back into instrument states cleanly.",
+        controls="Use A/S/D/F/G to choose, or 1-5 then Enter when needed.",
+        app_flow="This drill reuses the real Instrument Comprehension reverse-match layout and keeps workout-style next-item feedback active.",
+    ),
+    "ic_reverse_panel_run": TestGuideBriefing(
+        label="Instrument Comprehension: Reverse Panel Run",
+        assessment="Timed Instrument Comprehension drill for full aircraft-image-to-instrument-panel interpretation.",
+        tasks=(
+            "Use Part 2 only with the full reverse-match answer set.",
+            "Train quick panel matching from the aircraft picture without falling back to slow verbal narration.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: be comfortable translating bank, pitch, and heading from the aircraft image into the panel in one pass.",
+        controls="Use A/S/D/F/G to choose, or 1-5 then Enter when needed.",
+        app_flow="This drill reuses the real Instrument Comprehension reverse-match layout and keeps workout-style next-item feedback active.",
+    ),
+    "ic_description_prime": TestGuideBriefing(
+        label="Instrument Comprehension: Description Prime",
+        assessment="Timed Instrument Comprehension drill for easier Part 3 description interpretation before full mixed reading.",
+        tasks=(
+            "Use Part 3 only and clean up one-dimension distractors before the heavier description run.",
+            "Read the full instrument panel, then commit to the best description without stalling on wording.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: translate speed, heading, turn, and climb/descent into plain-language statements quickly.",
+        controls="Use A/S/D/F/G to choose, or 1-5 then Enter when needed.",
+        app_flow="This drill reuses the real Instrument Comprehension Part 3 layout and keeps workout-style next-item feedback active.",
+    ),
+    "ic_description_run": TestGuideBriefing(
+        label="Instrument Comprehension: Description Run",
+        assessment="Timed Instrument Comprehension drill for full instrument-panel-to-description interpretation.",
+        tasks=(
+            "Use Part 3 only with the real full-panel reading flow.",
+            "Train fast best-match judgment on the descriptions instead of re-reading every line from scratch.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: keep a stable read order across the panel so you do not chase instruments randomly.",
+        controls="Use A/S/D/F/G to choose, or 1-5 then Enter when needed.",
+        app_flow="This drill reuses the real Instrument Comprehension Part 3 layout and keeps workout-style next-item feedback active.",
+    ),
+    "ic_mixed_part_run": TestGuideBriefing(
+        label="Instrument Comprehension: Mixed Part Run",
+        assessment="Timed Instrument Comprehension drill for balanced switching across all three live parts.",
+        tasks=(
+            "Run a fixed rhythm of two Part 1 items, two Part 2 items, then two Part 3 items so the full family stays live in one block.",
+            "Use the part switch as a reset, not as a reason to slow down.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: know all three IC layouts and the common answer flow before using this block.",
+        controls="Use A/S/D/F/G to choose, or 1-5 then Enter when needed.",
+        app_flow="This drill rotates through the live Instrument Comprehension Part 1, Part 2, and Part 3 screens while keeping workout-style next-item feedback active.",
+    ),
+    "ic_pressure_run": TestGuideBriefing(
+        label="Instrument Comprehension: Pressure Run",
+        assessment="Timed Instrument Comprehension drill for the hardest cap profile with constant part switching.",
+        tasks=(
+            "Alternate Part 1, Part 2, and Part 3 item-by-item under the shortest cap profile in this family.",
+            "Train commitment and recovery, not perfect streaks.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: expect misses and use the next question as the reset point.",
+        controls="Use A/S/D/F/G to choose, or 1-5 then Enter when needed.",
+        app_flow="This drill alternates the live Instrument Comprehension Part 1, Part 2, and Part 3 screens while keeping workout-style next-item feedback active.",
+    ),
+    "instrument_comprehension_workout": TestGuideBriefing(
+        label="Instrument Comprehension Workout",
+        assessment="Chained Instrument Comprehension workout with typed reflection, Part 1/2/3 warm-ups, balanced mixed runs, and late pressure.",
+        tasks=(
+            "Start with heading and attitude warm-ups, then build reverse panel and description tempo before the mixed runs.",
+            "Finish with a balanced pressure block that alternates the three live IC parts without changing the real answer flow.",
+        ),
+        timing="Workout drill time: 90 minutes, plus opening and closing reflection outside the timed blocks.",
+        prep="Guide preparation: know all three Instrument Comprehension parts first; the workout is for chaining them under one structure.",
+        controls="Use Left and Right to set workout or block difficulty, type reflections, then use A/S/D/F/G or 1-5 then Enter during blocks.",
+        app_flow="Each block gets an untimed setup screen, and changing difficulty from workout settings restarts the workout from the beginning.",
+    ),
+    "instrument_comprehension": TestGuideBriefing(
+        label="Instrument Comprehension",
+        assessment="Spatial visualization test using pictorial, numerical, and verbal information.",
+        tasks=(
+            "Inspect the instrument readings to visualize aircraft orientation.",
+            "Match the instruments to the correct aircraft view, reverse-match the aircraft view to the panel, or choose the best flight description.",
+        ),
+        timing="Guide time including instructions: about 26 minutes.",
+        prep="Guide preparation: none required.",
+        controls="Choose with A/S/D/F/G, then press Enter to submit.",
+        app_flow="Practice introduces both parts before the scored block begins.",
+    ),
+    "tr_scene_anchor": TestGuideBriefing(
+        label="Target Recognition: Scene Anchor",
+        assessment="Timed Target Recognition drill for the map panel only, without damaged or high-priority modifiers.",
+        tasks=(
+            "Work shape and affiliation matching first so the map legend becomes automatic.",
+            "Ignore the OFF panels and keep the same live Target Recognition layout in view.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: treat this as a map-legend warm-up, not a multitask block.",
+        controls="Mouse only: click the active Target Recognition panel matches.",
+        app_flow="This drill reuses the live Target Recognition screen, keeps non-map panels visible but OFF, and keeps workout-style next-item feedback active.",
+    ),
+    "tr_scene_modifier_run": TestGuideBriefing(
+        label="Target Recognition: Scene Modifier Run",
+        assessment="Timed Target Recognition drill for full map-panel criteria, including damaged and high-priority tags.",
+        tasks=(
+            "Read the full map target labels cleanly, including modifiers, before multitask switching begins.",
+            "Keep the live map interaction, with the other panels still visible but OFF.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: be comfortable with the base map legend before bringing the extra tags back.",
+        controls="Mouse only: click the active Target Recognition panel matches.",
+        app_flow="This drill reuses the live Target Recognition screen, keeps non-map panels visible but OFF, and keeps workout-style next-item feedback active.",
+    ),
+    "tr_light_anchor": TestGuideBriefing(
+        label="Target Recognition: Light Anchor",
+        assessment="Timed Target Recognition drill for isolating the colour-light panel.",
+        tasks=(
+            "Train light-pattern timing by itself before switching back into multitask blocks.",
+            "Use the quieter cadence to stabilize timing in Build, then accept tighter cadence as modes rise.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: focus on the target pattern and timing, not on the OFF panels.",
+        controls="Mouse only: click the active Target Recognition panel matches.",
+        app_flow="This drill reuses the live Target Recognition screen, keeps non-light panels visible but OFF, and keeps workout-style next-item feedback active.",
+    ),
+    "tr_scan_anchor": TestGuideBriefing(
+        label="Target Recognition: Scan Anchor",
+        assessment="Timed Target Recognition drill for isolating the symbol scan stream.",
+        tasks=(
+            "Train the scan stream by itself first, with an easier symbol pool at the lower end of the family.",
+            "Lock in the reveal rhythm before denser switching returns.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: focus on the scan rhythm and symbol discrimination, not on the OFF panels.",
+        controls="Mouse only: click the active Target Recognition panel matches.",
+        app_flow="This drill reuses the live Target Recognition screen, keeps non-scan panels visible but OFF, and keeps workout-style next-item feedback active.",
+    ),
+    "tr_system_anchor": TestGuideBriefing(
+        label="Target Recognition: System Anchor",
+        assessment="Timed Target Recognition drill for isolating the scrolling alphanumeric system panel.",
+        tasks=(
+            "Train the system-code scroll by itself so target handoff becomes stable.",
+            "Use the slower pace in easier modes to read the live moving columns cleanly.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: focus on target-code reacquisition and ignore the OFF panels.",
+        controls="Mouse only: click the active Target Recognition panel matches.",
+        app_flow="This drill reuses the live Target Recognition screen, keeps non-system panels visible but OFF, and keeps workout-style next-item feedback active.",
+    ),
+    "tr_panel_switch_run": TestGuideBriefing(
+        label="Target Recognition: Panel Switch Run",
+        assessment="Timed Target Recognition drill for deliberate panel switching with one active panel at a time.",
+        tasks=(
+            "Cycle Scene, then Light, then Scan, then System, one active panel per item.",
+            "Use each panel change as a reset instead of carrying the previous panel forward.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: know the single-panel interactions first.",
+        controls="Mouse only: click the active Target Recognition panel matches.",
+        app_flow="This drill reuses the live Target Recognition screen, marks only one panel active per item, and keeps workout-style next-item feedback active.",
+    ),
+    "tr_mixed_tempo": TestGuideBriefing(
+        label="Target Recognition: Mixed Tempo",
+        assessment="Timed Target Recognition drill for fixed mixed-panel combinations before the full pressure run.",
+        tasks=(
+            "Work through deterministic mixed-panel combinations so switching becomes deliberate and repeatable.",
+            "Use the live four-panel layout throughout instead of a surrogate drill screen.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: know the isolated panels before using this mixed block.",
+        controls="Mouse only: click the active Target Recognition panel matches.",
+        app_flow="This drill reuses the live Target Recognition screen, rotates fixed active-panel combinations, and keeps workout-style next-item feedback active.",
+    ),
+    "tr_pressure_run": TestGuideBriefing(
+        label="Target Recognition: Pressure Run",
+        assessment="Timed Target Recognition drill for the full four-panel live task under the fastest cadence profile.",
+        tasks=(
+            "Run the full multitask target-recognition screen with all four panels live on every item.",
+            "Train recovery and continuous prioritization instead of chasing perfect streaks.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: expect misses and recover on the next pattern or panel.",
+        controls="Mouse only: click the active Target Recognition panel matches.",
+        app_flow="This drill reuses the full live Target Recognition screen and keeps workout-style next-item feedback active.",
+    ),
+    "target_recognition_workout": TestGuideBriefing(
+        label="Target Recognition Workout",
+        assessment="Chained Target Recognition workout with typed reflection, isolated panel warm-ups, switching drills, and a final full-pressure block.",
+        tasks=(
+            "Warm up the map, light, scan, and system panels individually before the switching blocks.",
+            "Finish on mixed and full-pressure blocks that keep the live four-panel screen and mouse-first answer flow.",
+        ),
+        timing="Workout drill time: 90 minutes, plus opening and closing reflection outside the timed blocks.",
+        prep="Guide preparation: know the four live Target Recognition panels first; the workout is for chaining them cleanly.",
+        controls="Use Left and Right to set workout or block difficulty, type reflections, then use the mouse during blocks.",
+        app_flow="Each block gets an untimed setup screen, and changing difficulty from workout settings restarts the workout from the beginning.",
+    ),
+    "target_recognition": TestGuideBriefing(
+        label="Target Recognition",
+        assessment="Multitask visual-search test for identifying several target types.",
+        tasks=(
+            "Scan for imagery, colour, symbol, code, and warning-sign targets.",
+            "Prioritize the different streams and register as many valid targets as possible.",
+        ),
+        timing="Guide time including instructions: about 25 minutes.",
+        prep="Guide preparation: none required.",
+        controls="The live tasks are mostly mouse-driven in this trainer; click the matching targets and panels.",
+        app_flow="Practice builds each category first, then the timed block combines them.",
+    ),
+    "system_logic": TestGuideBriefing(
+        label="System Logic",
+        assessment="Reasoning test for solving logic problems from multiple sources.",
+        tasks=(
+            "Inspect the numbered system index and compare multiple document panes to find the relevant facts.",
+            "Combine tables, graphs, diagrams, equations, and written statements to choose the best answer.",
+        ),
+        timing="Guide time including instructions: about 38 minutes.",
+        prep="Guide preparation: mental arithmetic helps.",
+        controls="Use Up/Down to move through the system index, choose A/B/C/D/E or 1-5, then press Enter.",
+        app_flow="Practice teaches the index workflow first, then the timed block keeps the same two-pane layout.",
+    ),
+    "sl_quantitative_anchor": TestGuideBriefing(
+        label="System Logic: Quantitative Anchor",
+        assessment="Timed System Logic drill for duration, capacity, and resource calculation using the live two-pane guide layout.",
+        tasks=(
+            "Combine tables, facts, and equations to compute the correct A-E answer.",
+            "Use the right-side index deliberately instead of guessing from the first pane you notice.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: basic arithmetic helps, but the main task is multi-source collation.",
+        controls="Use Up/Down to move the index, A/B/C/D/E or 1-5 to choose, then Enter to submit.",
+        app_flow="This drill keeps the real System Logic screen and narrows the reasoning load to quantitative items first.",
+    ),
+    "sl_flow_trace_anchor": TestGuideBriefing(
+        label="System Logic: Flow Trace Anchor",
+        assessment="Timed System Logic drill for dependency and feed-path tracing on the live guide-style UI.",
+        tasks=(
+            "Trace the active path through diagrams, routing notes, and tables before you answer.",
+            "Confirm which branch actually remains live instead of inferring from one component status alone.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: none required beyond learning the index-and-pane scan rhythm.",
+        controls="Use Up/Down to move the index, A/B/C/D/E or 1-5 to choose, then Enter to submit.",
+        app_flow="The live System Logic layout stays unchanged; only the reasoning family narrows to dependency tracing.",
+    ),
+    "sl_graph_rule_anchor": TestGuideBriefing(
+        label="System Logic: Graph + Rule Anchor",
+        assessment="Timed System Logic drill for graph interpretation and rule application with the real guide-style renderer.",
+        tasks=(
+            "Read graph bands or curves and combine them with the rule pane before selecting A-E.",
+            "Treat graph values and rule text as a paired source; neither one is enough by itself.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: none required.",
+        controls="Use Up/Down to move the index, A/B/C/D/E or 1-5 to choose, then Enter to submit.",
+        app_flow="This drill keeps the live System Logic UI and focuses only the graph-and-rule reasoning family.",
+    ),
+    "sl_fault_diagnosis_prime": TestGuideBriefing(
+        label="System Logic: Fault Diagnosis Prime",
+        assessment="Timed System Logic drill for advisory, state, and fault diagnosis from multiple panes.",
+        tasks=(
+            "Compare sensor values, graph limits, and rule priority to choose the single best diagnosis.",
+            "Ignore lower-priority symptoms when a higher-priority advisory already applies.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: none required.",
+        controls="Use Up/Down to move the index, A/B/C/D/E or 1-5 to choose, then Enter to submit.",
+        app_flow="The guide-style two-pane System Logic screen stays live while the drill narrows to diagnosis items.",
+    ),
+    "sl_index_switch_run": TestGuideBriefing(
+        label="System Logic: Index Switch Run",
+        assessment="Timed System Logic drill for deliberate right-side index movement and multi-pane collation.",
+        tasks=(
+            "Move the index and inspect multiple entries before you answer.",
+            "Stay disciplined with the guide layout instead of trying to solve from one pane only.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: know the live System Logic controls first.",
+        controls="Use Up/Down to move the index, A/B/C/D/E or 1-5 to choose, then Enter to submit.",
+        app_flow="This block keeps the live renderer and is designed so the answer depends on more than one indexed subsystem view.",
+    ),
+    "sl_family_run": TestGuideBriefing(
+        label="System Logic: Family Run",
+        assessment="Timed System Logic drill that rotates fixed system families on the real guide-style screen.",
+        tasks=(
+            "Work through oil, fuel, electrical, hydraulic, and thermal scenarios in a fixed repeating order.",
+            "Keep family switches from costing extra orientation time on the live two-pane layout.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: be comfortable with the basic live System Logic layout first.",
+        controls="Use Up/Down to move the index, A/B/C/D/E or 1-5 to choose, then Enter to submit.",
+        app_flow="The system family changes in a fixed cycle while the live System Logic UI stays constant.",
+    ),
+    "sl_mixed_tempo": TestGuideBriefing(
+        label="System Logic: Mixed Tempo",
+        assessment="Timed System Logic drill for balanced reasoning switches under the live guide-style layout.",
+        tasks=(
+            "Rotate through quantitative, trace, graph/rule, and diagnosis work without changing the screen format.",
+            "Reset quickly when the reasoning mode changes and keep the index scan structured.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: use the focused warm-up drills first if one reasoning family still causes slowdowns.",
+        controls="Use Up/Down to move the index, A/B/C/D/E or 1-5 to choose, then Enter to submit.",
+        app_flow="This is the reusable mixed System Logic tempo block, still on the real two-pane renderer and keyboard-only flow.",
+    ),
+    "sl_pressure_run": TestGuideBriefing(
+        label="System Logic: Pressure Run",
+        assessment="Timed System Logic pressure drill with all system families and reasoning modes active on the live guide-style screen.",
+        tasks=(
+            "Handle faster mixed family and mixed reasoning switches without losing the index-and-pane workflow.",
+            "Recover quickly after misses instead of overchecking one item.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: arrive warmed up; this is a pressure block, not a teaching block.",
+        controls="Use Up/Down to move the index, A/B/C/D/E or 1-5 to choose, then Enter to submit.",
+        app_flow="The pressure run keeps the full live System Logic renderer and keyboard-only controls while removing simplifications.",
+    ),
+    "sl_one_rule_identify": TestGuideBriefing(
+        label="System Logic: One-Rule Identify",
+        assessment="Primitive symbolic drill for spotting the decisive rule or graph relation quickly.",
+        tasks=(
+            "Identify the one rule that actually resolves the item instead of over-reading the whole guide.",
+            "Keep the right-side index movement deliberate and minimal.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: use the graph and rule pane together instead of guessing from one source.",
+        controls="Use Up/Down to move the index, A/B/C/D/E or 1-5 to choose, then Enter to submit.",
+        app_flow="This primitive drill preserves the normal System Logic guide layout and exact multiple-choice scoring.",
+    ),
+    "sl_missing_step_complete": TestGuideBriefing(
+        label="System Logic: Missing-Step Complete",
+        assessment="Primitive symbolic drill for finishing a broken dependency or transfer chain.",
+        tasks=(
+            "Find the missing step instead of rereading every visible fact line.",
+            "Use the guide index to verify the missing transfer or dependency exactly once.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: treat step order as the deciding feature, not just familiar wording.",
+        controls="Use Up/Down to move the index, A/B/C/D/E or 1-5 to choose, then Enter to submit.",
+        app_flow="This primitive drill keeps the standard two-pane System Logic presentation while narrowing the reasoning profile.",
+    ),
+    "sl_two_source_reconcile": TestGuideBriefing(
+        label="System Logic: Two-Source Reconcile",
+        assessment="Primitive symbolic drill for reconciling two guide sources without over-reading the rest of the scenario.",
+        tasks=(
+            "Cross-check the two decisive sources quickly and ignore the rest.",
+            "Use the block to make table-rule-fault reconciliation feel routine.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: know how the index maps you to the minimum evidence set.",
+        controls="Use Up/Down to move the index, A/B/C/D/E or 1-5 to choose, then Enter to submit.",
+        app_flow="This primitive drill still uses the normal System Logic panes and exact scoring.",
+    ),
+    "sl_rule_match": TestGuideBriefing(
+        label="System Logic: Rule Match",
+        assessment="Primitive symbolic drill for matching diagrams, tables, and rules faster.",
+        tasks=(
+            "Match the relevant diagram/table/rule relationship before the distractors feel plausible.",
+            "Keep the answer flow identical to the full System Logic task.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: let the guide structure do the work; do not free-associate from one pane.",
+        controls="Use Up/Down to move the index, A/B/C/D/E or 1-5 to choose, then Enter to submit.",
+        app_flow="This primitive drill keeps the live guide layout and focuses the generator on rule-matching cases.",
+    ),
+    "sl_fast_reject": TestGuideBriefing(
+        label="System Logic: Fast Reject",
+        assessment="Primitive symbolic drill for rejecting tempting distractors under tighter cap pressure.",
+        tasks=(
+            "Choose the single fully supported answer and reject the near-miss distractors quickly.",
+            "Do not reread the whole guide after you have enough evidence to eliminate the trap answers.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: be ready to commit once the required evidence is clear.",
+        controls="Use Up/Down to move the index, A/B/C/D/E or 1-5 to choose, then Enter to submit.",
+        app_flow="This primitive drill uses the normal System Logic guide flow but biases the answer set toward tempting distractors.",
+    ),
+    "system_logic_workout": TestGuideBriefing(
+        label="System Logic Workout",
+        assessment="Chained System Logic workout with typed reflection, focused reasoning warm-ups, family switching, and a final pressure block.",
+        tasks=(
+            "Start with typed focus prompts, then warm up quantitative, tracing, graph/rule, and diagnosis work one family at a time.",
+            "Build into index switching, family switching, and late mixed-pressure work on the real guide-style System Logic screen.",
+        ),
+        timing="Workout drill time: 90 minutes, plus opening and closing reflection outside the timed blocks.",
+        prep="Guide preparation: know the live System Logic controls first; the workout is for chaining them under pressure.",
+        controls="Use Left and Right to set workout or block difficulty, type reflections, then use Up/Down plus A-E or 1-5 and Enter during blocks.",
+        app_flow="Each block gets an untimed setup screen, and every timed block reuses the live two-pane System Logic renderer.",
+    ),
+    "table_reading": TestGuideBriefing(
+        label="Table Reading",
+        assessment="Work-rate test for scanning and cross-referencing tables quickly.",
+        tasks=(
+            "Cross-reference row and column numbers to find values.",
+            "Use multiple tables and reference cards to identify the correct answer.",
+        ),
+        timing="Guide time including instructions: about 11 minutes.",
+        prep="Guide preparation: none required.",
+        controls="Use A/S/D/F/G or 1-5 to choose, Up/Down to move the highlight, then Enter to submit.",
+        app_flow="Practice shows the lookup style before the timed block starts.",
+    ),
+    "tbl_part1_anchor": TestGuideBriefing(
+        label="Table Reading: Part 1 Anchor",
+        assessment="Timed Table Reading drill for steady single-card lookup before denser scan work starts.",
+        tasks=(
+            "Stay on one card only and find the correct row-column value cleanly.",
+            "Use the live table renderer and keep the same answer flow you use in the full test.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: use this before the faster mixed blocks if single-card scanning is still shaky.",
+        controls="Use A/S/D/F/G or 1-5 to choose, Up/Down to move the highlight, then Enter to submit.",
+        app_flow="This is the reusable Table Reading warm-up block and stays on the real live table UI.",
+    ),
+    "tbl_part1_scan_run": TestGuideBriefing(
+        label="Table Reading: Part 1 Scan Run",
+        assessment="Timed Table Reading drill for denser single-card scan speed across multiple card packs.",
+        tasks=(
+            "Keep the answer flow stable while row and column positions spread out more.",
+            "Reset immediately when the card family changes instead of relying on one memorized layout.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: arrive already comfortable with the one-card workflow first.",
+        controls="Use A/S/D/F/G or 1-5 to choose, Up/Down to move the highlight, then Enter to submit.",
+        app_flow="The live Table Reading renderer stays active while only the card family and option spacing change.",
+    ),
+    "tbl_part2_prime": TestGuideBriefing(
+        label="Table Reading: Part 2 Prime",
+        assessment="Timed Table Reading drill for the easier end of the two-card chaining workflow.",
+        tasks=(
+            "Use the first card to find the intermediate value, then move to the second card for the final answer.",
+            "Keep the scan ordered so the two-card handoff feels deliberate instead of rushed.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: start here before the full correction run if Part 2 still feels noisy.",
+        controls="Use A/S/D/F/G or 1-5 to choose, Up/Down to move the highlight, then Enter to submit.",
+        app_flow="This stays on the real two-card Table Reading layout with the same keyboard-only controls.",
+    ),
+    "tbl_part2_correction_run": TestGuideBriefing(
+        label="Table Reading: Part 2 Correction Run",
+        assessment="Timed Table Reading drill for the full two-card correction workflow.",
+        tasks=(
+            "Carry the intermediate value correctly from the first card to the second card.",
+            "Keep moving instead of double-checking every row when the chain is already clear.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: use the prime block first if the two-card handoff is still slow.",
+        controls="Use A/S/D/F/G or 1-5 to choose, Up/Down to move the highlight, then Enter to submit.",
+        app_flow="This is the real live Table Reading Part 2 workflow, not a surrogate drill screen.",
+    ),
+    "tbl_part_switch_run": TestGuideBriefing(
+        label="Table Reading: Part Switch Run",
+        assessment="Timed Table Reading drill for switching between one-card and two-card items item by item.",
+        tasks=(
+            "Alternate between Part 1 and Part 2 without changing your answer routine.",
+            "Recognize the required lookup depth quickly and start the scan immediately.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: use focused Part 1 and Part 2 blocks first if one side is still lagging.",
+        controls="Use A/S/D/F/G or 1-5 to choose, Up/Down to move the highlight, then Enter to submit.",
+        app_flow="The renderer stays the same while the problem type alternates between the one-card and two-card flows.",
+    ),
+    "tbl_card_family_run": TestGuideBriefing(
+        label="Table Reading: Card Family Run",
+        assessment="Timed Table Reading drill for rotating through the expanded card library instead of repeating one familiar pack.",
+        tasks=(
+            "Handle different card packs and card sets without letting the visual change slow the lookup.",
+            "Keep the same keyboard flow while the live table family rotates underneath the same UI shell.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: use this once the basic part workflows feel stable.",
+        controls="Use A/S/D/F/G or 1-5 to choose, Up/Down to move the highlight, then Enter to submit.",
+        app_flow="This block keeps the live Table Reading renderer but cycles through the full card-pack library.",
+    ),
+    "tbl_mixed_tempo": TestGuideBriefing(
+        label="Table Reading: Mixed Tempo",
+        assessment="Timed Table Reading drill for balanced single-card and two-card rhythm work on the live UI.",
+        tasks=(
+            "Run the fixed 2x Part 1, 2x Part 2 rhythm without losing the selection-and-submit flow.",
+            "Recover quickly after misses and keep the scan pattern stable when the section changes.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: use the focused warm-up drills first if one section still dominates your time.",
+        controls="Use A/S/D/F/G or 1-5 to choose, Up/Down to move the highlight, then Enter to submit.",
+        app_flow="The live Table Reading renderer stays active while the timed block alternates between the two parts in a fixed rhythm.",
+    ),
+    "tbl_pressure_run": TestGuideBriefing(
+        label="Table Reading: Pressure Run",
+        assessment="Timed Table Reading pressure drill with alternating Part 1 and Part 2 items under the hardest cap profile.",
+        tasks=(
+            "Switch between one-card and two-card lookups quickly without changing your answer flow.",
+            "Keep moving after near misses; the live partial-credit scoring still rewards close control.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: arrive warmed up; this is a pressure block, not a teaching block.",
+        controls="Use A/S/D/F/G or 1-5 to choose, Up/Down to move the highlight, then Enter to submit.",
+        app_flow="This pressure block keeps the same live Table Reading UI and keyboard-only controls while tightening the pacing.",
+    ),
+    "tbl_single_lookup_anchor": TestGuideBriefing(
+        label="Table Reading: Single Lookup Anchor",
+        assessment="Primitive table-reading drill for one-table row and column lookup speed.",
+        tasks=(
+            "Stay on single-table lookup only until the scan path stops costing extra time.",
+            "Keep the live table layout and answer strip exactly as they appear in the main task.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: none beyond the standard Table Reading answer flow.",
+        controls="Use A/S/D/F/G or 1-5 to choose, Up/Down to move the highlight, then Enter to submit.",
+        app_flow="This primitive drill uses the live Table Reading renderer and the normal partial-credit scoring model.",
+    ),
+    "tbl_two_table_xref": TestGuideBriefing(
+        label="Table Reading: Two-Table Cross Reference",
+        assessment="Primitive table-reading drill for repeated two-table cross-reference chains.",
+        tasks=(
+            "Use the index card and correction card in sequence on every item.",
+            "Stop the handoff between the two tables from leaking extra time.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: treat the first lookup and second lookup as two distinct steps.",
+        controls="Use A/S/D/F/G or 1-5 to choose, Up/Down to move the highlight, then Enter to submit.",
+        app_flow="This primitive drill uses the live Table Reading renderer with only the two-table workflow active.",
+    ),
+    "tbl_distractor_grid": TestGuideBriefing(
+        label="Table Reading: Distractor Grid",
+        assessment="Primitive table-reading drill for scan discipline under denser row and column distraction.",
+        tasks=(
+            "Finish the full row and column search instead of committing off partial matches.",
+            "Keep the response format unchanged while the scan pressure gets denser.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: keep your row-first then column confirmation sequence stable.",
+        controls="Use A/S/D/F/G or 1-5 to choose, Up/Down to move the highlight, then Enter to submit.",
+        app_flow="This primitive drill uses the normal Table Reading renderer and scoring, but tighter option spacing and scan pressure.",
+    ),
+    "tbl_lookup_compute": TestGuideBriefing(
+        label="Table Reading: Lookup + Compute",
+        assessment="Primitive table-reading drill for adding one small transform after the lookup is complete.",
+        tasks=(
+            "Extract the table value first, then apply the simple arithmetic transform only once.",
+            "Keep the lookup and transform separate so the arithmetic does not contaminate the scan.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: be comfortable with the base table workflow before adding the one-step transform.",
+        controls="Use A/S/D/F/G or 1-5 to choose, Up/Down to move the highlight, then Enter to submit.",
+        app_flow="This primitive drill keeps the live Table Reading screen and partial-credit scoring while adding one post-lookup transform.",
+    ),
+    "tbl_shrinking_cap_run": TestGuideBriefing(
+        label="Table Reading: Shrinking Cap Run",
+        assessment="Primitive table-reading drill for stable lookup workflow while the cap tightens through the block.",
+        tasks=(
+            "Keep the workflow stable even as the time cap shrinks from item to item.",
+            "Reset immediately after a slow answer; the next cap will be tighter.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: know both the single-table and two-table flows before starting.",
+        controls="Use A/S/D/F/G or 1-5 to choose, Up/Down to move the highlight, then Enter to submit.",
+        app_flow="This primitive drill uses the live Table Reading renderer with a cap profile that tightens during the block.",
+    ),
+    "table_reading_workout": TestGuideBriefing(
+        label="Table Reading Workout",
+        assessment="Chained Table Reading workout with typed reflection, focused one-card and two-card blocks, and a final pressure run.",
+        tasks=(
+            "Warm up single-card lookup, build into two-card chaining, then train switching and family rotation on the live UI.",
+            "Finish with mixed-tempo and pressure blocks that keep the full live Table Reading renderer active.",
+        ),
+        timing="Workout drill time: 90 minutes, plus opening and closing reflection outside the timed blocks.",
+        prep="Guide preparation: know the live Table Reading controls first; the workout is for chaining them under sustained pressure.",
+        controls="Use Left and Right to set workout or block difficulty, type reflections, then use Up/Down plus A/S/D/F/G or 1-5 and Enter during blocks.",
+        app_flow="Each block gets an untimed setup screen, and every timed block reuses the live Table Reading screen rather than a drill-specific layout.",
+    ),
+    "sensory_motor_apparatus": TestGuideBriefing(
+        label="Sensory Motor Apparatus",
+        assessment="Eye-hand-foot coordination test.",
+        tasks=(
+            "Control horizontal and vertical motion together.",
+            "Keep the moving dot as close to the center crosshair as possible.",
+        ),
+        timing="Guide time including instructions: about 9 minutes.",
+        prep="Guide preparation: none required.",
+        controls="Joystick-only blocks use stick X plus axis 1; split blocks use rudder for horizontal and joystick axis 1 for vertical.",
+        app_flow="Two mini practice blocks are followed by two timed blocks, with joystick-only first and split controls second.",
+    ),
+    "sma_joystick_horizontal_anchor": TestGuideBriefing(
+        label="Sensory Motor Apparatus: Joystick Horizontal Anchor",
+        assessment="Focused Sensory Motor drill for horizontal joystick settling.",
+        tasks=(
+            "Track only left-right drift with joystick X while vertical control is ignored.",
+            "Use the guide band to settle quickly and hold a clean horizontal line.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: center the stick smoothly instead of over-correcting.",
+        controls="Joystick X controls horizontal tracking; vertical input is ignored for this block. Keyboard fallback still works.",
+        app_flow="This drill reuses the live Sensory Motor Apparatus screen with a horizontal guide band and per-window scoring.",
+    ),
+    "sma_joystick_vertical_anchor": TestGuideBriefing(
+        label="Sensory Motor Apparatus: Joystick Vertical Anchor",
+        assessment="Focused Sensory Motor drill for vertical joystick settling.",
+        tasks=(
+            "Track only up-down drift with joystick axis 1 while horizontal control is ignored.",
+            "Use the guide band to hold clean vertical control before two-axis work returns.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: avoid chasing tiny reversals; settle and hold.",
+        controls="Joystick axis 1 controls vertical tracking; horizontal input is ignored for this block. Keyboard fallback still works.",
+        app_flow="This drill reuses the live Sensory Motor Apparatus screen with a vertical guide band and per-window scoring.",
+    ),
+    "sma_joystick_hold_run": TestGuideBriefing(
+        label="Sensory Motor Apparatus: Joystick Hold Run",
+        assessment="Two-axis Sensory Motor drill for steady joystick-only tracking.",
+        tasks=(
+            "Track the dot with joystick-only control under steady drift.",
+            "Build smooth settling and clean recovery before split-control work begins.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: keep the stick movements small and deliberate.",
+        controls="Joystick X controls horizontal and joystick axis 1 controls vertical. Keyboard fallback still works.",
+        app_flow="This drill reuses the live Sensory Motor Apparatus screen and scores each one-second tracking window.",
+    ),
+    "sma_split_horizontal_prime": TestGuideBriefing(
+        label="Sensory Motor Apparatus: Split Horizontal Prime",
+        assessment="Focused Sensory Motor drill for rudder-led horizontal split control.",
+        tasks=(
+            "Track only left-right drift with rudder while vertical control is ignored.",
+            "Prime the foot-control handoff before returning to full split tracking.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: keep pedal corrections short and centered.",
+        controls="Rudder controls horizontal tracking; vertical input is ignored for this block. Keyboard fallback still works.",
+        app_flow="This drill reuses the live Sensory Motor Apparatus screen with a horizontal guide band and per-window scoring.",
+    ),
+    "sma_split_coordination_run": TestGuideBriefing(
+        label="Sensory Motor Apparatus: Split Coordination Run",
+        assessment="Core Sensory Motor drill for full split-control coordination.",
+        tasks=(
+            "Use rudder for horizontal and joystick axis 1 for vertical against balanced drift.",
+            "Build stable hand-foot coordination before the switching blocks start.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: keep horizontal and vertical corrections independent.",
+        controls="Rudder controls horizontal and joystick axis 1 controls vertical. Keyboard fallback still works.",
+        app_flow="This drill reuses the live Sensory Motor Apparatus screen and scores each one-second tracking window.",
+    ),
+    "sma_mode_switch_run": TestGuideBriefing(
+        label="Sensory Motor Apparatus: Mode Switch Run",
+        assessment="Sensory Motor drill for switching between joystick-only and split control without losing rhythm.",
+        tasks=(
+            "Alternate between joystick-only and split-control segments.",
+            "Reset quickly each time the control mode changes instead of fighting the last segment.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: know both control schemes before starting.",
+        controls="Segments switch between joystick-only and split controls automatically; the header shows the current segment.",
+        app_flow="This drill reuses the live Sensory Motor Apparatus screen and advances through timed segments without stopping.",
+    ),
+    "sma_disturbance_tempo": TestGuideBriefing(
+        label="Sensory Motor Apparatus: Disturbance Tempo",
+        assessment="Sensory Motor drill for adapting to repeated disturbance-profile changes.",
+        tasks=(
+            "Cycle through steady and pulse disturbance profiles while control modes change.",
+            "Use the segment header to anticipate the next recovery pattern instead of reacting late.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: stay loose enough to reset when the profile changes.",
+        controls="Joystick-only and split segments alternate automatically; keyboard fallback still works.",
+        app_flow="This drill reuses the live Sensory Motor Apparatus screen and shows the active segment label plus countdown in the header.",
+    ),
+    "sma_pressure_run": TestGuideBriefing(
+        label="Sensory Motor Apparatus: Pressure Run",
+        assessment="Late-workout Sensory Motor drill for the heaviest disturbance profile in this family.",
+        tasks=(
+            "Alternate joystick-only and split control under the strongest and most frequent disturbance pattern.",
+            "Keep moving through misses and recover on the next second instead of freezing on one bad window.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: arrive warmed up; this block assumes both control modes are already active.",
+        controls="Joystick-only and split segments alternate automatically; keyboard fallback still works.",
+        app_flow="This drill reuses the live Sensory Motor Apparatus screen and scores every one-second tracking window under pressure.",
+    ),
+    "sensory_motor_apparatus_workout": TestGuideBriefing(
+        label="Sensory Motor Apparatus Workout",
+        assessment="Chained Sensory Motor workout with focused axis warm-ups, split-control coordination, disturbance cycling, and pressure work.",
+        tasks=(
+            "Warm up joystick-only horizontal and vertical anchors, then build into split-control coordination and switching.",
+            "Finish with disturbance-tempo and pressure blocks that keep the live Sensory Motor Apparatus screen active throughout.",
+        ),
+        timing="Workout drill time: 90 minutes, plus opening and closing reflection outside the timed blocks.",
+        prep="Guide preparation: know the joystick-only and split-control mappings before starting.",
+        controls="Use Left and Right to set workout or block difficulty, type reflections, then use live joystick, rudder, or keyboard fallback controls during blocks.",
+        app_flow="Each block gets an untimed setup screen, and every timed block reuses the live Sensory Motor Apparatus screen with segment labels and guide bands where needed.",
+    ),
+    "auditory_capacity": TestGuideBriefing(
+        label="Auditory Capacity",
+        assessment="Short-term memory test under multiple tasks and audio instructions.",
+        tasks=(
+            "Control the ball, react to colour and sound cues, and remember digit strings.",
+            "Follow instructions presented over headphones while several tasks run together.",
+        ),
+        timing="Guide time including instructions: about 23 minutes.",
+        prep="Guide preparation: none required.",
+        controls="WASD/arrows or configured HOTAS axes fly the ball; Q/W/E/R handle colours; keypad 0-9 sets the ball number; digits plus Enter handle delayed recall; the configured trigger binding or Space answers the beep.",
+        app_flow="Practice teaches the audio-control rhythm before the timed block loads.",
+    ),
+    "ac_gate_anchor": TestGuideBriefing(
+        label="Auditory Capacity: Gate Anchor",
+        assessment="Focused auditory drill for ball control and gate-flight timing without the extra command channels.",
+        tasks=(
+            "Fly the ball through the tunnel and keep the gate rhythm smooth.",
+            "Use this block to settle hand-eye timing before commands, recall, and trigger work come online.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: stay loose and let the ball settle instead of over-correcting.",
+        controls="WASD/arrows or configured HOTAS axes fly the ball. The other auditory answer channels are inactive in this block.",
+        app_flow="This drill reuses the live Auditory Capacity screen and keeps only gate flight active.",
+    ),
+    "ac_state_command_prime": TestGuideBriefing(
+        label="Auditory Capacity: State Command Prime",
+        assessment="Focused auditory drill for colour and number commands under low gate pressure.",
+        tasks=(
+            "Keep flying while reacting to colour and number commands addressed to your call signs.",
+            "Build clean state changes before directives, digit recall, and trigger cues are layered back in.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: keep colour and number changes crisp enough that they do not interrupt flight.",
+        controls="Fly the ball with WASD/arrows or configured HOTAS axes; Q/W/E/R change colour; keypad 0-9 changes the number.",
+        app_flow="This drill reuses the live Auditory Capacity screen with gates plus state commands only.",
+    ),
+    "ac_gate_directive_run": TestGuideBriefing(
+        label="Auditory Capacity: Gate Directive Run",
+        assessment="Focused auditory drill for next-matching-gate directives under live tunnel motion.",
+        tasks=(
+            "Follow next-gate pass or avoid directives while still flying the gate stream cleanly.",
+            "Keep the callsign filter active and recover quickly when the next matching gate appears.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: remember that the directive only applies to the next matching gate.",
+        controls="Fly the ball normally; the drill focuses on next-gate directives rather than number, recall, or trigger work.",
+        app_flow="This drill reuses the live Auditory Capacity screen and keeps gate directives in focus with low distractor pressure.",
+    ),
+    "ac_digit_sequence_prime": TestGuideBriefing(
+        label="Auditory Capacity: Digit Sequence Prime",
+        assessment="Focused auditory drill for memorizing and recalling short spoken digit groups under low gate pressure.",
+        tasks=(
+            "Keep the ball stable while you hold and recall the spoken digit sequences.",
+            "Build the memory cycle cleanly before the fully mixed blocks return.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: let the flight task run quietly in the background while you hold the digits.",
+        controls="Fly the ball normally, then type the digit sequence and press Enter when recall opens.",
+        app_flow="This drill reuses the live Auditory Capacity screen and keeps digit recall as the main extra channel.",
+    ),
+    "ac_trigger_cue_anchor": TestGuideBriefing(
+        label="Auditory Capacity: Trigger Cue Anchor",
+        assessment="Focused auditory drill for beep-response timing under low gate pressure.",
+        tasks=(
+            "Keep flying and answer the trigger cue promptly without double-pressing.",
+            "Use this block to clean up trigger timing before it is mixed back with filtering and recall.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: one clean trigger press matters more than mashing.",
+        controls="Fly the ball normally and press the configured trigger binding or Space once when the beep cue arrives.",
+        app_flow="This drill reuses the live Auditory Capacity screen with gates plus trigger cues only.",
+    ),
+    "ac_callsign_filter_run": TestGuideBriefing(
+        label="Auditory Capacity: Callsign Filter Run",
+        assessment="Auditory drill for filtering colour, number, and next-gate instructions through the correct call sign under distractor pressure.",
+        tasks=(
+            "Fly gates while separating real instructions from distractors.",
+            "Respond only to the right callsign and let non-matching chatter pass.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: listen for the addressed call sign before you act on the content.",
+        controls="Use the normal live controls for ball flight, colour, and number changes. Trigger and digit recall stay off in this block.",
+        app_flow="This drill reuses the live Auditory Capacity screen and keeps distractor callsign filtering active throughout.",
+    ),
+    "ac_mixed_tempo": TestGuideBriefing(
+        label="Auditory Capacity: Mixed Tempo",
+        assessment="Timed auditory drill for cycling through focused channel sets before the full pressure block.",
+        tasks=(
+            "Move through the fixed six-segment rhythm without needing to relearn the live controls each time.",
+            "Use the segment label to anticipate whether the next focus is flight, filtering, recall, trigger timing, or full mixed work.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: know the live ball, colour, number, recall, and trigger controls first.",
+        controls="All normal live auditory controls remain available. The active segment label shows the current channel focus.",
+        app_flow="This drill reuses the live Auditory Capacity screen and repeats a fixed six-segment cycle for the full block.",
+    ),
+    "ac_pressure_run": TestGuideBriefing(
+        label="Auditory Capacity: Pressure Run",
+        assessment="Late-workout auditory drill with all channels active under the highest cadence and disturbance profile in this family.",
+        tasks=(
+            "Fly, filter, recall, and answer the trigger cue while the full channel set stays active.",
+            "Recover from misses quickly instead of freezing on one bad instruction or gate.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: arrive warmed up; this block assumes the single-channel anchors already feel stable.",
+        controls="Use the full live control model: flight, colour changes, number changes, digit recall, and the configured trigger binding or Space.",
+        app_flow="This drill reuses the live Auditory Capacity screen with all channels active for the entire block.",
+    ),
+    "auditory_capacity_workout": TestGuideBriefing(
+        label="Auditory Capacity Workout",
+        assessment="Chained auditory workout with focused channel anchors, filtering blocks, a mixed tempo cycle, and a full pressure finish.",
+        tasks=(
+            "Warm up gate flight, state commands, directives, digit recall, and trigger timing in separate blocks before the mixed runs.",
+            "Finish with mixed tempo and pressure blocks that keep the live auditory screen, audio path, and control model active throughout.",
+        ),
+        timing="Workout drill time: 90 minutes, plus opening and closing reflection outside the timed blocks.",
+        prep="Guide preparation: know the live colour, number, recall, and trigger controls before starting.",
+        controls="Use Left and Right to set workout or block difficulty, type reflections, then use the normal live auditory controls during blocks.",
+        app_flow="Each block gets an untimed setup screen, and every timed block reuses the live Auditory Capacity runtime with segment focus labels where needed.",
+    ),
+    "cognitive_updating": TestGuideBriefing(
+        label="Cognitive Updating",
+        assessment="Multitask coordination test for a busy technical environment.",
+        tasks=(
+            "Monitor, control, set up, and adjust several systems against the clock.",
+            "Use multifunction displays, pages, and menus while keeping information updated.",
+        ),
+        timing="Guide time including instructions: about 35 minutes.",
+        prep="Guide preparation: none required.",
+        controls="Use the page tabs, clickable controls, toggles, and keypad-style entries shown in the display.",
+        app_flow="Practice is there to learn the page flow before the scored block begins.",
+    ),
+    "cu_controls_anchor": TestGuideBriefing(
+        label="Cognitive Updating: Controls Anchor",
+        assessment="Focused Cognitive Updating drill for pump and pressure correction on the live dual-MFD screen.",
+        tasks=(
+            "Hold pressure inside range while the other scored domains stay neutralized.",
+            "Use the normal live comms-code entry flow to submit the final code without switching to a surrogate screen.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: know the Controls page and final code-entry flow first.",
+        controls="Keep the normal page switches, pump controls, and comms-code entry. Inactive domains stay visible but dimmed.",
+        app_flow="This drill reuses the live Cognitive Updating screen and keeps only the controls domain scored.",
+    ),
+    "cu_navigation_anchor": TestGuideBriefing(
+        label="Cognitive Updating: Navigation Anchor",
+        assessment="Focused Cognitive Updating drill for airspeed correction on the live Navigation page.",
+        tasks=(
+            "Bring current knots back to the required speed cleanly while unrelated domains stay neutral.",
+            "Practice reading the live state and entering the final code without objective or engine penalties leaking in.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: know the Navigation page controls and final submission flow.",
+        controls="Use the normal tab switches, Navigation page inputs, and Enter submission. Inactive domains stay visible but dimmed.",
+        app_flow="This drill reuses the live Cognitive Updating renderer and only scores the navigation domain.",
+    ),
+    "cu_engine_balance_run": TestGuideBriefing(
+        label="Cognitive Updating: Engine Balance Run",
+        assessment="Focused Cognitive Updating drill for tank switching and engine balance control.",
+        tasks=(
+            "Keep tank spread controlled through active-tank changes while the other domains stay neutral.",
+            "Build a clean scan between tank state and final code entry without chasing inactive warnings.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: know the Engine page controls and what balanced tank spread looks like.",
+        controls="Use the live page tabs, tank controls, and Enter submission. Inactive domains remain visible but non-required.",
+        app_flow="This drill reuses the live Cognitive Updating screen and only scores the engine-management domain.",
+    ),
+    "cu_sensors_timing_prime": TestGuideBriefing(
+        label="Cognitive Updating: Sensors Timing Prime",
+        assessment="Focused Cognitive Updating drill for Alpha, Bravo, air, and ground timing windows.",
+        tasks=(
+            "Hit the camera and sensor windows cleanly while the other domains stay neutralized.",
+            "Preserve enough scan discipline to enter the final code cleanly after the sensor actions.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: know the Sensors page timing controls before the block starts.",
+        controls="Use the normal page switches, sensor buttons, and final comms-code submission. Inactive domains stay visible but dimmed.",
+        app_flow="This drill keeps the live dual-MFD layout and focuses scoring on the sensor timing domain only.",
+    ),
+    "cu_objective_prime": TestGuideBriefing(
+        label="Cognitive Updating: Objective Prime",
+        assessment="Focused Cognitive Updating drill for parcel entry, field switching, and dispenser timing.",
+        tasks=(
+            "Enter parcel fields accurately and trigger the dispenser on time while the other domains stay neutral.",
+            "Keep the live task flow intact instead of memorizing a simplified objective-only trainer.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: know the Objectives page field order and dispenser flow.",
+        controls="Use the normal objective field selection, digit entry, dispenser trigger, and final Enter submission.",
+        app_flow="This drill reuses the live Cognitive Updating screen and only scores the objective-management domain.",
+    ),
+    "cu_state_code_run": TestGuideBriefing(
+        label="Cognitive Updating: State Code Run",
+        assessment="Mixed Cognitive Updating drill for reading live state across Controls, Navigation, and Sensors to enter the 4-digit code cleanly.",
+        tasks=(
+            "Blend pressure, speed, and sensor timing into a stable live-state code without engine or objective penalties leaking in.",
+            "Stay on the real page flow and enter the code through the normal comms path.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: know how the live code is derived from the active state before starting.",
+        controls="Use the normal tabs, live controls, clickable toggles, digit entry, and Enter submission.",
+        app_flow="This drill reuses the live Cognitive Updating screen with controls, navigation, and sensors active together.",
+    ),
+    "cu_mixed_tempo": TestGuideBriefing(
+        label="Cognitive Updating: Mixed Tempo",
+        assessment="Timed Cognitive Updating drill that cycles through focused domains before returning to the full mixed task.",
+        tasks=(
+            "Move through the fixed Controls, Navigation, Engine, Sensors, Objectives, State Code, and Full Mixed rhythm.",
+            "Use the focus label and dimmed inactive panels to anticipate what matters on each item without changing the live controls.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: know the page flow for each domain before the mixed cycle begins.",
+        controls="All normal live controls remain available; the focus label and inactive-panel dimming tell you what is currently scored.",
+        app_flow="This drill reuses the live Cognitive Updating screen and repeats a fixed seven-item domain cycle for the full block.",
+    ),
+    "cu_pressure_run": TestGuideBriefing(
+        label="Cognitive Updating: Pressure Run",
+        assessment="Late-workout Cognitive Updating drill with all domains active and the hardest timing and warning pressure in this family.",
+        tasks=(
+            "Control every live domain at once while tighter timing windows and denser reveals compress your scan.",
+            "Recover from a bad page visit or warning quickly instead of letting one miss collapse the whole item.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: arrive warmed up; this block assumes the single-domain anchors already feel stable.",
+        controls="Use the full live tab, click, digit-entry, and Enter-submission flow on the dual-MFD display.",
+        app_flow="This drill reuses the live Cognitive Updating screen with all domains active for the entire block.",
+    ),
+    "cognitive_updating_workout": TestGuideBriefing(
+        label="Cognitive Updating Workout",
+        assessment="Chained Cognitive Updating workout with focused domain anchors, state-code integration, mixed tempo, and a full pressure finish.",
+        tasks=(
+            "Warm up each scored domain separately before blending them into state-code, mixed-tempo, and pressure blocks.",
+            "Stay on the live dual-MFD UI throughout instead of switching to a simplified training screen.",
+        ),
+        timing="Workout drill time: 90 minutes, plus opening and closing reflection outside the timed blocks.",
+        prep="Guide preparation: know the live page flow, tab switching, clicks, and final comms-code entry before starting.",
+        controls="Use Left and Right to set workout or block difficulty, type reflections, then use the normal live Cognitive Updating controls during blocks.",
+        app_flow="Each block gets an untimed setup screen, and every timed block reuses the live dual-MFD Cognitive Updating runtime with focus labels and dimmed inactive panels where needed.",
+    ),
+    "situational_awareness": TestGuideBriefing(
+        label="Situational Awareness",
+        assessment="Multitask test for building and updating a mental picture of a changing situation.",
+        tasks=(
+            "Combine verbal, numerical, pictorial, and coded information.",
+            "Answer questions about current, past, and future movement or whether a move is safe.",
+        ),
+        timing="Guide time including instructions: about 30 minutes.",
+        prep="Guide preparation: none required.",
+        controls="Grid-cell queries use click or row+column plus Enter; choice queries use 1-4 or click, then Enter.",
+        app_flow="Practice teaches the live sparse grid, fading cue card, and direct-response query modes before the timed continuous scenario starts.",
+    ),
+    "sa_picture_anchor": TestGuideBriefing(
+        label="Situational Awareness: Picture Anchor",
+        assessment="Focused Situational Awareness drill for holding the sparse traffic picture and near-future location work.",
+        tasks=(
+            "Track the fading grid sweeps and keep the route picture stable enough to answer current and future-location prompts.",
+            "Use the live sparse display instead of a simplified trainer while the non-essential channels stay de-emphasized.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: none required beyond understanding the live grid and direct-response controls.",
+        controls="Use the normal SA controls: click a grid cell or type row+column, then press Enter.",
+        app_flow="This drill reuses the live SA screen and narrows the block to picture-driven current and future-location work.",
+    ),
+    "sa_contact_identification_prime": TestGuideBriefing(
+        label="Situational Awareness: Contact Identification Prime",
+        assessment="Focused Situational Awareness drill for matching callsigns to the correct fading contact.",
+        tasks=(
+            "Read the live picture and cue card together to locate the right callsign quickly.",
+            "Keep the moving display live while only location prompts are scored.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: know how the cue card and the short grid flashes map to the callsigns in play.",
+        controls="Use the normal SA controls: click a grid cell or type row+column, then Enter.",
+        app_flow="This drill keeps the full live display visible and isolates callsign-to-contact scoring.",
+    ),
+    "sa_status_recall_prime": TestGuideBriefing(
+        label="Situational Awareness: Status Recall Prime",
+        assessment="Focused Situational Awareness drill for channel, waypoint, ETA, and altitude recall.",
+        tasks=(
+            "Pull the correct coded state from short cue-card flashes and radio chatter without losing the broader picture.",
+            "Use the live display and announcements while only status-recall prompts are scored.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: know how waypoint, ETA, altitude, and communication channel appear on the cue card.",
+        controls="Use the normal SA controls: click a choice or press 1-4, then Enter.",
+        app_flow="This drill reuses the live SA renderer and narrows scoring to coded-status recall after the cue fades.",
+    ),
+    "sa_future_projection_run": TestGuideBriefing(
+        label="Situational Awareness: Future Projection Run",
+        assessment="Focused Situational Awareness drill for projecting live movement and route continuation forward in time.",
+        tasks=(
+            "Predict where a contact will be after the stated time while route changes continue underneath you.",
+            "Keep using the live tactical picture instead of collapsing into one-sweep guessing.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: understand the live grid coordinates and how route changes affect future position.",
+        controls="Use the normal SA controls: click a grid cell or type row+column, then press Enter.",
+        app_flow="This drill reuses the live SA screen and only scores future-position projection prompts after the update fades.",
+    ),
+    "sa_action_selection_run": TestGuideBriefing(
+        label="Situational Awareness: Action Selection Run",
+        assessment="Focused Situational Awareness drill for judging whether a move is safe on the live tactical picture.",
+        tasks=(
+            "Judge the right move during conflict and status-pressure situations.",
+            "Answer from the hidden picture instead of waiting for a perfectly quiet screen.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: know the live choice-card response flow before the block starts.",
+        controls="Use the normal SA controls: click a choice card or press 1-4, then Enter when needed.",
+        app_flow="This drill reuses the live SA display and narrows scoring to safe-move prompts.",
+    ),
+    "sa_family_switch_run": TestGuideBriefing(
+        label="Situational Awareness: Family Switch Run",
+        assessment="Situational Awareness drill for rotating through the four scenario families while keeping the live display constant.",
+        tasks=(
+            "Cycle conflict, status, route-handoff, and channel/waypoint scenarios without paying a large reset cost on each family change.",
+            "Keep the full query mix active while the scenario family is what changes underneath you.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: know the live SA layout and what each scenario family tends to emphasize.",
+        controls="Use the normal SA direct-response controls for grid-cell and choice queries.",
+        app_flow="This drill reuses the live SA renderer and repeats a fixed four-family cycle for the full block.",
+    ),
+    "sa_mixed_tempo": TestGuideBriefing(
+        label="Situational Awareness: Mixed Tempo",
+        assessment="Situational Awareness drill that cycles the four live query types while the tactical picture keeps evolving.",
+        tasks=(
+            "Move through current-location, origin, future, status, and safe-move prompts without losing continuity.",
+            "Reset quickly when the query mode changes, but stay on the same live tactical display the whole time.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: know both SA answer modes before starting the block.",
+        controls="Use the normal SA controls: row+column for grid cells and 1-4 for choice cards.",
+        app_flow="This drill reuses the live SA screen and repeats a fixed four-query-kind cycle for the entire block.",
+    ),
+    "sa_pressure_run": TestGuideBriefing(
+        label="Situational Awareness: Pressure Run",
+        assessment="Late-workout Situational Awareness drill with the full live picture, all query kinds, and the hardest timing pressure in this family.",
+        tasks=(
+            "Handle denser updates, shorter response windows, and shorter cue windows without losing the current state estimate.",
+            "Recover immediately after misses instead of letting one bad query collapse the next hidden-state update.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: arrive warmed up; this block assumes the focused SA anchors already feel stable.",
+        controls="Use the full live SA direct-response control model throughout the block.",
+        app_flow="This drill reuses the live continuous SA renderer with all channels and all query kinds active at once under the shortest fade windows.",
+    ),
+    "situational_awareness_workout": TestGuideBriefing(
+        label="Situational Awareness Workout",
+        assessment="Chained Situational Awareness workout with focused live-picture anchors, family and query switching, and a final pressure run.",
+        tasks=(
+            "Warm up picture tracking, identification, recall, projection, and safe-move judgment before the mixed and pressure blocks.",
+            "Stay on the live continuous SA display throughout instead of switching to simplified drill screens.",
+        ),
+        timing="Workout drill time: 90 minutes, plus opening and closing reflection outside the timed blocks.",
+        prep="Guide preparation: know the live tactical grid, fading cue card, and both direct-response answer modes before starting.",
+        controls="Use Left and Right to set workout or block difficulty, type reflections, then use the normal live SA controls during blocks.",
+        app_flow="Each block gets an untimed setup screen, and every timed block reuses the live continuous Situational Awareness runtime with focus labels, fading cues, and de-emphasized non-focused channels where needed.",
+    ),
+    "rapid_tracking": TestGuideBriefing(
+        label="Rapid Tracking",
+        assessment="Eye-hand coordination test for tracking and targeting.",
+        tasks=(
+            "Track moving or stationary objects from a viewpoint that is moving continuously.",
+            "Predict the movement of obscured or handed-off targets.",
+        ),
+        timing="Guide time including instructions: about 16 minutes.",
+        prep="Guide preparation: none required.",
+        controls="Configured HOTAS movement axes, arrows, or A/D pan the camera; the configured capture binding, Space, or left-click captures.",
+        app_flow="Practice is for free-look camera feel and capture timing before the timed run.",
+    ),
+    "rt_lock_anchor": TestGuideBriefing(
+        label="Rapid Tracking: Lock Anchor",
+        assessment="Focused Rapid Tracking drill for stable centering, HUD lock, and clean open-target capture timing.",
+        tasks=(
+            "Work open soldier and truck tracks until the target stays centered without over-correcting.",
+            "Use the cleaner scene to settle the lock before you take the capture shot.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: arrive with the basic free-look control feel already comfortable.",
+        controls="Use the normal Rapid Tracking controls: HOTAS or keyboard to pan, configured capture binding, Space, or left-click to capture.",
+        app_flow="This drill reuses the live Rapid Tracking scene and narrows the script to open soldier and truck targets.",
+    ),
+    "rt_building_handoff_prime": TestGuideBriefing(
+        label="Rapid Tracking: Building Handoff Prime",
+        assessment="Focused Rapid Tracking drill for tracking building holds and reacquiring the next emerging target cleanly.",
+        tasks=(
+            "Hold the building steadily during the handoff and reacquire the next target as soon as it breaks cover.",
+            "Keep the capture rhythm live instead of treating the handoff as a separate minigame.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: know the difference between a building hold and a jump handoff before the block starts.",
+        controls="Use the normal Rapid Tracking pan and capture controls throughout the block.",
+        app_flow="This drill reuses the live Rapid Tracking renderer and biases the script toward building holds and emergence handoffs.",
+    ),
+    "rt_terrain_recovery_run": TestGuideBriefing(
+        label="Rapid Tracking: Terrain Recovery Run",
+        assessment="Focused Rapid Tracking drill for prediction and reacquisition after terrain occlusion.",
+        tasks=(
+            "Carry the target through ridge losses without abandoning the expected line of motion.",
+            "Reacquire cleanly when the target reappears and keep the capture workflow active.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: expect prediction, not pure visibility, to carry this block.",
+        controls="Use the normal Rapid Tracking pan and capture controls throughout the block.",
+        app_flow="This drill reuses the live Rapid Tracking scene and narrows the script to terrain-heavy recovery segments.",
+    ),
+    "rt_capture_timing_prime": TestGuideBriefing(
+        label="Rapid Tracking: Capture Timing Prime",
+        assessment="Focused Rapid Tracking drill for camera-box capture timing while live tracking stays active.",
+        tasks=(
+            "Keep the target centered, wait for a clean box, and capture without breaking the tracking line.",
+            "Treat miss discipline as part of the block instead of forcing every shot.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: know the live camera-box timing and your configured capture binding before starting.",
+        controls="Use the normal Rapid Tracking pan controls and capture with the configured binding, Space, or left-click.",
+        app_flow="This drill reuses the live Rapid Tracking scene and biases the runtime toward slower capture-friendly windows.",
+    ),
+    "rt_ground_tempo_run": TestGuideBriefing(
+        label="Rapid Tracking: Ground Tempo Run",
+        assessment="Rapid Tracking drill for faster ground-target tempo once the core lock and capture skills are warm.",
+        tasks=(
+            "Track soldier and truck targets through quicker ground switches and tighter preview windows.",
+            "Recover quickly after small lock losses without letting the ground tempo snowball.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: warm up with the easier lock and capture anchors first.",
+        controls="Use the normal Rapid Tracking pan and capture controls throughout the block.",
+        app_flow="This drill reuses the live Rapid Tracking scene with a faster ground-only script and less assist than the anchors.",
+    ),
+    "rt_air_speed_run": TestGuideBriefing(
+        label="Rapid Tracking: Air Speed Run",
+        assessment="Rapid Tracking drill for helicopter and jet passes with faster speed changes and tighter preview timing.",
+        tasks=(
+            "Stay ahead of air-target motion instead of chasing the target after it has already crossed the frame.",
+            "Keep capture timing live while the air-speed pressure increases.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: expect this block to feel faster than the ground-focused runs immediately.",
+        controls="Use the normal Rapid Tracking pan and capture controls throughout the block.",
+        app_flow="This drill reuses the live Rapid Tracking scene and narrows the script to helicopter and jet target profiles.",
+    ),
+    "rt_mixed_tempo": TestGuideBriefing(
+        label="Rapid Tracking: Mixed Tempo",
+        assessment="Rapid Tracking drill that repeats a fixed six-segment cycle across the main tracking challenges in this family.",
+        tasks=(
+            "Rotate through lock quality, building handoff, terrain recovery, capture timing, ground tempo, and air speed without changing screens.",
+            "Reset fast when the segment focus changes, but stay on the same live scene and capture workflow.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: know what each focused block is training before starting the mixed cycle.",
+        controls="Use the normal Rapid Tracking pan and capture controls; the scene stays live for the whole block.",
+        app_flow="This drill reuses the live Rapid Tracking renderer and repeats a fixed 60-second six-segment cycle.",
+    ),
+    "rt_pressure_run": TestGuideBriefing(
+        label="Rapid Tracking: Pressure Run",
+        assessment="Late-workout Rapid Tracking drill with all target kinds, all cover modes, and the hardest capture pressure in the family.",
+        tasks=(
+            "Handle minimal assist, stronger turbulence, smaller capture windows, and the fastest mixed target pressure.",
+            "Recover from misses immediately instead of letting one bad handoff or capture collapse the next segment.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: arrive warmed up; this block assumes the focused RT anchors already feel stable.",
+        controls="Use the normal Rapid Tracking pan and capture controls throughout the block.",
+        app_flow="This drill reuses the live Rapid Tracking scene with all target kinds and all challenge types active at once.",
+    ),
+    "dtb_tracking_recall": TestGuideBriefing(
+        label="Dual-Task Bridge: Tracking + Recall",
+        assessment="RT-first bridge drill for holding tracking stability while delayed digit reports appear under mild load.",
+        tasks=(
+            "Keep the track stable while short digit holds arrive in the background.",
+            "Report the digits only when the recall prompt opens; do not stop tracking early to rehearse them.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: know the Rapid Tracking pan and capture controls first.",
+        controls="Use normal Rapid Tracking pan and capture controls. Digits plus Enter submit the delayed report.",
+        app_flow="This bridge drill stays on the live Rapid Tracking scene and layers a delayed digit-report channel over it.",
+    ),
+    "dtb_tracking_command_filter": TestGuideBriefing(
+        label="Dual-Task Bridge: Tracking + Command Filter",
+        assessment="RT-first bridge drill for clean go/no-go command filtering while tracking stays live.",
+        tasks=(
+            "Keep the track stable while visual command cues appear on top of the scene.",
+            "Respond only to valid filter cues and ignore the rest without chasing the overlay.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: know the Rapid Tracking controls and the Q/W/E/R command mapping before starting.",
+        controls="Use normal Rapid Tracking pan and capture controls. Q/W/E/R answer command cues.",
+        app_flow="This bridge drill keeps the live Rapid Tracking scene and layers a clean command-filter channel over it.",
+    ),
+    "dtb_tracking_filter_digit_report": TestGuideBriefing(
+        label="Dual-Task Bridge: Tracking + Filter + Digit Report",
+        assessment="RT-first bridge drill for mild dual-task overload before full CLN or auditory-capacity style clutter.",
+        tasks=(
+            "Track continuously while command filtering and delayed digit reports alternate underneath.",
+            "Keep the extra channels orderly instead of jumping straight to full-chaos multitask load.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: use the simpler tracking-plus-recall and tracking-plus-filter bridges first if needed.",
+        controls="Use normal Rapid Tracking pan and capture controls. Q/W/E/R answer filter cues. Digits plus Enter submit delayed reports.",
+        app_flow="This bridge drill stays on the live Rapid Tracking scene and alternates command-filter and delayed digit-report prompts.",
+    ),
+    "dtb_tracking_interference_recovery": TestGuideBriefing(
+        label="Dual-Task Bridge: Tracking + Interference + Recovery",
+        assessment="RT-first bridge drill for ignoring short interference bursts and recovering on the next valid cue.",
+        tasks=(
+            "Ignore the interference cluster, then answer the recovery cue cleanly without losing the track.",
+            "Use this to build upward toward overload instead of jumping straight into maximum clutter.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: come in warmed up on the simpler command-filter bridge first.",
+        controls="Use normal Rapid Tracking pan and capture controls. Q/W/E/R answer valid recovery cues.",
+        app_flow="This bridge drill keeps the live Rapid Tracking scene and overlays short interference bursts followed by recovery targets.",
+    ),
+    "rapid_tracking_workout": TestGuideBriefing(
+        label="Rapid Tracking Workout",
+        assessment="Chained Rapid Tracking workout with focused lock and handoff anchors, terrain and capture work, mixed tempo, and a final pressure run.",
+        tasks=(
+            "Warm up lock quality, handoff reacquisition, terrain recovery, capture timing, ground tempo, and air-speed handling before the pressure block.",
+            "Stay on the live Rapid Tracking scene for every block instead of switching to a simplified drill screen.",
+        ),
+        timing="Workout drill time: 90 minutes, plus opening and closing reflection outside the timed blocks.",
+        prep="Guide preparation: know your pan controls and configured capture binding before starting the workout.",
+        controls="Use Left and Right to set workout or block difficulty, type reflections, then use the normal live Rapid Tracking pan and capture controls during blocks.",
+        app_flow="Each block gets an untimed setup screen, and every timed block reuses the live Rapid Tracking runtime with focus labels, segment countdowns, and active target or challenge metadata.",
+    ),
+    "spatial_integration": TestGuideBriefing(
+        label="Spatial Integration",
+        assessment="Spatial test for building a 3-D air-ground picture from 2-D views.",
+        tasks=(
+            "Interpret top, oblique, horizontal, and vertical viewpoints together.",
+            "Track landmarks and aircraft positions across the three sections.",
+        ),
+        timing="Guide time including instructions: about 28 minutes.",
+        prep="Guide preparation: none required.",
+        controls="Click a grid cell or type a token like B4 for grid questions, and click an option or press 1-4 then Enter for option questions.",
+        app_flow="Each section gets practice before scored items, and every scene stays frozen while only the viewpoint and compass reference change.",
+    ),
+    "si_landmark_anchor": TestGuideBriefing(
+        label="Spatial Integration: Landmark Anchor",
+        assessment="Focused Spatial Integration drill for locking landmarks to terrain on the static landscape section.",
+        tasks=(
+            "Study the three frozen landscape views as one scene seen from different angles.",
+            "Answer only landmark grid-cell questions and commit to the correct cell quickly.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: use the terrain and hill layout as the anchor before hunting for the queried object.",
+        controls="Click a grid cell or type a token like B4 then Enter.",
+        app_flow="This drill keeps the normal Spatial Integration study loop but filters the questions down to static landmark placement only.",
+    ),
+    "si_reconstruction_run": TestGuideBriefing(
+        label="Spatial Integration: Reconstruction Run",
+        assessment="Focused Spatial Integration drill for rebuilding one static scene from three viewpoints.",
+        tasks=(
+            "Merge the three study views into one consistent top-down scene.",
+            "Choose the matching reconstruction card without over-reading distractors.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: think in terms of one frozen scene, not three separate pictures.",
+        controls="Click an option or press 1-4 then Enter.",
+        app_flow="This drill keeps the normal Spatial Integration presentation but serves only static reconstruction questions after study.",
+    ),
+    "si_static_mixed_run": TestGuideBriefing(
+        label="Spatial Integration: Static Mixed Run",
+        assessment="Static-only Spatial Integration drill with the full landscape question mix.",
+        tasks=(
+            "Switch between landmark grid placement and whole-scene reconstruction without losing the scene picture.",
+            "Keep the same three-view study rhythm as the live static SI part.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: arrive with a stable landmark-to-hill anchoring rule so the question-type switches do not slow you down.",
+        controls="Use grid clicks or B4-style tokens for grid items, and 1-4 or option clicks for reconstruction items.",
+        app_flow="This drill stays entirely on the static SI section and keeps the frozen-scene, multi-view study flow intact.",
+    ),
+    "si_route_anchor": TestGuideBriefing(
+        label="Spatial Integration: Route Anchor",
+        assessment="Focused Spatial Integration drill for reading the aircraft route shape from multiple frozen views.",
+        tasks=(
+            "Study the aircraft route and terrain relationship across the three viewpoints.",
+            "Answer only the route-map match questions after study.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: anchor the route shape first, then the aircraft position on that shape.",
+        controls="Click an option or press 1-4 then Enter.",
+        app_flow="This drill uses the normal aircraft SI study views and answer cards, but filters to route-match questions only.",
+    ),
+    "si_continuation_prime": TestGuideBriefing(
+        label="Spatial Integration: Continuation Prime",
+        assessment="Focused Spatial Integration drill for projecting the next aircraft position from a studied route.",
+        tasks=(
+            "Study the route from the three viewpoints, then choose the correct continuation.",
+            "Bias your answer toward forward projection rather than whole-route comparison.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: treat the aircraft heading and route progression as the deciding cues.",
+        controls="Click an option or press 1-4 then Enter.",
+        app_flow="This drill keeps the normal aircraft SI visuals and isolates the continuation question family after study.",
+    ),
+    "si_aircraft_grid_run": TestGuideBriefing(
+        label="Spatial Integration: Aircraft Grid Run",
+        assessment="Focused Spatial Integration drill for placing the aircraft in the correct grid cell after study.",
+        tasks=(
+            "Use the route, terrain, and landmarks to pin the aircraft to one map cell.",
+            "Answer only aircraft-location grid questions after the three-view study sequence.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: keep one stable map frame in mind so the aircraft location can be read off quickly.",
+        controls="Click a grid cell or type a token like B4 then Enter.",
+        app_flow="This drill uses the aircraft SI section and filters the post-study questions down to aircraft grid placement only.",
+    ),
+    "si_mixed_tempo": TestGuideBriefing(
+        label="Spatial Integration: Mixed Tempo",
+        assessment="Balanced Spatial Integration drill that runs the full static section first and the full aircraft section second.",
+        tasks=(
+            "Work through both SI parts with their real question mixes still intact.",
+            "Recover quickly when the drill switches from landscape integration to aircraft-route integration.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: know the answer flow for both grid and option items before starting.",
+        controls="Use grid clicks or B4-style tokens for grid items, and click options or press 1-4 then Enter for option items.",
+        app_flow="This drill chains the static SI part first and the aircraft SI part second while preserving the frozen-scene presentation and compass behavior.",
+    ),
+    "si_pressure_run": TestGuideBriefing(
+        label="Spatial Integration: Pressure Run",
+        assessment="Late-workout Spatial Integration drill for both SI parts under the tightest study and answer caps in this family.",
+        tasks=(
+            "Run the full static section, then the full aircraft section, without simplified prompts or surrogate layouts.",
+            "Accept misses and reset immediately when viewpoint changes cost you time.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: arrive warmed up; this drill assumes the static and aircraft anchors are already active.",
+        controls="Use the normal Spatial Integration grid and option controls throughout the block.",
+        app_flow="This drill keeps the same frozen-scene runtime and full question mix, but shortens study and answer caps through the ANT stress profile.",
+    ),
+    "spatial_integration_workout": TestGuideBriefing(
+        label="Spatial Integration Workout",
+        assessment="Chained Spatial Integration workout with static anchors, aircraft-route work, balanced mixed tempo, and a final pressure block.",
+        tasks=(
+            "Warm up static landmark and reconstruction skills, then build aircraft route, continuation, and grid placement speed before mixed blocks.",
+            "Finish by chaining the full static SI part and full aircraft SI part under one 90-minute workout structure.",
+        ),
+        timing="Workout drill time: 90 minutes, plus opening and closing reflection outside the timed blocks.",
+        prep="Guide preparation: know the grid-cell and 1-4 answer flow first so the workout can stay focused on scene reconstruction.",
+        controls="Use Left and Right to set workout or block difficulty, type reflections, then use the normal Spatial Integration grid and option controls during blocks.",
+        app_flow="Each block gets an untimed setup screen, and every timed block preserves the normal frozen-scene Spatial Integration presentation with three study views and matching compass changes.",
+    ),
+    "trace_test_1": TestGuideBriefing(
+        label="Trace Test 1",
+        assessment="Spatial test for orientation in three-dimensional space.",
+        tasks=(
+            "Perceive the changing orientation of a moving aircraft from another perspective.",
+            "Identify the correct change in attitude from the answer options.",
+        ),
+        timing="Guide time including instructions: about 9 minutes.",
+        prep="Guide preparation: none required.",
+        controls="Watch the continuous stream, then answer with the arrow keys once the red aircraft changes.",
+        app_flow="Practice and scored play keep the same seamless square-view stream with no on-screen answer legend during the live scene.",
+    ),
+    "trace_test_2": TestGuideBriefing(
+        label="Trace Test 2",
+        assessment="Memory test for movement in three-dimensional space.",
+        tasks=(
+            "Watch short dynamic scenarios with several aircraft.",
+            "Recall movement, relative position, and sequence after the scene ends.",
+        ),
+        timing="Guide time including instructions: about 9 minutes.",
+        prep="Guide preparation: none required.",
+        controls="Watch the scene first, then answer with A/S/D/F, or use 1-4 and Enter.",
+        app_flow="Practice uses the same observe screen and separate recall screen as the timed block.",
+    ),
+    "tt1_lateral_anchor": TestGuideBriefing(
+        label="Trace Test 1: Lateral Anchor",
+        assessment="Timed Trace Test 1 drill for isolated left-versus-right discrimination in the continuous TT1 stream.",
+        tasks=(
+            "Watch the red aircraft and answer only Left or Right once the maneuver opens.",
+            "Use the block to clean up exact 90-degree lateral change recognition before the full TT1 command mix returns.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: know the arrow-key response mapping first.",
+        controls="Use Left for left turns and Right for right turns. No on-screen answer legend is shown during the live stream.",
+        app_flow="This drill keeps the live square TT1 viewport and seamless stream, but filters the prompts to left and right only.",
+    ),
+    "tt1_vertical_anchor": TestGuideBriefing(
+        label="Trace Test 1: Vertical Anchor",
+        assessment="Timed Trace Test 1 drill for isolated push-versus-pull discrimination in the continuous TT1 stream.",
+        tasks=(
+            "Watch the red aircraft and answer only Push or Pull once the maneuver opens.",
+            "Use it to stabilize forward-travel vertical change recognition before all four TT1 commands mix together again.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: know the arrow-key response mapping first.",
+        controls="Use Up for push and Down for pull. No on-screen answer legend is shown during the live stream.",
+        app_flow="This drill keeps the live square TT1 viewport and seamless stream, but filters the prompts to push and pull only.",
+    ),
+    "tt1_command_switch_run": TestGuideBriefing(
+        label="Trace Test 1: Command Switch Run",
+        assessment="Timed Trace Test 1 drill for switching across all four TT1 commands in the continuous stream.",
+        tasks=(
+            "Read the maneuver quickly and answer with the matching arrow as soon as the command opens.",
+            "Recover immediately after misses so the continuous stream never pulls you into stop-start pacing.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: warm up the lateral and vertical anchor blocks first if the command mapping still feels noisy.",
+        controls="Use the arrow keys only. The TT1 live screen keeps the square viewport and bottom status strip only.",
+        app_flow="This drill preserves the seamless TT1 runtime and full command family while shortening observe windows through the ANT drill mode profile.",
+    ),
+    "tt2_steady_anchor": TestGuideBriefing(
+        label="Trace Test 2: Steady Anchor",
+        assessment="Timed Trace Test 2 drill for the no-direction-change recall family.",
+        tasks=(
+            "Watch the clip first, then identify which aircraft kept the same direction.",
+            "Use it to settle into the guide-style observe-then-answer rhythm before turn and end-state prompts arrive.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: know the A/S/D/F answer mapping first.",
+        controls="During the question stage use A/S/D/F for immediate submit, or use 1-4 then Enter.",
+        app_flow="This drill keeps the same TT2 observe screen and separate question screen, but filters prompts to the steady-track family only.",
+    ),
+    "tt2_turn_trace_run": TestGuideBriefing(
+        label="Trace Test 2: Turn Trace Run",
+        assessment="Timed Trace Test 2 drill for left-turn and right-turn recall only.",
+        tasks=(
+            "Watch the clip first, then identify which aircraft turned left or which aircraft turned right.",
+            "Use it to lock in the guide-style turn-recall families before end-state prompts are mixed back in.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: be comfortable with the TT2 observe-then-answer rhythm first.",
+        controls="During the question stage use A/S/D/F for immediate submit, or use Up and Down to move the selector and Enter to submit.",
+        app_flow="This drill preserves the TT2 minimal observe screen and separate question screen, but filters the question bank to left-turn and right-turn recall.",
+    ),
+    "tt2_position_recall_run": TestGuideBriefing(
+        label="Trace Test 2: Position Recall Run",
+        assessment="Timed Trace Test 2 drill for end-state leftmost and highest recall questions.",
+        tasks=(
+            "Watch the clip first, then answer which aircraft ended furthest left or highest.",
+            "Use it to stabilize end-state recall after the turn-only blocks have already settled the motion cues.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: know the TT2 answer mapping first so the block can stay focused on recall, not controls.",
+        controls="During the question stage use A/S/D/F for immediate submit, or use 1-4 then Enter.",
+        app_flow="This drill preserves the TT2 observe and question layout, but filters the recall bank to the two end-state position families.",
+    ),
+    "trace_mixed_tempo": TestGuideBriefing(
+        label="Trace Tests: Mixed Tempo",
+        assessment="Timed mixed trace drill that runs Trace Test 1 first and Trace Test 2 second under one tempo block.",
+        tasks=(
+            "Run a live TT1 command stream first, then switch into TT2 observe-then-answer recall without a menu break.",
+            "Use the block to practise switching between the two trace-response models while keeping total exposure balanced.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: arrive warmed up on both TT1 and TT2 single-test anchors first.",
+        controls="TT1 uses arrow keys only. TT2 uses A/S/D/F or 1-4 plus Enter after the observe stage ends.",
+        app_flow="This drill chains TT1 first and TT2 second inside one block, splitting the timed duration evenly between the two trace tests.",
+    ),
+    "trace_pressure_run": TestGuideBriefing(
+        label="Trace Tests: Pressure Run",
+        assessment="Late-workout mixed trace drill that chains Trace Test 1 and Trace Test 2 under the tightest observe-window profile in this family.",
+        tasks=(
+            "Run the full TT1 command family first, then switch immediately into full TT2 recall work.",
+            "Treat misses as part of the pressure block and reset immediately so both trace tests keep moving.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: warm up both trace-test anchors first; this block assumes the control mappings are already automatic.",
+        controls="TT1 uses arrow keys only. TT2 uses A/S/D/F or 1-4 plus Enter after the observe stage ends.",
+        app_flow="This drill keeps the live TT1 stream first and the TT2 observe-question layout second, with ANT stress timing applied across the chained block.",
+    ),
+    "trace_test_1_workout": TestGuideBriefing(
+        label="Trace Test 1 Workout",
+        assessment="Standalone 90-minute Trace Test 1 workout with TT1-only anchors and full-command pressure blocks.",
+        tasks=(
+            "Warm up the TT1 lateral and vertical anchor families first, then spend the rest of the workout on full TT1 command switching under longer tempo and stress blocks.",
+            "Keep the continuous TT1 stream moving and reset immediately after misses instead of waiting for a stop screen.",
+        ),
+        timing="Workout drill time: 90 minutes, plus opening and closing reflection outside the timed blocks.",
+        prep="Guide preparation: know the TT1 arrow mapping first; this workout stays inside Trace Test 1 only.",
+        controls="Use Left and Right to set workout or block difficulty. During blocks, TT1 uses arrow keys only.",
+        app_flow="Each block gets an untimed setup screen, and every timed block stays inside the square TT1 live-stream layout with no on-screen answer legend.",
+    ),
+    "trace_test_2_workout": TestGuideBriefing(
+        label="Trace Test 2 Workout",
+        assessment="Standalone 90-minute Trace Test 2 workout with TT2-only steady, turn, and end-state recall blocks.",
+        tasks=(
+            "Warm up steady-track and turn-recall questions first, then spend the rest of the workout on faster TT2 recall blocks without chaining into TT1.",
+            "Keep the observe-then-answer rhythm intact and answer immediately when the TT2 question screen opens.",
+        ),
+        timing="Workout drill time: 90 minutes, plus opening and closing reflection outside the timed blocks.",
+        prep="Guide preparation: know the TT2 observe-first recall controls first; this workout stays inside Trace Test 2 only.",
+        controls="Use Left and Right to set workout or block difficulty. During blocks, TT2 uses A/S/D/F or 1-4 plus Enter after the observe stage ends.",
+        app_flow="Each block gets an untimed setup screen, and every timed block keeps the TT2 observe screen separate from the compact TT2 question screen.",
+    ),
+    "vigilance": TestGuideBriefing(
+        label="Vigilance",
+        assessment="Scanning test for switching between routine and priority tasks.",
+        tasks=(
+            "Scan the matrix accurately for the active target position.",
+            "Switch between routine and priority captures while keeping speed and accuracy up.",
+        ),
+        timing="Guide time including instructions: about 8 minutes.",
+        prep="Guide preparation: none required.",
+        controls="Click or focus the Row and Col fields, then type digits 1-9 to capture the target coordinates.",
+        app_flow="Practice teaches the matrix entry rhythm before the timed block begins.",
+    ),
+    "vig_entry_anchor": TestGuideBriefing(
+        label="Vigilance: Entry Anchor",
+        assessment="Slow full-board Vigilance drill for settling coordinate entry and early scan rhythm without changing the live task rules.",
+        tasks=(
+            "Keep the standard 9x9 board and normal symbol values, but work at the easiest stream pace in this family.",
+            "Use the block to make row-then-column entry automatic before density and pace increase later.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: none required; the goal is clean capture rhythm on the standard task.",
+        controls="Use the normal Vigilance row and column fields, then type digits 1-9 exactly as in the test.",
+        app_flow="This drill keeps the live Vigilance board intact and only adjusts the stream pace and overlap baseline.",
+    ),
+    "vig_clean_scan": TestGuideBriefing(
+        label="Vigilance: Clean Scan",
+        assessment="Full-board Vigilance drill for disciplined scan path control before the denser overlap blocks return.",
+        tasks=(
+            "Scan the whole board cleanly instead of waiting on one region or guessing coordinates.",
+            "Keep row and column entry precise while the stream runs a little faster than the entry anchor block.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: arrive ready to use one stable scan path on the real board.",
+        controls="Use the normal Vigilance row and column fields, then type digits 1-9 exactly as in the test.",
+        app_flow="This drill keeps the live Vigilance board unchanged and only shifts the stream baseline toward full-board scan discipline.",
+    ),
+    "vig_steady_capture_run": TestGuideBriefing(
+        label="Vigilance: Steady Capture Run",
+        assessment="Baseline sustained Vigilance drill that keeps the real board and score meaning while pushing steady output.",
+        tasks=(
+            "Run the normal Vigilance task at a sustained pace without changing the symbol mix or entry flow.",
+            "Build enough rhythm that points keep coming in without coordinate-entry breakdowns.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: settle your scan path first; this block assumes the basic entry rhythm is already stable.",
+        controls="Use the normal Vigilance row and column fields, then type digits 1-9 exactly as in the test.",
+        app_flow="This drill keeps the live board and input path unchanged; only the stream pace and overlap baseline move up.",
+    ),
+    "vig_density_ladder": TestGuideBriefing(
+        label="Vigilance: Density Ladder",
+        assessment="Vigilance drill for overlap management and recovery while the normal board and point values stay intact.",
+        tasks=(
+            "Hold the same row-and-column response flow even when multiple symbols are active at once.",
+            "Recover quickly after misses instead of abandoning the scan path.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: start this block only after the cleaner warm-up drills feel settled.",
+        controls="Use the normal Vigilance row and column fields, then type digits 1-9 exactly as in the test.",
+        app_flow="This drill preserves the full Vigilance task and only raises overlap pressure through denser stream settings.",
+    ),
+    "vig_tempo_sweep": TestGuideBriefing(
+        label="Vigilance: Tempo Sweep",
+        assessment="Faster sustained Vigilance block that keeps the standard board, values, and row/column input flow.",
+        tasks=(
+            "Hold the full board at a faster tempo without switching to shortcuts or guessing coordinates.",
+            "Let speed rise only as far as clean coordinate entry survives.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: treat this like a later-workout sustained block, not an entry warm-up.",
+        controls="Use the normal Vigilance row and column fields, then type digits 1-9 exactly as in the test.",
+        app_flow="This drill keeps the live task intact and raises only the stream pace and overlap baseline.",
+    ),
+    "vig_pressure_run": TestGuideBriefing(
+        label="Vigilance: Pressure Run",
+        assessment="Hardest late-workout Vigilance block with the densest and fastest full-board stream in this family.",
+        tasks=(
+            "Finish on the real Vigilance task under the tightest pace and overlap settings in the workout family.",
+            "Accept some expiries and reset immediately so the next coordinate stays clean.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: use this after the earlier warm-up and tempo blocks; it assumes the board and entry flow are already automatic.",
+        controls="Use the normal Vigilance row and column fields, then type digits 1-9 exactly as in the test.",
+        app_flow="This drill keeps the standard Vigilance screen and input path and only tightens stream pace and density for the pressure finish.",
+    ),
+    "vigilance_workout": TestGuideBriefing(
+        label="Vigilance Workout",
+        assessment="Standard 90-minute Vigilance workout with clean-entry warm-ups, denser tempo blocks, and one final pressure run.",
+        tasks=(
+            "Start with slower full-board entry and scan discipline, then build into denser and faster late blocks without changing the live task rules.",
+            "Keep the normal row/column response flow, board layout, symbol rarity, and point values across the entire workout.",
+        ),
+        timing="Workout drill time: 90 minutes, plus opening and closing reflection outside the timed blocks.",
+        prep="Guide preparation: none required beyond knowing the normal Vigilance row and column entry flow.",
+        controls="Use Left and Right to set workout or block difficulty. During blocks, keep the normal Vigilance row and column entry flow.",
+        app_flow="Each block gets an untimed setup screen, and every timed block stays on the standard Vigilance board with no layout or scoring changes.",
+    ),
+}
+
+
+GuideDifficultyAxis = str
+GuideDevice = str
+GuideBand = tuple[int, int]
+
+
+@dataclass(frozen=True, slots=True)
+class GuideSubskillSpec:
+    subskill_id: str
+    label: str
+    suggested_start_level: int
+    recommended_training_band: GuideBand
+    safe_pressure_band: GuideBand
+    canonical_drill_codes: tuple[str, ...]
+    ranking_primitive_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class GuideSkillSpec:
+    skill_id: str
+    label: str
+    suggested_start_level: int
+    recommended_training_band: GuideBand
+    safe_pressure_band: GuideBand
+    subskills: tuple[GuideSubskillSpec, ...]
+    ranking_primitive_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class GuideTestFamilySpec:
+    family_id: str
+    label: str
+    official_test_codes: tuple[str, ...]
+    skills: tuple[GuideSkillSpec, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class GuideCognitiveDomainSpec:
+    domain_id: str
+    label: str
+    test_families: tuple[GuideTestFamilySpec, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class OfficialGuideTestSpec:
+    official_name: str
+    test_code: str
+    guide_duration_min: int
+    guide_prepability: str
+    devices: tuple[GuideDevice, ...]
+    component_skills: tuple[str, ...]
+    component_subskills: tuple[str, ...]
+    difficulty_family_id: str
+    difficulty_axes_used: tuple[GuideDifficultyAxis, ...]
+    difficulty_description_by_axis: dict[str, str]
+    difficulty_notes: str
+    cognitive_domain_id: str
+    test_family_id: str
+    ranking_primitive_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class GuideCodeMapping:
+    code: str
+    cognitive_domain_id: str | None
+    test_family_id: str | None
+    skill_ids: tuple[str, ...]
+    subskill_ids: tuple[str, ...]
+    difficulty_family_id: str | None
+    ranking_primitive_id: str | None
+    is_official_test: bool
+
+
+def _band(start: int, end: int) -> GuideBand:
+    return (int(start), int(end))
+
+
+GUIDE_SKILL_CATALOG: tuple[GuideCognitiveDomainSpec, ...] = (
+    GuideCognitiveDomainSpec(
+        domain_id="quantitative_reasoning",
+        label="Quantitative Reasoning",
+        test_families=(
+            GuideTestFamilySpec(
+                family_id="quantitative_reasoning",
+                label="Quantitative Reasoning",
+                official_test_codes=(
+                    "numerical_operations",
+                    "math_reasoning",
+                    "airborne_numerical",
+                    "table_reading",
+                    "system_logic",
+                ),
+                skills=(
+                    GuideSkillSpec(
+                        skill_id="mental_arithmetic_automaticity",
+                        label="Mental Arithmetic Automaticity",
+                        suggested_start_level=3,
+                        recommended_training_band=_band(4, 7),
+                        safe_pressure_band=_band(5, 8),
+                        ranking_primitive_id="mental_arithmetic_automaticity",
+                        subskills=(
+                            GuideSubskillSpec(
+                                subskill_id="quantitative_core",
+                                label="Quantitative Core",
+                                suggested_start_level=3,
+                                recommended_training_band=_band(4, 7),
+                                safe_pressure_band=_band(5, 8),
+                                canonical_drill_codes=("ma_one_step_fluency", "ma_percentage_snap"),
+                                ranking_primitive_id="mental_arithmetic_automaticity",
+                            ),
+                            GuideSubskillSpec(
+                                subskill_id="written_extraction",
+                                label="Written Numerical Extraction",
+                                suggested_start_level=3,
+                                recommended_training_band=_band(4, 7),
+                                safe_pressure_band=_band(5, 8),
+                                canonical_drill_codes=("ma_written_numerical_extraction",),
+                                ranking_primitive_id="mental_arithmetic_automaticity",
+                            ),
+                            GuideSubskillSpec(
+                                subskill_id="applied_rate_fuel",
+                                label="Applied Rate And Fuel Solving",
+                                suggested_start_level=4,
+                                recommended_training_band=_band(5, 7),
+                                safe_pressure_band=_band(6, 8),
+                                canonical_drill_codes=("ma_rate_time_distance", "ma_fuel_endurance"),
+                                ranking_primitive_id="mental_arithmetic_automaticity",
+                            ),
+                            GuideSubskillSpec(
+                                subskill_id="interference_resilience",
+                                label="Interference-Resilient Arithmetic",
+                                suggested_start_level=4,
+                                recommended_training_band=_band(5, 8),
+                                safe_pressure_band=_band(6, 8),
+                                canonical_drill_codes=("ma_mixed_conversion_caps",),
+                                ranking_primitive_id="mental_arithmetic_automaticity",
+                            ),
+                        ),
+                    ),
+                    GuideSkillSpec(
+                        skill_id="table_cross_reference_speed",
+                        label="Table Cross-Reference Speed",
+                        suggested_start_level=3,
+                        recommended_training_band=_band(4, 7),
+                        safe_pressure_band=_band(5, 8),
+                        ranking_primitive_id="table_cross_reference_speed",
+                        subskills=(
+                            GuideSubskillSpec(
+                                subskill_id="single_lookup",
+                                label="Single Lookup",
+                                suggested_start_level=3,
+                                recommended_training_band=_band(4, 7),
+                                safe_pressure_band=_band(5, 8),
+                                canonical_drill_codes=("tbl_single_lookup_anchor",),
+                                ranking_primitive_id="table_cross_reference_speed",
+                            ),
+                            GuideSubskillSpec(
+                                subskill_id="two_source_xref",
+                                label="Two-Source Cross Reference",
+                                suggested_start_level=4,
+                                recommended_training_band=_band(5, 7),
+                                safe_pressure_band=_band(6, 8),
+                                canonical_drill_codes=("tbl_two_table_xref", "tbl_lookup_compute"),
+                                ranking_primitive_id="table_cross_reference_speed",
+                            ),
+                            GuideSubskillSpec(
+                                subskill_id="distractor_table_pressure",
+                                label="Distractor Table Pressure",
+                                suggested_start_level=4,
+                                recommended_training_band=_band(5, 8),
+                                safe_pressure_band=_band(6, 8),
+                                canonical_drill_codes=("tbl_distractor_grid", "tbl_shrinking_cap_run"),
+                                ranking_primitive_id="table_cross_reference_speed",
+                            ),
+                        ),
+                    ),
+                    GuideSkillSpec(
+                        skill_id="symbolic_rule_extraction",
+                        label="Symbolic Rule Extraction",
+                        suggested_start_level=3,
+                        recommended_training_band=_band(4, 7),
+                        safe_pressure_band=_band(5, 8),
+                        ranking_primitive_id="symbolic_rule_extraction",
+                        subskills=(
+                            GuideSubskillSpec(
+                                subskill_id="single_rule",
+                                label="Single Rule Identification",
+                                suggested_start_level=3,
+                                recommended_training_band=_band(4, 7),
+                                safe_pressure_band=_band(5, 8),
+                                canonical_drill_codes=("sl_one_rule_identify", "sl_rule_match"),
+                                ranking_primitive_id="symbolic_rule_extraction",
+                            ),
+                            GuideSubskillSpec(
+                                subskill_id="two_source_reconcile",
+                                label="Two-Source Reconciliation",
+                                suggested_start_level=4,
+                                recommended_training_band=_band(5, 7),
+                                safe_pressure_band=_band(6, 8),
+                                canonical_drill_codes=("sl_two_source_reconcile", "sl_missing_step_complete"),
+                                ranking_primitive_id="symbolic_rule_extraction",
+                            ),
+                            GuideSubskillSpec(
+                                subskill_id="distractor_reject",
+                                label="Distractor Rejection",
+                                suggested_start_level=4,
+                                recommended_training_band=_band(5, 8),
+                                safe_pressure_band=_band(6, 8),
+                                canonical_drill_codes=("sl_fast_reject",),
+                                ranking_primitive_id="symbolic_rule_extraction",
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    ),
+    GuideCognitiveDomainSpec(
+        domain_id="scan_search_and_monitoring",
+        label="Scan, Search, And Monitoring",
+        test_families=(
+            GuideTestFamilySpec(
+                family_id="scan_search",
+                label="Scan And Search",
+                official_test_codes=("visual_search", "target_recognition", "vigilance"),
+                skills=(
+                    GuideSkillSpec(
+                        skill_id="visual_scan_discipline",
+                        label="Visual Scan Discipline",
+                        suggested_start_level=3,
+                        recommended_training_band=_band(4, 7),
+                        safe_pressure_band=_band(5, 8),
+                        ranking_primitive_id="visual_scan_discipline",
+                        subskills=(
+                            GuideSubskillSpec(
+                                subskill_id="class_search",
+                                label="Class Search",
+                                suggested_start_level=3,
+                                recommended_training_band=_band(4, 7),
+                                safe_pressure_band=_band(5, 8),
+                                canonical_drill_codes=("vs_multi_target_class_search",),
+                                ranking_primitive_id="visual_scan_discipline",
+                            ),
+                            GuideSubskillSpec(
+                                subskill_id="priority_switch",
+                                label="Priority Switch Search",
+                                suggested_start_level=4,
+                                recommended_training_band=_band(5, 7),
+                                safe_pressure_band=_band(6, 8),
+                                canonical_drill_codes=("vs_priority_switch_search",),
+                                ranking_primitive_id="visual_scan_discipline",
+                            ),
+                            GuideSubskillSpec(
+                                subskill_id="routine_priority_switch",
+                                label="Routine/Priority Switching",
+                                suggested_start_level=4,
+                                recommended_training_band=_band(5, 8),
+                                safe_pressure_band=_band(6, 8),
+                                canonical_drill_codes=("vs_matrix_routine_priority_switch",),
+                                ranking_primitive_id="visual_scan_discipline",
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    ),
+    GuideCognitiveDomainSpec(
+        domain_id="memory_and_multitask",
+        label="Memory And Multitask",
+        test_families=(
+            GuideTestFamilySpec(
+                family_id="memory_multitask",
+                label="Memory And Multitask",
+                official_test_codes=(
+                    "digit_recognition",
+                    "colours_letters_numbers",
+                    "auditory_capacity",
+                    "cognitive_updating",
+                    "situational_awareness",
+                ),
+                skills=(
+                    GuideSkillSpec(
+                        skill_id="visual_memory_updating",
+                        label="Visual Memory Updating",
+                        suggested_start_level=3,
+                        recommended_training_band=_band(4, 7),
+                        safe_pressure_band=_band(5, 8),
+                        ranking_primitive_id="visual_memory_updating",
+                        subskills=(
+                            GuideSubskillSpec(
+                                subskill_id="visual_digit_query",
+                                label="Visual Digit Query",
+                                suggested_start_level=3,
+                                recommended_training_band=_band(4, 7),
+                                safe_pressure_band=_band(5, 8),
+                                canonical_drill_codes=("dr_visual_digit_query",),
+                                ranking_primitive_id="visual_memory_updating",
+                            ),
+                            GuideSubskillSpec(
+                                subskill_id="recall_after_interference",
+                                label="Recall After Interference",
+                                suggested_start_level=4,
+                                recommended_training_band=_band(5, 7),
+                                safe_pressure_band=_band(6, 8),
+                                canonical_drill_codes=("dr_recall_after_interference",),
+                                ranking_primitive_id="visual_memory_updating",
+                            ),
+                        ),
+                    ),
+                    GuideSkillSpec(
+                        skill_id="dual_task_stability_fatigue",
+                        label="Dual-Task Stability Under Fatigue",
+                        suggested_start_level=3,
+                        recommended_training_band=_band(4, 7),
+                        safe_pressure_band=_band(5, 8),
+                        ranking_primitive_id="dual_task_stability_fatigue",
+                        subskills=(
+                            GuideSubskillSpec(
+                                subskill_id="tracking_recall_bridge",
+                                label="Tracking + Recall",
+                                suggested_start_level=3,
+                                recommended_training_band=_band(4, 7),
+                                safe_pressure_band=_band(5, 8),
+                                canonical_drill_codes=("dtb_tracking_recall",),
+                                ranking_primitive_id="dual_task_stability_fatigue",
+                            ),
+                            GuideSubskillSpec(
+                                subskill_id="command_filter",
+                                label="Tracking + Command Filter",
+                                suggested_start_level=4,
+                                recommended_training_band=_band(5, 7),
+                                safe_pressure_band=_band(6, 8),
+                                canonical_drill_codes=("dtb_tracking_command_filter",),
+                                ranking_primitive_id="dual_task_stability_fatigue",
+                            ),
+                            GuideSubskillSpec(
+                                subskill_id="filtered_digit_report",
+                                label="Tracking + Filtered Digit Report",
+                                suggested_start_level=4,
+                                recommended_training_band=_band(5, 7),
+                                safe_pressure_band=_band(6, 8),
+                                canonical_drill_codes=("dtb_tracking_filter_digit_report",),
+                                ranking_primitive_id="dual_task_stability_fatigue",
+                            ),
+                            GuideSubskillSpec(
+                                subskill_id="interference_recovery",
+                                label="Tracking + Interference Recovery",
+                                suggested_start_level=4,
+                                recommended_training_band=_band(5, 8),
+                                safe_pressure_band=_band(6, 8),
+                                canonical_drill_codes=("dtb_tracking_interference_recovery",),
+                                ranking_primitive_id="dual_task_stability_fatigue",
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    ),
+    GuideCognitiveDomainSpec(
+        domain_id="spatial_orientation",
+        label="Spatial Orientation",
+        test_families=(
+            GuideTestFamilySpec(
+                family_id="spatial_orientation",
+                label="Spatial Orientation",
+                official_test_codes=(
+                    "angles_bearings_degrees",
+                    "instrument_comprehension",
+                    "spatial_integration",
+                    "trace_test_1",
+                    "trace_test_2",
+                ),
+                skills=(
+                    GuideSkillSpec(
+                        skill_id="angle_bearing_judgment",
+                        label="Angle And Bearing Judgment",
+                        suggested_start_level=3,
+                        recommended_training_band=_band(4, 7),
+                        safe_pressure_band=_band(5, 8),
+                        ranking_primitive_id="angle_bearing_judgment",
+                        subskills=(
+                            GuideSubskillSpec(
+                                subskill_id="angle_anchor",
+                                label="Angle Anchor",
+                                suggested_start_level=3,
+                                recommended_training_band=_band(4, 7),
+                                safe_pressure_band=_band(5, 8),
+                                canonical_drill_codes=("abd_angle_anchor",),
+                                ranking_primitive_id="angle_bearing_judgment",
+                            ),
+                            GuideSubskillSpec(
+                                subskill_id="angle_tempo",
+                                label="Angle Tempo",
+                                suggested_start_level=4,
+                                recommended_training_band=_band(5, 7),
+                                safe_pressure_band=_band(6, 8),
+                                canonical_drill_codes=("abd_angle_tempo",),
+                                ranking_primitive_id="angle_bearing_judgment",
+                            ),
+                            GuideSubskillSpec(
+                                subskill_id="bearing_anchor",
+                                label="Bearing Anchor",
+                                suggested_start_level=3,
+                                recommended_training_band=_band(4, 7),
+                                safe_pressure_band=_band(5, 8),
+                                canonical_drill_codes=("abd_bearing_anchor",),
+                                ranking_primitive_id="angle_bearing_judgment",
+                            ),
+                            GuideSubskillSpec(
+                                subskill_id="bearing_tempo",
+                                label="Bearing Tempo",
+                                suggested_start_level=4,
+                                recommended_training_band=_band(5, 7),
+                                safe_pressure_band=_band(6, 8),
+                                canonical_drill_codes=("abd_bearing_tempo",),
+                                ranking_primitive_id="angle_bearing_judgment",
+                            ),
+                        ),
+                    ),
+                    GuideSkillSpec(
+                        skill_id="instrument_orientation",
+                        label="Instrument Orientation",
+                        suggested_start_level=3,
+                        recommended_training_band=_band(4, 7),
+                        safe_pressure_band=_band(5, 8),
+                        ranking_primitive_id="instrument_orientation",
+                        subskills=(
+                            GuideSubskillSpec(
+                                subskill_id="instrument_attitude_matching",
+                                label="Instrument Attitude Matching",
+                                suggested_start_level=3,
+                                recommended_training_band=_band(4, 7),
+                                safe_pressure_band=_band(5, 8),
+                                canonical_drill_codes=("ic_instrument_attitude_matching",),
+                                ranking_primitive_id="instrument_orientation",
+                            ),
+                        ),
+                    ),
+                    GuideSkillSpec(
+                        skill_id="multi_view_spatial_integration",
+                        label="Multi-View Spatial Integration",
+                        suggested_start_level=3,
+                        recommended_training_band=_band(4, 7),
+                        safe_pressure_band=_band(5, 8),
+                        ranking_primitive_id="multi_view_spatial_integration",
+                        subskills=(
+                            GuideSubskillSpec(
+                                subskill_id="static_multiview_integration",
+                                label="Static Multiview Integration",
+                                suggested_start_level=3,
+                                recommended_training_band=_band(4, 7),
+                                safe_pressure_band=_band(5, 8),
+                                canonical_drill_codes=("si_static_multiview_integration",),
+                                ranking_primitive_id="multi_view_spatial_integration",
+                            ),
+                            GuideSubskillSpec(
+                                subskill_id="moving_aircraft_multiview_integration",
+                                label="Moving-Aircraft Multiview Integration",
+                                suggested_start_level=4,
+                                recommended_training_band=_band(5, 7),
+                                safe_pressure_band=_band(6, 8),
+                                canonical_drill_codes=("si_moving_aircraft_multiview_integration",),
+                                ranking_primitive_id="multi_view_spatial_integration",
+                            ),
+                        ),
+                    ),
+                    GuideSkillSpec(
+                        skill_id="trace_orientation_change",
+                        label="Trace Orientation Change",
+                        suggested_start_level=3,
+                        recommended_training_band=_band(4, 7),
+                        safe_pressure_band=_band(5, 8),
+                        ranking_primitive_id="trace_orientation_change",
+                        subskills=(
+                            GuideSubskillSpec(
+                                subskill_id="trace_orientation_decode",
+                                label="Trace Orientation Decode",
+                                suggested_start_level=3,
+                                recommended_training_band=_band(4, 7),
+                                safe_pressure_band=_band(5, 8),
+                                canonical_drill_codes=("trace_orientation_decode",),
+                                ranking_primitive_id="trace_orientation_change",
+                            ),
+                        ),
+                    ),
+                    GuideSkillSpec(
+                        skill_id="three_d_movement_recall",
+                        label="3D Movement Recall",
+                        suggested_start_level=3,
+                        recommended_training_band=_band(4, 7),
+                        safe_pressure_band=_band(5, 8),
+                        ranking_primitive_id="three_d_movement_recall",
+                        subskills=(
+                            GuideSubskillSpec(
+                                subskill_id="trace_movement_recall",
+                                label="Trace Movement Recall",
+                                suggested_start_level=3,
+                                recommended_training_band=_band(4, 7),
+                                safe_pressure_band=_band(5, 8),
+                                canonical_drill_codes=("trace_movement_recall",),
+                                ranking_primitive_id="three_d_movement_recall",
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    ),
+    GuideCognitiveDomainSpec(
+        domain_id="psychomotor_control",
+        label="Psychomotor Control",
+        test_families=(
+            GuideTestFamilySpec(
+                family_id="psychomotor_control",
+                label="Psychomotor Control",
+                official_test_codes=("sensory_motor_apparatus", "rapid_tracking"),
+                skills=(
+                    GuideSkillSpec(
+                        skill_id="tracking_stability_low_load",
+                        label="Tracking Stability Under Low Load",
+                        suggested_start_level=3,
+                        recommended_training_band=_band(4, 7),
+                        safe_pressure_band=_band(5, 8),
+                        ranking_primitive_id="tracking_stability_low_load",
+                        subskills=(
+                            GuideSubskillSpec(
+                                subskill_id="split_axis_control",
+                                label="Split-Axis Control",
+                                suggested_start_level=3,
+                                recommended_training_band=_band(4, 7),
+                                safe_pressure_band=_band(5, 8),
+                                canonical_drill_codes=("sma_split_axis_control",),
+                                ranking_primitive_id="tracking_stability_low_load",
+                            ),
+                            GuideSubskillSpec(
+                                subskill_id="overshoot_recovery",
+                                label="Overshoot Recovery",
+                                suggested_start_level=4,
+                                recommended_training_band=_band(5, 7),
+                                safe_pressure_band=_band(6, 8),
+                                canonical_drill_codes=("sma_overshoot_recovery",),
+                                ranking_primitive_id="tracking_stability_low_load",
+                            ),
+                            GuideSubskillSpec(
+                                subskill_id="obscured_prediction",
+                                label="Obscured-Motion Prediction",
+                                suggested_start_level=4,
+                                recommended_training_band=_band(5, 8),
+                                safe_pressure_band=_band(6, 8),
+                                canonical_drill_codes=("rt_obscured_target_prediction",),
+                                ranking_primitive_id="tracking_stability_low_load",
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    ),
+)
+
+
+SUBSKILL_BY_ID = {
+    subskill.subskill_id: subskill
+    for domain in GUIDE_SKILL_CATALOG
+    for family in domain.test_families
+    for skill in family.skills
+    for subskill in skill.subskills
+}
+SKILL_BY_ID = {
+    skill.skill_id: skill
+    for domain in GUIDE_SKILL_CATALOG
+    for family in domain.test_families
+    for skill in family.skills
+}
+TEST_FAMILY_BY_ID = {
+    family.family_id: family
+    for domain in GUIDE_SKILL_CATALOG
+    for family in domain.test_families
+}
+COGNITIVE_DOMAIN_BY_ID = {domain.domain_id: domain for domain in GUIDE_SKILL_CATALOG}
+
+
+OFFICIAL_GUIDE_TESTS: tuple[OfficialGuideTestSpec, ...] = (
+    OfficialGuideTestSpec(
+        official_name="Numerical Operations",
+        test_code="numerical_operations",
+        guide_duration_min=2,
+        guide_prepability="high",
+        devices=("keyboard",),
+        component_skills=("mental_arithmetic_automaticity",),
+        component_subskills=("quantitative_core", "interference_resilience"),
+        difficulty_family_id="quantitative",
+        difficulty_axes_used=("content_complexity", "time_pressure", "switch_frequency"),
+        difficulty_description_by_axis={
+            "content_complexity": "Operand size and operator variety rise across forms.",
+            "time_pressure": "Per-item answer windows compress quickly.",
+            "switch_frequency": "Mixed operators increase setup switching cost.",
+        },
+        difficulty_notes="Fast typed arithmetic under cap pressure.",
+        cognitive_domain_id="quantitative_reasoning",
+        test_family_id="quantitative_reasoning",
+        ranking_primitive_id="mental_arithmetic_automaticity",
+    ),
+    OfficialGuideTestSpec(
+        official_name="Mathematics Reasoning",
+        test_code="math_reasoning",
+        guide_duration_min=18,
+        guide_prepability="high",
+        devices=("keyboard",),
+        component_skills=("mental_arithmetic_automaticity",),
+        component_subskills=("written_extraction", "applied_rate_fuel"),
+        difficulty_family_id="quantitative",
+        difficulty_axes_used=("content_complexity", "source_integration_depth", "time_pressure"),
+        difficulty_description_by_axis={
+            "content_complexity": "Word-problem setup depth and step count increase.",
+            "source_integration_depth": "Relevant-value extraction load rises with filler content.",
+            "time_pressure": "Answer choice timing compresses under a fixed test clock.",
+        },
+        difficulty_notes="Written numerical problem solving with multiple-choice selection.",
+        cognitive_domain_id="quantitative_reasoning",
+        test_family_id="quantitative_reasoning",
+        ranking_primitive_id="mental_arithmetic_automaticity",
+    ),
+    OfficialGuideTestSpec(
+        official_name="Airborne Numerical",
+        test_code="airborne_numerical",
+        guide_duration_min=35,
+        guide_prepability="high",
+        devices=("keyboard",),
+        component_skills=("mental_arithmetic_automaticity", "table_cross_reference_speed"),
+        component_subskills=("applied_rate_fuel", "two_source_xref", "distractor_table_pressure"),
+        difficulty_family_id="quantitative",
+        difficulty_axes_used=("content_complexity", "source_integration_depth", "time_pressure"),
+        difficulty_description_by_axis={
+            "content_complexity": "Applied fuel, endurance, route, and payload transforms compound.",
+            "source_integration_depth": "Chart and table use adds reference integration burden.",
+            "time_pressure": "Short item caps punish slow setup.",
+        },
+        difficulty_notes="Applied airborne math plus reference lookups.",
+        cognitive_domain_id="quantitative_reasoning",
+        test_family_id="quantitative_reasoning",
+        ranking_primitive_id="mental_arithmetic_automaticity",
+    ),
+    OfficialGuideTestSpec(
+        official_name="Table Reading",
+        test_code="table_reading",
+        guide_duration_min=15,
+        guide_prepability="moderate",
+        devices=("keyboard",),
+        component_skills=("table_cross_reference_speed",),
+        component_subskills=("single_lookup", "two_source_xref", "distractor_table_pressure"),
+        difficulty_family_id="table_cross_reference",
+        difficulty_axes_used=("time_pressure", "distractor_density", "source_integration_depth"),
+        difficulty_description_by_axis={
+            "time_pressure": "Lookup caps shrink as the item stream advances.",
+            "distractor_density": "Near-match rows and columns increase interference.",
+            "source_integration_depth": "Cross-reference depth rises from one table to two tables plus compute.",
+        },
+        difficulty_notes="Fast table lookup and cross-reference under visual clutter.",
+        cognitive_domain_id="quantitative_reasoning",
+        test_family_id="quantitative_reasoning",
+        ranking_primitive_id="table_cross_reference_speed",
+    ),
+    OfficialGuideTestSpec(
+        official_name="System Logic",
+        test_code="system_logic",
+        guide_duration_min=15,
+        guide_prepability="moderate",
+        devices=("keyboard",),
+        component_skills=("symbolic_rule_extraction",),
+        component_subskills=("single_rule", "two_source_reconcile", "distractor_reject"),
+        difficulty_family_id="system_logic",
+        difficulty_axes_used=("content_complexity", "source_integration_depth", "distractor_density"),
+        difficulty_description_by_axis={
+            "content_complexity": "Rule-set depth and exception handling increase.",
+            "source_integration_depth": "Multiple panes or diagrams must be reconciled.",
+            "distractor_density": "Near-valid options raise reject pressure.",
+        },
+        difficulty_notes="Rule extraction and reconciliation across symbolic sources.",
+        cognitive_domain_id="quantitative_reasoning",
+        test_family_id="quantitative_reasoning",
+        ranking_primitive_id="symbolic_rule_extraction",
+    ),
+    OfficialGuideTestSpec(
+        official_name="Visual Search",
+        test_code="visual_search",
+        guide_duration_min=6,
+        guide_prepability="moderate",
+        devices=("keyboard",),
+        component_skills=("visual_scan_discipline",),
+        component_subskills=("class_search", "priority_switch", "routine_priority_switch"),
+        difficulty_family_id="search_vigilance",
+        difficulty_axes_used=("time_pressure", "distractor_density", "switch_frequency"),
+        difficulty_description_by_axis={
+            "time_pressure": "Decision windows are short and continuous.",
+            "distractor_density": "Grid clutter and near matches drive capture errors.",
+            "switch_frequency": "Target rules rotate across blocks and variants.",
+        },
+        difficulty_notes="Class search and switch-heavy scan discipline.",
+        cognitive_domain_id="scan_search_and_monitoring",
+        test_family_id="scan_search",
+        ranking_primitive_id="visual_scan_discipline",
+    ),
+    OfficialGuideTestSpec(
+        official_name="Target Recognition",
+        test_code="target_recognition",
+        guide_duration_min=12,
+        guide_prepability="moderate",
+        devices=("keyboard",),
+        component_skills=("visual_scan_discipline",),
+        component_subskills=("class_search", "priority_switch"),
+        difficulty_family_id="search_vigilance",
+        difficulty_axes_used=("distractor_density", "source_integration_depth", "time_pressure"),
+        difficulty_description_by_axis={
+            "distractor_density": "Scene clutter and modifier confusion increase false picks.",
+            "source_integration_depth": "Panel, light, and scene features must be integrated.",
+            "time_pressure": "Rapid panel changes punish slow verification.",
+        },
+        difficulty_notes="Scene and panel target identification under changing rules.",
+        cognitive_domain_id="scan_search_and_monitoring",
+        test_family_id="scan_search",
+        ranking_primitive_id="visual_scan_discipline",
+    ),
+    OfficialGuideTestSpec(
+        official_name="Vigilance",
+        test_code="vigilance",
+        guide_duration_min=15,
+        guide_prepability="moderate",
+        devices=("keyboard",),
+        component_skills=("visual_scan_discipline",),
+        component_subskills=("class_search", "routine_priority_switch"),
+        difficulty_family_id="search_vigilance",
+        difficulty_axes_used=("time_pressure", "distractor_density", "switch_frequency"),
+        difficulty_description_by_axis={
+            "time_pressure": "Entry cadence increases over time.",
+            "distractor_density": "Signal rarity and board density amplify miss risk.",
+            "switch_frequency": "Routine scanning must stay stable across long runs.",
+        },
+        difficulty_notes="Sustained monitoring with entry precision under fatigue.",
+        cognitive_domain_id="scan_search_and_monitoring",
+        test_family_id="scan_search",
+        ranking_primitive_id="visual_scan_discipline",
+    ),
+    OfficialGuideTestSpec(
+        official_name="Digit Recognition",
+        test_code="digit_recognition",
+        guide_duration_min=6,
+        guide_prepability="moderate",
+        devices=("keyboard",),
+        component_skills=("visual_memory_updating",),
+        component_subskills=("visual_digit_query", "recall_after_interference"),
+        difficulty_family_id="visual_memory_updating",
+        difficulty_axes_used=("memory_span_delay", "time_pressure", "switch_frequency"),
+        difficulty_description_by_axis={
+            "memory_span_delay": "Visible-to-hidden recall burden grows across items.",
+            "time_pressure": "Query windows stay brief after stimulus removal.",
+            "switch_frequency": "Prompt types rotate between query styles.",
+        },
+        difficulty_notes="Short-span visual memory and query accuracy.",
+        cognitive_domain_id="memory_and_multitask",
+        test_family_id="memory_multitask",
+        ranking_primitive_id="visual_memory_updating",
+    ),
+    OfficialGuideTestSpec(
+        official_name="Colours, Letters and Numbers",
+        test_code="colours_letters_numbers",
+        guide_duration_min=12,
+        guide_prepability="high",
+        devices=("keyboard",),
+        component_skills=("dual_task_stability_fatigue",),
+        component_subskills=("filtered_digit_report", "interference_recovery"),
+        difficulty_family_id="cln_multitask",
+        difficulty_axes_used=("multitask_concurrency", "memory_span_delay", "switch_frequency"),
+        difficulty_description_by_axis={
+            "multitask_concurrency": "Channels stack memory, colour, and math demands.",
+            "memory_span_delay": "Held sequences must survive intervening work.",
+            "switch_frequency": "Response channel switches are frequent.",
+        },
+        difficulty_notes="Classic multitask interference and working-memory control.",
+        cognitive_domain_id="memory_and_multitask",
+        test_family_id="memory_multitask",
+        ranking_primitive_id="dual_task_stability_fatigue",
+    ),
+    OfficialGuideTestSpec(
+        official_name="Auditory Capacity",
+        test_code="auditory_capacity",
+        guide_duration_min=12,
+        guide_prepability="high",
+        devices=("keyboard", "audio"),
+        component_skills=("dual_task_stability_fatigue",),
+        component_subskills=("command_filter", "filtered_digit_report"),
+        difficulty_family_id="auditory_multitask",
+        difficulty_axes_used=("multitask_concurrency", "memory_span_delay", "distractor_density"),
+        difficulty_description_by_axis={
+            "multitask_concurrency": "Tracking, callsigns, triggers, and recall overlap.",
+            "memory_span_delay": "Heard sequences must be retained until response windows.",
+            "distractor_density": "Non-target calls and distractor tones capture attention.",
+        },
+        difficulty_notes="Auditory filtering and recall while tracking.",
+        cognitive_domain_id="memory_and_multitask",
+        test_family_id="memory_multitask",
+        ranking_primitive_id="dual_task_stability_fatigue",
+    ),
+    OfficialGuideTestSpec(
+        official_name="Cognitive Updating",
+        test_code="cognitive_updating",
+        guide_duration_min=12,
+        guide_prepability="high",
+        devices=("keyboard",),
+        component_skills=("visual_memory_updating", "dual_task_stability_fatigue"),
+        component_subskills=("recall_after_interference", "interference_recovery"),
+        difficulty_family_id="visual_memory_updating",
+        difficulty_axes_used=("memory_span_delay", "switch_frequency", "source_integration_depth"),
+        difficulty_description_by_axis={
+            "memory_span_delay": "State must be refreshed after each update cycle.",
+            "switch_frequency": "Update sources rotate quickly.",
+            "source_integration_depth": "Multiple state panels must stay synchronized.",
+        },
+        difficulty_notes="State revision and memory updating under interruption.",
+        cognitive_domain_id="memory_and_multitask",
+        test_family_id="memory_multitask",
+        ranking_primitive_id="visual_memory_updating",
+    ),
+    OfficialGuideTestSpec(
+        official_name="Situational Awareness",
+        test_code="situational_awareness",
+        guide_duration_min=25,
+        guide_prepability="moderate",
+        devices=("keyboard",),
+        component_skills=("dual_task_stability_fatigue",),
+        component_subskills=("tracking_recall_bridge", "command_filter", "interference_recovery"),
+        difficulty_family_id="situational_awareness",
+        difficulty_axes_used=("source_integration_depth", "memory_span_delay", "switch_frequency"),
+        difficulty_description_by_axis={
+            "source_integration_depth": "Picture, status, and projection cues must be integrated.",
+            "memory_span_delay": "Critical state details must survive scenario evolution.",
+            "switch_frequency": "Attention rotates across incoming updates and action demands.",
+        },
+        difficulty_notes="Scenario integration, recall, and action selection.",
+        cognitive_domain_id="memory_and_multitask",
+        test_family_id="memory_multitask",
+        ranking_primitive_id="dual_task_stability_fatigue",
+    ),
+    OfficialGuideTestSpec(
+        official_name="Angles, Bearings and Degrees",
+        test_code="angles_bearings_degrees",
+        guide_duration_min=6,
+        guide_prepability="moderate",
+        devices=("keyboard",),
+        component_skills=("angle_bearing_judgment",),
+        component_subskills=("angle_anchor", "angle_tempo", "bearing_anchor", "bearing_tempo"),
+        difficulty_family_id="angle_bearing",
+        difficulty_axes_used=("spatial_ambiguity", "time_pressure"),
+        difficulty_description_by_axis={
+            "spatial_ambiguity": "Offsets shrink between nearby angles and bearings.",
+            "time_pressure": "Judgments must stay quick and clean.",
+        },
+        difficulty_notes="Angle and bearing estimation under time pressure.",
+        cognitive_domain_id="spatial_orientation",
+        test_family_id="spatial_orientation",
+        ranking_primitive_id="angle_bearing_judgment",
+    ),
+    OfficialGuideTestSpec(
+        official_name="Instrument Comprehension",
+        test_code="instrument_comprehension",
+        guide_duration_min=12,
+        guide_prepability="moderate",
+        devices=("keyboard",),
+        component_skills=("instrument_orientation",),
+        component_subskills=("instrument_attitude_matching",),
+        difficulty_family_id="instrument_orientation",
+        difficulty_axes_used=("spatial_ambiguity", "source_integration_depth", "time_pressure"),
+        difficulty_description_by_axis={
+            "spatial_ambiguity": "Attitude interpretations grow less obvious.",
+            "source_integration_depth": "Panel readouts and aircraft orientation must agree.",
+            "time_pressure": "Panel decisions must stay fast across parts.",
+        },
+        difficulty_notes="Attitude and heading interpretation from instruments.",
+        cognitive_domain_id="spatial_orientation",
+        test_family_id="spatial_orientation",
+        ranking_primitive_id="instrument_orientation",
+    ),
+    OfficialGuideTestSpec(
+        official_name="Spatial Integration",
+        test_code="spatial_integration",
+        guide_duration_min=12,
+        guide_prepability="moderate",
+        devices=("keyboard",),
+        component_skills=("multi_view_spatial_integration",),
+        component_subskills=("static_multiview_integration", "moving_aircraft_multiview_integration"),
+        difficulty_family_id="spatial_integration_trace",
+        difficulty_axes_used=("spatial_ambiguity", "source_integration_depth", "time_pressure"),
+        difficulty_description_by_axis={
+            "spatial_ambiguity": "Viewpoint offsets and map ambiguity increase.",
+            "source_integration_depth": "Multiple views must be reconciled into one answer.",
+            "time_pressure": "Longer scenarios still need fast query resolution.",
+        },
+        difficulty_notes="Static and moving multiview spatial reasoning.",
+        cognitive_domain_id="spatial_orientation",
+        test_family_id="spatial_orientation",
+        ranking_primitive_id="multi_view_spatial_integration",
+    ),
+    OfficialGuideTestSpec(
+        official_name="Trace Test 1",
+        test_code="trace_test_1",
+        guide_duration_min=6,
+        guide_prepability="moderate",
+        devices=("keyboard",),
+        component_skills=("trace_orientation_change",),
+        component_subskills=("trace_orientation_decode",),
+        difficulty_family_id="spatial_integration_trace",
+        difficulty_axes_used=("control_sensitivity", "spatial_ambiguity", "switch_frequency"),
+        difficulty_description_by_axis={
+            "control_sensitivity": "Trace following tightens tolerance around the commanded path.",
+            "spatial_ambiguity": "Orientation decode becomes less intuitive with perspective shifts.",
+            "switch_frequency": "Command changes arrive more often.",
+        },
+        difficulty_notes="Trace orientation decode and control following.",
+        cognitive_domain_id="spatial_orientation",
+        test_family_id="spatial_orientation",
+        ranking_primitive_id="trace_orientation_change",
+    ),
+    OfficialGuideTestSpec(
+        official_name="Trace Test 2",
+        test_code="trace_test_2",
+        guide_duration_min=6,
+        guide_prepability="moderate",
+        devices=("keyboard",),
+        component_skills=("three_d_movement_recall",),
+        component_subskills=("trace_movement_recall",),
+        difficulty_family_id="spatial_integration_trace",
+        difficulty_axes_used=("spatial_ambiguity", "memory_span_delay", "source_integration_depth"),
+        difficulty_description_by_axis={
+            "spatial_ambiguity": "Movement paths diverge by smaller geometric margins.",
+            "memory_span_delay": "Recall follows a longer observe interval.",
+            "source_integration_depth": "Path and orientation must both be retained for the query.",
+        },
+        difficulty_notes="Observed movement recall after trace-style orientation changes.",
+        cognitive_domain_id="spatial_orientation",
+        test_family_id="spatial_orientation",
+        ranking_primitive_id="three_d_movement_recall",
+    ),
+    OfficialGuideTestSpec(
+        official_name="Sensory Motor Apparatus",
+        test_code="sensory_motor_apparatus",
+        guide_duration_min=15,
+        guide_prepability="moderate",
+        devices=("keyboard", "joystick"),
+        component_skills=("tracking_stability_low_load",),
+        component_subskills=("split_axis_control", "overshoot_recovery"),
+        difficulty_family_id="psychomotor_tracking",
+        difficulty_axes_used=("control_sensitivity", "time_pressure", "multitask_concurrency"),
+        difficulty_description_by_axis={
+            "control_sensitivity": "Tolerance radius shrinks and coupling rises.",
+            "time_pressure": "Tracking corrections must settle faster.",
+            "multitask_concurrency": "Split-axis coordination increases control burden.",
+        },
+        difficulty_notes="Joystick/HOTAS split-axis stability and recovery.",
+        cognitive_domain_id="psychomotor_control",
+        test_family_id="psychomotor_control",
+        ranking_primitive_id="tracking_stability_low_load",
+    ),
+    OfficialGuideTestSpec(
+        official_name="Rapid Tracking",
+        test_code="rapid_tracking",
+        guide_duration_min=10,
+        guide_prepability="moderate",
+        devices=("keyboard", "joystick"),
+        component_skills=("tracking_stability_low_load",),
+        component_subskills=("obscured_prediction", "overshoot_recovery"),
+        difficulty_family_id="psychomotor_tracking",
+        difficulty_axes_used=("control_sensitivity", "spatial_ambiguity", "time_pressure"),
+        difficulty_description_by_axis={
+            "control_sensitivity": "Motion prediction and recentering must stay stable under tighter error budgets.",
+            "spatial_ambiguity": "Occlusion and handoff ambiguity increase.",
+            "time_pressure": "Fast reacquisition is required after cover transitions.",
+        },
+        difficulty_notes="Continuous tracking plus obscured-target prediction.",
+        cognitive_domain_id="psychomotor_control",
+        test_family_id="psychomotor_control",
+        ranking_primitive_id="tracking_stability_low_load",
+    ),
+)
+
+
+OFFICIAL_GUIDE_TESTS_BY_CODE = {test.test_code: test for test in OFFICIAL_GUIDE_TESTS}
+OFFICIAL_GUIDE_TEST_CODES = tuple(test.test_code for test in OFFICIAL_GUIDE_TESTS)
+
+_SUBSKILL_PARENT_SKILL = {
+    subskill.subskill_id: skill.skill_id
+    for domain in GUIDE_SKILL_CATALOG
+    for family in domain.test_families
+    for skill in family.skills
+    for subskill in skill.subskills
+}
+_SUBSKILL_PARENT_FAMILY = {
+    subskill.subskill_id: family.family_id
+    for domain in GUIDE_SKILL_CATALOG
+    for family in domain.test_families
+    for skill in family.skills
+    for subskill in skill.subskills
+}
+_SUBSKILL_PARENT_DOMAIN = {
+    subskill.subskill_id: domain.domain_id
+    for domain in GUIDE_SKILL_CATALOG
+    for family in domain.test_families
+    for skill in family.skills
+    for subskill in skill.subskills
+}
+
+_SUBSKILL_COVERAGE_EXPECTATIONS = {
+    subskill.subskill_id: tuple(subskill.canonical_drill_codes)
+    for subskill in SUBSKILL_BY_ID.values()
+}
+
+_CODE_TO_MAPPING: dict[str, GuideCodeMapping] = {}
+for test in OFFICIAL_GUIDE_TESTS:
+    _CODE_TO_MAPPING[test.test_code] = GuideCodeMapping(
+        code=test.test_code,
+        cognitive_domain_id=test.cognitive_domain_id,
+        test_family_id=test.test_family_id,
+        skill_ids=tuple(test.component_skills),
+        subskill_ids=tuple(test.component_subskills),
+        difficulty_family_id=test.difficulty_family_id,
+        ranking_primitive_id=test.ranking_primitive_id,
+        is_official_test=True,
+    )
+
+for subskill_id, subskill in SUBSKILL_BY_ID.items():
+    for drill_code in subskill.canonical_drill_codes:
+        existing = _CODE_TO_MAPPING.get(drill_code)
+        skill_id = _SUBSKILL_PARENT_SKILL[subskill_id]
+        family_id = _SUBSKILL_PARENT_FAMILY[subskill_id]
+        domain_id = _SUBSKILL_PARENT_DOMAIN[subskill_id]
+        if existing is None:
+            _CODE_TO_MAPPING[drill_code] = GuideCodeMapping(
+                code=drill_code,
+                cognitive_domain_id=domain_id,
+                test_family_id=family_id,
+                skill_ids=(skill_id,),
+                subskill_ids=(subskill_id,),
+                difficulty_family_id=None,
+                ranking_primitive_id=subskill.ranking_primitive_id,
+                is_official_test=False,
+            )
+            continue
+        _CODE_TO_MAPPING[drill_code] = GuideCodeMapping(
+            code=drill_code,
+            cognitive_domain_id=existing.cognitive_domain_id or domain_id,
+            test_family_id=existing.test_family_id or family_id,
+            skill_ids=tuple(dict.fromkeys(existing.skill_ids + (skill_id,))),
+            subskill_ids=tuple(dict.fromkeys(existing.subskill_ids + (subskill_id,))),
+            difficulty_family_id=existing.difficulty_family_id,
+            ranking_primitive_id=existing.ranking_primitive_id or subskill.ranking_primitive_id,
+            is_official_test=False,
+        )
+
+GUIDE_CODE_MAPPINGS = dict(sorted(_CODE_TO_MAPPING.items()))
+
+
+def official_guide_tests() -> tuple[OfficialGuideTestSpec, ...]:
+    return OFFICIAL_GUIDE_TESTS
+
+
+def official_guide_test(test_code: str | None) -> OfficialGuideTestSpec | None:
+    token = str(test_code or "").strip().lower()
+    if token == "":
+        return None
+    return OFFICIAL_GUIDE_TESTS_BY_CODE.get(token)
+
+
+def guide_code_mapping(code: str | None) -> GuideCodeMapping | None:
+    token = str(code or "").strip().lower()
+    if token == "":
+        return None
+    return GUIDE_CODE_MAPPINGS.get(token)
+
+
+def guide_domain_for_code(code: str | None) -> str | None:
+    mapping = guide_code_mapping(code)
+    return None if mapping is None else mapping.cognitive_domain_id
+
+
+def guide_test_family_for_code(code: str | None) -> str | None:
+    mapping = guide_code_mapping(code)
+    return None if mapping is None else mapping.test_family_id
+
+
+def guide_skill_ids_for_code(code: str | None) -> tuple[str, ...]:
+    mapping = guide_code_mapping(code)
+    return () if mapping is None else mapping.skill_ids
+
+
+def guide_subskill_ids_for_code(code: str | None) -> tuple[str, ...]:
+    mapping = guide_code_mapping(code)
+    return () if mapping is None else mapping.subskill_ids
+
+
+def guide_ranking_primitive_id_for_code(code: str | None) -> str | None:
+    mapping = guide_code_mapping(code)
+    return None if mapping is None else mapping.ranking_primitive_id
+
+
+def canonical_drill_codes_for_subskill(subskill_id: str | None) -> tuple[str, ...]:
+    token = str(subskill_id or "").strip().lower()
+    if token == "":
+        return ()
+    spec = SUBSKILL_BY_ID.get(token)
+    return () if spec is None else tuple(spec.canonical_drill_codes)
+
+
+def subskill_coverage_expectations() -> dict[str, tuple[str, ...]]:
+    return dict(_SUBSKILL_COVERAGE_EXPECTATIONS)
+

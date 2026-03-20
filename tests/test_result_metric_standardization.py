@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 import pytest
 
+from cfast_trainer.abd_drills import AbdDrillConfig, build_abd_angle_anchor_drill
 from cfast_trainer.ac_drills import AcDrillConfig, build_ac_callsign_filter_run_drill
 from cfast_trainer.adaptive_difficulty import (
     build_resolved_difficulty_context,
@@ -26,6 +27,7 @@ from cfast_trainer.dtb_drills import (
     DualTaskBridgeDrillConfig,
     build_dtb_tracking_filter_digit_report_drill,
 )
+from cfast_trainer.angles_bearings_degrees import AnglesBearingsTrainingPayload
 from cfast_trainer.numerical_operations import NumericalOperationsConfig, build_numerical_operations_test
 from cfast_trainer.rapid_tracking import RapidTrackingPayload
 from cfast_trainer.results import attempt_result_from_engine
@@ -414,6 +416,24 @@ def _run_vs_attempt(*, level: int):
     return attempt_result_from_engine(drill, test_code="vs_target_preview")
 
 
+def _run_abd_attempt(*, level: int):
+    clock = FakeClock()
+    drill = build_abd_angle_anchor_drill(
+        clock=clock,
+        seed=613,
+        difficulty=difficulty_ratio_for_level("abd_angle_anchor", level),
+        mode=AntDrillMode.BUILD,
+        config=AbdDrillConfig(practice_questions=0, scored_duration_s=5.0),
+    )
+    _set_fixed_context(drill, test_code="abd_angle_anchor", level=level)
+    drill.start_scored()
+    payload = drill.snapshot().payload
+    assert isinstance(payload, AnglesBearingsTrainingPayload)
+    assert drill.submit_answer(str(int(drill._current.answer))) is True
+    assert drill.submit_answer("__skip_section__") is True
+    return attempt_result_from_engine(drill, test_code="abd_angle_anchor")
+
+
 def _build_small_benchmark_plan(*, clock: FakeClock) -> BenchmarkPlan:
     def _probe(
         *,
@@ -542,11 +562,42 @@ def test_benchmark_result_emits_composite_realized_difficulty_and_prefixed_probe
 
 
 @pytest.mark.parametrize(
+    "runner",
+    (
+        lambda: _run_numerical_wrong_attempt(level=5),
+        lambda: _run_vs_attempt(level=5),
+        lambda: _run_visible_copy_order_error_attempt(level=5),
+        lambda: _run_rt_attempt(level=5),
+        lambda: _run_abd_attempt(level=5),
+    ),
+)
+def test_representative_families_emit_all_required_difficulty_axis_metrics(runner) -> None:
+    result = runner()
+
+    assert result.metrics["difficulty_family_id"] != ""
+    assert result.metrics["difficulty_profile_level"] != ""
+    assert result.metrics["difficulty_profile_mode"] != ""
+    for axis_name in (
+        "content_complexity",
+        "time_pressure",
+        "distractor_density",
+        "multitask_concurrency",
+        "memory_span_delay",
+        "switch_frequency",
+        "control_sensitivity",
+        "spatial_ambiguity",
+        "source_integration_depth",
+    ):
+        assert result.metrics[f"difficulty_axis_{axis_name}"] != ""
+
+
+@pytest.mark.parametrize(
     ("test_code", "axis_name", "runner"),
     (
         ("vs_target_preview", "distractor_density", _run_vs_attempt),
         ("rt_lock_anchor", "control_sensitivity", _run_rt_attempt),
         ("ac_callsign_filter_run", "multitask_concurrency", _run_ac_attempt),
+        ("abd_angle_anchor", "spatial_ambiguity", _run_abd_attempt),
     ),
 )
 def test_changing_level_changes_realized_difficulty_metrics_for_representative_families(

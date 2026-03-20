@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from cfast_trainer.persistence import AttemptHistoryEntry
-from cfast_trainer.primitive_ranking import rank_primitives
+from cfast_trainer.primitive_ranking import canonical_ranked_primitive_id_for_code, rank_primitives
 
 
 def _iso(hours_ago: float) -> str:
@@ -162,6 +162,17 @@ def test_rank_primitives_is_deterministic_for_same_history_and_seed() -> None:
         (item.primitive_id, round(item.priority, 6), item.recommended_level)
         for item in second.weakest_primitives
     ]
+
+
+def test_canonical_ranked_primitive_id_prefers_catalog_backed_mapping(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "cfast_trainer.primitive_ranking.guide_ranking_primitive_id_for_code",
+        lambda code: "visual_scan_discipline" if code == "mystery_catalog_code" else None,
+    )
+
+    assert canonical_ranked_primitive_id_for_code("mystery_catalog_code") == "visual_scan_discipline"
 
 
 def test_low_confidence_primitive_keeps_exploration_bonus() -> None:

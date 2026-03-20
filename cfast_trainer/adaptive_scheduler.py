@@ -14,9 +14,14 @@ from .adaptive_difficulty import (
     clamp_level,
 )
 from .ant_workouts import AntWorkoutBlockPlan, build_workout_block_engine
-from .canonical_drill_registry import CANONICAL_DRILL_BY_CODE, resolved_canonical_drill_code
+from .canonical_drill_registry import (
+    CANONICAL_DRILL_BY_CODE,
+    canonical_drill_spec,
+    resolved_canonical_drill_code,
+)
 from .clock import Clock
 from .cognitive_core import Phase
+from .guide_skill_catalog import guide_ranking_primitive_id_for_code, guide_subskill_ids_for_code
 from .persistence import AttemptHistoryEntry
 from .primitive_ranking import (
     PRIMITIVES as _RANKED_PRIMITIVES,
@@ -428,13 +433,22 @@ def _candidate(
     form_factor: str,
     role_support: tuple[str, ...],
 ) -> AdaptiveDrillCandidate:
+    registry_spec = canonical_drill_spec(drill_code)
+    mapped_primitive_id = guide_ranking_primitive_id_for_code(drill_code) or primitive_id
+    mapped_subskills = guide_subskill_ids_for_code(drill_code)
+    mapped_target_area = (
+        registry_spec.primary_subskill
+        if registry_spec is not None
+        else (mapped_subskills[0] if mapped_subskills else target_area)
+    )
+    mapped_form_factor = registry_spec.granularity if registry_spec is not None else form_factor
     return AdaptiveDrillCandidate(
         drill_code=drill_code,
-        primitive_id=primitive_id,
-        target_area=target_area,
-        form_factor=form_factor,
+        primitive_id=str(mapped_primitive_id).strip().lower(),
+        target_area=str(mapped_target_area).strip().lower(),
+        form_factor=str(mapped_form_factor).strip().lower(),
         role_support=tuple(role_support),
-        canonical_preferred=(str(drill_code).strip().lower() in CANONICAL_DRILL_BY_CODE),
+        canonical_preferred=(registry_spec is not None or str(drill_code).strip().lower() in CANONICAL_DRILL_BY_CODE),
     )
 
 

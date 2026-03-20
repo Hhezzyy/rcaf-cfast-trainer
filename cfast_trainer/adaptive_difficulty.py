@@ -4,6 +4,8 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Literal, cast
 
+from .guide_skill_catalog import official_guide_test, guide_ranking_primitive_id_for_code
+
 
 LaunchDifficultyMode = Literal["adaptive", "fixed"]
 ScopeKind = Literal["code", "family", "primitive"]
@@ -500,6 +502,11 @@ def scope_keys_for_code(test_code: str | None) -> tuple[str, str]:
             resolved = resolved_canonical_drill_code(token)
             if resolved:
                 code_scope = resolved
+    guide_primitive = guide_ranking_primitive_id_for_code(code_scope)
+    if guide_primitive is None:
+        guide_primitive = guide_ranking_primitive_id_for_code(token)
+    if guide_primitive is not None:
+        return (code_scope, guide_primitive)
     try:
         from .primitive_ranking import canonical_ranked_primitive_id_for_code
     except Exception:
@@ -555,6 +562,21 @@ def family_id_for_code(test_code: str | None) -> DifficultyFamilyId:
     token = str(test_code or "").strip().lower()
     if token in {"adaptive_session", "adaptive_session_short", "adaptive_session_micro"}:
         return "quantitative"
+    try:
+        from .canonical_drill_registry import canonical_drill_spec, resolved_canonical_drill_spec
+    except Exception:
+        canonical_drill_spec = None
+        resolved_canonical_drill_spec = None
+    if canonical_drill_spec is not None and resolved_canonical_drill_spec is not None:
+        direct = canonical_drill_spec(token)
+        if direct is not None:
+            return direct.difficulty_family_id
+        resolved = resolved_canonical_drill_spec(token)
+        if resolved is not None:
+            return resolved.difficulty_family_id
+    guide_test = official_guide_test(token)
+    if guide_test is not None:
+        return cast(DifficultyFamilyId, guide_test.difficulty_family_id)
     if token.startswith(
         (
             "numerical_operations",

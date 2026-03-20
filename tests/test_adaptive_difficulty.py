@@ -17,6 +17,7 @@ from cfast_trainer.adaptive_difficulty import (
     recommended_level_for_primitive,
 )
 from cfast_trainer.airborne_numerical import build_ant_airborne_difficulty_profile
+from cfast_trainer.guide_skill_catalog import OfficialGuideTestSpec
 from cfast_trainer.rapid_tracking import build_rapid_tracking_test
 
 
@@ -80,6 +81,47 @@ def test_mode_offsets_shift_time_pressure_and_distractors_by_intended_use() -> N
     assert anchor.axes.distractor_density < build.axes.distractor_density
     assert fatigue.axes.time_pressure >= build.axes.time_pressure
     assert fatigue.axes.distractor_density >= build.axes.distractor_density
+
+
+def test_scope_keys_for_code_prefers_catalog_backed_primitive_mapping(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "cfast_trainer.adaptive_difficulty.guide_ranking_primitive_id_for_code",
+        lambda code: "visual_scan_discipline" if code == "mystery_catalog_code" else None,
+    )
+
+    from cfast_trainer.adaptive_difficulty import scope_keys_for_code
+
+    assert scope_keys_for_code("mystery_catalog_code") == (
+        "mystery_catalog_code",
+        "visual_scan_discipline",
+    )
+
+
+def test_family_id_for_code_prefers_catalog_backed_official_test_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = OfficialGuideTestSpec(
+        official_name="Mystery Test",
+        test_code="mystery_guide_test",
+        guide_duration_min=10,
+        guide_prepability="moderate",
+        devices=("keyboard",),
+        component_skills=("visual_scan_discipline",),
+        component_subskills=("class_search",),
+        difficulty_family_id="search_vigilance",
+        difficulty_axes_used=("time_pressure",),
+        difficulty_description_by_axis={"time_pressure": "Faster pacing."},
+        difficulty_notes="Synthetic catalog mapping for tests.",
+        cognitive_domain_id="scan_search_and_monitoring",
+        test_family_id="scan_search",
+        ranking_primitive_id="visual_scan_discipline",
+    )
+    monkeypatch.setattr(
+        "cfast_trainer.adaptive_difficulty.official_guide_test",
+        lambda code: fake if code == "mystery_guide_test" else None,
+    )
+
+    assert family_id_for_code("mystery_guide_test") == "search_vigilance"
 
 
 def test_next_level_from_performance_applies_hysteresis_and_session_caps() -> None:

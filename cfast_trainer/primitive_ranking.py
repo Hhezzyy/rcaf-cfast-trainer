@@ -8,7 +8,8 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from .adaptive_difficulty import DifficultyFamilyId, difficulty_profile_for_family
-from .canonical_drill_registry import resolved_canonical_drill_code
+from .canonical_drill_registry import canonical_drill_spec, resolved_canonical_drill_code
+from .guide_skill_catalog import guide_ranking_primitive_id_for_code, official_guide_test
 
 if TYPE_CHECKING:
     from .persistence import AttemptHistoryEntry
@@ -810,11 +811,19 @@ def canonical_ranked_primitive_id_for_code(test_code: str | None) -> str | None:
     token = str(test_code or "").strip().lower()
     if token == "":
         return None
+    guide_primitive = guide_ranking_primitive_id_for_code(token)
+    if guide_primitive in PRIMITIVE_BY_ID:
+        return guide_primitive
     direct = _CANONICAL_CODE_TO_PRIMITIVE_ID.get(token)
     if direct is not None:
         return direct
     resolved = resolved_canonical_drill_code(token, for_adaptive=True)
-    if resolved is None or resolved == token:
+    if resolved is None:
+        return None
+    guide_resolved = guide_ranking_primitive_id_for_code(resolved)
+    if guide_resolved in PRIMITIVE_BY_ID:
+        return guide_resolved
+    if resolved == token:
         return None
     return _CANONICAL_CODE_TO_PRIMITIVE_ID.get(resolved)
 
@@ -1430,6 +1439,15 @@ def _adaptive_block_evidence_from_attempt(entry: AttemptHistoryEntry) -> list[Pr
 
 def _source_for_code(test_code: str | None) -> tuple[PrimitiveDefinition, str] | None:
     token = str(test_code or "").strip().lower()
+    guide_primitive_id = canonical_ranked_primitive_id_for_code(token)
+    if guide_primitive_id is not None:
+        primitive = PRIMITIVE_BY_ID.get(guide_primitive_id)
+        if primitive is not None:
+            if official_guide_test(token) is not None:
+                return (primitive, "integrated_test")
+            spec = canonical_drill_spec(token)
+            if spec is not None and spec.status == "canonical_keep":
+                return (primitive, "direct")
     if token in _DIRECT_DRILL_TO_PRIMITIVE:
         return (_DIRECT_DRILL_TO_PRIMITIVE[token], "direct")
     if token in _WORKOUT_TO_PRIMITIVE:

@@ -14,6 +14,7 @@ import pytest
 from cfast_trainer.ant_drills import AntDrillMode
 from cfast_trainer.adaptive_scheduler import (
     ADAPTIVE_SKILL_GRAPH,
+    _candidate,
     _training_mode_for_role,
     AdaptiveSession,
     AdaptiveSessionBlock,
@@ -176,6 +177,20 @@ def test_collect_adaptive_evidence_maps_benchmark_drills_and_coarse_workouts() -
     }
     assert any(item.source_code == "numerical_operations" for item in evidence)
     assert any(item.coarse for item in evidence if item.primitive_id == "visual_scan_discipline")
+
+
+def test_scheduler_candidate_prefers_registry_backed_catalog_metadata() -> None:
+    candidate = _candidate(
+        "vs_multi_target_class_search",
+        "wrong_primitive",
+        "wrong_target_area",
+        "short",
+        ("target_anchor",),
+    )
+
+    assert candidate.primitive_id == "visual_scan_discipline"
+    assert candidate.target_area == "class_search"
+    assert candidate.form_factor == "micro"
 
 
 def test_collect_adaptive_evidence_maps_new_symbolic_and_dual_task_drills() -> None:
