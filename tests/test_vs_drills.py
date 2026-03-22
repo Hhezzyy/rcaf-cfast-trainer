@@ -3,12 +3,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from cfast_trainer.ant_drills import AntDrillMode
-from cfast_trainer.visual_search import VisualSearchPayload, VisualSearchTaskKind
+from cfast_trainer.visual_search import VisualSearchGenerator, VisualSearchPayload, VisualSearchTaskKind
 from cfast_trainer.vs_drills import (
+    build_vs_clean_scan_drill,
     VsMixedTempoGenerator,
     build_vs_family_run_drill,
     build_vs_matrix_routine_priority_switch_drill,
+    build_vs_mixed_tempo_drill,
     build_vs_multi_target_class_search_drill,
+    build_vs_pressure_run_drill,
     build_vs_priority_switch_search_drill,
     build_vs_target_preview_drill,
 )
@@ -103,8 +106,54 @@ def test_mixed_tempo_emits_both_live_visual_search_families() -> None:
     }
 
 
+def test_standard_visual_search_drills_top_out_at_5x5() -> None:
+    builders = (
+        build_vs_target_preview_drill,
+        build_vs_clean_scan_drill,
+        build_vs_pressure_run_drill,
+    )
+    for builder in builders:
+        clock = FakeClock()
+        engine = builder(clock=clock, seed=61, difficulty=_difficulty_for_level(10))
+        engine.start_scored()
+        payload = engine._current.payload
+        assert isinstance(payload, VisualSearchPayload)
+        assert (payload.rows, payload.cols) == (5, 5)
+
+    clock = FakeClock()
+    mixed_engine = build_vs_mixed_tempo_drill(clock=clock, seed=61, difficulty=_difficulty_for_level(10))
+    mixed_engine.start_scored()
+    mixed_shapes: set[tuple[int, int]] = set()
+    for _ in range(3):
+        payload = mixed_engine._current.payload
+        assert isinstance(payload, VisualSearchPayload)
+        mixed_shapes.add((payload.rows, payload.cols))
+        assert mixed_engine.submit_answer(str(mixed_engine._current.answer)) is True
+    assert mixed_shapes >= {(4, 5), (5, 5)}
+
+    for kind in (VisualSearchTaskKind.ALPHANUMERIC, VisualSearchTaskKind.SYMBOL_CODE):
+        clock = FakeClock()
+        engine = build_vs_family_run_drill(
+            clock=clock,
+            seed=71,
+            kind=kind,
+            difficulty=_difficulty_for_level(10),
+            mode=AntDrillMode.STRESS,
+        )
+        engine.start_scored()
+        payload = engine._current.payload
+        assert isinstance(payload, VisualSearchPayload)
+        assert (payload.rows, payload.cols) == (5, 5)
+        assert len(set(payload.cells)) == len(payload.cells)
+        assert all("@" in token for token in payload.cells)
+
+
 def _difficulty_for_level(level: int) -> float:
     return float(level - 1) / 9.0
+
+
+def _bases(payload: VisualSearchPayload) -> set[str]:
+    return {VisualSearchGenerator.token_base(token) for token in payload.cells}
 
 
 def test_multi_target_class_search_emits_mixed_class_payload_metadata() -> None:
@@ -185,3 +234,80 @@ def test_wave1_scan_drills_l2_l5_l8_scale_materially() -> None:
         assert low[4] is not None and mid[4] is not None and high[4] is not None
         assert low[4] > mid[4] > high[4]
         assert low != mid != high
+
+
+def test_wave1_visual_search_drills_top_out_at_5x6_with_unique_l10_boards() -> None:
+    builders = (
+        build_vs_multi_target_class_search_drill,
+        build_vs_priority_switch_search_drill,
+        build_vs_matrix_routine_priority_switch_drill,
+    )
+    for builder in builders:
+        clock = FakeClock()
+        engine = builder(clock=clock, seed=211, difficulty=_difficulty_for_level(10))
+        engine.start_scored()
+        payload = engine._current.payload
+        assert isinstance(payload, VisualSearchPayload)
+        assert (payload.rows, payload.cols) == (5, 6)
+        assert len(set(payload.cells)) == len(payload.cells)
+        assert all("@" in token for token in payload.cells)
+        assert len(_bases(payload)) == 1
+        assert VisualSearchGenerator.token_base(payload.target) in _bases(payload)
+        assert any("+" in token for token in payload.cells)
+
+
+def test_standard_visual_search_drills_switch_to_same_base_overload_at_l9_l10() -> None:
+    builders = (
+        build_vs_target_preview_drill,
+        build_vs_clean_scan_drill,
+        build_vs_pressure_run_drill,
+    )
+    for level in (9, 10):
+        for builder in builders:
+            clock = FakeClock()
+            engine = builder(clock=clock, seed=271, difficulty=_difficulty_for_level(level))
+            engine.start_scored()
+            payload = engine._current.payload
+            assert isinstance(payload, VisualSearchPayload)
+            assert len(_bases(payload)) == 1
+            assert VisualSearchGenerator.token_base(payload.target) in _bases(payload)
+            assert all("@" in token for token in payload.cells)
+            assert any("+" in token for token in payload.cells)
+
+        for kind in (VisualSearchTaskKind.ALPHANUMERIC, VisualSearchTaskKind.SYMBOL_CODE):
+            clock = FakeClock()
+            engine = build_vs_family_run_drill(
+                clock=clock,
+                seed=281,
+                kind=kind,
+                difficulty=_difficulty_for_level(level),
+                mode=AntDrillMode.STRESS,
+            )
+            engine.start_scored()
+            payload = engine._current.payload
+            assert isinstance(payload, VisualSearchPayload)
+            assert len(_bases(payload)) == 1
+            assert VisualSearchGenerator.token_base(payload.target) in _bases(payload)
+
+
+def test_wave1_visual_search_drills_switch_from_mixed_bases_at_l8_to_same_base_at_l9() -> None:
+    builders = (
+        build_vs_multi_target_class_search_drill,
+        build_vs_priority_switch_search_drill,
+        build_vs_matrix_routine_priority_switch_drill,
+    )
+    for builder in builders:
+        clock = FakeClock()
+        l8_engine = builder(clock=clock, seed=311, difficulty=_difficulty_for_level(8))
+        l8_engine.start_scored()
+        l8_payload = l8_engine._current.payload
+        assert isinstance(l8_payload, VisualSearchPayload)
+        assert len(_bases(l8_payload)) > 1
+
+        clock = FakeClock()
+        l9_engine = builder(clock=clock, seed=311, difficulty=_difficulty_for_level(9))
+        l9_engine.start_scored()
+        l9_payload = l9_engine._current.payload
+        assert isinstance(l9_payload, VisualSearchPayload)
+        assert len(_bases(l9_payload)) == 1
+        assert VisualSearchGenerator.token_base(l9_payload.target) in _bases(l9_payload)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 
 import pytest
 
@@ -16,6 +17,7 @@ from cfast_trainer.trace_test_2 import (
     TraceTest2TrialStage,
     build_trace_test_2_test,
     trace_test_2_track_position,
+    trace_test_2_track_tangent,
 )
 
 
@@ -143,43 +145,43 @@ def test_generated_scene_contains_unique_answer_facts() -> None:
     assert len({straight[0], left[0], right[0], leftmost, highest}) >= 4
 
 
-def test_generated_tracks_use_only_axis_aligned_segments() -> None:
+def test_generated_tracks_preserve_role_specific_smooth_tangent_behavior() -> None:
     payload = TraceTest2Generator(seed=29).next_problem(difficulty=0.55).payload
     assert isinstance(payload, TraceTest2Payload)
 
     for track in payload.aircraft:
-        start, middle, end = track.waypoints
-        first_axes = {
-            axis
-            for axis, delta in (
-                ("x", middle.x - start.x),
-                ("y", middle.y - start.y),
-                ("z", middle.z - start.z),
-            )
-            if abs(delta) > 1e-6
-        }
-        second_axes = {
-            axis
-            for axis, delta in (
-                ("x", end.x - middle.x),
-                ("y", end.y - middle.y),
-                ("z", end.z - middle.z),
-            )
-            if abs(delta) > 1e-6
-        }
+        start_tangent = trace_test_2_track_tangent(track=track, progress=0.0)
+        mid_tangent = trace_test_2_track_tangent(track=track, progress=0.5)
+        end_tangent = trace_test_2_track_tangent(track=track, progress=1.0)
 
-        assert len(first_axes) == 1
-        assert len(second_axes) == 1
-        assert first_axes == {"y"}
+        assert all(math.isfinite(component) for component in (*start_tangent, *mid_tangent, *end_tangent))
+        assert start_tangent[1] > 0.0
         if track.motion_kind is TraceTest2MotionKind.STRAIGHT:
-            assert second_axes == {"y"}
+            assert track.direction_changed is False
+            assert start_tangent[0] == pytest.approx(0.0, abs=1e-6)
+            assert mid_tangent[0] == pytest.approx(0.0, abs=1e-6)
+            assert end_tangent[0] == pytest.approx(0.0, abs=1e-6)
+            assert start_tangent[2] == pytest.approx(0.0, abs=1e-6)
+            assert mid_tangent[2] == pytest.approx(0.0, abs=1e-6)
+            assert end_tangent[2] == pytest.approx(0.0, abs=1e-6)
         elif track.motion_kind in (TraceTest2MotionKind.LEFT, TraceTest2MotionKind.RIGHT):
-            assert second_axes == {"x"}
+            assert track.direction_changed is True
+            assert mid_tangent[2] == pytest.approx(0.0, abs=1e-6)
+            assert end_tangent[2] == pytest.approx(0.0, abs=1e-6)
+            expected_sign = -1.0 if track.motion_kind is TraceTest2MotionKind.LEFT else 1.0
+            assert start_tangent[0] == pytest.approx(0.0, abs=1e-6)
+            assert mid_tangent[0] * expected_sign > 0.0
+            assert end_tangent[0] * expected_sign > 0.0
         else:
-            assert second_axes == {"z"}
+            assert track.direction_changed is True
+            assert start_tangent[0] == pytest.approx(0.0, abs=1e-6)
+            assert mid_tangent[0] == pytest.approx(0.0, abs=1e-6)
+            assert end_tangent[0] == pytest.approx(0.0, abs=1e-6)
+            assert mid_tangent[2] > 0.0
+            assert end_tangent[2] > 0.0
 
 
-def test_track_position_is_linear_across_the_two_straight_segments() -> None:
+def test_track_position_uses_quadratic_control_polygon_for_three_point_tracks() -> None:
     track = TraceTest2AircraftTrack(
         code=1,
         color_name="Red",
@@ -199,12 +201,34 @@ def test_track_position_is_linear_across_the_two_straight_segments() -> None:
     half = trace_test_2_track_position(track=track, progress=0.5)
     three_quarters = trace_test_2_track_position(track=track, progress=0.75)
 
-    assert quarter.x == pytest.approx(0.0, abs=0.01)
-    assert quarter.y == pytest.approx(5.0, abs=0.01)
-    assert half.x == pytest.approx(0.0, abs=0.01)
-    assert half.y == pytest.approx(10.0, abs=0.01)
-    assert three_quarters.x == pytest.approx(5.0, abs=0.01)
-    assert three_quarters.y == pytest.approx(10.0, abs=0.01)
+    assert trace_test_2_track_position(track=track, progress=0.0) == track.waypoints[0]
+    assert trace_test_2_track_position(track=track, progress=1.0) == track.waypoints[-1]
+    assert quarter.x == pytest.approx(0.625, abs=0.01)
+    assert quarter.y == pytest.approx(4.375, abs=0.01)
+    assert half.x == pytest.approx(2.5, abs=0.01)
+    assert half.y == pytest.approx(7.5, abs=0.01)
+    assert three_quarters.x == pytest.approx(5.625, abs=0.01)
+    assert three_quarters.y == pytest.approx(9.375, abs=0.01)
+    assert trace_test_2_track_tangent(track=track, progress=0.5) == pytest.approx((10.0, 10.0, 0.0))
+
+
+def test_generated_answer_facts_match_smooth_track_end_states() -> None:
+    payload = TraceTest2Generator(seed=33).next_problem(difficulty=0.6).payload
+    assert isinstance(payload, TraceTest2Payload)
+
+    final_positions = {
+        track.code: trace_test_2_track_position(track=track, progress=1.0)
+        for track in payload.aircraft
+    }
+
+    assert min(payload.aircraft, key=lambda track: track.ended_screen_x).code == min(
+        final_positions,
+        key=lambda code: final_positions[code].x,
+    )
+    assert max(payload.aircraft, key=lambda track: track.ended_altitude_z).code == max(
+        final_positions,
+        key=lambda code: final_positions[code].z,
+    )
 
 
 def test_trial_transitions_from_observe_to_question_and_rejects_input_during_observe() -> None:

@@ -13,6 +13,36 @@ from .cognitive_core import (
 )
 
 
+_OFFICIAL_GRID_BY_LEVEL: tuple[tuple[int, int], ...] = (
+    (3, 4),
+    (3, 4),
+    (3, 4),
+    (4, 4),
+    (4, 4),
+    (4, 4),
+    (4, 4),
+    (4, 5),
+    (4, 5),
+    (4, 5),
+)
+_VISUAL_SEARCH_VARIANT_MARKS: tuple[str, ...] = (
+    "T",
+    "TR",
+    "R",
+    "BR",
+    "B",
+    "BL",
+    "L",
+    "TL",
+    "C",
+    "DOT",
+)
+
+
+def _difficulty_to_level(difficulty: float) -> int:
+    return max(1, min(10, int(round(clamp01(difficulty) * 9.0)) + 1))
+
+
 @dataclass(frozen=True, slots=True)
 class VisualSearchConfig:
     # Guide describes this as a short test; keep timed block compact by default.
@@ -40,6 +70,11 @@ class VisualSearchProfile:
     family_switch_floor: float = 0.15
     family_switch_ceiling: float = 0.75
     preview_emphasis: bool = False
+    grid_by_level: tuple[tuple[int, int], ...] = _OFFICIAL_GRID_BY_LEVEL
+    high_band_unique_level: int = 8
+    same_base_overload_level: int = 9
+    high_band_symbol_only: bool = True
+    variant_marks: tuple[str, ...] = _VISUAL_SEARCH_VARIANT_MARKS
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,6 +87,7 @@ class VisualSearchPayload:
     cell_codes: tuple[int, ...]  # row-major numeric labels shown in each block
     full_credit_error: int
     zero_credit_error: int
+    input_digits: int = 2
     class_count: int = 1
     active_classes: tuple[str, ...] = ()
     salience_level: float = 0.0
@@ -119,22 +155,41 @@ class VisualSearchGenerator:
 
     def next_problem(self, *, difficulty: float) -> Problem:
         normalized_difficulty = clamp01(difficulty)
-        kind = self._pick_kind(difficulty=normalized_difficulty)
-        rows, cols = self._grid_shape(difficulty=normalized_difficulty)
+        level = _difficulty_to_level(normalized_difficulty)
+        kind = self._pick_kind(difficulty=normalized_difficulty, level=level)
+        rows, cols = self._grid_shape(level=level)
         cell_count = rows * cols
 
         bank = self._token_bank(kind)
-        target = str(self._rng.choice(bank))
-        distractors = self._build_distractor_pool(
-            kind=kind,
-            target=target,
-            difficulty=normalized_difficulty,
-            count=cell_count,
-        )
+        target_base = str(self._rng.choice(bank))
+        same_base_level = max(1, int(self._profile.same_base_overload_level))
+        if level >= same_base_level:
+            target, cells = self._build_same_base_overload_board(
+                kind=kind,
+                target_base=target_base,
+                count=cell_count,
+                level=level,
+            )
+            target_idx = cells.index(target)
+        elif level >= max(1, int(self._profile.high_band_unique_level)):
+            target, cells = self._build_high_band_unique_board(
+                kind=kind,
+                target_base=target_base,
+                count=cell_count,
+            )
+            target_idx = cells.index(target)
+        else:
+            target = target_base
+            distractors = self._build_distractor_pool(
+                kind=kind,
+                target=target,
+                difficulty=normalized_difficulty,
+                count=cell_count,
+            )
 
-        cells = [str(distractors[idx]) for idx in range(cell_count)]
-        target_idx = int(self._rng.randint(0, cell_count - 1))
-        cells[target_idx] = target
+            cells = [str(distractors[idx]) for idx in range(cell_count)]
+            target_idx = int(self._rng.randint(0, cell_count - 1))
+            cells[target_idx] = target
 
         # Visible per-cell numeric labels that the user types as the answer.
         code_pool = tuple(range(10, 10 + cell_count))
@@ -161,16 +216,20 @@ class VisualSearchGenerator:
             payload=payload,
         )
 
-    def _grid_shape(self, *, difficulty: float) -> tuple[int, int]:
-        if difficulty < 0.25:
-            return (2, 3)
-        if difficulty < 0.60:
-            return (3, 4)
-        if difficulty < 0.85:
-            return (4, 4)
-        return (4, 5)
+    def _grid_shape(self, *, level: int) -> tuple[int, int]:
+        shapes = self._profile.grid_by_level or _OFFICIAL_GRID_BY_LEVEL
+        index = max(0, min(len(shapes) - 1, int(level) - 1))
+        rows, cols = shapes[index]
+        return (max(1, int(rows)), max(1, int(cols)))
 
-    def _pick_kind(self, *, difficulty: float) -> VisualSearchTaskKind:
+    def _pick_kind(self, *, difficulty: float, level: int) -> VisualSearchTaskKind:
+        if (
+            level >= max(1, int(self._profile.same_base_overload_level))
+            and self._profile.high_band_symbol_only
+            and VisualSearchTaskKind.SYMBOL_CODE in self._kinds
+        ):
+            self._last_kind = VisualSearchTaskKind.SYMBOL_CODE
+            return VisualSearchTaskKind.SYMBOL_CODE
         if len(self._kinds) == 1:
             kind = self._kinds[0]
             self._last_kind = kind
@@ -212,6 +271,136 @@ class VisualSearchGenerator:
             picks.append(str(self._rng.choice(pool)))
         return tuple(picks)
 
+    def _build_high_band_unique_board(
+        self,
+        *,
+        kind: VisualSearchTaskKind,
+        target_base: str,
+        count: int,
+    ) -> tuple[str, list[str]]:
+        marks = self._variant_marks()
+        bases = list(self._high_band_base_pool(kind=kind, target_base=target_base, count=count))
+        while len(bases) * len(marks) < max(1, int(count)):
+            for token in self._token_bank(kind):
+                token = str(token)
+                if token in bases:
+                    continue
+                bases.append(token)
+                if len(bases) * len(marks) >= max(1, int(count)):
+                    break
+
+        target_mark = str(self._rng.choice(marks))
+        target = self._compose_variant_token(target_base, target_mark)
+        pool = [
+            self._compose_variant_token(base, mark)
+            for base in bases
+            for mark in marks
+            if self._compose_variant_token(base, mark) != target
+        ]
+        selected = self._rng.sample(tuple(pool), k=max(0, int(count) - 1))
+        cells = [str(token) for token in selected]
+        cells.append(target)
+        cells = [str(token) for token in self._rng.sample(tuple(cells), k=len(cells))]
+        return target, cells
+
+    def _build_same_base_overload_board(
+        self,
+        *,
+        kind: VisualSearchTaskKind,
+        target_base: str,
+        count: int,
+        level: int,
+    ) -> tuple[str, list[str]]:
+        _ = kind
+        signatures = self._variant_signatures()
+        level_signatures = [
+            signature for signature in signatures if len(signature) == 1
+        ] or list(signatures)
+        if level >= 10:
+            level_signatures = [signature for signature in signatures if len(signature) == 2] or list(signatures)
+
+        target_signature = tuple(
+            level_signatures[int(self._rng.randint(0, len(level_signatures) - 1))]
+        )
+        target = self._compose_variant_token(target_base, target_signature)
+        distractor_signatures = self._sorted_same_base_signatures(
+            target_signature=target_signature,
+            prefer_single_first=level <= 9,
+        )
+
+        needed = max(0, int(count) - 1)
+        if len(distractor_signatures) < needed:
+            repeats = list(distractor_signatures)
+            while len(repeats) < needed:
+                repeats.extend(distractor_signatures)
+            distractor_signatures = tuple(repeats[:needed])
+        else:
+            distractor_signatures = distractor_signatures[:needed]
+
+        cells = [
+            self._compose_variant_token(target_base, signature)
+            for signature in distractor_signatures
+        ]
+        cells.append(target)
+        cells = [str(token) for token in self._rng.sample(tuple(cells), k=len(cells))]
+        return target, cells
+
+    def _high_band_base_pool(
+        self,
+        *,
+        kind: VisualSearchTaskKind,
+        target_base: str,
+        count: int,
+    ) -> tuple[str, ...]:
+        marks = tuple(
+            str(mark).upper()
+            for mark in (self._profile.variant_marks or _VISUAL_SEARCH_VARIANT_MARKS)
+            if str(mark).strip()
+        ) or _VISUAL_SEARCH_VARIANT_MARKS
+        bank = self._token_bank(kind)
+        bases: list[str] = [str(target_base)]
+        for token in self._confusable_members(kind=kind, target=target_base):
+            token = str(token)
+            if token not in bases:
+                bases.append(token)
+        if len(bases) * len(marks) >= max(1, int(count)):
+            return tuple(bases)
+        for token in bank:
+            token = str(token)
+            if token in bases:
+                continue
+            bases.append(token)
+            if len(bases) * len(marks) >= max(1, int(count)):
+                break
+        return tuple(bases)
+
+    @staticmethod
+    def _compose_variant_token(base: str, mark: str | tuple[str, ...] | list[str]) -> str:
+        if isinstance(mark, str):
+            marks = tuple(part.strip().upper() for part in mark.split("+") if part.strip())
+        else:
+            marks = tuple(str(part).strip().upper() for part in tuple(mark) if str(part).strip())
+        if not marks:
+            return str(base)
+        return f"{str(base)}@{'+'.join(marks)}"
+
+    @staticmethod
+    def token_base(token: str) -> str:
+        raw = str(token)
+        return raw.split("@", 1)[0]
+
+    @staticmethod
+    def token_mark(token: str) -> str:
+        return "+".join(VisualSearchGenerator.token_marks(token))
+
+    @staticmethod
+    def token_marks(token: str) -> tuple[str, ...]:
+        raw = str(token)
+        if "@" not in raw:
+            return ()
+        _base, suffix = raw.split("@", 1)
+        return tuple(part.strip().upper() for part in suffix.split("+") if part.strip())
+
     def _token_bank(self, kind: VisualSearchTaskKind) -> tuple[str, ...]:
         if kind is VisualSearchTaskKind.ALPHANUMERIC:
             return self._ALPHANUMERIC_TOKENS
@@ -231,6 +420,7 @@ class VisualSearchGenerator:
         return f"{prefix}: find the matching tile and enter its block number."
 
     def _confusable_members(self, *, kind: VisualSearchTaskKind, target: str) -> tuple[str, ...]:
+        base_target = self.token_base(target)
         if kind is VisualSearchTaskKind.ALPHANUMERIC:
             clusters = self._LETTER_CONFUSABLE_CLUSTERS
         elif kind is VisualSearchTaskKind.SYMBOL_CODE:
@@ -240,10 +430,10 @@ class VisualSearchGenerator:
         seen: set[str] = set()
         ordered: list[str] = []
         for cluster in clusters:
-            if target not in cluster:
+            if base_target not in cluster:
                 continue
             for token in cluster:
-                if token == target or token in seen:
+                if token == base_target or token in seen:
                     continue
                 seen.add(token)
                 ordered.append(token)
@@ -276,6 +466,51 @@ class VisualSearchGenerator:
         t = clamp01(amount)
         return float(start) + (float(end) - float(start)) * t
 
+    def _variant_marks(self) -> tuple[str, ...]:
+        marks: list[str] = []
+        seen: set[str] = set()
+        for raw in self._profile.variant_marks or _VISUAL_SEARCH_VARIANT_MARKS:
+            mark = str(raw).strip().upper()
+            if not mark or mark in seen:
+                continue
+            seen.add(mark)
+            marks.append(mark)
+        return tuple(marks) or _VISUAL_SEARCH_VARIANT_MARKS
+
+    def _variant_signatures(self) -> tuple[tuple[str, ...], ...]:
+        marks = self._variant_marks()
+        signatures: list[tuple[str, ...]] = [(mark,) for mark in marks]
+        for first_index, first in enumerate(marks):
+            for second in marks[first_index + 1 :]:
+                signatures.append((first, second))
+        return tuple(signatures)
+
+    def _sorted_same_base_signatures(
+        self,
+        *,
+        target_signature: tuple[str, ...],
+        prefer_single_first: bool,
+    ) -> tuple[tuple[str, ...], ...]:
+        target_set = set(target_signature)
+        mark_index = {mark: index for index, mark in enumerate(self._variant_marks())}
+
+        def signature_key(signature: tuple[str, ...]) -> tuple[int, int, int, tuple[int, ...]]:
+            signature_set = set(signature)
+            distance = len(signature_set.symmetric_difference(target_set))
+            single_penalty = 0
+            if prefer_single_first:
+                single_penalty = 0 if len(signature) == 1 else 1
+            return (
+                single_penalty,
+                distance,
+                len(signature),
+                tuple(mark_index[mark] for mark in signature),
+            )
+
+        ordered = [signature for signature in self._variant_signatures() if signature != target_signature]
+        ordered.sort(key=signature_key)
+        return tuple(ordered)
+
 
 def build_visual_search_test(
     *,
@@ -291,13 +526,12 @@ def build_visual_search_test(
         "Visual Search Test",
         "",
         "Scan the numbered tiles and match the tile shown underneath the grid.",
-        "Each board uses 12 numbered blocks labelled 10 to 21.",
-        "Enter the number from the matching block.",
+        "Boards scale from the standard 3x4 layout up to denser late-level matrices.",
+        "Enter the two-digit number from the matching block, then press Enter to submit.",
         "Targets use letters and line-figure symbols from the same live test family.",
         "",
         "Controls:",
-        "- Type the two-digit block number",
-        "- Press Enter to submit",
+        "- Type the two-digit block number, then press Enter",
         "",
         "You will get a short practice, then a timed scored block.",
     ]

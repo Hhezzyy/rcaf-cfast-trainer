@@ -63,7 +63,7 @@ def _build_payload() -> SystemLogicPayload:
         system_family="fuel",
         index_entries=(
             SystemLogicIndexEntry(
-                code=0,
+                code=1,
                 label="Tank Status",
                 top_document=SystemLogicDocument(
                     title="Fuel Table",
@@ -78,7 +78,7 @@ def _build_payload() -> SystemLogicPayload:
                 ),
             ),
             SystemLogicIndexEntry(
-                code=1,
+                code=2,
                 label="Flow Rule",
                 top_document=SystemLogicDocument(
                     title="Endurance Rule",
@@ -92,7 +92,7 @@ def _build_payload() -> SystemLogicPayload:
                 ),
             ),
             SystemLogicIndexEntry(
-                code=2,
+                code=3,
                 label="Mission Card",
                 top_document=SystemLogicDocument(
                     title="Burn Reference",
@@ -107,7 +107,7 @@ def _build_payload() -> SystemLogicPayload:
                 ),
             ),
             SystemLogicIndexEntry(
-                code=3,
+                code=4,
                 label="Answer Check",
                 top_document=SystemLogicDocument(
                     title="Question Focus",
@@ -131,7 +131,7 @@ def _build_payload() -> SystemLogicPayload:
         ),
         correct_choice_code=4,
         reasoning_mode="quantitative_duration",
-        required_index_codes=(0, 1, 2),
+        required_index_codes=(1, 2, 3),
         required_document_kinds=("table", "equation"),
     )
 
@@ -195,7 +195,7 @@ def test_system_logic_index_navigation_changes_rendered_pane_content() -> None:
         pygame.quit()
 
 
-def test_system_logic_choice_keys_wait_for_enter_then_submit() -> None:
+def test_system_logic_choice_keys_submit_immediately() -> None:
     engine = _FakeSystemLogicEngine(payload=_build_payload())
     screen = _build_screen(engine)
     try:
@@ -203,15 +203,44 @@ def test_system_logic_choice_keys_wait_for_enter_then_submit() -> None:
             pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_c, "mod": 0, "unicode": "c"})
         )
 
-        assert engine.submissions == []
-        assert screen._system_logic_choice == 3
-        assert screen._input == "3"
+        assert engine.submissions == ["3"]
+    finally:
+        pygame.quit()
 
+
+def test_system_logic_number_keys_switch_index_directly() -> None:
+    engine = _FakeSystemLogicEngine(payload=_build_payload())
+    screen = _build_screen(engine)
+    try:
         screen.handle_event(
-            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "mod": 0, "unicode": "\r"})
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_3, "mod": 0, "unicode": "3"})
         )
 
-        assert engine.submissions == ["3"]
+        assert screen._system_logic_index_index == 2
+    finally:
+        pygame.quit()
+
+
+def test_system_logic_mouse_click_changes_index_and_submits_answer() -> None:
+    engine = _FakeSystemLogicEngine(payload=_build_payload())
+    screen = _build_screen(engine)
+    try:
+        surface = pygame.display.get_surface()
+        assert surface is not None
+        screen.render(surface)
+
+        index_rect = screen._system_logic_index_hitboxes[3]
+        screen.handle_event(
+            pygame.event.Event(pygame.MOUSEBUTTONDOWN, {"button": 1, "pos": index_rect.center})
+        )
+        assert screen._system_logic_index_index == 2
+
+        answer_rect = screen._choice_option_hitboxes[4]
+        screen.handle_event(
+            pygame.event.Event(pygame.MOUSEBUTTONDOWN, {"button": 1, "pos": answer_rect.center})
+        )
+
+        assert engine.submissions == ["4"]
     finally:
         pygame.quit()
 

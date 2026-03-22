@@ -3,10 +3,14 @@ from __future__ import annotations
 from typing import cast
 
 from cfast_trainer.cln_drills import (
+    _LiveDiamond,
     build_cln_colour_lane_drill,
     build_cln_full_pressure_drill,
     build_cln_memory_colour_drill,
     build_cln_memory_math_drill,
+    build_cln_overdrive_blue_return_drill,
+    build_cln_overdrive_dual_math_drill,
+    build_cln_overdrive_six_choice_memory_drill,
     build_cln_sequence_copy_drill,
     build_cln_sequence_math_recall_drill,
     build_cln_sequence_match_drill,
@@ -120,6 +124,7 @@ def test_colour_lane_drill_is_colour_only() -> None:
     assert payload.math_active is False
     assert payload.colour_active is True
     assert payload.show_text_entry is False
+    assert payload.lane_colors == ("RED", "YELLOW", "GREEN")
 
 
 def test_memory_math_and_memory_colour_limit_active_channels() -> None:
@@ -159,3 +164,54 @@ def test_full_pressure_is_deterministic_for_same_seed_and_difficulty() -> None:
     assert payload_a.target_sequence == payload_b.target_sequence
     assert payload_a.math_prompt == payload_b.math_prompt
     assert payload_a.diamonds == payload_b.diamonds
+
+
+def test_overdrive_blue_return_restores_blue_lane_mapping() -> None:
+    clock = FakeClock()
+    engine = build_cln_overdrive_blue_return_drill(clock=clock, seed=101, difficulty=0.6)
+
+    engine.start_practice()
+    payload = cast(ColoursLettersNumbersTrainingPayload, engine.snapshot().payload)
+
+    assert payload.lane_colors == ("RED", "YELLOW", "GREEN", "BLUE")
+    engine._diamonds = [
+        _LiveDiamond(id=77, color="BLUE", row=0, x_norm=0.92, speed_norm_per_s=0.2)
+    ]  # type: ignore[attr-defined]
+    assert engine.submit_answer("CLR:R") is True
+
+
+def test_overdrive_six_choice_memory_generates_six_options_deterministically() -> None:
+    clock_a = FakeClock()
+    clock_b = FakeClock()
+    engine_a = build_cln_overdrive_six_choice_memory_drill(clock=clock_a, seed=131, difficulty=0.7)
+    engine_b = build_cln_overdrive_six_choice_memory_drill(clock=clock_b, seed=131, difficulty=0.7)
+
+    engine_a.start_practice()
+    engine_b.start_practice()
+    payload_a = cast(ColoursLettersNumbersTrainingPayload, engine_a.snapshot().payload)
+    payload_b = cast(ColoursLettersNumbersTrainingPayload, engine_b.snapshot().payload)
+
+    assert len(payload_a.options) == 0
+    clock_a.advance(engine_a._sequence_show_s() + engine_a._memory_recall_delay_s_current + 0.05)
+    clock_b.advance(engine_b._sequence_show_s() + engine_b._memory_recall_delay_s_current + 0.05)
+    engine_a.update()
+    engine_b.update()
+    opened_a = cast(ColoursLettersNumbersTrainingPayload, engine_a.snapshot().payload)
+    opened_b = cast(ColoursLettersNumbersTrainingPayload, engine_b.snapshot().payload)
+    assert opened_a.options_active is True
+    assert len(opened_a.options) == 6
+    assert opened_a.options == opened_b.options
+    assert opened_a.memory_choice_keys == ("A", "S", "D", "F", "G", "H")
+
+
+def test_overdrive_dual_math_emits_bonus_multiple_choice_panel() -> None:
+    clock = FakeClock()
+    engine = build_cln_overdrive_dual_math_drill(clock=clock, seed=151, difficulty=0.8)
+
+    engine.start_practice()
+    payload = cast(ColoursLettersNumbersTrainingPayload, engine.snapshot().payload)
+
+    assert payload.math_active is True
+    assert payload.secondary_math_choice_active is True
+    assert len(payload.secondary_math_options) == 5
+    assert payload.secondary_math_prompt.strip() != ""

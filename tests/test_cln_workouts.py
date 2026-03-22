@@ -136,7 +136,9 @@ def test_real_cln_workout_matches_standard_90_minute_structure() -> None:
         "cln_memory_math",
         "cln_memory_colour",
         "cln_full_steady",
-        "cln_full_pressure",
+        "cln_overdrive_blue_return",
+        "cln_overdrive_six_choice_memory",
+        "cln_overdrive_dual_math",
     )
     assert {
         "Encoding rhythm",
@@ -147,4 +149,7 @@ def test_real_cln_workout_matches_standard_90_minute_structure() -> None:
         "Colour-lane multitask",
         "Full multitask integration",
         "Pressure tolerance",
+        "Blue-lane recovery",
+        "Memory discrimination",
+        "Dual-math switching",
     }.issubset(set(plan.focus_skills))

@@ -119,6 +119,34 @@ def fixed_wing_heading_from_screen_heading(screen_heading_deg: float) -> float:
     return (float(screen_heading_deg) + 90.0) % 360.0
 
 
+def screen_motion_heading_deg(
+    start: tuple[float, float],
+    end: tuple[float, float],
+    *,
+    minimum_distance: float = 0.2,
+) -> float | None:
+    dx = float(end[0] - start[0])
+    dy = float(end[1] - start[1])
+    if math.hypot(dx, dy) < max(0.0, float(minimum_distance)):
+        return None
+    return float(math.degrees(math.atan2(dy, dx)))
+
+
+def panda3d_fixed_wing_hpr_from_screen_heading(
+    *,
+    screen_heading_deg: float,
+    pitch_deg: float = 0.0,
+    roll_deg: float = 0.0,
+    camera_heading_deg: float = 0.0,
+) -> tuple[float, float, float]:
+    return panda3d_fixed_wing_hpr(
+        heading_deg=fixed_wing_heading_from_screen_heading(screen_heading_deg)
+        + float(camera_heading_deg),
+        pitch_deg=float(pitch_deg),
+        roll_deg=float(roll_deg),
+    )
+
+
 def panda3d_fixed_wing_hpr_from_tangent(
     tangent: Point3,
     *,
@@ -259,6 +287,8 @@ def project_fixed_wing_faces(
     view_yaw_deg: float = 0.0,
     view_pitch_deg: float = 0.0,
     view_roll_deg: float = 0.0,
+    forward_x_mix: float = 0.11,
+    forward_y_mix: float = 0.31,
 ) -> tuple[FixedWingProjectedFace, ...]:
     projected: list[FixedWingProjectedFace] = []
     for face in build_fixed_wing_mesh():
@@ -279,7 +309,14 @@ def project_fixed_wing_faces(
         points_2d: list[tuple[int, int]] = []
         depth_sum = 0.0
         for point in rotated:
-            sx, sy, depth = project_fixed_wing_point(point, cx=cx, cy=cy, scale=scale)
+            sx, sy, depth = project_fixed_wing_point(
+                point,
+                cx=cx,
+                cy=cy,
+                scale=scale,
+                forward_x_mix=forward_x_mix,
+                forward_y_mix=forward_y_mix,
+            )
             points_2d.append((sx, sy))
             depth_sum += depth
         if _polygon_area(points_2d) < 1.0:
@@ -310,6 +347,8 @@ def draw_fixed_wing_pygame(
     view_yaw_deg: float = 0.0,
     view_pitch_deg: float = 0.0,
     view_roll_deg: float = 0.0,
+    forward_x_mix: float = 0.11,
+    forward_y_mix: float = 0.31,
 ) -> None:
     import pygame
 
@@ -330,6 +369,8 @@ def draw_fixed_wing_pygame(
         view_yaw_deg=view_yaw_deg,
         view_pitch_deg=view_pitch_deg,
         view_roll_deg=view_roll_deg,
+        forward_x_mix=forward_x_mix,
+        forward_y_mix=forward_y_mix,
     ):
         base = role_colors.get(face.role, paint.body)
         fill = _shade_rgb(base, face.shade)
@@ -407,10 +448,12 @@ def project_fixed_wing_point(
     cx: int,
     cy: int,
     scale: float,
+    forward_x_mix: float = 0.11,
+    forward_y_mix: float = 0.31,
 ) -> tuple[int, int, float]:
     x, y, z = point
-    sx = int(round(cx + (x + (y * 0.11)) * scale))
-    sy = int(round(cy - (z + (y * 0.31)) * scale))
+    sx = int(round(cx + (x + (y * float(forward_x_mix))) * scale))
+    sy = int(round(cy - (z + (y * float(forward_y_mix))) * scale))
     return sx, sy, y
 
 

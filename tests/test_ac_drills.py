@@ -218,3 +218,108 @@ def test_ac_pressure_run_keeps_all_channels_active() -> None:
         assert payload.active_channels == AC_CHANNEL_ORDER
         clock.advance(0.5)
         drill.update()
+
+
+@pytest.mark.parametrize(
+    ("builder", "expected_snippets"),
+    (
+        (
+            build_ac_gate_directive_run_drill,
+            (
+                "Respond only to your assigned call signs while you follow gate directives.",
+                "Gate directives apply to the next matching gate only.",
+            ),
+        ),
+        (
+            build_ac_callsign_filter_run_drill,
+            (
+                "Respond only to your assigned call signs while you fly gates, state commands, and gate directives.",
+                "Gate directives apply to the next matching gate.",
+            ),
+        ),
+        (
+            build_ac_pressure_run_drill,
+            (
+                "Respond only to your assigned call signs, treat gate directives as next-match only, and recover immediately after misses.",
+            ),
+        ),
+    ),
+)
+def test_ac_drill_intro_copy_matches_live_rule_set(builder, expected_snippets) -> None:
+    clock = FakeClock()
+    drill = builder(
+        clock=clock,
+        seed=77,
+        difficulty=0.5,
+        mode=AntDrillMode.BUILD,
+        config=AcDrillConfig(scored_duration_s=2.0),
+    )
+
+    prompt = drill.snapshot().prompt
+
+    for snippet in expected_snippets:
+        assert snippet in prompt
+
+
+@pytest.mark.parametrize(
+    ("builder", "required", "forbidden"),
+    (
+        (
+            build_ac_gate_anchor_drill,
+            ("WASD/arrows or HOTAS fly",),
+            ("Q/W/E/R colour", "digits+Enter recall", "Space/trigger beep"),
+        ),
+        (
+            build_ac_state_command_prime_drill,
+            ("WASD/arrows or HOTAS fly", "Q/W/E/R colour", "keypad 0-9 number"),
+            ("digits+Enter recall", "Space/trigger beep", "assigned call signs only"),
+        ),
+        (
+            build_ac_gate_directive_run_drill,
+            ("WASD/arrows or HOTAS fly", "assigned call signs only", "next matching gate only"),
+            ("Q/W/E/R colour", "digits+Enter recall", "Space/trigger beep"),
+        ),
+        (
+            build_ac_digit_sequence_prime_drill,
+            ("WASD/arrows or HOTAS fly", "digits+Enter recall"),
+            ("Q/W/E/R colour", "Space/trigger beep", "assigned call signs only"),
+        ),
+        (
+            build_ac_trigger_cue_anchor_drill,
+            ("WASD/arrows or HOTAS fly", "Space/trigger beep"),
+            ("Q/W/E/R colour", "digits+Enter recall", "assigned call signs only"),
+        ),
+        (
+            build_ac_callsign_filter_run_drill,
+            (
+                "WASD/arrows or HOTAS fly",
+                "Q/W/E/R colour",
+                "keypad 0-9 number",
+                "assigned call signs only",
+                "next matching gate only",
+            ),
+            ("digits+Enter recall", "Space/trigger beep"),
+        ),
+    ),
+)
+def test_ac_focused_drill_input_hint_only_advertises_live_controls(
+    builder,
+    required,
+    forbidden,
+) -> None:
+    clock = FakeClock()
+    drill = builder(
+        clock=clock,
+        seed=41,
+        difficulty=0.5,
+        mode=AntDrillMode.BUILD,
+        config=AcDrillConfig(scored_duration_s=2.0),
+    )
+    drill.start_practice()
+
+    hint = drill.snapshot().input_hint
+
+    for token in required:
+        assert token in hint
+    for token in forbidden:
+        assert token not in hint

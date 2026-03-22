@@ -105,21 +105,13 @@ def test_table_reading_drill_title_still_routes_to_real_renderer(monkeypatch) ->
         pygame.quit()
 
 
-def test_table_reading_choice_keys_wait_for_enter_then_submit() -> None:
+def test_table_reading_choice_keys_submit_immediately() -> None:
     payload = _sample_payload(part=TableReadingPart.PART_TWO)
     engine = _FakeTableReadingEngine(payload, title="Table Reading: Part 2 Prime")
     _app, screen = _build_screen(engine)
     try:
         screen.handle_event(
             pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_d, "mod": 0, "unicode": "d"})
-        )
-
-        assert engine.submissions == []
-        assert screen._math_choice == 3
-        assert screen._input == "3"
-
-        screen.handle_event(
-            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "mod": 0, "unicode": "\r"})
         )
 
         assert engine.submissions == ["3"]

@@ -9,6 +9,7 @@ from cfast_trainer.instrument_comprehension import (
     InstrumentAircraftViewPreset,
     InstrumentComprehensionConfig,
     InstrumentComprehensionGenerator,
+    InstrumentHeadingDisplayMode,
     InstrumentComprehensionPayload,
     InstrumentOptionRenderMode,
     InstrumentComprehensionScorer,
@@ -19,6 +20,21 @@ from cfast_trainer.instrument_comprehension import (
     altimeter_hand_turns,
     build_instrument_comprehension_test,
     instrument_aircraft_view_preset_for_code,
+    instrument_aircraft_reverse_prompt_view_preset,
+)
+from cfast_trainer.instrument_orientation_solver import (
+    INSTRUMENT_COMMON_MISREAD_TAGS,
+    apply_distractor_profile,
+    display_match_error,
+    display_observation_from_state,
+    lower_band_profile_pool,
+    interpreted_heading_from_display,
+    north_up_heading_from_display,
+)
+from cfast_trainer.instrument_aircraft_cards import (
+    aircraft_card_semantic_drift_tags,
+    aircraft_card_pose_distance,
+    aircraft_card_pose_signature,
 )
 
 
@@ -62,6 +78,21 @@ def test_generator_emits_all_required_trial_kinds() -> None:
     }
 
 
+def test_generator_emits_both_heading_display_modes() -> None:
+    gen = InstrumentComprehensionGenerator(seed=1441)
+    seen: set[InstrumentHeadingDisplayMode] = set()
+    for _ in range(24):
+        p = gen.next_problem(difficulty=0.6)
+        payload = p.payload
+        assert isinstance(payload, InstrumentComprehensionPayload)
+        seen.add(payload.heading_display_mode)
+
+    assert seen == {
+        InstrumentHeadingDisplayMode.ROTATING_ROSE,
+        InstrumentHeadingDisplayMode.MOVING_ARROW,
+    }
+
+
 def test_part1_option_generation_uses_fixed_view_family_by_code() -> None:
     gen = InstrumentComprehensionGenerator(seed=31415)
     problem = gen.next_problem_for_kind(
@@ -83,7 +114,7 @@ def test_part1_option_generation_uses_fixed_view_family_by_code() -> None:
     assert tuple(
         instrument_aircraft_view_preset_for_code(option.code) for option in payload.options
     ) == tuple(option.view_preset for option in payload.options)
-    assert payload.options[problem.answer - 1].state == payload.prompt_state
+    assert payload.options[problem.answer - 1].distractor_tag == "correct"
 
 
 def test_part2_reverse_generation_uses_aircraft_prompt_and_panel_answers() -> None:
@@ -96,9 +127,208 @@ def test_part2_reverse_generation_uses_aircraft_prompt_and_panel_answers() -> No
     assert isinstance(payload, InstrumentComprehensionPayload)
 
     assert payload.option_render_mode is InstrumentOptionRenderMode.INSTRUMENT_PANEL
-    assert payload.prompt_view_preset in set(InstrumentAircraftViewPreset)
+    assert payload.prompt_view_preset is instrument_aircraft_reverse_prompt_view_preset()
     assert all(option.view_preset is None for option in payload.options)
-    assert payload.options[problem.answer - 1].state == payload.prompt_state
+    assert payload.options[problem.answer - 1].distractor_tag == "correct"
+
+
+def test_generator_correct_answer_is_unique_minimum_under_display_matching() -> None:
+    gen = InstrumentComprehensionGenerator(seed=8282)
+    for kind in InstrumentComprehensionTrialKind:
+        problem = gen.next_problem_for_kind(kind=kind, difficulty=0.65)
+        payload = problem.payload
+        assert isinstance(payload, InstrumentComprehensionPayload)
+        prompt_observation = display_observation_from_state(
+            payload.prompt_state,
+            payload.heading_display_mode,
+        )
+        recomputed_errors = tuple(
+            display_match_error(
+                prompt_observation,
+                option.state,
+                kind=payload.kind,
+                heading_display_mode=payload.heading_display_mode,
+            )
+            for option in payload.options
+        )
+        correct_option = payload.options[problem.answer - 1]
+
+        assert recomputed_errors == payload.option_errors
+        assert correct_option.distractor_tag == "correct"
+        assert correct_option.distractor_profile_tag == "correct"
+        assert payload.option_errors[problem.answer - 1] == min(payload.option_errors)
+        assert payload.option_errors.count(min(payload.option_errors)) == 1
+
+
+def test_common_misread_tags_appear_when_distinct() -> None:
+    gen = InstrumentComprehensionGenerator(seed=6161)
+    for kind in InstrumentComprehensionTrialKind:
+        problem = gen.next_problem_for_kind(kind=kind, difficulty=0.6)
+        payload = problem.payload
+        assert isinstance(payload, InstrumentComprehensionPayload)
+        prompt_observation = display_observation_from_state(
+            payload.prompt_state,
+            payload.heading_display_mode,
+        )
+        expected: list[str] = []
+        seen_states = {payload.prompt_state}
+        for tag in INSTRUMENT_COMMON_MISREAD_TAGS:
+            candidate = apply_distractor_profile(
+                payload.prompt_state,
+                profile_tag=tag,
+                kind=payload.kind,
+                heading_display_mode=payload.heading_display_mode,
+                difficulty=0.6,
+            )
+            if candidate != payload.prompt_state and candidate not in seen_states:
+                expected.append(tag)
+                seen_states.add(candidate)
+
+        option_tags = {option.distractor_tag for option in payload.options}
+        assert set(expected).issubset(option_tags)
+        heading_observation = prompt_observation.heading
+        if "misread_other_heading_mode" in expected:
+            if payload.heading_display_mode is InstrumentHeadingDisplayMode.ROTATING_ROSE:
+                expected_heading = interpreted_heading_from_display(
+                    heading_observation,
+                    assumed_mode=InstrumentHeadingDisplayMode.MOVING_ARROW,
+                )
+            else:
+                expected_heading = interpreted_heading_from_display(
+                    heading_observation,
+                    assumed_mode=InstrumentHeadingDisplayMode.ROTATING_ROSE,
+                )
+            option = next(
+                option for option in payload.options if option.distractor_tag == "misread_other_heading_mode"
+            )
+            assert option.state.heading_deg == expected_heading
+        if "misread_north_up" in expected:
+            option = next(
+                option for option in payload.options if option.distractor_tag == "misread_north_up"
+            )
+            assert option.state.heading_deg == north_up_heading_from_display(heading_observation)
+
+
+def test_easier_band_random_profile_comes_from_lower_band_pool() -> None:
+    gen = InstrumentComprehensionGenerator(seed=9797)
+    problem = gen.next_problem_for_kind(
+        kind=InstrumentComprehensionTrialKind.INSTRUMENTS_TO_DESCRIPTION,
+        difficulty=0.82,
+    )
+    payload = problem.payload
+    assert isinstance(payload, InstrumentComprehensionPayload)
+
+    easier_option = next(option for option in payload.options if option.distractor_tag == "easier_band_random")
+    assert easier_option.distractor_profile_tag in set(
+        lower_band_profile_pool(kind=payload.kind, difficulty=0.82)
+    )
+
+
+def test_part1_and_part2_option_states_do_not_collapse_into_near_duplicate_aircraft_cards() -> None:
+    gen = InstrumentComprehensionGenerator(seed=4401)
+    threshold = 26.0
+    for kind in (
+        InstrumentComprehensionTrialKind.INSTRUMENTS_TO_AIRCRAFT,
+        InstrumentComprehensionTrialKind.AIRCRAFT_TO_INSTRUMENTS,
+    ):
+        problem = gen.next_problem_for_kind(kind=kind, difficulty=0.72)
+        payload = problem.payload
+        assert isinstance(payload, InstrumentComprehensionPayload)
+        signatures = []
+        for option in payload.options:
+            preset = (
+                option.view_preset
+                if kind is InstrumentComprehensionTrialKind.INSTRUMENTS_TO_AIRCRAFT
+                else (payload.prompt_view_preset or InstrumentAircraftViewPreset.FRONT_LEFT)
+            )
+            signatures.append(aircraft_card_pose_signature(option.state, view_preset=preset))
+        for idx, left in enumerate(signatures):
+            for right in signatures[idx + 1 :]:
+                assert aircraft_card_pose_distance(left, right) >= threshold
+
+
+def test_part1_and_part2_aircraft_cards_stay_semantically_consistent() -> None:
+    gen = InstrumentComprehensionGenerator(seed=5151)
+    for kind in (
+        InstrumentComprehensionTrialKind.INSTRUMENTS_TO_AIRCRAFT,
+        InstrumentComprehensionTrialKind.AIRCRAFT_TO_INSTRUMENTS,
+    ):
+        problem = gen.next_problem_for_kind(kind=kind, difficulty=0.72)
+        payload = problem.payload
+        assert isinstance(payload, InstrumentComprehensionPayload)
+        if kind is InstrumentComprehensionTrialKind.AIRCRAFT_TO_INSTRUMENTS:
+            assert aircraft_card_semantic_drift_tags(
+                payload.prompt_state,
+                view_preset=payload.prompt_view_preset or InstrumentAircraftViewPreset.FRONT_LEFT,
+            ) == ()
+        for option in payload.options:
+            preset = (
+                option.view_preset
+                if kind is InstrumentComprehensionTrialKind.INSTRUMENTS_TO_AIRCRAFT
+                else (payload.prompt_view_preset or InstrumentAircraftViewPreset.FRONT_LEFT)
+            )
+            assert aircraft_card_semantic_drift_tags(
+                option.state,
+                view_preset=preset or InstrumentAircraftViewPreset.FRONT_LEFT,
+            ) == ()
+
+
+def test_fixed_canonical_states_stay_unique_minimum_across_all_ic_parts() -> None:
+    class FixedStateGenerator(InstrumentComprehensionGenerator):
+        def __init__(
+            self,
+            *,
+            seed: int,
+            fixed_state: InstrumentState,
+            fixed_mode: InstrumentHeadingDisplayMode,
+        ) -> None:
+            super().__init__(seed=seed)
+            self._fixed_state = fixed_state
+            self._fixed_mode = fixed_mode
+
+        def _sample_state(self, *, difficulty: float) -> InstrumentState:
+            _ = difficulty
+            return self._fixed_state
+
+        def _sample_heading_display_mode(self) -> InstrumentHeadingDisplayMode:
+            return self._fixed_mode
+
+    canonical_states = (
+        InstrumentState(
+            speed_kts=220,
+            altitude_ft=4800,
+            vertical_rate_fpm=900,
+            bank_deg=16,
+            pitch_deg=6,
+            heading_deg=90,
+            slip=0,
+        ),
+        InstrumentState(
+            speed_kts=205,
+            altitude_ft=6200,
+            vertical_rate_fpm=-700,
+            bank_deg=-20,
+            pitch_deg=-5,
+            heading_deg=225,
+            slip=0,
+        ),
+    )
+    for fixed_state, mode in zip(
+        canonical_states,
+        (
+            InstrumentHeadingDisplayMode.ROTATING_ROSE,
+            InstrumentHeadingDisplayMode.MOVING_ARROW,
+        ),
+        strict=False,
+    ):
+        gen = FixedStateGenerator(seed=700 + fixed_state.heading_deg, fixed_state=fixed_state, fixed_mode=mode)
+        for kind in InstrumentComprehensionTrialKind:
+            problem = gen.next_problem_for_kind(kind=kind, difficulty=0.7)
+            payload = problem.payload
+            assert isinstance(payload, InstrumentComprehensionPayload)
+            assert payload.options[problem.answer - 1].distractor_tag == "correct"
+            assert payload.option_errors[problem.answer - 1] == min(payload.option_errors)
+            assert payload.option_errors.count(min(payload.option_errors)) == 1
 
 
 def test_scoring_exact_and_estimation_behavior() -> None:

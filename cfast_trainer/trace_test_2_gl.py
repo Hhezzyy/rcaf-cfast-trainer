@@ -2,8 +2,13 @@ from __future__ import annotations
 
 import math
 
-from .aircraft_art import panda3d_fixed_wing_hpr_from_tangent
-from .trace_test_2 import TraceTest2AircraftTrack, TraceTest2Point3, trace_test_2_track_position
+from .aircraft_art import panda3d_fixed_wing_hpr_from_tangent, screen_motion_heading_deg
+from .trace_test_2 import (
+    TraceTest2AircraftTrack,
+    TraceTest2Point3,
+    trace_test_2_track_position,
+    trace_test_2_track_tangent,
+)
 
 
 def aircraft_hpr_from_tangent(tangent: tuple[float, float, float]) -> tuple[float, float, float]:
@@ -27,17 +32,7 @@ def tangent_for_track(
     track: TraceTest2AircraftTrack,
     progress: float,
 ) -> tuple[float, float, float]:
-    pos = trace_test_2_track_position(track=track, progress=progress)
-    future = trace_test_2_track_position(track=track, progress=min(1.0, progress + 0.03))
-    dx = future.x - pos.x
-    dy = future.y - pos.y
-    dz = future.z - pos.z
-    if (dx * dx) + (dy * dy) + (dz * dz) <= 1e-8:
-        past = trace_test_2_track_position(track=track, progress=max(0.0, progress - 0.03))
-        dx = pos.x - past.x
-        dy = pos.y - past.y
-        dz = pos.z - past.z
-    return (float(dx), float(dy), float(dz))
+    return trace_test_2_track_tangent(track=track, progress=progress)
 
 
 def screen_heading_deg(
@@ -55,6 +50,7 @@ def screen_heading_deg(
     )
     px, py = project_point(pos, size=size)
     fx, fy = project_point(future, size=size)
-    if abs(fx - px) + abs(fy - py) < 0.01:
+    heading = screen_motion_heading_deg((px, py), (fx, fy), minimum_distance=0.01)
+    if heading is None:
         return 0.0
-    return float(math.degrees(math.atan2(fy - py, fx - px)))
+    return heading

@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import math
 
-from .aircraft_art import panda3d_fixed_wing_hpr
+from .aircraft_art import screen_motion_heading_deg
 from .trace_test_1 import (
     TraceTest1PromptPlan,
     TraceTest1SceneFrame,
     TraceTest1SceneSnapshot,
+    trace_test_1_aircraft_hpr,
     trace_test_1_normalized_position,
     trace_test_1_scene_frames,
 )
@@ -19,11 +20,7 @@ def _screen_heading_from_world_heading(heading_deg: float) -> float:
 
 
 def aircraft_hpr_for_frame(frame: TraceTest1SceneFrame) -> tuple[float, float, float]:
-    return panda3d_fixed_wing_hpr(
-        heading_deg=float(frame.travel_heading_deg),
-        pitch_deg=float(frame.attitude.pitch_deg),
-        roll_deg=float(frame.attitude.roll_deg),
-    )
+    return trace_test_1_aircraft_hpr(frame)
 
 
 def build_scene_frames(
@@ -67,10 +64,9 @@ def screen_heading_deg(
     center, _ = project_scene_position(frame.position, anchor=anchor, size=size)
     if future_frame is not None:
         future_center, _ = project_scene_position(future_frame.position, anchor=anchor, size=size)
-        dx = float(future_center[0] - center[0])
-        dy = float(future_center[1] - center[1])
-        if abs(dx) + abs(dy) >= 0.2:
-            return float(math.degrees(math.atan2(dy, dx)))
+        heading = screen_motion_heading_deg(center, future_center)
+        if heading is not None:
+            return heading
 
     heading_rad = math.radians(float(frame.travel_heading_deg))
     ahead_world = (
@@ -79,8 +75,7 @@ def screen_heading_deg(
         frame.position[2] + (math.sin(math.radians(float(frame.attitude.pitch_deg))) * 1.4),
     )
     ahead_center, _ = project_scene_position(ahead_world, anchor=anchor, size=size)
-    dx = float(ahead_center[0] - center[0])
-    dy = float(ahead_center[1] - center[1])
-    if abs(dx) + abs(dy) < 0.2:
+    heading = screen_motion_heading_deg(center, ahead_center)
+    if heading is None:
         return 0.0
-    return float(math.degrees(math.atan2(dy, dx)))
+    return heading

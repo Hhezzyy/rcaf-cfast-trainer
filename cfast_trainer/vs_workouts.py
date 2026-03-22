@@ -91,8 +91,8 @@ def build_vs_workout_plan(*, duration_scale: float = 1.0) -> AntWorkoutPlan:
         ),
         notes=(
             "Typed reflections and block setup screens do not count toward the 90-minute drill clock.",
-            "Every block stays on the real 3x4 Visual Search board with one target and typed two-digit block-number answers.",
-            "Early blocks keep distractors easier; later blocks tighten similarity and family switching without changing the board layout.",
+            "Every block keeps the same typed two-digit block-number answer flow while the board scales upward with difficulty.",
+            "Early blocks keep distractors easier; later blocks tighten similarity, expand the matrix, and increase family switching.",
         ),
         blocks=blocks,
     )

@@ -228,20 +228,13 @@ def test_grid_question_click_submits_cell_token() -> None:
         pygame.quit()
 
 
-def test_option_question_uses_numeric_keys_then_enter() -> None:
+def test_option_question_uses_numeric_keys_immediately() -> None:
     payload = _payload_for(part=SpatialIntegrationPart.STATIC, study=False, question_index=3)
     engine = _FakeSpatialEngine(payload)
     _app, screen = _build_screen(engine)
     try:
         screen.handle_event(
             pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_2, "mod": 0, "unicode": "2"})
-        )
-
-        assert engine.submissions == []
-        assert screen._input == "2"
-
-        screen.handle_event(
-            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "mod": 0, "unicode": "\r"})
         )
 
         assert engine.submissions == ["2"]

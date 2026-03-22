@@ -323,7 +323,7 @@ def camera_rig_state(
         * max(0.15, turbulence)
     )
     roll_deg += roll_shake
-    fov_deg = _clamp(52.0 - (zoom * 6.0), 44.0, 52.0)
+    fov_deg = _clamp(_lerp(130.0, 39.0, zoom), 36.0, 136.0)
     orbit_weight = 1.0 - path_transition
 
     return RapidTrackingCameraRigState(

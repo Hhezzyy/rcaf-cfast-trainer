@@ -1174,6 +1174,36 @@ class AdaptiveSession:
             return False
         return bool(submit(raw))
 
+    def _submit_current_block_skip(self, tokens: tuple[str, ...]) -> bool:
+        engine = self._current_engine
+        if self._stage is not AdaptiveStage.BLOCK or engine is None:
+            return False
+        submit = getattr(engine, "submit_answer", None)
+        if not callable(submit):
+            return False
+        for token in tokens:
+            if submit(token):
+                return True
+        return False
+
+    def debug_skip_current_block(self) -> None:
+        engine = self._current_engine
+        if self._stage is not AdaptiveStage.BLOCK or engine is None:
+            return
+        if not self._submit_current_block_skip(
+            ("__skip_section__", "skip_section", "__skip_all__", "skip_all")
+        ):
+            finish = getattr(engine, "finish", None)
+            if callable(finish):
+                finish()
+            elif hasattr(engine, "phase"):
+                try:
+                    setattr(engine, "phase", Phase.RESULTS)
+                except Exception:
+                    if hasattr(engine, "_phase"):
+                        setattr(engine, "_phase", Phase.RESULTS)
+        self.sync_runtime()
+
     def update(self) -> None:
         if self._stage is not AdaptiveStage.BLOCK or self._current_engine is None:
             return

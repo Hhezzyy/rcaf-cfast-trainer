@@ -8,7 +8,16 @@ from pathlib import Path
 
 import pytest
 
-from cfast_trainer.trace_test_1_panda3d import panda3d_trace_test_1_rendering_available
+from cfast_trainer.trace_test_1 import (
+    TraceTest1AircraftPlan,
+    TraceTest1AircraftState,
+    TraceTest1Command,
+    trace_test_1_scene_frames,
+)
+from cfast_trainer.trace_test_1_panda3d import (
+    TraceTest1Panda3DRenderer,
+    panda3d_trace_test_1_rendering_available,
+)
 
 
 _HELPER = Path(__file__).with_name("_panda3d_runtime_probe.py")
@@ -46,6 +55,32 @@ def test_panda3d_trace_test_1_rendering_disabled_when_forced_to_pygame(monkeypat
     monkeypatch.delenv("SDL_VIDEODRIVER", raising=False)
 
     assert panda3d_trace_test_1_rendering_available() is False
+
+
+def test_trace_test_1_panda_hpr_uses_apparent_screen_heading_for_lateral_motion() -> None:
+    prompt = type(
+        "_Prompt",
+        (),
+        {
+            "red_plan": TraceTest1AircraftPlan(
+                start_state=TraceTest1AircraftState(position=(0.0, 8.0, 12.0), heading_deg=0.0),
+                command=TraceTest1Command.LEFT,
+                lead_distance=18.0,
+                maneuver_distance=18.0,
+                altitude_delta=0.0,
+            ),
+            "blue_plans": (),
+            "answer_open_progress": 0.42,
+        },
+    )()
+    frame = trace_test_1_scene_frames(prompt=prompt, progress=0.7).red_frame
+
+    hpr = TraceTest1Panda3DRenderer._aircraft_hpr_for_frame(frame=frame, size=(640, 640))
+
+    assert hpr[0] == pytest.approx(270.0)
+    assert hpr[1] == pytest.approx(frame.attitude.pitch_deg)
+    assert hpr[2] == pytest.approx(frame.attitude.roll_deg)
+    assert hpr[0] != pytest.approx(frame.travel_heading_deg)
 
 
 def test_trace_test_1_screen_prefers_panda3d_runtime() -> None:

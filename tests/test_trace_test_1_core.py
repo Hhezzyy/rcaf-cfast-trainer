@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 
 import pytest
 
@@ -62,6 +63,10 @@ def _manual_prompt(
         ),
         blue_plans=(),
     )
+
+
+def _angle_delta_deg(a: float, b: float) -> float:
+    return ((float(a) - float(b) + 180.0) % 360.0) - 180.0
 
 
 def test_generator_determinism_same_seed_same_sequence() -> None:
@@ -261,43 +266,58 @@ def test_answer_parser_accepts_arrow_aliases() -> None:
     assert trace_test_1_answer_code("bogus") is None
 
 
-def test_left_and_right_use_exact_90_degree_turns() -> None:
+def test_left_and_right_bank_into_turn_and_finish_in_expected_heading_family() -> None:
     left_prompt = _manual_prompt(command=TraceTest1Command.LEFT)
     right_prompt = _manual_prompt(command=TraceTest1Command.RIGHT)
 
-    left_scene = trace_test_1_scene_frames(prompt=left_prompt, progress=0.80)
-    right_scene = trace_test_1_scene_frames(prompt=right_prompt, progress=0.80)
+    left_mid = trace_test_1_scene_frames(prompt=left_prompt, progress=0.80).red_frame
+    left_end = trace_test_1_scene_frames(prompt=left_prompt, progress=1.0).red_frame
+    right_mid = trace_test_1_scene_frames(prompt=right_prompt, progress=0.80).red_frame
+    right_end = trace_test_1_scene_frames(prompt=right_prompt, progress=1.0).red_frame
 
-    assert left_scene.red_frame.travel_heading_deg == pytest.approx(270.0, abs=0.01)
-    assert left_scene.red_frame.position[1] == pytest.approx(12.0, abs=0.01)
-    assert left_scene.red_frame.position[0] < 0.0
-    assert left_scene.red_frame.attitude.roll_deg == pytest.approx(0.0, abs=0.01)
+    assert left_mid.position[0] < 0.0
+    assert left_mid.position[1] > 12.0
+    assert left_mid.attitude.roll_deg < 0.0
+    assert _angle_delta_deg(left_mid.travel_heading_deg, 0.0) < 0.0
+    assert abs(_angle_delta_deg(left_end.travel_heading_deg, 270.0)) <= 2.0
 
-    assert right_scene.red_frame.travel_heading_deg == pytest.approx(90.0, abs=0.01)
-    assert right_scene.red_frame.position[1] == pytest.approx(12.0, abs=0.01)
-    assert right_scene.red_frame.position[0] > 0.0
-    assert right_scene.red_frame.attitude.roll_deg == pytest.approx(0.0, abs=0.01)
+    assert right_mid.position[0] > 0.0
+    assert right_mid.position[1] > 12.0
+    assert right_mid.attitude.roll_deg > 0.0
+    assert _angle_delta_deg(right_mid.travel_heading_deg, 0.0) > 0.0
+    assert abs(_angle_delta_deg(right_end.travel_heading_deg, 90.0)) <= 2.0
 
 
-def test_left_and_right_turns_hold_the_corner_before_moving_sideways() -> None:
+def test_left_and_right_turn_paths_progress_smoothly_after_answer_open() -> None:
     left_prompt = _manual_prompt(command=TraceTest1Command.LEFT)
     right_prompt = _manual_prompt(command=TraceTest1Command.RIGHT)
 
-    left_corner = trace_test_1_scene_frames(prompt=left_prompt, progress=0.44).red_frame
-    left_hold = trace_test_1_scene_frames(prompt=left_prompt, progress=0.48).red_frame
-    left_move = trace_test_1_scene_frames(prompt=left_prompt, progress=0.72).red_frame
+    left_positions = [
+        trace_test_1_scene_frames(prompt=left_prompt, progress=progress).red_frame.position
+        for progress in (0.44, 0.48, 0.56, 0.72)
+    ]
+    right_positions = [
+        trace_test_1_scene_frames(prompt=right_prompt, progress=progress).red_frame.position
+        for progress in (0.44, 0.48, 0.56, 0.72)
+    ]
 
-    assert left_corner.position == pytest.approx(left_hold.position, abs=0.01)
-    assert left_move.position[0] < left_hold.position[0]
-    assert left_move.position[1] == pytest.approx(left_hold.position[1], abs=0.01)
+    assert all(later[0] < earlier[0] for earlier, later in zip(left_positions, left_positions[1:], strict=False))
+    assert all(later[1] > earlier[1] for earlier, later in zip(left_positions, left_positions[1:], strict=False))
+    assert all(
+        math.dist(earlier, later) > 0.01
+        for earlier, later in zip(left_positions, left_positions[1:], strict=False)
+    )
 
-    right_corner = trace_test_1_scene_frames(prompt=right_prompt, progress=0.44).red_frame
-    right_hold = trace_test_1_scene_frames(prompt=right_prompt, progress=0.48).red_frame
-    right_move = trace_test_1_scene_frames(prompt=right_prompt, progress=0.72).red_frame
-
-    assert right_corner.position == pytest.approx(right_hold.position, abs=0.01)
-    assert right_move.position[0] > right_hold.position[0]
-    assert right_move.position[1] == pytest.approx(right_hold.position[1], abs=0.01)
+    assert all(
+        later[0] > earlier[0] for earlier, later in zip(right_positions, right_positions[1:], strict=False)
+    )
+    assert all(
+        later[1] > earlier[1] for earlier, later in zip(right_positions, right_positions[1:], strict=False)
+    )
+    assert all(
+        math.dist(earlier, later) > 0.01
+        for earlier, later in zip(right_positions, right_positions[1:], strict=False)
+    )
 
 
 def test_push_and_pull_keep_forward_motion_while_changing_altitude() -> None:
@@ -312,10 +332,12 @@ def test_push_and_pull_keep_forward_motion_while_changing_altitude() -> None:
     assert push_mid.position[1] > push_start.position[1]
     assert push_mid.position[2] < push_start.position[2]
     assert push_mid.travel_heading_deg == pytest.approx(0.0, abs=0.01)
+    assert push_mid.attitude.pitch_deg < 0.0
 
     assert pull_mid.position[1] > pull_start.position[1]
     assert pull_mid.position[2] > pull_start.position[2]
     assert pull_mid.travel_heading_deg == pytest.approx(0.0, abs=0.01)
+    assert pull_mid.attitude.pitch_deg > 0.0
 
 
 def test_stream_continues_from_current_world_state_after_answer() -> None:
@@ -427,7 +449,7 @@ def test_red_stays_inside_safe_box_across_tiers() -> None:
             gen.commit_prompt(prompt=prompt, progress=1.0)
 
 
-def test_all_trace_test_1_headings_stay_on_cardinal_90_degree_axes() -> None:
+def test_all_trace_test_1_frames_keep_finite_motion_state() -> None:
     gen = TraceTest1Generator(seed=1601)
     for _ in range(20):
         prompt = gen.next_problem(difficulty=0.95).payload
@@ -436,5 +458,9 @@ def test_all_trace_test_1_headings_stay_on_cardinal_90_degree_axes() -> None:
             scene = trace_test_1_scene_frames(prompt=prompt, progress=progress)
             frames = (scene.red_frame, *scene.blue_frames)
             for frame in frames:
-                assert frame.travel_heading_deg % 90.0 == pytest.approx(0.0, abs=0.01)
+                assert all(math.isfinite(value) for value in frame.position)
+                assert math.isfinite(frame.travel_heading_deg)
+                assert math.isfinite(frame.attitude.pitch_deg)
+                assert math.isfinite(frame.attitude.roll_deg)
+                assert math.isfinite(frame.attitude.yaw_deg)
         gen.commit_prompt(prompt=prompt, progress=1.0)

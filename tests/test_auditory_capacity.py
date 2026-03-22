@@ -29,6 +29,10 @@ class _FakeClock:
         self.t += float(dt)
 
 
+def _difficulty_ratio(level: int) -> float:
+    return max(0.0, min(1.0, float(level - 1) / 9.0))
+
+
 def test_default_config_values_match_auditory_overhaul() -> None:
     cfg = AuditoryCapacityConfig()
 
@@ -54,6 +58,45 @@ def test_default_gate_interval_comes_from_spawn_rate() -> None:
     engine = build_auditory_capacity_test(clock=clock, seed=17, difficulty=0.5)
 
     assert engine._gate_interval_s() == pytest.approx(1.0 / 0.24)
+
+
+def test_default_profile_stays_bounded_low_and_overloads_high() -> None:
+    low_clock = _FakeClock()
+    high_clock = _FakeClock()
+    low_engine = build_auditory_capacity_test(
+        clock=low_clock,
+        seed=17,
+        difficulty=_difficulty_ratio(1),
+    )
+    high_engine = build_auditory_capacity_test(
+        clock=high_clock,
+        seed=17,
+        difficulty=_difficulty_ratio(10),
+    )
+
+    low_engine.start_practice()
+    low_engine.start_scored()
+    high_engine.start_practice()
+    high_engine.start_scored()
+
+    low_digits = "".join(
+        ch
+        for ch in str(low_engine._build_runtime_digit_sequence_event(timestamp_s=1.0).payload)
+        if ch.isdigit()
+    )
+    high_digits = "".join(
+        ch
+        for ch in str(high_engine._build_runtime_digit_sequence_event(timestamp_s=1.0).payload)
+        if ch.isdigit()
+    )
+
+    assert len(low_digits) in (4, 5)
+    assert len(high_digits) == 10
+    assert len(low_engine._assigned_callsigns) == 3
+    assert len(high_engine._assigned_callsigns) == 4
+    assert low_engine._effective_gate_interval_s() == pytest.approx(4.2, abs=0.05)
+    assert high_engine._effective_gate_interval_s() == pytest.approx(1.6, abs=0.05)
+    assert high_engine._effective_gate_interval_s() < low_engine._effective_gate_interval_s()
 
 
 def test_spawned_gate_uses_shared_far_spawn_anchor() -> None:

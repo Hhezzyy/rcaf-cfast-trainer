@@ -33,6 +33,10 @@ class FakeClock:
         self.t += float(dt)
 
 
+def _difficulty_ratio(level: int) -> float:
+    return max(0.0, min(1.0, float(level - 1) / 9.0))
+
+
 def _event(
     *,
     event_id: int,
@@ -329,26 +333,102 @@ def test_custom_scored_segments_advance_metadata_as_segments_change() -> None:
     assert second.active_channels == ("gates", "digit_recall")
 
 
-def test_runtime_digit_sequences_are_grouped_to_five_or_six_digits() -> None:
+@pytest.mark.parametrize(
+    ("level", "expected_lengths"),
+    (
+        (1, {4, 5}),
+        (4, {5, 6}),
+        (6, {6, 7}),
+        (8, {7, 8}),
+        (9, {8, 9}),
+        (10, {10}),
+    ),
+)
+def test_runtime_digit_sequences_follow_default_difficulty_buckets(
+    level: int,
+    expected_lengths: set[int],
+) -> None:
     clock = FakeClock()
     engine = build_auditory_capacity_test(
         clock=clock,
-        seed=41,
-        difficulty=0.62,
-        config=AuditoryCapacityConfig(
-            practice_enabled=False,
-            practice_duration_s=0.0,
-            scored_duration_s=10.0,
-            run_duration_seconds=10.0,
-        ),
+        seed=41 + level,
+        difficulty=_difficulty_ratio(level),
     )
     engine.start_practice()
     engine.start_scored()
 
-    for _ in range(20):
-        evt = engine._build_runtime_digit_sequence_event(timestamp_s=1.0 + _)
-        digits = "".join(ch for ch in str(evt.payload) if ch.isdigit())
-        assert len(digits) in (5, 6)
+    lengths = {
+        len("".join(ch for ch in str(engine._build_runtime_digit_sequence_event(timestamp_s=1.0 + idx).payload) if ch.isdigit()))
+        for idx in range(24)
+    }
+    assert lengths <= expected_lengths
+    assert min(lengths) >= min(expected_lengths)
+    assert max(lengths) <= max(expected_lengths)
+
+
+def test_default_profile_adds_fourth_callsign_at_level_eight_and_above() -> None:
+    low_clock = FakeClock()
+    high_clock = FakeClock()
+    low_engine = build_auditory_capacity_test(
+        clock=low_clock,
+        seed=71,
+        difficulty=_difficulty_ratio(7),
+    )
+    high_engine = build_auditory_capacity_test(
+        clock=high_clock,
+        seed=72,
+        difficulty=_difficulty_ratio(8),
+    )
+
+    assert len(low_engine._assigned_callsigns) == 3
+    assert len(high_engine._assigned_callsigns) == 4
+
+
+def test_default_profile_gate_interval_shrinks_to_top_end_pressure() -> None:
+    low_engine = build_auditory_capacity_test(
+        clock=FakeClock(),
+        seed=81,
+        difficulty=_difficulty_ratio(1),
+    )
+    mid_engine = build_auditory_capacity_test(
+        clock=FakeClock(),
+        seed=82,
+        difficulty=_difficulty_ratio(6),
+    )
+    high_engine = build_auditory_capacity_test(
+        clock=FakeClock(),
+        seed=83,
+        difficulty=_difficulty_ratio(10),
+    )
+
+    assert low_engine._effective_gate_interval_s() == pytest.approx(4.2, abs=0.05)
+    assert high_engine._effective_gate_interval_s() == pytest.approx(1.6, abs=0.05)
+    assert low_engine._effective_gate_interval_s() > mid_engine._effective_gate_interval_s()
+    assert mid_engine._effective_gate_interval_s() > high_engine._effective_gate_interval_s()
+
+
+def test_default_profile_payload_exposes_split_background_and_instructor_mix() -> None:
+    engine = build_auditory_capacity_test(
+        clock=FakeClock(),
+        seed=91,
+        difficulty=_difficulty_ratio(10),
+    )
+    engine.start_practice()
+    engine.start_scored()
+    engine._phase_duration_s = 40.0
+    engine._briefing_duration_s = 4.0
+    engine._sim_elapsed_s = 20.0
+
+    payload = engine.snapshot().payload
+    assert payload is not None
+    assert len(payload.assigned_callsigns) == 4
+    assert payload.background_noise_level > 0.0
+    assert payload.background_distortion_level > 0.0
+    assert payload.distortion_level == pytest.approx(payload.background_distortion_level)
+    assert payload.instructor_noise_level > payload.background_noise_level
+    assert payload.instructor_distortion_level > payload.background_distortion_level
+    assert payload.instructor_rate_wpm == 273
+    assert payload.ambient_layer_target == 3
 
 
 def test_next_gate_directive_binds_replaces_and_clears_after_resolution() -> None:
@@ -456,6 +536,47 @@ def test_beep_task_accepts_one_press_and_rejects_early_late_and_extra() -> None:
     engine._update_instruction_channel()
     assert engine.events()[-1].kind.value == "trigger"
     assert engine.events()[-1].is_correct is False
+
+
+def test_briefing_script_uses_concise_instruction_copy() -> None:
+    _, engine = _build_engine()
+
+    lines = [str(event.payload) for event in engine._build_briefing_script(duration_s=4.0)]
+
+    assert lines == [
+        "Your call signs are EAGLE, RAVEN, VIPER. Respond only to those call signs.",
+        (
+            "Use Q W E R for colour, keypad numbers for the ball, and type "
+            f"{engine._instruction_digit_range_label()} sequences with Enter."
+        ),
+        "Press trigger or Space on the beep. Gate instructions apply to the next matching gate.",
+    ]
+
+
+def test_gate_directive_instruction_text_drops_filler_language() -> None:
+    _, engine = _build_engine()
+    event = AuditoryCapacityInstructionEvent(
+        event_id=10,
+        timestamp_s=0.1,
+        addressed_call_sign="RAVEN",
+        speaker_id="lead",
+        command_type=AuditoryCapacityCommandType.GATE_DIRECTIVE,
+        payload=AuditoryCapacityGateDirective(
+            action="AVOID",
+            match_kind="SHAPE",
+            match_value="TRIANGLE",
+        ),
+        expires_at_s=1.0,
+        is_distractor=False,
+    )
+
+    text = engine._instruction_text(event)
+
+    assert "Do not go through it" not in text
+    assert text in {
+        "RAVEN. Avoid the next triangle gate.",
+        "RAVEN. Skip the next triangle gate.",
+    }
 
 
 def test_distractor_envelope_falls_faster_than_it_rises() -> None:

@@ -197,6 +197,9 @@ from .cln_drills import (
     build_cln_math_prime_drill,
     build_cln_memory_colour_drill,
     build_cln_memory_math_drill,
+    build_cln_overdrive_blue_return_drill,
+    build_cln_overdrive_dual_math_drill,
+    build_cln_overdrive_six_choice_memory_drill,
     build_cln_sequence_copy_drill,
     build_cln_sequence_match_drill,
 )
@@ -3061,6 +3064,39 @@ class AntWorkoutSession:
             )
         elif block.drill_code == "cln_full_pressure":
             engine = build_cln_full_pressure_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=ClnDrillConfig(
+                    practice_rounds=0,
+                    scored_duration_s=block.duration_s,
+                ),
+            )
+        elif block.drill_code == "cln_overdrive_blue_return":
+            engine = build_cln_overdrive_blue_return_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=ClnDrillConfig(
+                    practice_rounds=0,
+                    scored_duration_s=block.duration_s,
+                ),
+            )
+        elif block.drill_code == "cln_overdrive_six_choice_memory":
+            engine = build_cln_overdrive_six_choice_memory_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=ClnDrillConfig(
+                    practice_rounds=0,
+                    scored_duration_s=block.duration_s,
+                ),
+            )
+        elif block.drill_code == "cln_overdrive_dual_math":
+            engine = build_cln_overdrive_dual_math_drill(
                 clock=self._clock,
                 seed=block_seed,
                 difficulty=difficulty,

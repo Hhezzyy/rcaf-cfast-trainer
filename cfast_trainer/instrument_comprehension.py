@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from enum import StrEnum
 
 from .clock import Clock
@@ -45,6 +45,11 @@ class InstrumentOptionRenderMode(StrEnum):
     DESCRIPTION = "description"
 
 
+class InstrumentHeadingDisplayMode(StrEnum):
+    ROTATING_ROSE = "rotating_rose"
+    MOVING_ARROW = "moving_arrow"
+
+
 @dataclass(frozen=True, slots=True)
 class InstrumentState:
     speed_kts: int
@@ -62,6 +67,8 @@ class InstrumentOption:
     state: InstrumentState
     description: str
     view_preset: InstrumentAircraftViewPreset | None = None
+    distractor_tag: str = ""
+    distractor_profile_tag: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,9 +82,31 @@ class InstrumentComprehensionPayload:
     zero_credit_error: int
     prompt_view_preset: InstrumentAircraftViewPreset | None = None
     option_render_mode: InstrumentOptionRenderMode = InstrumentOptionRenderMode.DESCRIPTION
+    heading_display_mode: InstrumentHeadingDisplayMode = InstrumentHeadingDisplayMode.ROTATING_ROSE
     content_family: str = ""
     variant_id: str = ""
     content_pack: str = "instrument_comprehension"
+
+
+from .instrument_orientation_solver import (
+    INSTRUMENT_COMMON_MISREAD_TAGS,
+    INSTRUMENT_DISTRACTOR_FALLBACKS,
+    apply_distractor_profile,
+    display_match_error,
+    display_observation_from_state,
+    describe_instrument_state,
+    lower_band_profile_pool,
+    nearest_profile_candidates,
+    solve_instrument_interpretation,
+    interpretation_error,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _InstrumentOptionSeed:
+    state: InstrumentState
+    distractor_tag: str
+    distractor_profile_tag: str
 
 
 _PART_ORDER = (
@@ -93,6 +122,7 @@ _PART1_VIEW_PRESETS: tuple[InstrumentAircraftViewPreset, ...] = (
     InstrumentAircraftViewPreset.PROFILE_RIGHT,
     InstrumentAircraftViewPreset.TOP_OBLIQUE,
 )
+_PART2_PROMPT_VIEW_PRESET = InstrumentAircraftViewPreset.FRONT_LEFT
 
 
 def instrument_aircraft_view_preset_for_code(code: int) -> InstrumentAircraftViewPreset:
@@ -100,64 +130,8 @@ def instrument_aircraft_view_preset_for_code(code: int) -> InstrumentAircraftVie
     return _PART1_VIEW_PRESETS[idx]
 
 
-def _norm_heading(deg: int) -> int:
-    return int(deg) % 360
-
-
-def _heading_error(a: int, b: int) -> int:
-    aa = _norm_heading(a)
-    bb = _norm_heading(b)
-    diff = abs(aa - bb)
-    return min(diff, 360 - diff)
-
-
-def _heading_cardinal_8(heading_deg: int) -> str:
-    h = float(_norm_heading(heading_deg))
-    idx = int(((h + 22.5) % 360) // 45)
-    labels = ("N", "NE", "E", "SE", "S", "SW", "W", "NW")
-    return labels[idx]
-
-
-def _turn_phrase(bank_deg: int) -> str:
-    bank = int(bank_deg)
-    if abs(bank) <= 4:
-        return "maintaining direction"
-    return "turning left" if bank < 0 else "turning right"
-
-
-def _altitude_phrase(*, altitude_ft: int, vertical_rate_fpm: int) -> str:
-    altitude = int(altitude_ft)
-    vertical_rate = int(vertical_rate_fpm)
-    if abs(vertical_rate) < 100:
-        return f"maintaining height at {altitude} feet"
-    if vertical_rate > 0:
-        return f"climbing through {altitude} feet"
-    return f"descending through {altitude} feet"
-
-
-def _describe_state(state: InstrumentState) -> str:
-    altitude_text = _altitude_phrase(
-        altitude_ft=int(state.altitude_ft),
-        vertical_rate_fpm=int(state.vertical_rate_fpm),
-    )
-    return (
-        f"Flying at {int(state.speed_kts)} kt, "
-        f"{_turn_phrase(int(state.bank_deg))}, "
-        f"heading {_heading_cardinal_8(int(state.heading_deg))}, "
-        f"{altitude_text}."
-    )
-
-
-def _state_error(true: InstrumentState, other: InstrumentState) -> int:
-    speed_err = abs(int(true.speed_kts) - int(other.speed_kts)) // 5
-    alt_err = abs(int(true.altitude_ft) - int(other.altitude_ft)) // 100
-    vs_err = abs(int(true.vertical_rate_fpm) - int(other.vertical_rate_fpm)) // 100
-    bank_err = abs(int(true.bank_deg) - int(other.bank_deg)) * 2
-    pitch_err = abs(int(true.pitch_deg) - int(other.pitch_deg)) * 3
-    heading_err = _heading_error(true.heading_deg, other.heading_deg)
-    slip_penalty = 0 if int(true.slip) == int(other.slip) else 14
-    return int(speed_err + alt_err + vs_err + bank_err + pitch_err + heading_err + slip_penalty)
-
+def instrument_aircraft_reverse_prompt_view_preset() -> InstrumentAircraftViewPreset:
+    return _PART2_PROMPT_VIEW_PRESET
 
 def altimeter_hand_turns(altitude_ft: int) -> tuple[float, float]:
     """Return clockwise turns from the 12 o'clock position.
@@ -226,54 +200,101 @@ class InstrumentComprehensionGenerator:
         difficulty: float,
     ) -> Problem:
         d = clamp01(difficulty)
-        true_state = self._sample_state(difficulty=d)
-
-        distractors = self._build_distractors(state=true_state, difficulty=d, kind=kind)
-        candidates = [true_state, *distractors]
-
-        order = self._rng.sample((0, 1, 2, 3, 4), k=5)
-        options: list[InstrumentOption] = []
-        option_errors: list[int] = []
-        correct_code = 0
-
-        for code, idx in enumerate(order, start=1):
-            candidate_state = candidates[idx]
-            option = InstrumentOption(
-                code=code,
-                state=candidate_state,
-                description=_describe_state(candidate_state),
-                view_preset=(
-                    instrument_aircraft_view_preset_for_code(code)
-                    if kind is InstrumentComprehensionTrialKind.INSTRUMENTS_TO_AIRCRAFT
-                    else None
-                ),
-            )
-            options.append(option)
-            option_errors.append(_state_error(true_state, candidate_state))
-            if idx == 0:
-                correct_code = code
-
         option_render_mode = {
             InstrumentComprehensionTrialKind.INSTRUMENTS_TO_AIRCRAFT: InstrumentOptionRenderMode.AIRCRAFT,
             InstrumentComprehensionTrialKind.AIRCRAFT_TO_INSTRUMENTS: InstrumentOptionRenderMode.INSTRUMENT_PANEL,
             InstrumentComprehensionTrialKind.INSTRUMENTS_TO_DESCRIPTION: InstrumentOptionRenderMode.DESCRIPTION,
         }[kind]
+        heading_display_mode = self._sample_heading_display_mode()
+        sampled_state = self._sample_state(difficulty=d)
+        solved_state = solve_instrument_interpretation(
+            prompt_state=sampled_state,
+            kind=kind,
+            heading_display_mode=heading_display_mode,
+        )
+        prompt_observation = display_observation_from_state(
+            solved_state,
+            heading_display_mode,
+        )
+        prompt_view_preset = (
+            instrument_aircraft_reverse_prompt_view_preset()
+            if kind is InstrumentComprehensionTrialKind.AIRCRAFT_TO_INSTRUMENTS
+            else None
+        )
+        option_seeds = self._build_option_seeds(
+            state=solved_state,
+            difficulty=d,
+            kind=kind,
+            heading_display_mode=heading_display_mode,
+        )
+        order = self._rng.sample((0, 1, 2, 3, 4), k=5)
+        options: list[InstrumentOption] = []
+        for code, idx in enumerate(order, start=1):
+            seed = option_seeds[idx]
+            option = InstrumentOption(
+                code=code,
+                state=seed.state,
+                description=describe_instrument_state(seed.state),
+                view_preset=(
+                    instrument_aircraft_view_preset_for_code(code)
+                    if kind is InstrumentComprehensionTrialKind.INSTRUMENTS_TO_AIRCRAFT
+                    else None
+                ),
+                distractor_tag=seed.distractor_tag,
+                distractor_profile_tag=seed.distractor_profile_tag,
+            )
+            options.append(option)
+
+        options = self._repair_option_render_collisions(
+            options=options,
+            correct_state=solved_state,
+            difficulty=d,
+            kind=kind,
+            heading_display_mode=heading_display_mode,
+            prompt_view_preset=prompt_view_preset,
+        )
+        self._validate_aircraft_option_semantics(
+            options=options,
+            prompt_state=solved_state,
+            kind=kind,
+            prompt_view_preset=prompt_view_preset,
+        )
+        option_errors = tuple(
+            display_match_error(
+                prompt_observation,
+                option.state,
+                kind=kind,
+                heading_display_mode=heading_display_mode,
+            )
+            for option in options
+        )
+        correct_indices = [
+            idx for idx, option in enumerate(options) if option.distractor_tag == "correct"
+        ]
+        if len(correct_indices) != 1:
+            raise RuntimeError("Instrument Comprehension expected exactly one correct option")
+        correct_idx = correct_indices[0]
+        min_error = min(option_errors)
+        if option_errors[correct_idx] != min_error or option_errors.count(min_error) != 1:
+            raise RuntimeError("Instrument Comprehension correct option lost display-model uniqueness")
+        correct_code = int(options[correct_idx].code)
         payload = InstrumentComprehensionPayload(
             kind=kind,
-            prompt_state=true_state,
-            prompt_description=_describe_state(true_state),
+            prompt_state=solved_state,
+            prompt_description=describe_instrument_state(solved_state),
             options=tuple(options),
-            option_errors=tuple(option_errors),
+            option_errors=option_errors,
             full_credit_error=0,
             zero_credit_error=lerp_int(130, 70, d),
-            prompt_view_preset=(
-                InstrumentAircraftViewPreset(self._rng.choice(_PART1_VIEW_PRESETS))
-                if kind is InstrumentComprehensionTrialKind.AIRCRAFT_TO_INSTRUMENTS
-                else None
-            ),
+            prompt_view_preset=prompt_view_preset,
             option_render_mode=option_render_mode,
+            heading_display_mode=heading_display_mode,
             content_family=str(kind.value),
-            variant_id=stable_variant_id(kind.value, option_render_mode.value),
+            variant_id=stable_variant_id(
+                kind.value,
+                option_render_mode.value,
+                heading_display_mode.value,
+            ),
         )
         return Problem(
             prompt=self._prompt_for(kind=kind),
@@ -327,48 +348,360 @@ class InstrumentComprehensionGenerator:
             slip=int(slip),
         )
 
-    def _build_distractors(
+    def _sample_heading_display_mode(self) -> InstrumentHeadingDisplayMode:
+        return InstrumentHeadingDisplayMode(
+            self._rng.choice(
+                (
+                    InstrumentHeadingDisplayMode.ROTATING_ROSE,
+                    InstrumentHeadingDisplayMode.MOVING_ARROW,
+                )
+            )
+        )
+
+    def _build_option_seeds(
         self,
         *,
         state: InstrumentState,
         difficulty: float,
         kind: InstrumentComprehensionTrialKind,
-    ) -> tuple[InstrumentState, InstrumentState, InstrumentState, InstrumentState]:
-        near_heading = max(5, lerp_int(32, 10, difficulty))
-        far_heading = lerp_int(95, 42, difficulty)
-        speed_delta = lerp_int(40, 15, difficulty)
-        altitude_delta = lerp_int(1600, 400, difficulty)
-        vs_delta = lerp_int(900, 300, difficulty)
+        heading_display_mode: InstrumentHeadingDisplayMode,
+    ) -> tuple[_InstrumentOptionSeed, ...]:
+        used_states = {state}
+        used_tags = {"correct"}
+        seeds: list[_InstrumentOptionSeed] = [
+            _InstrumentOptionSeed(
+                state=state,
+                distractor_tag="correct",
+                distractor_profile_tag="correct",
+            )
+        ]
 
-        if kind in (
+        for tag in INSTRUMENT_COMMON_MISREAD_TAGS:
+            seeds.append(
+                self._pick_tagged_distractor(
+                    requested_tag=tag,
+                    used_states=used_states,
+                    used_tags=used_tags,
+                    state=state,
+                    difficulty=difficulty,
+                    kind=kind,
+                    heading_display_mode=heading_display_mode,
+                )
+            )
+
+        seeds.append(
+            self._pick_easier_band_random_distractor(
+                used_states=used_states,
+                used_tags=used_tags,
+                state=state,
+                difficulty=difficulty,
+                kind=kind,
+                heading_display_mode=heading_display_mode,
+            )
+        )
+        seeds.append(
+            self._pick_nearest_distractor(
+                used_states=used_states,
+                used_tags=used_tags,
+                state=state,
+                difficulty=difficulty,
+                kind=kind,
+                heading_display_mode=heading_display_mode,
+            )
+        )
+        return tuple(seeds)
+
+    def _pick_tagged_distractor(
+        self,
+        *,
+        requested_tag: str,
+        used_states: set[InstrumentState],
+        used_tags: set[str],
+        state: InstrumentState,
+        difficulty: float,
+        kind: InstrumentComprehensionTrialKind,
+        heading_display_mode: InstrumentHeadingDisplayMode,
+        candidate_tags: tuple[str, ...] | None = None,
+    ) -> _InstrumentOptionSeed:
+        ordered_tags = (
+            tuple(candidate_tags)
+            if candidate_tags is not None
+            else (requested_tag, *self._fallback_tags(kind))
+        )
+        for tag in ordered_tags:
+            if tag in used_tags and tag != requested_tag:
+                continue
+            candidate_state = apply_distractor_profile(
+                state,
+                profile_tag=tag,
+                kind=kind,
+                heading_display_mode=heading_display_mode,
+                difficulty=difficulty,
+            )
+            if candidate_state in used_states:
+                continue
+            if (
+                interpretation_error(
+                    state,
+                    candidate_state,
+                    kind=kind,
+                    heading_display_mode=heading_display_mode,
+                )
+                <= 0
+            ):
+                continue
+            used_states.add(candidate_state)
+            used_tags.add(tag)
+            return _InstrumentOptionSeed(
+                state=candidate_state,
+                distractor_tag=requested_tag,
+                distractor_profile_tag=tag,
+            )
+        raise RuntimeError(f"Could not build Instrument Comprehension distractor for tag {requested_tag}")
+
+    def _pick_easier_band_random_distractor(
+        self,
+        *,
+        used_states: set[InstrumentState],
+        used_tags: set[str],
+        state: InstrumentState,
+        difficulty: float,
+        kind: InstrumentComprehensionTrialKind,
+        heading_display_mode: InstrumentHeadingDisplayMode,
+    ) -> _InstrumentOptionSeed:
+        base_pool = tuple(
+            tag
+            for tag in self._lower_band_profile_pool(kind=kind, difficulty=difficulty)
+            if tag not in used_tags
+        )
+        if base_pool:
+            start = int(self._rng.randint(0, len(base_pool) - 1))
+            ordered = base_pool[start:] + base_pool[:start]
+        else:
+            ordered = ()
+        return self._pick_tagged_distractor(
+            requested_tag="easier_band_random",
+            used_states=used_states,
+            used_tags=used_tags,
+            state=state,
+            difficulty=difficulty,
+            kind=kind,
+            heading_display_mode=heading_display_mode,
+            candidate_tags=tuple(ordered) + self._fallback_tags(kind),
+        )
+
+    def _pick_nearest_distractor(
+        self,
+        *,
+        used_states: set[InstrumentState],
+        used_tags: set[str],
+        state: InstrumentState,
+        difficulty: float,
+        kind: InstrumentComprehensionTrialKind,
+        heading_display_mode: InstrumentHeadingDisplayMode,
+    ) -> _InstrumentOptionSeed:
+        ranked: list[tuple[int, int, str, InstrumentState]] = []
+        for idx, tag in enumerate(self._nearest_profile_candidates(kind=kind, difficulty=difficulty)):
+            if tag in used_tags:
+                continue
+            candidate_state = apply_distractor_profile(
+                state,
+                profile_tag=tag,
+                kind=kind,
+                heading_display_mode=heading_display_mode,
+                difficulty=difficulty,
+            )
+            if candidate_state in used_states:
+                continue
+            err = interpretation_error(
+                state,
+                candidate_state,
+                kind=kind,
+                heading_display_mode=heading_display_mode,
+            )
+            if err <= 0:
+                continue
+            ranked.append((int(err), int(idx), tag, candidate_state))
+        if not ranked:
+            return self._pick_tagged_distractor(
+                requested_tag="nearest_solver",
+                used_states=used_states,
+                used_tags=used_tags,
+                state=state,
+                difficulty=difficulty,
+                kind=kind,
+                heading_display_mode=heading_display_mode,
+                candidate_tags=self._fallback_tags(kind),
+            )
+        _err, _idx, tag, candidate_state = min(ranked, key=lambda item: (item[0], item[1], item[2]))
+        used_states.add(candidate_state)
+        used_tags.add(tag)
+        return _InstrumentOptionSeed(
+            state=candidate_state,
+            distractor_tag="nearest_solver",
+            distractor_profile_tag=tag,
+        )
+
+    def _repair_option_render_collisions(
+        self,
+        *,
+        options: list[InstrumentOption],
+        correct_state: InstrumentState,
+        difficulty: float,
+        kind: InstrumentComprehensionTrialKind,
+        heading_display_mode: InstrumentHeadingDisplayMode,
+        prompt_view_preset: InstrumentAircraftViewPreset | None,
+    ) -> list[InstrumentOption]:
+        if kind not in (
             InstrumentComprehensionTrialKind.INSTRUMENTS_TO_AIRCRAFT,
             InstrumentComprehensionTrialKind.AIRCRAFT_TO_INSTRUMENTS,
         ):
-            s1 = replace(state, heading_deg=_norm_heading(state.heading_deg + near_heading))
-            s2 = replace(state, bank_deg=-state.bank_deg)
-            s3 = replace(state, pitch_deg=-state.pitch_deg)
-            s4 = replace(
-                state,
-                bank_deg=-state.bank_deg,
-                pitch_deg=-state.pitch_deg,
-                heading_deg=_norm_heading(state.heading_deg + far_heading),
-            )
-            return s1, s2, s3, s4
+            return options
 
-        s1 = replace(state, speed_kts=self._clamp(state.speed_kts + speed_delta, 120, 360))
-        s2 = replace(state, altitude_ft=self._clamp(state.altitude_ft + altitude_delta, 1000, 9500))
-        s3 = replace(
-            state,
-            heading_deg=_norm_heading(state.heading_deg + near_heading),
-            bank_deg=-state.bank_deg,
+        from .instrument_aircraft_cards import (
+            aircraft_card_pose_distance,
+            aircraft_card_pose_signature,
         )
-        s4 = replace(
-            state,
-            vertical_rate_fpm=self._clamp(-state.vertical_rate_fpm - vs_delta, -2500, 2500),
-            pitch_deg=-state.pitch_deg,
-            heading_deg=_norm_heading(state.heading_deg + far_heading),
-        )
-        return s1, s2, s3, s4
+
+        repaired = list(options)
+        threshold = 26.0
+        for idx, option in enumerate(repaired):
+            if option.distractor_tag == "correct":
+                continue
+            attempts = 0
+            while True:
+                current_signature = aircraft_card_pose_signature(
+                    option.state,
+                    view_preset=(
+                        option.view_preset
+                        if kind is InstrumentComprehensionTrialKind.INSTRUMENTS_TO_AIRCRAFT
+                        else (prompt_view_preset or InstrumentAircraftViewPreset.FRONT_LEFT)
+                    ),
+                )
+                collision = False
+                for earlier in repaired[:idx]:
+                    earlier_signature = aircraft_card_pose_signature(
+                        earlier.state,
+                        view_preset=(
+                            earlier.view_preset
+                            if kind is InstrumentComprehensionTrialKind.INSTRUMENTS_TO_AIRCRAFT
+                            else (prompt_view_preset or InstrumentAircraftViewPreset.FRONT_LEFT)
+                        ),
+                    )
+                    if aircraft_card_pose_distance(current_signature, earlier_signature) < threshold:
+                        collision = True
+                        break
+                if not collision:
+                    break
+                attempts += 1
+                if attempts > 8:
+                    break
+                used_states = {correct_state, option.state, *(opt.state for opt in repaired[:idx])}
+                used_tags = {
+                    "correct",
+                    option.distractor_profile_tag,
+                    *(opt.distractor_profile_tag for opt in repaired[:idx]),
+                }
+                if option.distractor_tag == "easier_band_random":
+                    replacement = self._pick_easier_band_random_distractor(
+                        used_states=used_states,
+                        used_tags=used_tags,
+                        state=correct_state,
+                        difficulty=difficulty,
+                        kind=kind,
+                        heading_display_mode=heading_display_mode,
+                    )
+                elif option.distractor_tag == "nearest_solver":
+                    replacement = self._pick_nearest_distractor(
+                        used_states=used_states,
+                        used_tags=used_tags,
+                        state=correct_state,
+                        difficulty=difficulty,
+                        kind=kind,
+                        heading_display_mode=heading_display_mode,
+                    )
+                else:
+                    replacement = self._pick_tagged_distractor(
+                        requested_tag=option.distractor_tag,
+                        used_states=used_states,
+                        used_tags=used_tags,
+                        state=correct_state,
+                        difficulty=difficulty,
+                        kind=kind,
+                        heading_display_mode=heading_display_mode,
+                    )
+                repaired[idx] = InstrumentOption(
+                    code=option.code,
+                    state=replacement.state,
+                    description=describe_instrument_state(replacement.state),
+                    view_preset=option.view_preset,
+                    distractor_tag=replacement.distractor_tag,
+                    distractor_profile_tag=replacement.distractor_profile_tag,
+                )
+                option = repaired[idx]
+        return repaired
+
+    def _validate_aircraft_option_semantics(
+        self,
+        *,
+        options: list[InstrumentOption],
+        prompt_state: InstrumentState,
+        kind: InstrumentComprehensionTrialKind,
+        prompt_view_preset: InstrumentAircraftViewPreset | None,
+    ) -> None:
+        if kind not in (
+            InstrumentComprehensionTrialKind.INSTRUMENTS_TO_AIRCRAFT,
+            InstrumentComprehensionTrialKind.AIRCRAFT_TO_INSTRUMENTS,
+        ):
+            return
+
+        from .instrument_aircraft_cards import aircraft_card_semantic_drift_tags
+
+        if kind is InstrumentComprehensionTrialKind.AIRCRAFT_TO_INSTRUMENTS:
+            prompt_tags = aircraft_card_semantic_drift_tags(
+                prompt_state,
+                view_preset=prompt_view_preset or InstrumentAircraftViewPreset.FRONT_LEFT,
+            )
+            if prompt_tags:
+                raise RuntimeError(
+                    f"Instrument aircraft prompt semantic drift: {', '.join(prompt_tags)}"
+                )
+
+        for option in options:
+            preset = (
+                option.view_preset
+                if kind is InstrumentComprehensionTrialKind.INSTRUMENTS_TO_AIRCRAFT
+                else (prompt_view_preset or InstrumentAircraftViewPreset.FRONT_LEFT)
+            )
+            drift_tags = aircraft_card_semantic_drift_tags(
+                option.state,
+                view_preset=preset or InstrumentAircraftViewPreset.FRONT_LEFT,
+            )
+            if drift_tags:
+                raise RuntimeError(
+                    f"Instrument aircraft option semantic drift for code {option.code}: "
+                    + ", ".join(drift_tags)
+                )
+
+    def _lower_band_profile_pool(
+        self,
+        *,
+        kind: InstrumentComprehensionTrialKind,
+        difficulty: float,
+    ) -> tuple[str, ...]:
+        return lower_band_profile_pool(kind=kind, difficulty=difficulty)
+
+    def _nearest_profile_candidates(
+        self,
+        *,
+        kind: InstrumentComprehensionTrialKind,
+        difficulty: float,
+    ) -> tuple[str, ...]:
+        return nearest_profile_candidates(kind=kind, difficulty=difficulty)
+
+    def _fallback_tags(self, kind: InstrumentComprehensionTrialKind) -> tuple[str, ...]:
+        _ = kind
+        return INSTRUMENT_DISTRACTOR_FALLBACKS
 
     def _sample_quantized(self, lo: int, hi: int, step: int) -> int:
         if step <= 1:
@@ -420,6 +753,8 @@ class InstrumentComprehensionEngine:
             "then choose the matching full instrument panel.",
             "Part 3: read the full instrument panel, "
             "then choose the matching flight description.",
+            "",
+            "Some heading questions use the rotating compass card. Others keep the compass fixed and move the red heading arrow.",
             "",
             "Controls:",
             "- Press A, S, D, F, or G to choose an option",

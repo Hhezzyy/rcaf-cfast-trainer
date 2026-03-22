@@ -7,8 +7,16 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pygame
 import pytest
 
+from cfast_trainer.app import (
+    App,
+    CognitiveTestScreen,
+    MenuItem,
+    MenuScreen,
+    _AuditoryPandaRequirementState,
+)
 from cfast_trainer.auditory_capacity import (
     AUDITORY_GATE_RETIRE_X_NORM,
     AUDITORY_GATE_SPAWN_X_NORM,
@@ -38,6 +46,17 @@ class _FakeClock:
         self.t += dt
 
 
+class _ExplodingRenderer:
+    def __init__(self, *, size: tuple[int, int]) -> None:
+        self.size = tuple(size)
+
+    def render(self, **_: object) -> pygame.Surface:
+        raise RuntimeError("boom")
+
+    def close(self) -> None:
+        return None
+
+
 def _run_probe(scene_name: str) -> dict[str, object]:
     env = dict(os.environ)
     env.pop("SDL_VIDEODRIVER", None)
@@ -56,6 +75,47 @@ def _run_probe(scene_name: str) -> dict[str, object]:
     lines = [line for line in result.stdout.splitlines() if line.strip()]
     assert lines, "subprocess produced no output"
     return json.loads(lines[-1])
+
+
+@pytest.fixture
+def pygame_headless(monkeypatch):
+    monkeypatch.setenv("SDL_VIDEODRIVER", "dummy")
+    monkeypatch.setenv("SDL_AUDIODRIVER", "dummy")
+    pygame.quit()
+    pygame.init()
+    yield
+    pygame.quit()
+
+
+def _build_screen() -> tuple[App, CognitiveTestScreen]:
+    display = pygame.display.set_mode((960, 540))
+    font = pygame.font.Font(None, 36)
+    app = App(surface=display, font=font)
+    app.push(MenuScreen(app, "Main Menu", [MenuItem("Quit", app.quit)], is_root=True))
+
+    clock = _FakeClock()
+    screen = CognitiveTestScreen(
+        app,
+        engine_factory=lambda: build_auditory_capacity_test(
+            clock=clock,
+            seed=17,
+            difficulty=0.58,
+        ),
+        test_code="auditory_capacity",
+    )
+    app.push(screen)
+    screen._engine.start_practice()
+    clock.advance(0.2)
+    screen._engine.update()
+    return app, screen
+
+
+def _mark_auditory_panda_ready(screen: CognitiveTestScreen) -> None:
+    screen._auditory_panda_requirement = _AuditoryPandaRequirementState(
+        checked=True,
+        ready=True,
+    )
+    screen._auditory_panda_failed = False
 
 
 def _payload_with_gate(*, x_norm: float, gate_id: int = 401) -> AuditoryCapacityPayload:
@@ -97,6 +157,38 @@ def test_panda3d_auditory_rendering_disabled_when_forced_to_pygame(monkeypatch) 
     assert panda3d_auditory_rendering_available() is False
 
 
+def test_auditory_panda_preflight_reports_timeout(
+    pygame_headless,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _app, screen = _build_screen()
+
+    def _raise_timeout(*_args, **_kwargs):
+        raise subprocess.TimeoutExpired(cmd="auditory_preflight", timeout=5.0)
+
+    monkeypatch.setattr("cfast_trainer.app.launch_runtime", _raise_timeout)
+
+    ok, category, summary = screen._run_auditory_panda_preflight()
+
+    assert ok is False
+    assert category == "preflight_timeout"
+    assert "timed out" in summary.lower()
+
+
+def test_auditory_panda_preflight_rejects_non_panda_renderer_preference(
+    pygame_headless,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _app, screen = _build_screen()
+    monkeypatch.setenv("CFAST_AUDITORY_RENDERER", "pygame")
+
+    ok, category, summary = screen._run_auditory_panda_preflight()
+
+    assert ok is False
+    assert category == "renderer_pref"
+    assert "requires panda3d" in summary.lower()
+
+
 def test_auditory_screen_prefers_panda3d_runtime() -> None:
     probe = _run_probe("auditory")
 
@@ -113,6 +205,27 @@ def test_auditory_screen_prefers_panda3d_runtime() -> None:
     }
     assert "auditory_ball" not in set(probe["fallback_asset_ids"])
     assert sum(probe["avg_color"]) > 60
+
+
+def test_auditory_renderer_failure_enters_blocking_requirement_state(
+    pygame_headless,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, screen = _build_screen()
+    _mark_auditory_panda_ready(screen)
+    monkeypatch.setattr(
+        screen,
+        "_get_auditory_panda_renderer",
+        lambda **_: _ExplodingRenderer(size=(320, 200)),
+    )
+
+    app.render()
+
+    assert app.consume_gl_scene() is None
+    assert screen._auditory_panda_requirement.checked is True
+    assert screen._auditory_panda_requirement.ready is False
+    assert screen._auditory_panda_requirement.failure_category == "renderer_render_failed"
+    assert "failed while drawing" in screen._auditory_panda_requirement.failure_summary.lower()
 
 
 def test_gate_ahead_distance_mapping_matches_arrival_expectations() -> None:

@@ -113,6 +113,21 @@ def _point_lerp(a: TraceTest2Point3, b: TraceTest2Point3, t: float) -> TraceTest
     )
 
 
+def _quadratic_point(
+    a: TraceTest2Point3,
+    b: TraceTest2Point3,
+    c: TraceTest2Point3,
+    t: float,
+) -> TraceTest2Point3:
+    u = _clamp(float(t), 0.0, 1.0)
+    one_minus = 1.0 - u
+    return TraceTest2Point3(
+        x=(one_minus * one_minus * a.x) + (2.0 * one_minus * u * b.x) + (u * u * c.x),
+        y=(one_minus * one_minus * a.y) + (2.0 * one_minus * u * b.y) + (u * u * c.y),
+        z=(one_minus * one_minus * a.z) + (2.0 * one_minus * u * b.z) + (u * u * c.z),
+    )
+
+
 def _direction_changed(waypoints: tuple[TraceTest2Point3, ...]) -> bool:
     if len(waypoints) < 3:
         return False
@@ -163,6 +178,15 @@ def trace_test_2_track_position(
 ) -> TraceTest2Point3:
     if len(track.waypoints) == 1:
         return track.waypoints[0]
+    if len(track.waypoints) == 2:
+        return _point_lerp(track.waypoints[0], track.waypoints[1], _clamp(progress, 0.0, 1.0))
+    if len(track.waypoints) == 3:
+        return _quadratic_point(
+            track.waypoints[0],
+            track.waypoints[1],
+            track.waypoints[2],
+            _clamp(progress, 0.0, 1.0),
+        )
     t = _clamp(progress, 0.0, 1.0)
     seg_lengths: list[float] = []
     total = 0.0
@@ -179,6 +203,38 @@ def trace_test_2_track_position(
             return _point_lerp(track.waypoints[idx], track.waypoints[idx + 1], local)
         remaining -= seg
     return track.waypoints[-1]
+
+
+def trace_test_2_track_tangent(
+    *,
+    track: TraceTest2AircraftTrack,
+    progress: float,
+) -> tuple[float, float, float]:
+    if len(track.waypoints) == 1:
+        return (0.0, 0.0, 0.0)
+    if len(track.waypoints) == 2:
+        start, end = track.waypoints
+        return (
+            float(end.x - start.x),
+            float(end.y - start.y),
+            float(end.z - start.z),
+        )
+    if len(track.waypoints) == 3:
+        start, middle, end = track.waypoints
+        u = _clamp(progress, 0.0, 1.0)
+        return (
+            float((2.0 * (1.0 - u) * (middle.x - start.x)) + (2.0 * u * (end.x - middle.x))),
+            float((2.0 * (1.0 - u) * (middle.y - start.y)) + (2.0 * u * (end.y - middle.y))),
+            float((2.0 * (1.0 - u) * (middle.z - start.z)) + (2.0 * u * (end.z - middle.z))),
+        )
+    step = 0.03
+    pos = trace_test_2_track_position(track=track, progress=max(0.0, float(progress) - step))
+    future = trace_test_2_track_position(track=track, progress=min(1.0, float(progress) + step))
+    return (
+        float(future.x - pos.x),
+        float(future.y - pos.y),
+        float(future.z - pos.z),
+    )
 
 
 class TraceTest2Generator:

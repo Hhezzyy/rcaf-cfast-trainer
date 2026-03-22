@@ -19,6 +19,20 @@ from .visual_search import (
 )
 
 
+_STANDARD_DRILL_GRID_BY_LEVEL: tuple[tuple[int, int], ...] = (
+    (3, 4),
+    (3, 4),
+    (3, 4),
+    (4, 4),
+    (4, 4),
+    (4, 4),
+    (4, 5),
+    (4, 5),
+    (5, 5),
+    (5, 5),
+)
+
+
 def _clamp01(value: float) -> float:
     return max(0.0, min(1.0, float(value)))
 
@@ -61,10 +75,12 @@ class VsTargetPreviewGenerator:
             seed=seed,
             profile=VisualSearchProfile(
                 similarity_floor=0.0,
-                similarity_ceiling=0.45,
+                similarity_ceiling=0.52,
                 family_switch_floor=0.05,
                 family_switch_ceiling=0.30,
                 preview_emphasis=True,
+                grid_by_level=_STANDARD_DRILL_GRID_BY_LEVEL,
+                high_band_symbol_only=False,
             ),
         )
 
@@ -78,9 +94,11 @@ class VsCleanScanGenerator:
             seed=seed,
             profile=VisualSearchProfile(
                 similarity_floor=0.05,
-                similarity_ceiling=0.55,
+                similarity_ceiling=0.66,
                 family_switch_floor=0.10,
                 family_switch_ceiling=0.40,
+                grid_by_level=_STANDARD_DRILL_GRID_BY_LEVEL,
+                high_band_symbol_only=False,
             ),
         )
 
@@ -95,9 +113,11 @@ class VsFamilyRunGenerator:
             profile=VisualSearchProfile(
                 allowed_kinds=(kind,),
                 similarity_floor=0.15,
-                similarity_ceiling=0.90,
+                similarity_ceiling=0.96,
                 family_switch_floor=0.0,
                 family_switch_ceiling=0.0,
+                grid_by_level=_STANDARD_DRILL_GRID_BY_LEVEL,
+                high_band_symbol_only=False,
             ),
         )
 
@@ -112,18 +132,22 @@ class VsMixedTempoGenerator:
             seed=seed + 101,
             profile=VisualSearchProfile(
                 similarity_floor=0.10,
-                similarity_ceiling=0.60,
+                similarity_ceiling=0.70,
                 family_switch_floor=0.15,
                 family_switch_ceiling=0.55,
+                grid_by_level=_STANDARD_DRILL_GRID_BY_LEVEL,
+                high_band_symbol_only=False,
             ),
         )
         self._hard = VisualSearchGenerator(
             seed=seed + 202,
             profile=VisualSearchProfile(
                 similarity_floor=0.55,
-                similarity_ceiling=0.95,
+                similarity_ceiling=1.00,
                 family_switch_floor=0.35,
                 family_switch_ceiling=0.90,
+                grid_by_level=_STANDARD_DRILL_GRID_BY_LEVEL,
+                high_band_symbol_only=False,
             ),
         )
 
@@ -143,9 +167,11 @@ class VsPressureRunGenerator:
             seed=seed,
             profile=VisualSearchProfile(
                 similarity_floor=0.65,
-                similarity_ceiling=0.98,
+                similarity_ceiling=1.00,
                 family_switch_floor=0.45,
                 family_switch_ceiling=0.95,
+                grid_by_level=_STANDARD_DRILL_GRID_BY_LEVEL,
+                high_band_symbol_only=False,
             ),
         )
 
@@ -179,16 +205,18 @@ class _Wave1SearchGenerator:
     def _grid_shape(self, *, level: int) -> tuple[int, int]:
         if level <= 3:
             return (3, 4)
-        if level <= 6:
-            return (4, 4)
-        return (4, 5)
+        if level <= 5:
+            return (4, 5)
+        if level <= 7:
+            return (5, 5)
+        return (5, 6)
 
     def _salience_level(self, *, level: int) -> float:
         if level <= 3:
-            return 0.25
+            return 0.30
         if level <= 6:
-            return 0.55
-        return 0.82
+            return 0.65
+        return 0.92
 
     def _target_classes(self, *, level: int) -> tuple[VisualSearchTaskKind, ...]:
         class_count = self._class_count(level=level)
@@ -234,31 +262,91 @@ class _Wave1SearchGenerator:
         target = str(target_bank[self._item_index % len(target_bank)])
         salience = self._salience_level(level=level)
         confusable = tuple(token for token in self._confusable(kind=target_kind, target=target) if token != target)
-        cross_class: list[str] = []
-        for kind in active_classes:
-            if kind is target_kind:
-                continue
-            cross_class.extend(self._token_bank(kind))
-        same_class = tuple(token for token in target_bank if token != target)
-        fallback_same = confusable or same_class
-        distractors: list[str] = []
-        cross_ratio = 0.28 if level <= 3 else 0.42 if level <= 6 else 0.56
-        for idx in range(cell_count):
-            if cross_class and self._rng.random() < cross_ratio:
-                distractors.append(str(self._rng.choice(cross_class)))
-                continue
-            if fallback_same and self._rng.random() < salience:
-                distractors.append(str(self._rng.choice(fallback_same)))
-                continue
-            distractors.append(str(self._rng.choice(same_class if same_class else target_bank)))
-        target_idx = int(self._rng.randint(0, cell_count - 1))
-        distractors[target_idx] = target
+        if level >= 9:
+            target_variant, overload_cells = self._helper._build_same_base_overload_board(
+                kind=target_kind,
+                target_base=target,
+                count=cell_count,
+                level=level,
+            )
+            target_idx = overload_cells.index(target_variant)
+            distractors = [str(token) for token in overload_cells]
+            target = target_variant
+        elif level >= 8:
+            marks = self._helper._variant_marks()
+            ordered_bases: list[str] = [target]
+            for token in confusable:
+                if token not in ordered_bases:
+                    ordered_bases.append(str(token))
+            for kind in active_classes:
+                if kind is target_kind:
+                    continue
+                bank = self._token_bank(kind)
+                if bank and str(bank[0]) not in ordered_bases:
+                    ordered_bases.append(str(bank[0]))
+            for token in target_bank:
+                token = str(token)
+                if token in ordered_bases:
+                    continue
+                ordered_bases.append(token)
+                if len(ordered_bases) * len(marks) >= cell_count:
+                    break
+            for kind in active_classes:
+                if kind is target_kind:
+                    continue
+                for token in self._token_bank(kind):
+                    token = str(token)
+                    if token in ordered_bases:
+                        continue
+                    ordered_bases.append(token)
+                    if len(ordered_bases) * len(marks) >= cell_count:
+                        break
+                if len(ordered_bases) * len(marks) >= cell_count:
+                    break
+            target_variant = self._helper._compose_variant_token(
+                target,
+                str(marks[self._item_index % len(marks)]),
+            )
+            variant_pool = [
+                self._helper._compose_variant_token(base, mark)
+                for base in ordered_bases
+                for mark in marks
+                if self._helper._compose_variant_token(base, mark) != target_variant
+            ]
+            distractors = [
+                str(token)
+                for token in self._rng.sample(tuple(variant_pool), k=max(0, cell_count - 1))
+            ]
+            target_idx = int(self._rng.randint(0, cell_count - 1))
+            distractors.insert(target_idx, target_variant)
+            target = target_variant
+        else:
+            cross_class: list[str] = []
+            for kind in active_classes:
+                if kind is target_kind:
+                    continue
+                cross_class.extend(self._token_bank(kind))
+            same_class = tuple(token for token in target_bank if token != target)
+            fallback_same = confusable or same_class
+            distractors = []
+            cross_ratio = 0.28 if level <= 3 else 0.44 if level <= 6 else 0.60
+            for _ in range(cell_count):
+                if cross_class and self._rng.random() < cross_ratio:
+                    distractors.append(str(self._rng.choice(cross_class)))
+                    continue
+                if fallback_same and self._rng.random() < salience:
+                    distractors.append(str(self._rng.choice(fallback_same)))
+                    continue
+                distractors.append(str(self._rng.choice(same_class if same_class else target_bank)))
+            target_idx = int(self._rng.randint(0, cell_count - 1))
+            distractors[target_idx] = target
         code_pool = tuple(range(10, 10 + cell_count))
         cell_codes = tuple(int(v) for v in self._rng.sample(code_pool, k=cell_count))
         correct_code = int(cell_codes[target_idx])
         self._item_index += 1
+        display_target = self._helper.token_base(target)
         return Problem(
-            prompt=f"{prompt_prefix} Find {target} in the {_kind_label(target_kind)} class and enter its block number.",
+            prompt=f"{prompt_prefix} Find {display_target} in the {_kind_label(target_kind)} class and enter its block number.",
             answer=correct_code,
             payload=VisualSearchPayload(
                 kind=target_kind,
@@ -385,7 +473,7 @@ def build_vs_target_preview_drill(
         instructions=(
             "Visual Search: Target Preview",
             f"Mode: {profile.label}",
-            "Use the same full 3x4 board as the test, but give yourself a clean beat to reacquire the target before scanning.",
+            "Use the same typed answer flow as the test, but give yourself a clean beat to reacquire the target before scanning.",
             "Preview the target, then search row by row and type the matching block number without rushing the first eye movement.",
             "Press Enter to begin practice.",
         ),

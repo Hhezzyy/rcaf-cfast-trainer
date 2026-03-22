@@ -14,8 +14,13 @@ from cfast_trainer.ic_drills import (
     build_ic_reverse_panel_run_drill,
 )
 from cfast_trainer.instrument_comprehension import (
+    InstrumentHeadingDisplayMode,
     InstrumentComprehensionPayload,
     InstrumentComprehensionTrialKind,
+)
+from cfast_trainer.instrument_orientation_solver import (
+    display_match_error,
+    display_observation_from_state,
 )
 
 
@@ -43,8 +48,19 @@ def _problem_signature(engine) -> tuple[object, ...]:
         current.prompt,
         current.answer,
         payload.kind,
+        payload.heading_display_mode,
         payload.prompt_state,
-        tuple((option.code, option.state, option.view_preset, option.description) for option in payload.options),
+        tuple(
+            (
+                option.code,
+                option.state,
+                option.view_preset,
+                option.description,
+                option.distractor_tag,
+                option.distractor_profile_tag,
+            )
+            for option in payload.options
+        ),
         payload.option_errors,
     )
 
@@ -175,3 +191,58 @@ def test_ic_attitude_frame_levels_l2_l5_l8_are_materially_different() -> None:
     assert all(heading % 90 == 0 for heading in mid_headings)
     assert any(heading % 90 != 0 for heading in high_headings)
     assert low_nearest > mid_nearest > high_nearest
+
+
+def test_ic_drills_emit_both_heading_display_modes() -> None:
+    builders = (
+        build_ic_heading_anchor_drill,
+        build_ic_reverse_panel_run_drill,
+        build_ic_description_run_drill,
+    )
+    for builder in builders:
+        clock = FakeClock()
+        engine = builder(clock=clock, seed=919, difficulty=0.6)
+        engine.start_scored()
+        seen: set[InstrumentHeadingDisplayMode] = set()
+        for _ in range(10):
+            payload = engine._current.payload
+            assert isinstance(payload, InstrumentComprehensionPayload)
+            seen.add(payload.heading_display_mode)
+            assert engine.submit_answer(str(engine._current.answer)) is True
+        assert seen == {
+            InstrumentHeadingDisplayMode.ROTATING_ROSE,
+            InstrumentHeadingDisplayMode.MOVING_ARROW,
+        }
+
+
+def test_ic_drills_keep_display_model_grounded_correct_answer() -> None:
+    builders = (
+        build_ic_heading_anchor_drill,
+        build_ic_reverse_panel_run_drill,
+        build_ic_description_run_drill,
+    )
+    for builder in builders:
+        clock = FakeClock()
+        engine = builder(clock=clock, seed=939, difficulty=0.65)
+        engine.start_scored()
+        for _ in range(4):
+            payload = engine._current.payload
+            assert isinstance(payload, InstrumentComprehensionPayload)
+            prompt_observation = display_observation_from_state(
+                payload.prompt_state,
+                payload.heading_display_mode,
+            )
+            recomputed_errors = tuple(
+                display_match_error(
+                    prompt_observation,
+                    option.state,
+                    kind=payload.kind,
+                    heading_display_mode=payload.heading_display_mode,
+                )
+                for option in payload.options
+            )
+            assert recomputed_errors == payload.option_errors
+            assert payload.options[engine._current.answer - 1].distractor_tag == "correct"
+            assert payload.option_errors[engine._current.answer - 1] == min(payload.option_errors)
+            assert payload.option_errors.count(min(payload.option_errors)) == 1
+            assert engine.submit_answer(str(engine._current.answer)) is True

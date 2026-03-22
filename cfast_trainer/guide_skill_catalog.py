@@ -54,6 +54,9 @@ TEST_DIFFICULTY_OPTIONS: tuple[tuple[str, str], ...] = (
     ("cln_memory_colour", "Colours, Letters and Numbers: Memory + Colour"),
     ("cln_full_steady", "Colours, Letters and Numbers: Full Steady"),
     ("cln_full_pressure", "Colours, Letters and Numbers: Full Pressure"),
+    ("cln_overdrive_blue_return", "Colours, Letters and Numbers: Overdrive Blue Return"),
+    ("cln_overdrive_six_choice_memory", "Colours, Letters and Numbers: Overdrive Six-Choice Memory"),
+    ("cln_overdrive_dual_math", "Colours, Letters and Numbers: Overdrive Dual Math"),
     ("colours_letters_numbers_workout", "Colours, Letters and Numbers Workout"),
     ("angles_bearings_degrees", "Angles, Bearings and Degrees"),
     ("abd_cardinal_anchors", "Angles, Bearings and Degrees: Cardinal Anchors"),
@@ -723,7 +726,7 @@ TEST_GUIDE_BRIEFS: dict[str, TestGuideBriefing] = {
         ),
         timing="Guide time including instructions: about 20 minutes.",
         prep="Guide preparation: practice mental arithmetic.",
-        controls="Memory uses A/S/D/F/G or mouse, colours use Q/W/E/R, and math uses digits plus Enter.",
+        controls="Memory uses A/S/D/F/G or mouse, colours use Q/W/E, and math uses digits plus Enter.",
         app_flow="Practice lets you feel the three concurrent tasks before the timed block.",
     ),
     "cln_sequence_copy": TestGuideBriefing(
@@ -779,11 +782,11 @@ TEST_GUIDE_BRIEFS: dict[str, TestGuideBriefing] = {
         assessment="Colour-only CLN drill for lane mapping, scan rhythm, and hit timing.",
         tasks=(
             "Clear matching diamonds while they pass through the coloured lane zone.",
-            "Build automatic Q/W/E/R responses before memory and math start competing for the same attention.",
+            "Build automatic Q/W/E responses before memory and math start competing for the same attention.",
         ),
         timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
         prep="Guide preparation: know the colour-to-key mapping.",
-        controls="Use Q/W/E/R to clear the matching lane.",
+        controls="Use Q/W/E to clear the matching lane.",
         app_flow="This drill reuses the CLN full-screen lane layout while muting the memory and math channels.",
     ),
     "cln_memory_math": TestGuideBriefing(
@@ -806,8 +809,8 @@ TEST_GUIDE_BRIEFS: dict[str, TestGuideBriefing] = {
             "Learn to protect memory quality while a live reactive channel competes for your attention.",
         ),
         timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
-        prep="Guide preparation: know both the memory corner mapping and the Q/W/E/R lane mapping first.",
-        controls="Use A/S/D/F/G or mouse for memory and Q/W/E/R for colour lanes.",
+        prep="Guide preparation: know both the memory corner mapping and the Q/W/E lane mapping first.",
+        controls="Use A/S/D/F/G or mouse for memory and Q/W/E for colour lanes.",
         app_flow="This drill reuses the CLN full-screen layout with memory and colour active together, but no math channel.",
     ),
     "cln_full_steady": TestGuideBriefing(
@@ -819,7 +822,7 @@ TEST_GUIDE_BRIEFS: dict[str, TestGuideBriefing] = {
         ),
         timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
         prep="Guide preparation: arrive warmed up on each individual channel first.",
-        controls="Use A/S/D/F/G or mouse for memory, digits plus Enter for math, and Q/W/E/R for colour lanes.",
+        controls="Use A/S/D/F/G or mouse for memory, digits plus Enter for math, and Q/W/E for colour lanes.",
         app_flow="This drill reuses the full CLN screen and keeps all three channels live at once.",
     ),
     "cln_full_pressure": TestGuideBriefing(
@@ -831,20 +834,56 @@ TEST_GUIDE_BRIEFS: dict[str, TestGuideBriefing] = {
         ),
         timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
         prep="Guide preparation: warm up the split-channel and paired-channel blocks first.",
-        controls="Use A/S/D/F/G or mouse for memory, digits plus Enter for math, and Q/W/E/R for colour lanes.",
+        controls="Use A/S/D/F/G or mouse for memory, digits plus Enter for math, and Q/W/E for colour lanes.",
         app_flow="This drill reuses the full CLN screen and uses the next-item feedback banner instead of a stop screen.",
+    ),
+    "cln_overdrive_blue_return": TestGuideBriefing(
+        label="Colours, Letters and Numbers: Overdrive Blue Return",
+        assessment="Four-lane CLN overdrive that brings the blue colour lane back on top of the full standard CLN shell.",
+        tasks=(
+            "Keep the standard memory and typed-math channels running while the colour stream expands back to four lanes.",
+            "Treat it as a lane-density overload block rather than a new response format.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: be stable on the standard three-lane CLN blocks first.",
+        controls="Use A/S/D/F/G or mouse for memory, digits plus Enter for math, and Q/W/E/R for colour lanes.",
+        app_flow="This overdrive drill keeps the full CLN layout but restores the blue lane for extra scan and timing burden.",
+    ),
+    "cln_overdrive_six_choice_memory": TestGuideBriefing(
+        label="Colours, Letters and Numbers: Overdrive Six-Choice Memory",
+        assessment="CLN overdrive drill that expands delayed memory choice from five boxes to six while the standard CLN channels stay live.",
+        tasks=(
+            "Keep one target sequence in memory, but discriminate among six delayed answer choices instead of five.",
+            "Hold the standard typed math and three-lane colour stream together while the memory choice set gets tighter.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: be comfortable with the standard CLN delayed-choice memory grid first.",
+        controls="Use A/S/D/F/G/H or mouse for memory, digits plus Enter for math, and Q/W/E for colour lanes.",
+        app_flow="This overdrive drill keeps one target sequence but expands the memory grid to a fixed six-choice layout.",
+    ),
+    "cln_overdrive_dual_math": TestGuideBriefing(
+        label="Colours, Letters and Numbers: Overdrive Dual Math",
+        assessment="CLN overdrive drill that adds a second multiple-choice math panel in parallel with the standard typed math lane.",
+        tasks=(
+            "Keep the standard typed math lane moving while also clearing a second multiple-choice math prompt with the mouse.",
+            "Protect memory and colour performance while the response mode for math splits in two.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: be comfortable with standard CLN math and full three-channel CLN first.",
+        controls="Use A/S/D/F/G or mouse for memory, digits plus Enter for the main math lane, mouse for the bonus multiple-choice math panel, and Q/W/E for colour lanes.",
+        app_flow="This overdrive drill adds a second clickable math panel to the CLN center column while the usual typed math prompt stays active.",
     ),
     "colours_letters_numbers_workout": TestGuideBriefing(
         label="Colours, Letters and Numbers Workout",
-        assessment="Chained CLN workout with typed reflection, split-channel warm-ups, paired interference blocks, and late full multitask pressure.",
+        assessment="Chained CLN workout with typed reflection, split-channel warm-ups, paired interference blocks, and late CLN overdrive blocks.",
         tasks=(
             "Start with typed focus prompts, then warm up the sequence, math, and colour channels separately before the paired blocks.",
-            "Finish with memory-plus-math, memory-plus-colour, and full three-channel CLN pressure blocks.",
+            "Finish with memory-plus-math, memory-plus-colour, the steady full CLN block, and the three late overdrive variants.",
         ),
         timing="Workout drill time: 90 minutes, plus opening and closing reflection outside the timed blocks.",
         prep="Guide preparation: know the three CLN control channels first; the workout is for chaining them under one structure.",
-        controls="Use Left and Right to set workout or block difficulty, type reflections, then use A/S/D/F/G or mouse for memory, digits plus Enter for math, and Q/W/E/R for colour lanes.",
-        app_flow="Each block gets an untimed setup screen, and changing difficulty from workout settings restarts the workout from the beginning.",
+        controls="Use Left and Right to set workout or block difficulty, type reflections, then use A/S/D/F/G or mouse for memory, digits plus Enter for math, and Q/W/E for the standard colour lanes before the late overdrive variants add extra burden.",
+        app_flow="Each block gets an untimed setup screen, and changing difficulty from workout settings restarts the workout from the beginning while the late workout ladder now uses the overdrive CLN variants.",
     ),
     "angles_bearings_degrees": TestGuideBriefing(
         label="Angles, Bearings and Degrees",
@@ -963,19 +1002,19 @@ TEST_GUIDE_BRIEFS: dict[str, TestGuideBriefing] = {
         ),
         timing="Guide time including instructions: about 4 minutes.",
         prep="Guide preparation: none required.",
-        controls="Scan the board, type the matching block number, and press Enter.",
+        controls="Scan the board and type the matching block number.",
         app_flow="Practice lets you learn the board layout before the timed block unlocks.",
     ),
     "vs_target_preview": TestGuideBriefing(
         label="Visual Search: Target Preview",
         assessment="Timed Visual Search drill for reacquiring the target cleanly before the scan starts.",
         tasks=(
-            "Use the real 3x4 board and type the numbered block that matches the target.",
+            "Use the real typed answer flow and type the numbered block that matches the target.",
             "Preview the target first, then settle into a stable board scan instead of guessing from the center.",
         ),
         timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
         prep="Guide preparation: choose one scan order and keep it consistent.",
-        controls="Type the two-digit block number and press Enter. Each item has its own hard cap.",
+        controls="Type the two-digit block number. Each item has its own hard cap.",
         app_flow="This drill reuses the real Visual Search board and uses the next-item feedback banner instead of a stop screen.",
     ),
     "vs_clean_scan": TestGuideBriefing(
@@ -987,7 +1026,7 @@ TEST_GUIDE_BRIEFS: dict[str, TestGuideBriefing] = {
         ),
         timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
         prep="Guide preparation: pick the scan path before the target appears.",
-        controls="Type the two-digit block number and press Enter.",
+        controls="Type the two-digit block number.",
         app_flow="This drill stays on the real board and keeps feedback on the next item so the pace does not stop.",
     ),
     "vs_family_run_letters": TestGuideBriefing(
@@ -995,11 +1034,11 @@ TEST_GUIDE_BRIEFS: dict[str, TestGuideBriefing] = {
         assessment="Timed Visual Search drill for alphanumeric targets only.",
         tasks=(
             "Stay on the letter family and clean up confusions before switching back to mixed boards.",
-            "Use the full 3x4 board and the same typed answer mode as the test.",
+            "Use the same typed answer mode as the test while the board scales with level.",
         ),
         timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
         prep="Guide preparation: know the common confusable letter groups first.",
-        controls="Type the two-digit block number and press Enter.",
+        controls="Type the two-digit block number.",
         app_flow="This drill reuses the real Visual Search board and keeps the next-item feedback banner active.",
     ),
     "vs_family_run_symbols": TestGuideBriefing(
@@ -1007,11 +1046,11 @@ TEST_GUIDE_BRIEFS: dict[str, TestGuideBriefing] = {
         assessment="Timed Visual Search drill for line-figure targets only.",
         tasks=(
             "Stay on the symbol family and sharpen the line-figure confusions before returning to mixed boards.",
-            "Use the full 3x4 board and the same typed answer mode as the test.",
+            "Use the same typed answer mode as the test while the board scales with level.",
         ),
         timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
         prep="Guide preparation: use a stable scan order so similar figures do not stall the search.",
-        controls="Type the two-digit block number and press Enter.",
+        controls="Type the two-digit block number.",
         app_flow="This drill reuses the real Visual Search board and keeps the next-item feedback banner active.",
     ),
     "vs_mixed_tempo": TestGuideBriefing(
@@ -1023,7 +1062,7 @@ TEST_GUIDE_BRIEFS: dict[str, TestGuideBriefing] = {
         ),
         timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
         prep="Guide preparation: keep the same scan discipline even when the family changes.",
-        controls="Type the two-digit block number and press Enter.",
+        controls="Type the two-digit block number.",
         app_flow="This drill keeps the real board and uses next-item feedback instead of a separate correction screen.",
     ),
     "vs_pressure_run": TestGuideBriefing(
@@ -1035,7 +1074,7 @@ TEST_GUIDE_BRIEFS: dict[str, TestGuideBriefing] = {
         ),
         timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
         prep="Guide preparation: know that misses are expected; the useful skill is recovering immediately.",
-        controls="Type the two-digit block number and press Enter.",
+        controls="Type the two-digit block number.",
         app_flow="This drill reuses the real Visual Search board and keeps the next-item feedback banner active.",
     ),
     "visual_search_workout": TestGuideBriefing(
@@ -1043,11 +1082,11 @@ TEST_GUIDE_BRIEFS: dict[str, TestGuideBriefing] = {
         assessment="Chained Visual Search workout with typed reflection, full-board warm-ups, family runs, mixed tempo, and late pressure.",
         tasks=(
             "Start with typed focus prompts, then reacquire the target and clean up your board scan before the family runs start.",
-            "Finish with mixed tempo and a final pressure block that keeps the same real 3x4 board and typed answer mode as the test.",
+            "Finish with mixed tempo and a final pressure block that keeps the same typed answer mode while the board scales upward with difficulty.",
         ),
         timing="Workout drill time: 90 minutes, plus opening and closing reflection outside the timed blocks.",
         prep="Guide preparation: the workout stays inside the live Visual Search scope only: letters and line figures.",
-        controls="Use Left and Right to set workout or block difficulty, then type the two-digit block number and press Enter.",
+        controls="Use Left and Right to set workout or block difficulty, then type the two-digit block number.",
         app_flow="Each block gets an untimed setup screen, and changing difficulty from workout settings restarts the workout from the beginning.",
     ),
     "ic_heading_anchor": TestGuideBriefing(
@@ -3787,4 +3826,3 @@ def canonical_drill_codes_for_subskill(subskill_id: str | None) -> tuple[str, ..
 
 def subskill_coverage_expectations() -> dict[str, tuple[str, ...]]:
     return dict(_SUBSKILL_COVERAGE_EXPECTATIONS)
-

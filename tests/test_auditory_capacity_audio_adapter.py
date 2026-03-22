@@ -16,7 +16,12 @@ os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
 
 from cfast_trainer.app import _AmbientTrack, _AuditoryCapacityAudioAdapter
-from cfast_trainer.auditory_capacity import build_auditory_capacity_test
+from cfast_trainer.auditory_capacity import (
+    AuditoryCapacityCommandType,
+    AuditoryCapacityGateDirective,
+    AuditoryCapacityInstructionEvent,
+    build_auditory_capacity_test,
+)
 from cfast_trainer.cognitive_core import Phase
 
 
@@ -39,6 +44,7 @@ class _FakeSound:
 class _NoopSpeaker:
     enabled: bool = False
     pending_count: int = 0
+    _rate_wpm: int = 182
 
     def update(self) -> None:
         return
@@ -48,6 +54,9 @@ class _NoopSpeaker:
 
     def speak(self, _text: str) -> None:
         return
+
+    def set_rate_wpm(self, rate_wpm: int) -> None:
+        self._rate_wpm = int(rate_wpm)
 
 
 class _FakeChannel:
@@ -105,8 +114,8 @@ def _make_adapter(*, seed: int = 17) -> _AuditoryCapacityAudioAdapter:
     adapter._ambient_snippet_bank = {}
     adapter._ambient_snippet_variant_index = {}
     adapter._ambient_cache_ready = False
-    adapter._ambient_slots = [None, None]
-    adapter._ambient_active_sounds = [None, None]
+    adapter._ambient_slots = [None, None, None]
+    adapter._ambient_active_sounds = [None, None, None]
     adapter._ambient_recent_keys = []
     adapter._ambient_target_layers = 0
     adapter._ambient_started_at_s = 0.0
@@ -122,6 +131,7 @@ def _make_adapter(*, seed: int = 17) -> _AuditoryCapacityAudioAdapter:
     adapter._fx_channel = None
     adapter._voice_channel = None
     adapter._interrupt_channel = None
+    adapter._ambient_aux_channel = None
     adapter._tts_callsign = _NoopSpeaker()
     adapter._tts_commands = _NoopSpeaker()
     adapter._tts_story = _NoopSpeaker()
@@ -137,6 +147,13 @@ def _make_adapter(*, seed: int = 17) -> _AuditoryCapacityAudioAdapter:
     adapter._fallback_distractor_voice = "Karen"
     adapter._instructor_voice = "Samantha"
     adapter._distractor_voice = "Alex"
+    adapter._instructor_cached_base_rate_wpm = 182
+    adapter._callsign_base_rate_wpm = 168
+    adapter._commands_base_rate_wpm = 172
+    adapter._story_base_rate_wpm = 160
+    adapter._instructor_rate_wpm = 182
+    adapter._instructor_noise_level = 0.0
+    adapter._instructor_distortion_level = 0.0
     adapter._speech_enabled = False
     adapter._speech_cache_root = Path("/tmp")
     adapter._speech_sound_cache = {}
@@ -159,6 +176,11 @@ def _build_payload(
     background_noise_source: str | None,
     background_noise_level: float,
     briefing_active: bool = False,
+    background_distortion_level: float = 0.0,
+    instructor_noise_level: float = 0.0,
+    instructor_distortion_level: float = 0.0,
+    instructor_rate_wpm: int = 182,
+    ambient_layer_target: int = 1,
 ) -> Any:
     clock = _FakeClock()
     engine = build_auditory_capacity_test(clock=clock, seed=77, difficulty=0.58)
@@ -171,7 +193,12 @@ def _build_payload(
         payload,
         background_noise_source=background_noise_source,
         background_noise_level=float(background_noise_level),
-        distortion_level=0.0,
+        background_distortion_level=float(background_distortion_level),
+        distortion_level=float(background_distortion_level),
+        instructor_noise_level=float(instructor_noise_level),
+        instructor_distortion_level=float(instructor_distortion_level),
+        instructor_rate_wpm=int(instructor_rate_wpm),
+        ambient_layer_target=int(ambient_layer_target),
         briefing_active=briefing_active,
         callsign_cue=None,
         color_command=None,
@@ -469,13 +496,17 @@ def test_audio_schedule_uses_phase_elapsed_and_is_repeatable_for_same_seed(
     )
     timeline = (4.5, 7.1, 9.9, 12.6, 15.4, 18.8)
 
-    def _run(seed: int) -> tuple[list[tuple[str, int]], list[tuple[str, int]], tuple[str | None, str | None]]:
+    def _run(
+        seed: int,
+    ) -> tuple[list[tuple[str, int]], list[tuple[str, int]], tuple[str | None, str | None, str | None]]:
         adapter = _make_adapter(seed=seed)
         bg_channel = _FakeChannel()
         dist_channel = _FakeChannel()
+        aux_channel = _FakeChannel()
         interrupt_channel = _FakeChannel()
         adapter._bg_channel = bg_channel
         adapter._dist_channel = dist_channel
+        adapter._ambient_aux_channel = aux_channel
         adapter._interrupt_channel = interrupt_channel
         adapter._ambient_tracks = {
             "background_noise_1.wav": _AmbientTrack(
@@ -524,6 +555,7 @@ def test_audio_schedule_uses_phase_elapsed_and_is_repeatable_for_same_seed(
             dt = t - last_t
             bg_channel.advance(dt)
             dist_channel.advance(dt)
+            aux_channel.advance(dt)
             interrupt_channel.advance(dt)
             payload = replace(base_payload, phase_elapsed_s=t, session_seed=seed)
             adapter._sync_phase_speech_profile(phase=Phase.PRACTICE, payload=payload)
@@ -531,7 +563,8 @@ def test_audio_schedule_uses_phase_elapsed_and_is_repeatable_for_same_seed(
             adapter._sync_interrupt_distractors(payload=payload)
             last_t = t
         ambient_history = [
-            (str(sound.key), int(sound.variant)) for sound in bg_channel.played + dist_channel.played
+            (str(sound.key), int(sound.variant))
+            for sound in bg_channel.played + dist_channel.played + aux_channel.played
         ]
         interrupt_history = [
             (str(sound.key), int(sound.variant)) for sound in interrupt_channel.played
@@ -570,14 +603,181 @@ def test_macos_say_cache_renders_once_then_reuses_existing_wav(
     monkeypatch.setattr(subprocess, "run", _fake_run)
     monkeypatch.setattr("cfast_trainer.app.shutil.which", lambda name: f"/usr/bin/{name}")
 
-    first = adapter._speech_wav_path(text="Change colour to RED.", voice="Samantha")
-    second = adapter._speech_wav_path(text="Change colour to RED.", voice="Samantha")
+    first = adapter._speech_wav_path(
+        text="Change colour to RED.",
+        voice="Samantha",
+        rate_wpm=182,
+    )
+    second = adapter._speech_wav_path(
+        text="Change colour to RED.",
+        voice="Samantha",
+        rate_wpm=182,
+    )
+    faster = adapter._speech_wav_path(
+        text="Change colour to RED.",
+        voice="Samantha",
+        rate_wpm=273,
+    )
 
     assert first == second
+    assert faster != first
     assert first.exists()
-    assert len(calls) == 2
+    assert faster.exists()
+    assert len(calls) == 4
     assert "say" in calls[0][0]
     assert "afconvert" in calls[1][0]
+
+
+def test_instruction_sound_uses_concise_gate_directive_tokens() -> None:
+    adapter = _make_adapter()
+    captured: list[tuple[str, ...]] = []
+
+    def _capture_phrase(
+        *,
+        tokens: tuple[str, ...],
+        voice: str,
+        rate_wpm: int,
+        noise_level: float,
+        distortion_level: float,
+    ) -> _FakeSound:
+        captured.append(tokens)
+        return _FakeSound(key="directive", variant=0, duration_s=0.2)
+
+    adapter._build_phrase_sound_from_tokens = _capture_phrase
+    payload = _build_payload(
+        background_noise_source="background_noise_1.wav",
+        background_noise_level=0.2,
+    )
+
+    avoid_instruction = AuditoryCapacityInstructionEvent(
+        event_id=10,
+        timestamp_s=0.1,
+        addressed_call_sign="RAVEN",
+        speaker_id="lead",
+        command_type=AuditoryCapacityCommandType.GATE_DIRECTIVE,
+        payload=AuditoryCapacityGateDirective(
+            action="AVOID",
+            match_kind="SHAPE",
+            match_value="TRIANGLE",
+        ),
+        expires_at_s=1.0,
+        is_distractor=False,
+    )
+    avoid_payload = replace(
+        payload,
+        active_instruction=avoid_instruction,
+        instruction_text="RAVEN. Avoid the next triangle gate.",
+        instruction_uid=10,
+        instruction_command_type=AuditoryCapacityCommandType.GATE_DIRECTIVE.value,
+    )
+    adapter._instruction_sound(payload=avoid_payload, omit_callsign=False)
+
+    pass_instruction = AuditoryCapacityInstructionEvent(
+        event_id=11,
+        timestamp_s=0.1,
+        addressed_call_sign="EAGLE",
+        speaker_id="lead",
+        command_type=AuditoryCapacityCommandType.GATE_DIRECTIVE,
+        payload=AuditoryCapacityGateDirective(
+            action="PASS",
+            match_kind="COLOR",
+            match_value="RED",
+        ),
+        expires_at_s=1.0,
+        is_distractor=False,
+    )
+    pass_payload = replace(
+        payload,
+        active_instruction=pass_instruction,
+        instruction_text="EAGLE. Take the next red gate.",
+        instruction_uid=11,
+        instruction_command_type=AuditoryCapacityCommandType.GATE_DIRECTIVE.value,
+    )
+    adapter._instruction_sound(payload=pass_payload, omit_callsign=False)
+
+    assert captured == [
+        ("RAVEN", "Avoid the next", "TRIANGLE", "gate"),
+        ("EAGLE", "Take the next", "RED", "gate"),
+    ]
+
+
+def test_top_end_background_mix_can_reach_three_ambient_layers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _make_adapter(seed=23)
+    fake_time_s = 10.0
+    bg_channel = _FakeChannel()
+    dist_channel = _FakeChannel()
+    aux_channel = _FakeChannel()
+    adapter._bg_channel = bg_channel
+    adapter._dist_channel = dist_channel
+    adapter._ambient_aux_channel = aux_channel
+    adapter._ambient_tracks = {
+        key: _AmbientTrack(
+            path=Path("/tmp") / key,
+            base_volume=0.20,
+            base_weight=1.0,
+            late_weight=0.0,
+            sample_rate=adapter._sample_rate,
+            channels=1,
+            frame_count=int(8.0 * adapter._sample_rate),
+            is_generated_noise=False,
+        )
+        for key in (
+            "background_noise_1.wav",
+            "background_noise_2.wav",
+            "background_noise_3.wav",
+        )
+    }
+    adapter._ambient_snippet_bank = {
+        key: (_FakeSound(key=key, variant=0, duration_s=2.0),)
+        for key in adapter._ambient_tracks
+    }
+    adapter._ambient_snippet_variant_index = {key: 0 for key in adapter._ambient_tracks}
+    adapter._ambient_cache_ready = True
+    payload = replace(
+        _build_payload(
+            background_noise_source=None,
+            background_noise_level=0.82,
+            ambient_layer_target=3,
+        ),
+        phase_elapsed_s=fake_time_s,
+    )
+    adapter._ambient_started_at_s = fake_time_s
+    monkeypatch.setattr(adapter._voice_rng, "random", lambda: 0.99)
+
+    adapter._sync_background_layers(payload=payload)
+
+    assert adapter._ambient_target_layers == 3
+    assert len(bg_channel.played) == 1
+    assert len(dist_channel.played) == 1
+    assert len(aux_channel.played) == 1
+    assert len({slot for slot in adapter._ambient_slots if slot is not None}) == 3
+
+
+def test_instructor_profile_scales_rate_and_stays_dirtier_than_background() -> None:
+    adapter = _make_adapter()
+    payload = _build_payload(
+        background_noise_source=None,
+        background_noise_level=0.34,
+        background_distortion_level=0.06,
+        instructor_noise_level=0.48,
+        instructor_distortion_level=0.30,
+        instructor_rate_wpm=273,
+        ambient_layer_target=3,
+    )
+
+    adapter._sync_phase_speech_profile(phase=Phase.SCORED, payload=payload)
+    debug = adapter.debug_state(payload=payload)
+
+    assert adapter._instructor_rate_wpm == 273
+    assert adapter._tts_callsign._rate_wpm == int(round(168 * (273 / 182)))
+    assert adapter._tts_commands._rate_wpm == int(round(172 * (273 / 182)))
+    assert adapter._tts_story._rate_wpm == int(round(160 * (273 / 182)))
+    assert float(debug["instructor_noise_level"]) > float(debug["noise_level"])
+    assert float(debug["instructor_distortion_level"]) > float(
+        debug["background_distortion_level"]
+    )
 
 
 def test_instructor_voice_channel_is_louder_than_interrupt_channel(

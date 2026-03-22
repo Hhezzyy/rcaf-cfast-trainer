@@ -748,7 +748,10 @@ class _FakeBlockEngine:
             self.phase = Phase.RESULTS
 
     def submit_answer(self, raw: str) -> bool:
-        _ = raw
+        token = str(raw).strip().lower()
+        if token in {"__skip_section__", "skip_section", "__skip_all__", "skip_all"}:
+            self.phase = Phase.RESULTS
+            return True
         return False
 
     def snapshot(self) -> SnapshotModel:
@@ -1019,6 +1022,114 @@ def test_adaptive_session_bootstrap_enter_routes_to_benchmark(tmp_path) -> None:
         screen.handle_event(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""}))
 
         assert isinstance(app._screens[-1], BenchmarkScreen)
+    finally:
+        pygame.quit()
+
+
+def test_adaptive_pause_menu_shows_unified_actions_and_settings(tmp_path) -> None:
+    pygame.init()
+    try:
+        surface = pygame.display.set_mode((960, 540))
+        font = pygame.font.Font(None, 36)
+        store = ResultsStore(tmp_path / "adaptive-settings.sqlite3")
+        app = App(surface=surface, font=font, results_store=store, app_version="test")
+        app.push(MenuScreen(app, "Main Menu", [MenuItem("Quit", app.quit)], is_root=True))
+        clock = _FakeClock()
+        screen = AdaptiveSessionScreen(
+            app,
+            session=AdaptiveSession(clock=clock, seed=555, plan=_small_adaptive_plan(clock)),
+            test_code="adaptive_session",
+        )
+        app.push(screen)
+        screen.handle_event(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""}))
+        screen.render(surface)
+
+        screen.handle_event(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_ESCAPE, "unicode": ""}))
+
+        assert screen._pause_menu_options() == (
+            "Resume",
+            "Skip Current Segment",
+            "Restart Current",
+            "Settings",
+            "Main Menu",
+        )
+
+        settings_index = screen._pause_menu_options().index("Settings")
+        for _ in range(settings_index):
+            screen.handle_event(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_DOWN, "unicode": ""}))
+        screen.handle_event(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""}))
+
+        assert [key for key, _label, _value in screen._pause_settings_rows()] == [
+            "review_mode",
+            "joystick_bindings",
+            "back",
+        ]
+    finally:
+        pygame.quit()
+
+
+def test_adaptive_pause_menu_skip_current_segment_advances_to_next_block() -> None:
+    pygame.init()
+    try:
+        surface = pygame.display.set_mode((960, 540))
+        font = pygame.font.Font(None, 36)
+        app = App(surface=surface, font=font, app_version="test")
+        app.push(MenuScreen(app, "Main Menu", [MenuItem("Quit", app.quit)], is_root=True))
+        clock = _FakeClock()
+        session = AdaptiveSession(clock=clock, seed=555, plan=_small_adaptive_plan(clock))
+        screen = AdaptiveSessionScreen(app, session=session, test_code="adaptive_session")
+        app.push(screen)
+        screen.handle_event(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""}))
+        screen.render(surface)
+
+        assert session.snapshot().block_index == 1
+        screen.handle_event(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_ESCAPE, "unicode": ""}))
+        skip_index = screen._pause_menu_options().index("Skip Current Segment")
+        for _ in range(skip_index):
+            screen.handle_event(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_DOWN, "unicode": ""}))
+        screen.handle_event(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""}))
+
+        assert session.stage is AdaptiveStage.BLOCK
+        assert session.snapshot().block_index == 2
+    finally:
+        pygame.quit()
+
+
+def test_adaptive_pause_menu_skip_does_not_persist_attempt(tmp_path) -> None:
+    pygame.init()
+    try:
+        surface = pygame.display.set_mode((960, 540))
+        font = pygame.font.Font(None, 36)
+        store = ResultsStore(tmp_path / "adaptive-skip.sqlite3")
+        app = App(surface=surface, font=font, results_store=store, app_version="test")
+        app.push(MenuScreen(app, "Main Menu", [MenuItem("Quit", app.quit)], is_root=True))
+        clock = _FakeClock()
+        session = AdaptiveSession(clock=clock, seed=555, plan=_small_adaptive_plan(clock))
+        screen = AdaptiveSessionScreen(app, session=session, test_code="adaptive_session")
+        app.push(screen)
+        screen.handle_event(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""}))
+        screen.render(surface)
+
+        for _ in range(2):
+            screen.handle_event(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_ESCAPE, "unicode": ""}))
+            skip_index = screen._pause_menu_options().index("Skip Current Segment")
+            for _ in range(skip_index):
+                screen.handle_event(
+                    pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_DOWN, "unicode": ""})
+                )
+            screen.handle_event(
+                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""})
+            )
+
+        screen.render(surface)
+
+        session_summary = store.session_summary()
+        assert session_summary is not None
+        assert session_summary.activity_count == 1
+        assert session_summary.completed_activity_count == 0
+        assert session_summary.aborted_activity_count == 1
+        assert session_summary.attempt_count == 0
+        assert screen._results_persistence_lines == ["Local save skipped in dev mode."]
     finally:
         pygame.quit()
 

@@ -3,22 +3,27 @@ from __future__ import annotations
 import importlib.util
 import os
 import sys
-from dataclasses import dataclass
+import math
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import pygame
 
 from .aircraft_art import (
+    apply_fixed_wing_view_rotation,
     build_panda_palette,
     build_panda3d_fixed_wing_model,
     draw_fixed_wing_pygame,
     instrument_card_pygame_palette,
+    project_fixed_wing_faces,
+    project_fixed_wing_point,
+    rotate_fixed_wing_point,
 )
 from .instrument_comprehension import InstrumentAircraftViewPreset, InstrumentState
 from .panda3d_assets import Panda3DAssetCatalog
 
 _CANONICAL_CARD_SIZE = (448, 280)
-_CARD_SPRITE_VERSION = "v19"
+_CARD_SPRITE_VERSION = "v20"
 
 
 def panda3d_card_rendering_available() -> bool:
@@ -78,6 +83,8 @@ class InstrumentAircraftCardViewProjection:
     scale: float = 16.0
     offset_x: float = 0.0
     offset_y: float = 0.0
+    forward_x_mix: float = 0.0
+    forward_y_mix: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,91 +94,295 @@ class _InstrumentAircraftCardCameraSpec:
     fov_deg: float
 
 
+@dataclass(frozen=True, slots=True)
+class InstrumentAircraftCardPoseSignature:
+    nose: tuple[int, int]
+    tail: tuple[int, int]
+    left_wing: tuple[int, int]
+    right_wing: tuple[int, int]
+    canopy: tuple[int, int]
+    bounds: tuple[int, int, int, int]
+
+
+@dataclass(frozen=True, slots=True)
+class InstrumentAircraftCardPresetSpec:
+    projection: InstrumentAircraftCardViewProjection
+    camera: _InstrumentAircraftCardCameraSpec
+    view_root_offset: tuple[float, float, float] = (0.0, 0.0, 0.0)
+
+
+@dataclass(frozen=True, slots=True)
+class InstrumentAircraftCardSemanticMetrics:
+    projected_heading_deg: float
+    wing_tilt_px: float
+    pitch_cue_px: float
+
+
+_REFERENCE_CAMERA = _InstrumentAircraftCardCameraSpec(
+    camera_pos=(0.0, -22.0, 2.15),
+    look_at=(0.0, 1.60, 0.32),
+    fov_deg=16.0,
+)
+
+
+_PRESET_SPECS: dict[InstrumentAircraftViewPreset, InstrumentAircraftCardPresetSpec] = {
+    InstrumentAircraftViewPreset.FRONT_LEFT: InstrumentAircraftCardPresetSpec(
+        projection=InstrumentAircraftCardViewProjection(
+            view_yaw_deg=0.0,
+            view_pitch_deg=1.0,
+            scale=12.8,
+        ),
+        camera=_REFERENCE_CAMERA,
+    ),
+    InstrumentAircraftViewPreset.FRONT_RIGHT: InstrumentAircraftCardPresetSpec(
+        projection=InstrumentAircraftCardViewProjection(
+            view_yaw_deg=0.0,
+            view_pitch_deg=1.0,
+            scale=12.8,
+        ),
+        camera=_REFERENCE_CAMERA,
+    ),
+    InstrumentAircraftViewPreset.PROFILE_LEFT: InstrumentAircraftCardPresetSpec(
+        projection=InstrumentAircraftCardViewProjection(
+            view_yaw_deg=0.0,
+            view_pitch_deg=2.0,
+            scale=12.4,
+        ),
+        camera=_REFERENCE_CAMERA,
+    ),
+    InstrumentAircraftViewPreset.PROFILE_RIGHT: InstrumentAircraftCardPresetSpec(
+        projection=InstrumentAircraftCardViewProjection(
+            view_yaw_deg=0.0,
+            view_pitch_deg=2.0,
+            scale=12.4,
+        ),
+        camera=_REFERENCE_CAMERA,
+    ),
+    InstrumentAircraftViewPreset.TOP_OBLIQUE: InstrumentAircraftCardPresetSpec(
+        projection=InstrumentAircraftCardViewProjection(
+            view_yaw_deg=0.0,
+            view_pitch_deg=6.0,
+            scale=12.0,
+        ),
+        camera=_REFERENCE_CAMERA,
+    ),
+}
+
+
+def instrument_aircraft_card_preset_spec(
+    preset: InstrumentAircraftViewPreset,
+) -> InstrumentAircraftCardPresetSpec:
+    return _PRESET_SPECS[preset]
+
+
 def instrument_aircraft_card_view_projection(
     preset: InstrumentAircraftViewPreset,
 ) -> InstrumentAircraftCardViewProjection:
-    if preset is InstrumentAircraftViewPreset.FRONT_RIGHT:
-        return InstrumentAircraftCardViewProjection(
-            view_yaw_deg=-28.0,
-            view_pitch_deg=9.0,
-            scale=12.8,
-            offset_y=1.0,
-        )
-    if preset is InstrumentAircraftViewPreset.PROFILE_LEFT:
-        return InstrumentAircraftCardViewProjection(
-            view_yaw_deg=78.0,
-            view_pitch_deg=7.0,
-            scale=12.1,
-            offset_y=0.0,
-        )
-    if preset is InstrumentAircraftViewPreset.PROFILE_RIGHT:
-        return InstrumentAircraftCardViewProjection(
-            view_yaw_deg=-78.0,
-            view_pitch_deg=7.0,
-            scale=12.1,
-            offset_y=0.0,
-        )
-    if preset is InstrumentAircraftViewPreset.TOP_OBLIQUE:
-        return InstrumentAircraftCardViewProjection(
-            view_yaw_deg=-40.0,
-            view_pitch_deg=32.0,
-            scale=11.8,
-            offset_y=0.0,
-        )
-    return InstrumentAircraftCardViewProjection(
-        view_yaw_deg=28.0,
-        view_pitch_deg=9.0,
-        scale=12.8,
-        offset_y=1.0,
-    )
+    return instrument_aircraft_card_preset_spec(preset).projection
 
 
 def _camera_spec_for_preset(
     preset: InstrumentAircraftViewPreset,
 ) -> _InstrumentAircraftCardCameraSpec:
-    if preset is InstrumentAircraftViewPreset.FRONT_RIGHT:
-        return _InstrumentAircraftCardCameraSpec(
-            camera_pos=(2.55, 8.70, 1.18),
-            look_at=(0.0, 1.58, 0.30),
-            fov_deg=22.5,
-        )
-    if preset is InstrumentAircraftViewPreset.PROFILE_LEFT:
-        return _InstrumentAircraftCardCameraSpec(
-            camera_pos=(-10.6, 1.75, 0.92),
-            look_at=(0.0, 1.62, 0.28),
-            fov_deg=19.5,
-        )
-    if preset is InstrumentAircraftViewPreset.PROFILE_RIGHT:
-        return _InstrumentAircraftCardCameraSpec(
-            camera_pos=(10.6, 1.75, 0.92),
-            look_at=(0.0, 1.62, 0.28),
-            fov_deg=19.5,
-        )
-    if preset is InstrumentAircraftViewPreset.TOP_OBLIQUE:
-        return _InstrumentAircraftCardCameraSpec(
-            camera_pos=(5.2, 6.4, 5.1),
-            look_at=(0.0, 1.60, 0.22),
-            fov_deg=18.0,
-        )
-    return _InstrumentAircraftCardCameraSpec(
-        camera_pos=(-2.55, 8.70, 1.18),
-        look_at=(0.0, 1.58, 0.30),
-        fov_deg=22.5,
-    )
+    return instrument_aircraft_card_preset_spec(preset).camera
 
 
 def _view_root_offset_for_preset(
     preset: InstrumentAircraftViewPreset,
 ) -> tuple[float, float, float]:
-    if preset is InstrumentAircraftViewPreset.FRONT_RIGHT:
-        return (-1.40, 0.0, 0.0)
-    if preset is InstrumentAircraftViewPreset.PROFILE_RIGHT:
-        return (-1.10, 0.0, 0.0)
-    if preset is InstrumentAircraftViewPreset.TOP_OBLIQUE:
-        return (-1.60, 0.0, 0.12)
-    if preset is InstrumentAircraftViewPreset.FRONT_LEFT:
-        return (-0.70, 0.0, 0.0)
-    return (-0.35, 0.0, 0.0)
+    return instrument_aircraft_card_preset_spec(preset).view_root_offset
+
+
+def aircraft_card_pose_signature(
+    state: InstrumentState,
+    *,
+    view_preset: InstrumentAircraftViewPreset = InstrumentAircraftViewPreset.FRONT_LEFT,
+) -> InstrumentAircraftCardPoseSignature:
+    projection = instrument_aircraft_card_view_projection(view_preset)
+    scale = max(40.0, float(projection.scale) * 6.0)
+
+    def project(point: tuple[float, float, float]) -> tuple[int, int]:
+        rotated = rotate_fixed_wing_point(
+            point,
+            heading_deg=float(state.heading_deg),
+            pitch_deg=float(state.pitch_deg),
+            bank_deg=float(state.bank_deg),
+        )
+        viewed = apply_fixed_wing_view_rotation(
+            rotated,
+            view_yaw_deg=projection.view_yaw_deg,
+            view_pitch_deg=projection.view_pitch_deg,
+            view_roll_deg=projection.view_roll_deg,
+        )
+        sx, sy, _depth = project_fixed_wing_point(
+            viewed,
+            cx=0,
+            cy=0,
+            scale=scale,
+            forward_x_mix=projection.forward_x_mix,
+            forward_y_mix=projection.forward_y_mix,
+        )
+        return int(sx), int(sy)
+
+    faces = project_fixed_wing_faces(
+        heading_deg=float(state.heading_deg),
+        pitch_deg=float(state.pitch_deg),
+        bank_deg=float(state.bank_deg),
+        cx=0,
+        cy=0,
+        scale=scale,
+        view_yaw_deg=projection.view_yaw_deg,
+        view_pitch_deg=projection.view_pitch_deg,
+        view_roll_deg=projection.view_roll_deg,
+        forward_x_mix=projection.forward_x_mix,
+        forward_y_mix=projection.forward_y_mix,
+    )
+    points = [point for face in faces for point in face.points]
+    min_x = min(point[0] for point in points)
+    min_y = min(point[1] for point in points)
+    max_x = max(point[0] for point in points)
+    max_y = max(point[1] for point in points)
+
+    return InstrumentAircraftCardPoseSignature(
+        nose=project((0.0, 3.42, 0.12)),
+        tail=project((0.0, -2.48, 0.18)),
+        left_wing=project((-3.86, 0.56, 0.16)),
+        right_wing=project((3.86, 0.56, 0.16)),
+        canopy=project((0.0, 1.42, 0.64)),
+        bounds=(int(min_x), int(min_y), int(max_x), int(max_y)),
+    )
+
+
+def aircraft_card_pose_distance(
+    left: InstrumentAircraftCardPoseSignature,
+    right: InstrumentAircraftCardPoseSignature,
+) -> float:
+    landmarks = (
+        (left.nose, right.nose),
+        (left.tail, right.tail),
+        (left.left_wing, right.left_wing),
+        (left.right_wing, right.right_wing),
+        (left.canopy, right.canopy),
+    )
+    distance = 0.0
+    for a, b in landmarks:
+        distance += abs(float(a[0] - b[0])) + abs(float(a[1] - b[1]))
+    distance += 0.5 * sum(abs(float(a - b)) for a, b in zip(left.bounds, right.bounds, strict=False))
+    return float(distance)
+
+
+def aircraft_card_projected_heading_deg(signature: InstrumentAircraftCardPoseSignature) -> float:
+    dx = float(signature.nose[0] - signature.tail[0])
+    dy = float(signature.nose[1] - signature.tail[1])
+    return _wrap_signed_deg(math.degrees(math.atan2(-dy, dx)))
+
+
+def aircraft_card_wing_tilt_px(signature: InstrumentAircraftCardPoseSignature) -> float:
+    return float(signature.left_wing[1] - signature.right_wing[1])
+
+
+def aircraft_card_pitch_cue_px(signature: InstrumentAircraftCardPoseSignature) -> float:
+    body_mid_y = (float(signature.nose[1]) + float(signature.tail[1])) * 0.5
+    return body_mid_y - float(signature.canopy[1])
+
+
+def aircraft_card_semantic_metrics(
+    signature: InstrumentAircraftCardPoseSignature,
+) -> InstrumentAircraftCardSemanticMetrics:
+    return InstrumentAircraftCardSemanticMetrics(
+        projected_heading_deg=aircraft_card_projected_heading_deg(signature),
+        wing_tilt_px=aircraft_card_wing_tilt_px(signature),
+        pitch_cue_px=aircraft_card_pitch_cue_px(signature),
+    )
+
+
+def aircraft_card_semantic_drift_tags(
+    state: InstrumentState,
+    *,
+    view_preset: InstrumentAircraftViewPreset = InstrumentAircraftViewPreset.FRONT_LEFT,
+    heading_tolerance_deg: float = 24.0,
+    heading_margin_deg: float = 8.0,
+    neutral_bank_sample_deg: int = 12,
+    neutral_bank_symmetry_tolerance_px: float = 16.0,
+    bank_delta_tolerance_px: float = 2.0,
+    pitch_delta_tolerance_px: float = 0.5,
+) -> tuple[str, ...]:
+    signature = aircraft_card_pose_signature(state, view_preset=view_preset)
+    metrics = aircraft_card_semantic_metrics(signature)
+    tags: list[str] = []
+
+    heading_deg = int(state.heading_deg) % 360
+    if int(state.pitch_deg) == 0 and int(state.bank_deg) == 0:
+        expected_heading = _wrap_signed_deg(90.0 - float(heading_deg))
+        heading_err = _wrapped_angle_error(metrics.projected_heading_deg, expected_heading)
+        nearby_heading_errors = [
+            _wrapped_angle_error(
+                metrics.projected_heading_deg,
+                _wrap_signed_deg(90.0 - float((heading_deg + delta) % 360)),
+            )
+            for delta in (90, 180, 270)
+        ]
+        if heading_err > float(heading_tolerance_deg) or any(
+            error + float(heading_margin_deg) < heading_err for error in nearby_heading_errors
+        ):
+            tags.append("heading_axis")
+
+    neutral_bank_signature = aircraft_card_pose_signature(
+        replace(state, bank_deg=0),
+        view_preset=view_preset,
+    )
+    neutral_bank_metrics = aircraft_card_semantic_metrics(neutral_bank_signature)
+    wing_delta = metrics.wing_tilt_px - neutral_bank_metrics.wing_tilt_px
+    bank = int(state.bank_deg)
+    if bank == 0 and abs(int(state.pitch_deg)) <= 2:
+        left_bank_metrics = aircraft_card_semantic_metrics(
+            aircraft_card_pose_signature(
+                replace(state, bank_deg=-abs(int(neutral_bank_sample_deg))),
+                view_preset=view_preset,
+            )
+        )
+        right_bank_metrics = aircraft_card_semantic_metrics(
+            aircraft_card_pose_signature(
+                replace(state, bank_deg=abs(int(neutral_bank_sample_deg))),
+                view_preset=view_preset,
+            )
+        )
+        left_delta = left_bank_metrics.wing_tilt_px - metrics.wing_tilt_px
+        right_delta = right_bank_metrics.wing_tilt_px - metrics.wing_tilt_px
+        if (
+            left_delta <= 0.0
+            or right_delta >= 0.0
+            or abs(abs(left_delta) - abs(right_delta)) > float(neutral_bank_symmetry_tolerance_px)
+        ):
+            tags.append("bank_neutral")
+    elif abs(bank) >= 2 and (
+        abs(wing_delta) < float(bank_delta_tolerance_px) or (wing_delta * float(bank)) > 0.0
+    ):
+        tags.append("bank_sign")
+
+    neutral_pitch_signature = aircraft_card_pose_signature(
+        replace(state, pitch_deg=0),
+        view_preset=view_preset,
+    )
+    neutral_pitch_metrics = aircraft_card_semantic_metrics(neutral_pitch_signature)
+    pitch_delta = metrics.pitch_cue_px - neutral_pitch_metrics.pitch_cue_px
+    pitch = int(state.pitch_deg)
+    if abs(pitch) >= 2:
+        if abs(pitch_delta) < float(pitch_delta_tolerance_px) or (pitch_delta * float(pitch)) < 0.0:
+            tags.append("pitch_sign")
+
+    return tuple(tags)
+
+
+def _wrap_signed_deg(angle_deg: float) -> float:
+    wrapped = (float(angle_deg) + 180.0) % 360.0 - 180.0
+    if wrapped == -180.0:
+        return 180.0
+    return wrapped
+
+
+def _wrapped_angle_error(left: float, right: float) -> float:
+    return abs(_wrap_signed_deg(float(left) - float(right)))
 
 
 class InstrumentAircraftCardSpriteBank:
@@ -387,6 +598,8 @@ class InstrumentAircraftCardSpriteBank:
             view_yaw_deg=projection.view_yaw_deg,
             view_pitch_deg=projection.view_pitch_deg,
             view_roll_deg=projection.view_roll_deg,
+            forward_x_mix=projection.forward_x_mix,
+            forward_y_mix=projection.forward_y_mix,
         )
         pygame.draw.rect(surface, (170, 184, 212), rect, 1)
         return surface
@@ -408,9 +621,10 @@ class _Panda3DInstrumentCardRenderer:
         self._base = ShowBase()
         self._base.disableMouse()
         self._base.setBackgroundColor(0.83, 0.85, 0.89, 1.0)
-        self._base.camLens.setFov(22.8)
-        self._base.cam.setPos(0.0, -18.7, 1.46)
-        self._base.cam.lookAt(0.0, 1.64, 0.46)
+        default_camera = _camera_spec_for_preset(InstrumentAircraftViewPreset.FRONT_LEFT)
+        self._base.camLens.setFov(default_camera.fov_deg)
+        self._base.cam.setPos(*default_camera.camera_pos)
+        self._base.cam.lookAt(*default_camera.look_at)
 
         ambient = AmbientLight("ambient")
         ambient.setColor(Vec4(0.34, 0.36, 0.39, 1.0))
@@ -448,6 +662,10 @@ class _Panda3DInstrumentCardRenderer:
         from panda3d.core import PNMImage
 
         projection = instrument_aircraft_card_view_projection(key.view_preset)
+        camera = _camera_spec_for_preset(key.view_preset)
+        self._base.camLens.setFov(camera.fov_deg)
+        self._base.cam.setPos(*camera.camera_pos)
+        self._base.cam.lookAt(*camera.look_at)
         self._view_root.setPos(*_view_root_offset_for_preset(key.view_preset))
         self._view_root.setHpr(
             float(projection.view_yaw_deg),

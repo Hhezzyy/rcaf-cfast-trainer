@@ -5,15 +5,16 @@ from dataclasses import dataclass
 import pygame
 import pytest
 
-from cfast_trainer.app import App, CognitiveTestScreen, MenuItem, MenuScreen
-from cfast_trainer.auditory_capacity import build_auditory_capacity_test
-from cfast_trainer.gl_scenes import (
-    AuditoryGlScene,
-    RapidTrackingGlScene,
-    TraceTest1GlScene,
-    TraceTest2GlScene,
+from cfast_trainer.app import (
+    App,
+    CognitiveTestScreen,
+    MenuItem,
+    MenuScreen,
+    _AuditoryPandaRequirementState,
 )
+from cfast_trainer.auditory_capacity import build_auditory_capacity_test
 from cfast_trainer.rapid_tracking import build_rapid_tracking_test
+from cfast_trainer.spatial_integration import build_spatial_integration_test
 from cfast_trainer.trace_test_1 import build_trace_test_1_test
 from cfast_trainer.trace_test_2 import build_trace_test_2_test
 
@@ -52,7 +53,6 @@ class _SceneSpec:
     name: str
     test_code: str
     getter_name: str
-    gl_scene_type: type[object]
 
 
 _SCENES = (
@@ -60,27 +60,29 @@ _SCENES = (
         name="auditory",
         test_code="auditory_capacity",
         getter_name="_get_auditory_panda_renderer",
-        gl_scene_type=AuditoryGlScene,
     ),
     _SceneSpec(
         name="rapid_tracking",
         test_code="rapid_tracking",
         getter_name="_get_rapid_tracking_panda_renderer",
-        gl_scene_type=RapidTrackingGlScene,
+    ),
+    _SceneSpec(
+        name="spatial_integration",
+        test_code="spatial_integration",
+        getter_name="_get_spatial_integration_panda_renderer",
     ),
     _SceneSpec(
         name="trace_test_1",
         test_code="trace_test_1",
         getter_name="_get_trace_test_1_panda_renderer",
-        gl_scene_type=TraceTest1GlScene,
     ),
     _SceneSpec(
         name="trace_test_2",
         test_code="trace_test_2",
         getter_name="_get_trace_test_2_panda_renderer",
-        gl_scene_type=TraceTest2GlScene,
     ),
 )
+_NON_AUDITORY_SCENES = tuple(spec for spec in _SCENES if spec.name != "auditory")
 
 
 @pytest.fixture
@@ -150,6 +152,23 @@ def _build_screen(*, spec: _SceneSpec, opengl_enabled: bool) -> tuple[App, Cogni
         screen._engine.update()
         return app, screen
 
+    if spec.name == "spatial_integration":
+        clock = _FakeClock()
+        screen = CognitiveTestScreen(
+            app,
+            engine_factory=lambda: build_spatial_integration_test(
+                clock=clock,
+                seed=61,
+                difficulty=0.58,
+            ),
+            test_code=spec.test_code,
+        )
+        app.push(screen)
+        screen._engine.start_practice()
+        clock.advance(0.1)
+        screen._engine.update()
+        return app, screen
+
     if spec.name == "trace_test_2":
         clock = _FakeClock()
         screen = CognitiveTestScreen(
@@ -170,6 +189,14 @@ def _build_screen(*, spec: _SceneSpec, opengl_enabled: bool) -> tuple[App, Cogni
     raise ValueError(f"unknown scene: {spec.name}")
 
 
+def _mark_auditory_panda_ready(screen: CognitiveTestScreen) -> None:
+    screen._auditory_panda_requirement = _AuditoryPandaRequirementState(
+        checked=True,
+        ready=True,
+    )
+    screen._auditory_panda_failed = False
+
+
 @pytest.mark.parametrize("spec", _SCENES, ids=lambda spec: spec.name)
 @pytest.mark.parametrize("opengl_enabled", [False, True], ids=["gl-off", "gl-on"])
 def test_complex_scene_prefers_panda_renderer_when_available(
@@ -180,6 +207,9 @@ def test_complex_scene_prefers_panda_renderer_when_available(
 ) -> None:
     app, screen = _build_screen(spec=spec, opengl_enabled=opengl_enabled)
     fake_renderer = _FakePandaRenderer(size=(320, 200))
+    if spec.name == "auditory":
+        _mark_auditory_panda_ready(screen)
+        monkeypatch.setattr(screen, "_sync_auditory_audio", lambda **_: None)
 
     def fake_getter(*, size: tuple[int, int]):
         fake_renderer.size = tuple(size)
@@ -194,14 +224,40 @@ def test_complex_scene_prefers_panda_renderer_when_available(
 
 
 @pytest.mark.parametrize("spec", _SCENES, ids=lambda spec: spec.name)
-def test_complex_scene_falls_back_to_gl_when_panda_unavailable_and_gl_enabled(
+def test_complex_scene_blocks_when_panda_unavailable_instead_of_falling_back_to_gl(
     pygame_headless,
     monkeypatch,
     spec: _SceneSpec,
 ) -> None:
     app, screen = _build_screen(spec=spec, opengl_enabled=True)
+    if spec.name == "auditory":
+        _mark_auditory_panda_ready(screen)
+        monkeypatch.setattr(screen, "_sync_auditory_audio", lambda **_: None)
     monkeypatch.setattr(screen, spec.getter_name, lambda **_: None)
 
     app.render()
 
-    assert isinstance(app.consume_gl_scene(), spec.gl_scene_type)
+    assert app.consume_gl_scene() is None
+    requirement = getattr(screen, f"_{spec.name}_panda_requirement")
+    assert requirement.checked is True
+    assert requirement.ready is False
+    assert requirement.failure_category == "renderer_unavailable"
+
+
+@pytest.mark.parametrize("spec", _NON_AUDITORY_SCENES, ids=lambda spec: spec.name)
+def test_non_panda_renderer_preference_blocks_panda_required_scene(
+    pygame_headless,
+    monkeypatch,
+    spec: _SceneSpec,
+) -> None:
+    env_var = f"CFAST_{spec.name.upper()}_RENDERER"
+    app, screen = _build_screen(spec=spec, opengl_enabled=True)
+    monkeypatch.setenv(env_var, "pygame")
+
+    app.render()
+
+    assert app.consume_gl_scene() is None
+    requirement = getattr(screen, f"_{spec.name}_panda_requirement")
+    assert requirement.checked is True
+    assert requirement.ready is False
+    assert requirement.failure_category == "renderer_pref"

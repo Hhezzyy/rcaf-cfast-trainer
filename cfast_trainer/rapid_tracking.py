@@ -52,6 +52,10 @@ class RapidTrackingConfig:
     capture_cooldown_s: float = 0.42
     capture_flash_s: float = 0.34
     capture_zoom_strength: float = 0.85
+    capture_hold_bonus_interval_s: float = 0.25
+    capture_hold_blend_response_hz: float = 8.0
+    default_h_fov_deg: float = 130.0
+    hold_zoom_h_fov_deg: float = 39.0
 
 
 RAPID_TRACKING_TARGET_KIND_ORDER: tuple[str, ...] = (
@@ -1125,6 +1129,9 @@ class RapidTrackingEngine:
         self._capture_attempts = 0
         self._capture_max_points = 0
         self._capture_zoom_until_s = 0.0
+        self._capture_hold_active = False
+        self._capture_hold_blend = 0.0
+        self._capture_hold_bonus_due_at_s = 0.0
         self._capture_last_at_s = -999.0
         self._capture_feedback_until_s = 0.0
         self._capture_feedback = ""
@@ -1455,6 +1462,10 @@ class RapidTrackingEngine:
 
     def submit_answer(self, raw: str) -> bool:
         token = str(raw).strip().upper()
+        if token == "CAPTURE_HOLD_START":
+            return self._capture_hold_start()
+        if token == "CAPTURE_HOLD_END":
+            return self._capture_hold_end()
         if token in {"CAPTURE", "TRIGGER", "SHOT"}:
             return self._capture_trigger()
         return False
@@ -1577,7 +1588,7 @@ class RapidTrackingEngine:
             prompt=self.current_prompt(),
             input_hint=(
                 "Pan freely with configured HOTAS movement, rudder or left-right input, and joystick axis 1 or up-down input. "
-                "Keep the target centered, then press the configured capture binding or Space when it is inside the "
+                "Keep the target centered, then hold the configured capture binding or Space when it is inside the "
                 "center camera box."
             ),
             time_remaining_s=self.time_remaining_s(),
@@ -1596,8 +1607,8 @@ class RapidTrackingEngine:
                 "and jets are the fastest passes.\n"
                 "Targets may duck into buildings or disappear behind terrain; during building handoffs "
                 "you track the structure until the next target emerges.\n"
-                "Pan the camera freely, keep the target centered, and press the configured capture binding or Space when the target "
-                "is inside the center camera box.\n"
+                "Pan the camera freely, keep the target centered, and hold the configured capture binding or Space when the target "
+                "is inside the center camera box to zoom and capture.\n"
                 "Press Enter to begin practice."
             )
         if self._phase is Phase.PRACTICE_DONE:
@@ -1795,6 +1806,9 @@ class RapidTrackingEngine:
         self._lock_hold_s = 0.0
         self._hud_visible_until_s = 0.0
         self._capture_zoom_until_s = 0.0
+        self._capture_hold_active = False
+        self._capture_hold_blend = 0.0
+        self._capture_hold_bonus_due_at_s = 0.0
         self._capture_last_at_s = -999.0
         self._capture_feedback_until_s = 0.0
         self._capture_feedback = ""
@@ -1835,7 +1849,9 @@ class RapidTrackingEngine:
         tracking_error = math.sqrt((err_x * err_x) + (err_y * err_y))
 
         on_target = bool(projection.in_front) and tracking_error <= self._cfg.on_target_radius
+        target_in_capture_box = self._target_in_capture_box(require_visible=True)
         self._update_hud_lock_state(dt=dt, on_target=on_target)
+        self._advance_capture_hold_state(dt=dt, target_in_box=target_in_capture_box)
 
         if self._phase is Phase.PRACTICE:
             self._practice_samples += 1
@@ -2179,6 +2195,26 @@ class RapidTrackingEngine:
     def _capture_points_for_kind(kind: str) -> int:
         return 2 if str(kind).strip().lower() in {"helicopter", "jet"} else 1
 
+    def _capture_hold_start(self) -> bool:
+        if self._phase not in (Phase.PRACTICE, Phase.SCORED):
+            return False
+        self._capture_hold_active = True
+        self._capture_hold_bonus_due_at_s = self._sim_elapsed_s + max(
+            0.05,
+            float(self._cfg.capture_hold_bonus_interval_s),
+        )
+        self._capture_trigger()
+        return True
+
+    def _capture_hold_end(self) -> bool:
+        if self._phase not in (Phase.PRACTICE, Phase.SCORED):
+            self._capture_hold_active = False
+            self._capture_hold_bonus_due_at_s = 0.0
+            return False
+        self._capture_hold_active = False
+        self._capture_hold_bonus_due_at_s = 0.0
+        return True
+
     def _capture_trigger(self) -> bool:
         if self._phase not in (Phase.PRACTICE, Phase.SCORED):
             return False
@@ -2203,6 +2239,23 @@ class RapidTrackingEngine:
         self._capture_feedback_until_s = self._sim_elapsed_s + self._cfg.capture_flash_s
         return True
 
+    def _advance_capture_hold_state(self, *, dt: float, target_in_box: bool) -> None:
+        response_hz = max(0.1, float(self._cfg.capture_hold_blend_response_hz))
+        alpha = min(1.0, dt * response_hz)
+        target_blend = 1.0 if self._capture_hold_active else 0.0
+        self._capture_hold_blend += (target_blend - self._capture_hold_blend) * alpha
+        if not self._capture_hold_active:
+            return
+
+        interval = max(0.05, float(self._cfg.capture_hold_bonus_interval_s))
+        if self._capture_hold_bonus_due_at_s <= 0.0:
+            self._capture_hold_bonus_due_at_s = self._sim_elapsed_s + interval
+        while self._sim_elapsed_s >= self._capture_hold_bonus_due_at_s:
+            self._capture_max_points += 1
+            if target_in_box:
+                self._capture_points += 1
+            self._capture_hold_bonus_due_at_s += interval
+
     def _target_in_capture_box(self, *, require_visible: bool) -> bool:
         if require_visible and self._target_terrain_occluded:
             return False
@@ -2217,13 +2270,15 @@ class RapidTrackingEngine:
         )
 
     def _current_capture_zoom(self) -> float:
+        hold_zoom = max(0.0, min(1.0, float(self._capture_hold_blend)))
         remaining = self._capture_zoom_until_s - self._sim_elapsed_s
         if remaining <= 0.0 or self._cfg.capture_zoom_s <= 0.0:
-            return 0.0
+            return hold_zoom
         t = 1.0 - max(0.0, min(1.0, remaining / self._cfg.capture_zoom_s))
         pulse = math.sin(t * math.pi)
         kick = 1.0 - t
-        return max(0.0, ((pulse * 0.72) + (kick * 0.28)) * self._cfg.capture_zoom_strength)
+        pulse_zoom = max(0.0, ((pulse * 0.72) + (kick * 0.28)) * self._cfg.capture_zoom_strength)
+        return max(hold_zoom, pulse_zoom)
 
     def _scene_progress(self) -> float:
         if self._phase is Phase.PRACTICE:

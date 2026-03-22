@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 
 from .ant_drills import (
     ANT_DRILL_MODE_PROFILES,
@@ -16,11 +16,6 @@ from .instrument_comprehension import (
     InstrumentComprehensionTrialKind,
     InstrumentState,
 )
-
-
-def _norm_heading(deg: int) -> int:
-    return int(deg) % 360
-
 
 def _normalize_mode(mode: AntDrillMode | str) -> AntDrillMode:
     if isinstance(mode, AntDrillMode):
@@ -52,6 +47,15 @@ class _IcSinglePartGenerator(InstrumentComprehensionGenerator):
         return self.next_problem_for_kind(kind=self._kind, difficulty=difficulty)
 
 
+def _ordered_unique_tags(*groups: tuple[str, ...]) -> tuple[str, ...]:
+    ordered: list[str] = []
+    for group in groups:
+        for tag in group:
+            if tag not in ordered:
+                ordered.append(tag)
+    return tuple(ordered)
+
+
 class IcHeadingAnchorGenerator(_IcSinglePartGenerator):
     _kind = InstrumentComprehensionTrialKind.INSTRUMENTS_TO_AIRCRAFT
 
@@ -73,23 +77,26 @@ class IcHeadingAnchorGenerator(_IcSinglePartGenerator):
             slip=0,
         )
 
-    def _build_distractors(
+    def _lower_band_profile_pool(
         self,
         *,
-        state: InstrumentState,
-        difficulty: float,
         kind: InstrumentComprehensionTrialKind,
-    ) -> tuple[InstrumentState, InstrumentState, InstrumentState, InstrumentState]:
-        _ = kind
-        d = clamp01(difficulty)
-        near = max(20, lerp_int(70, 30, d))
-        mid = max(35, lerp_int(110, 55, d))
-        far = max(55, lerp_int(150, 85, d))
-        return (
-            replace(state, heading_deg=_norm_heading(state.heading_deg + near)),
-            replace(state, heading_deg=_norm_heading(state.heading_deg - near)),
-            replace(state, heading_deg=_norm_heading(state.heading_deg + mid)),
-            replace(state, heading_deg=_norm_heading(state.heading_deg + far)),
+        difficulty: float,
+    ) -> tuple[str, ...]:
+        _ = kind, difficulty
+        return ("quarter_turn_left", "quarter_turn_right", "reciprocal_heading")
+
+    def _nearest_profile_candidates(
+        self,
+        *,
+        kind: InstrumentComprehensionTrialKind,
+        difficulty: float,
+    ) -> tuple[str, ...]:
+        _ = kind, difficulty
+        return _ordered_unique_tags(
+            ("quarter_turn_left", "quarter_turn_right", "reciprocal_heading"),
+            ("bank_flip", "pitch_flip", "attitude_mirror"),
+            self._fallback_tags(kind),
         )
 
 
@@ -116,33 +123,26 @@ class IcAttitudeFrameGenerator(_IcSinglePartGenerator):
             slip=0,
         )
 
-    def _build_distractors(
+    def _lower_band_profile_pool(
         self,
         *,
-        state: InstrumentState,
-        difficulty: float,
         kind: InstrumentComprehensionTrialKind,
-    ) -> tuple[InstrumentState, InstrumentState, InstrumentState, InstrumentState]:
-        _ = kind
-        d = clamp01(difficulty)
-        pitch_delta = max(2, lerp_int(8, 4, d))
-        bank_delta = max(4, lerp_int(14, 7, d))
-        coarse_heading = 0 if d < 0.85 else 45
-        return (
-            replace(state, bank_deg=-state.bank_deg),
-            replace(state, pitch_deg=-state.pitch_deg, vertical_rate_fpm=-state.vertical_rate_fpm),
-            replace(
-                state,
-                bank_deg=-state.bank_deg,
-                pitch_deg=-state.pitch_deg,
-                vertical_rate_fpm=-state.vertical_rate_fpm,
-            ),
-            replace(
-                state,
-                heading_deg=_norm_heading(state.heading_deg + coarse_heading),
-                bank_deg=state.bank_deg + (bank_delta if state.bank_deg <= 0 else -bank_delta),
-                pitch_deg=state.pitch_deg + (pitch_delta if state.pitch_deg <= 0 else -pitch_delta),
-            ),
+        difficulty: float,
+    ) -> tuple[str, ...]:
+        _ = kind, difficulty
+        return ("bank_flip", "pitch_flip", "attitude_mirror")
+
+    def _nearest_profile_candidates(
+        self,
+        *,
+        kind: InstrumentComprehensionTrialKind,
+        difficulty: float,
+    ) -> tuple[str, ...]:
+        _ = difficulty
+        return _ordered_unique_tags(
+            ("bank_flip", "pitch_flip", "attitude_mirror"),
+            ("quarter_turn_left", "quarter_turn_right"),
+            self._fallback_tags(kind),
         )
 
 
@@ -173,36 +173,26 @@ class IcReversePanelPrimeGenerator(_IcSinglePartGenerator):
             slip=0,
         )
 
-    def _build_distractors(
+    def _lower_band_profile_pool(
         self,
         *,
-        state: InstrumentState,
-        difficulty: float,
         kind: InstrumentComprehensionTrialKind,
-    ) -> tuple[InstrumentState, InstrumentState, InstrumentState, InstrumentState]:
-        _ = kind
-        d = clamp01(difficulty)
-        speed_delta = max(20, lerp_int(50, 20, d))
-        altitude_delta = max(500, lerp_int(1600, 600, d))
-        heading_delta = max(45, lerp_int(90, 45, d))
-        pitch_delta = max(3, lerp_int(7, 4, d))
-        return (
-            replace(state, speed_kts=max(120, min(360, state.speed_kts + speed_delta))),
-            replace(state, altitude_ft=max(1000, min(9500, state.altitude_ft + altitude_delta))),
-            replace(
-                state,
-                heading_deg=_norm_heading(state.heading_deg + heading_delta),
-                bank_deg=-state.bank_deg,
-            ),
-            replace(
-                state,
-                pitch_deg=-state.pitch_deg if state.pitch_deg != 0 else pitch_delta,
-                vertical_rate_fpm=(
-                    -state.vertical_rate_fpm
-                    if state.vertical_rate_fpm != 0
-                    else (700 if pitch_delta > 0 else -700)
-                ),
-            ),
+        difficulty: float,
+    ) -> tuple[str, ...]:
+        _ = kind, difficulty
+        return ("bank_flip", "pitch_flip", "quarter_turn_left")
+
+    def _nearest_profile_candidates(
+        self,
+        *,
+        kind: InstrumentComprehensionTrialKind,
+        difficulty: float,
+    ) -> tuple[str, ...]:
+        _ = difficulty
+        return _ordered_unique_tags(
+            ("bank_flip", "pitch_flip", "quarter_turn_left", "quarter_turn_right"),
+            ("reciprocal_heading", "attitude_mirror"),
+            self._fallback_tags(kind),
         )
 
 
@@ -233,34 +223,26 @@ class IcDescriptionPrimeGenerator(_IcSinglePartGenerator):
             slip=0,
         )
 
-    def _build_distractors(
+    def _lower_band_profile_pool(
         self,
         *,
-        state: InstrumentState,
-        difficulty: float,
         kind: InstrumentComprehensionTrialKind,
-    ) -> tuple[InstrumentState, InstrumentState, InstrumentState, InstrumentState]:
-        _ = kind
-        d = clamp01(difficulty)
-        speed_delta = max(20, lerp_int(50, 20, d))
-        altitude_delta = max(500, lerp_int(1800, 600, d))
-        heading_delta = max(45, lerp_int(90, 45, d))
-        pitch_delta = max(3, lerp_int(7, 4, d))
-        return (
-            replace(state, speed_kts=max(120, min(360, state.speed_kts + speed_delta))),
-            replace(state, altitude_ft=max(1000, min(9500, state.altitude_ft + altitude_delta))),
-            replace(
-                state,
-                heading_deg=_norm_heading(state.heading_deg + heading_delta),
-                bank_deg=-state.bank_deg,
-            ),
-            replace(
-                state,
-                pitch_deg=-state.pitch_deg if state.pitch_deg != 0 else pitch_delta,
-                vertical_rate_fpm=(
-                    -state.vertical_rate_fpm if state.vertical_rate_fpm != 0 else (700 if pitch_delta > 0 else -700)
-                ),
-            ),
+        difficulty: float,
+    ) -> tuple[str, ...]:
+        _ = kind, difficulty
+        return ("speed_shift_up", "altitude_shift_up", "quarter_turn_left")
+
+    def _nearest_profile_candidates(
+        self,
+        *,
+        kind: InstrumentComprehensionTrialKind,
+        difficulty: float,
+    ) -> tuple[str, ...]:
+        _ = difficulty
+        return _ordered_unique_tags(
+            ("speed_shift_up", "altitude_shift_up", "vertical_rate_flip"),
+            ("quarter_turn_left", "quarter_turn_right", "bank_flip", "pitch_flip"),
+            self._fallback_tags(kind),
         )
 
 
@@ -332,6 +314,12 @@ def _build_ic_drill(
     scored_duration_s = (
         profile.scored_duration_s if config.scored_duration_s is None else float(config.scored_duration_s)
     )
+    if instructions and instructions[-1] == "Press Enter to begin practice.":
+        instructions = (
+            *instructions[:-1],
+            "Some items use the rotating compass card; others keep the compass fixed and move the red heading arrow.",
+            instructions[-1],
+        )
     return InstrumentComprehensionTimedDrill(
         title=f"{title_base} ({profile.label})",
         instructions=instructions,

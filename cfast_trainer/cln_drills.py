@@ -6,6 +6,8 @@ from .ant_drills import ANT_DRILL_MODE_PROFILES, AntDrillAttemptSummary, AntDril
 from .clock import Clock
 from .cognitive_core import Phase, Problem, QuestionEvent, SeededRng, TestSnapshot, clamp01
 from .colours_letters_numbers import (
+    CLN_BLUE_OVERDRIVE_LANE_COLORS,
+    CLN_STANDARD_LANE_COLORS,
     ColoursLettersNumbersDiamond,
     ColoursLettersNumbersGenerationProfile,
     ColoursLettersNumbersGenerator,
@@ -14,8 +16,15 @@ from .colours_letters_numbers import (
     ColoursLettersNumbersOption,
     ColoursLettersNumbersRuntimePayload,
     ColoursLettersNumbersTrainingPayload,
+    cln_key_label_join,
+    cln_lane_key_map,
+    cln_lane_key_pairs,
+    cln_memory_choice_keys,
 )
-from .numerical_operations import NumericalOperationsProblemProfile
+from .numerical_operations import (
+    NumericalOperationsGenerator,
+    NumericalOperationsProblemProfile,
+)
 
 
 def _normalize_mode(mode: AntDrillMode | str) -> AntDrillMode:
@@ -74,6 +83,10 @@ class ClnDrillProfile:
     static_text: str = "--"
     top_hint_override: str | None = None
     required_math_answers_before_memory: int = 0
+    lane_colors: tuple[str, ...] = CLN_STANDARD_LANE_COLORS
+    secondary_math_profile: NumericalOperationsProblemProfile | None = None
+    secondary_math_difficulty_offset: float = 0.0
+    secondary_math_option_count: int = 5
 
     def has_memory(self) -> bool:
         return "memory" in self.active_channels
@@ -83,6 +96,9 @@ class ClnDrillProfile:
 
     def has_colour(self) -> bool:
         return "colour" in self.active_channels
+
+    def has_secondary_math(self) -> bool:
+        return self.secondary_math_profile is not None
 
 
 @dataclass(slots=True)
@@ -94,10 +110,16 @@ class _LiveDiamond:
     speed_norm_per_s: float
 
 
+@dataclass(frozen=True, slots=True)
+class _SecondaryMathChoice:
+    prompt: str
+    options: tuple[ColoursLettersNumbersOption, ...]
+    expected_option_code: int
+
+
 class ClnDrillEngine:
-    _LANE_COLORS = ("RED", "YELLOW", "GREEN", "BLUE")
-    _HIT_ZONE_START = 0.54
-    _HIT_ZONE_END = 0.98
+    _HIT_ZONE_START = 0.48
+    _HIT_ZONE_END = 0.92
     _MAX_UPDATE_DT_S = 0.25
 
     def __init__(
@@ -119,6 +141,11 @@ class ClnDrillEngine:
         self._clock = clock
         self._seed = int(seed)
         self._difficulty = clamp01(float(difficulty))
+        self._lane_colors = tuple(str(color).upper() for color in self._profile.lane_colors)
+        if len(self._lane_colors) == 0:
+            raise ValueError("lane_colors must not be empty")
+        if len(set(self._lane_colors)) != len(self._lane_colors):
+            raise ValueError("lane_colors must be unique")
         self._practice_rounds = max(0, int(practice_rounds))
         self._scored_duration_s = max(1.0, float(scored_duration_s))
         self._mode = mode
@@ -128,12 +155,23 @@ class ClnDrillEngine:
             profile=self._profile.generation_profile,
         )
         self._rng = SeededRng(self._seed ^ 0x51D0_6F19)
+        self._secondary_math_rng = SeededRng(self._seed ^ 0x3E11_9C27)
+        self._secondary_math_generator = (
+            None
+            if self._profile.secondary_math_profile is None
+            else NumericalOperationsGenerator(
+                seed=int(self._secondary_math_rng.randint(1, 2_147_483_647)),
+                profile=self._profile.secondary_math_profile,
+            )
+        )
 
         self._phase = Phase.INSTRUCTIONS
         self._memory_current: ColoursLettersNumbersMemoryChallenge | None = None
         self._math_current: Problem | None = None
+        self._secondary_math_current: _SecondaryMathChoice | None = None
         self._memory_cycle_started_at_s: float | None = None
         self._memory_prompted_at_s: float | None = None
+        self._secondary_math_presented_at_s: float | None = None
         self._memory_recall_delay_s_current = 0.0
         self._memory_answered = False
         self._last_update_s: float | None = None
@@ -247,6 +285,8 @@ class ClnDrillEngine:
             return self._submit_memory_sequence(upper.split(":", 1)[1])
         if upper.startswith("MEM:"):
             return self._submit_memory_choice(upper.split(":", 1)[1])
+        if upper.startswith("MATH2:"):
+            return self._submit_secondary_math_choice(upper.split(":", 1)[1])
         if upper.startswith("CLR:"):
             return self._submit_color(upper.split(":", 1)[1])
         return self._submit_math(token)
@@ -385,7 +425,10 @@ class ClnDrillEngine:
         if memory_input_active:
             prompt_text = "Type the stored sequence and press Enter."
         elif self._profile.has_memory() and options_active:
-            prompt_text = "Pick the matching corner using A/S/D/F/G or the mouse."
+            prompt_text = (
+                "Pick the matching corner using "
+                f"{cln_key_label_join(cln_memory_choice_keys(len(options)))} or the mouse."
+            )
         elif (
             self._profile.has_math()
             and self._math_current is not None
@@ -403,7 +446,7 @@ class ClnDrillEngine:
         input_label = "Sequence Entry" if memory_input_active else self._profile.input_label
         static_text = self._profile.static_text
         if options_active and not show_text_entry:
-            static_text = "A/S/D/F/G"
+            static_text = cln_key_label_join(cln_memory_choice_keys(len(options)))
 
         return ColoursLettersNumbersTrainingPayload(
             target_sequence=target_sequence,
@@ -412,7 +455,7 @@ class ClnDrillEngine:
             memory_answered=(not self._profile.has_memory()) or self._memory_answered,
             math_answered=False,
             math_prompt=prompt_text,
-            lane_colors=self._LANE_COLORS,
+            lane_colors=self._lane_colors,
             lane_start_norm=self._HIT_ZONE_START,
             lane_end_norm=self._HIT_ZONE_END,
             diamonds=diamonds,
@@ -431,6 +474,17 @@ class ClnDrillEngine:
             colour_active=self._profile.has_colour(),
             math_active=self._profile.has_math(),
             memory_active=self._profile.has_memory(),
+            memory_choice_keys=cln_memory_choice_keys(len(options)),
+            secondary_math_prompt=(
+                "" if self._secondary_math_current is None else str(self._secondary_math_current.prompt)
+            ),
+            secondary_math_options=(
+                ()
+                if self._secondary_math_current is None
+                else self._secondary_math_current.options
+            ),
+            secondary_math_choice_active=self._secondary_math_current is not None,
+            secondary_math_choice_keys=("1", "2", "3", "4", "5"),
         )
 
     def _start_channels(self, now: float) -> None:
@@ -448,6 +502,11 @@ class ClnDrillEngine:
             self._start_math_cycle(now)
         else:
             self._math_current = None
+        if self._profile.has_secondary_math():
+            self._start_secondary_math_cycle(now)
+        else:
+            self._secondary_math_current = None
+            self._secondary_math_presented_at_s = None
 
     def _start_memory_cycle(self, now: float) -> None:
         self._memory_current = self._challenge_generator.next_memory_challenge(difficulty=self._difficulty)
@@ -468,6 +527,46 @@ class ClnDrillEngine:
         prompt, answer = self._challenge_generator.next_math_challenge(difficulty=self._difficulty)
         self._math_current = Problem(prompt=prompt, answer=int(answer))
         self._presented_at_s = now
+
+    def _start_secondary_math_cycle(self, now: float) -> None:
+        if self._secondary_math_generator is None:
+            self._secondary_math_current = None
+            self._secondary_math_presented_at_s = None
+            return
+        difficulty = clamp01(
+            float(self._difficulty) + float(self._profile.secondary_math_difficulty_offset)
+        )
+        problem = self._secondary_math_generator.next_problem(difficulty=difficulty)
+        answer = int(problem.answer)
+        variants = [answer]
+        seen = {answer}
+        offset_cap = max(2, 2 + _lerp_int(0, 6, difficulty))
+        while len(variants) < max(2, int(self._profile.secondary_math_option_count)):
+            step = int(self._secondary_math_rng.randint(1, offset_cap))
+            direction = -1 if self._secondary_math_rng.random() < 0.5 else 1
+            candidate = answer + (step * direction)
+            if candidate in seen:
+                continue
+            variants.append(candidate)
+            seen.add(candidate)
+
+        for idx in range(len(variants) - 1, 0, -1):
+            swap_idx = int(self._secondary_math_rng.randint(0, idx))
+            variants[idx], variants[swap_idx] = variants[swap_idx], variants[idx]
+
+        options = tuple(
+            ColoursLettersNumbersOption(code=index + 1, label=str(value))
+            for index, value in enumerate(variants)
+        )
+        expected_option_code = next(
+            option.code for option in options if int(option.label) == answer
+        )
+        self._secondary_math_current = _SecondaryMathChoice(
+            prompt=str(problem.prompt),
+            options=options,
+            expected_option_code=int(expected_option_code),
+        )
+        self._secondary_math_presented_at_s = now
 
     def _memory_elapsed(self) -> float:
         if self._memory_cycle_started_at_s is None:
@@ -599,7 +698,7 @@ class ClnDrillEngine:
         self._diamonds = survivors
 
     def _spawn_diamond(self) -> None:
-        color = str(self._rng.choice(self._LANE_COLORS))
+        color = str(self._rng.choice(self._lane_colors))
         row = self._sample_diamond_row()
         diamond = _LiveDiamond(
             id=self._next_diamond_id,
@@ -730,7 +829,11 @@ class ClnDrillEngine:
             return "Type the full sequence while it remains visible."
         if self._profile.memory_mode is ColoursLettersNumbersMemoryMode.DELAYED_EXACT:
             return "Type the stored sequence from memory."
-        return "Pick the matching sequence using A/S/D/F/G or mouse."
+        return (
+            "Pick the matching sequence using "
+            f"{cln_key_label_join(cln_memory_choice_keys(len(self._memory_current.options) if self._memory_current is not None else 5))} "
+            "or mouse."
+        )
 
     def _submit_math(self, raw_text: str) -> bool:
         if not self._profile.has_math() or self._math_current is None:
@@ -791,20 +894,75 @@ class ClnDrillEngine:
             self._start_math_cycle(now)
         return True
 
+    def _submit_secondary_math_choice(self, raw_code: str) -> bool:
+        if self._secondary_math_current is None:
+            return False
+        digits = "".join(ch for ch in str(raw_code) if ch.isdigit())
+        if digits == "":
+            return False
+        code = int(digits)
+        option = next(
+            (choice for choice in self._secondary_math_current.options if int(choice.code) == code),
+            None,
+        )
+        if option is None:
+            return False
+
+        is_correct = code == int(self._secondary_math_current.expected_option_code)
+        now = self._clock.now()
+        base = (
+            self._secondary_math_presented_at_s
+            if self._secondary_math_presented_at_s is not None
+            else now
+        )
+        rt = max(0.0, now - base)
+        self._events.append(
+            QuestionEvent(
+                index=len(self._events),
+                phase=self._phase,
+                prompt=str(self._secondary_math_current.prompt),
+                correct_answer=int(
+                    next(
+                        choice.label
+                        for choice in self._secondary_math_current.options
+                        if int(choice.code) == int(self._secondary_math_current.expected_option_code)
+                    )
+                ),
+                user_answer=int(option.label),
+                is_correct=is_correct,
+                presented_at_s=base,
+                answered_at_s=now,
+                response_time_s=rt,
+                raw=f"MATH2:{code}",
+                score=(2.0 if is_correct else 0.0),
+                max_score=2.0,
+            )
+        )
+        self._display_attempted += 1
+        if is_correct:
+            self._display_correct += 1
+            self._display_points += 2.0
+            self._last_feedback = "Bonus math correct. Keep the channels separated."
+        else:
+            correct_choice = next(
+                choice
+                for choice in self._secondary_math_current.options
+                if int(choice.code) == int(self._secondary_math_current.expected_option_code)
+            )
+            self._last_feedback = f"Bonus math miss. Correct answer: {correct_choice.label}"
+        if self._phase is Phase.SCORED:
+            self._scored_attempted += 1
+            self._scored_points += 2.0 if is_correct else 0.0
+            if is_correct:
+                self._scored_correct += 1
+        self._start_secondary_math_cycle(now)
+        return True
+
     def _submit_color(self, raw_key: str) -> bool:
         if not self._profile.has_colour():
             return False
         key = str(raw_key).strip().upper()
-        key_map = {
-            "Q": "RED",
-            "W": "YELLOW",
-            "E": "GREEN",
-            "R": "BLUE",
-            "RED": "RED",
-            "YELLOW": "YELLOW",
-            "GREEN": "GREEN",
-            "BLUE": "BLUE",
-        }
+        key_map = cln_lane_key_map(self._lane_colors)
         color = key_map.get(key)
         if color is None:
             return False
@@ -835,10 +993,10 @@ class ClnDrillEngine:
 
     def _color_lane_bounds(self, color: str) -> tuple[float, float] | None:
         try:
-            idx = self._LANE_COLORS.index(color)
+            idx = self._lane_colors.index(color)
         except ValueError:
             return None
-        lane_w = (self._HIT_ZONE_END - self._HIT_ZONE_START) / float(len(self._LANE_COLORS))
+        lane_w = (self._HIT_ZONE_END - self._HIT_ZONE_START) / float(len(self._lane_colors))
         lane_start = self._HIT_ZONE_START + (lane_w * float(idx))
         lane_end = lane_start + lane_w
         return lane_start, lane_end
@@ -867,8 +1025,10 @@ class ClnDrillEngine:
     def _clear_channel_state(self) -> None:
         self._memory_current = None
         self._math_current = None
+        self._secondary_math_current = None
         self._memory_cycle_started_at_s = None
         self._memory_prompted_at_s = None
+        self._secondary_math_presented_at_s = None
         self._memory_answered = False
         self._last_update_s = None
         self._diamonds.clear()
@@ -1146,10 +1306,10 @@ def build_cln_colour_lane_drill(
         max_live_diamonds_easy=1,
         max_live_diamonds_hard=3,
         panel_prompt="Clear matching diamonds inside the colour lanes.",
-        control_hint="Colour lanes: Q/W/E/R",
+        control_hint="Colour lanes: Q/W/E",
         input_label="Status",
         show_text_entry=False,
-        static_text="Q/W/E/R",
+        static_text="Q/W/E",
         top_hint_override="Colour channel only. Clear matching diamonds in the lane zone.",
     )
     return _build_cln_drill(
@@ -1157,7 +1317,7 @@ def build_cln_colour_lane_drill(
         instructions=(
             "Colours, Letters and Numbers: Colour Lane Warm-Up",
             f"Mode: {mode_profile.label}",
-            "Lane-clearing drill using the real CLN colour-zone layout and Q/W/E/R mapping.",
+            "Lane-clearing drill using the standard CLN three-lane layout and Q/W/E mapping.",
             "Build scan rhythm and hit timing before memory and math start interfering.",
             "Press Enter to begin practice.",
         ),
@@ -1261,10 +1421,10 @@ def build_cln_memory_colour_drill(
         max_live_diamonds_easy=1,
         max_live_diamonds_hard=4,
         panel_prompt="Clear the lanes while holding the sequence in memory.",
-        control_hint="Memory: A/S/D/F/G or mouse  |  Colour lanes: Q/W/E/R",
+        control_hint="Memory: A/S/D/F/G or mouse  |  Colour lanes: Q/W/E",
         input_label="Status",
         show_text_entry=False,
-        static_text="A/S/D/F/G + Q/W/E/R",
+        static_text="A/S/D/F/G + Q/W/E",
     )
     return _build_cln_drill(
         title_base="Colours, Letters and Numbers: Memory + Colour",
@@ -1324,7 +1484,7 @@ def build_cln_full_steady_drill(
         max_live_diamonds_easy=1,
         max_live_diamonds_hard=4,
         panel_prompt="Run the full CLN structure at steady pressure.",
-        control_hint="Memory: A/S/D/F/G or mouse  |  Colour lanes: Q/W/E/R  |  Enter: math",
+        control_hint="Memory: A/S/D/F/G or mouse  |  Colour lanes: Q/W/E  |  Enter: math",
         input_label="Math Answer",
         show_text_entry=True,
         static_text="--",
@@ -1387,7 +1547,7 @@ def build_cln_full_pressure_drill(
         max_live_diamonds_easy=2,
         max_live_diamonds_hard=5,
         panel_prompt="Full CLN pressure: hold memory, keep the math clean, and keep the lanes alive.",
-        control_hint="Memory: A/S/D/F/G or mouse  |  Colour lanes: Q/W/E/R  |  Enter: math",
+        control_hint="Memory: A/S/D/F/G or mouse  |  Colour lanes: Q/W/E  |  Enter: math",
         input_label="Math Answer",
         show_text_entry=True,
         static_text="--",
@@ -1399,6 +1559,200 @@ def build_cln_full_pressure_drill(
             f"Mode: {mode_profile.label}",
             "The full three-channel CLN structure under denser diamonds, harder arithmetic, and more disruptive memory timing.",
             "Use it as the late-workout pressure block, not as a perfection block.",
+            "Press Enter to begin practice.",
+        ),
+        profile=profile,
+        clock=clock,
+        seed=seed,
+        difficulty=difficulty,
+        mode=mode,
+        config=cfg,
+    )
+
+
+def build_cln_overdrive_blue_return_drill(
+    *,
+    clock: Clock,
+    seed: int,
+    difficulty: float = 0.5,
+    mode: AntDrillMode | str = AntDrillMode.TEMPO,
+    config: ClnDrillConfig | None = None,
+) -> ClnDrillEngine:
+    cfg = config or ClnDrillConfig()
+    mode_profile = ANT_DRILL_MODE_PROFILES[_normalize_mode(mode)]
+    profile = ClnDrillProfile(
+        active_channels=("memory", "math", "colour"),
+        generation_profile=ColoursLettersNumbersGenerationProfile(
+            sequence_min_easy=5,
+            sequence_min_hard=6,
+            sequence_max_easy=6,
+            sequence_max_hard=8,
+            option_style="default",
+            math_profile=NumericalOperationsProblemProfile(operand_profile="clean_compute"),
+            math_difficulty_offset=0.10,
+        ),
+        sequence_show_easy=3.0,
+        sequence_show_hard=1.8,
+        recall_delay_easy=2.2,
+        recall_delay_hard=5.0,
+        recall_delay_max_easy=3.2,
+        recall_delay_max_hard=6.8,
+        recall_window_easy=6.8,
+        recall_window_hard=4.6,
+        diamond_spawn_easy=1.6,
+        diamond_spawn_hard=0.75,
+        diamond_spawn_max_easy=2.0,
+        diamond_spawn_max_hard=0.95,
+        diamond_speed_easy=0.16,
+        diamond_speed_hard=0.38,
+        diamond_speed_max_easy=0.22,
+        diamond_speed_max_hard=0.48,
+        max_live_diamonds_easy=2,
+        max_live_diamonds_hard=5,
+        panel_prompt="Full CLN overdrive: the blue lane is back on top of the standard CLN load.",
+        control_hint="Memory: A/S/D/F/G or mouse  |  Colour lanes: Q/W/E/R  |  Enter: math",
+        input_label="Math Answer",
+        show_text_entry=True,
+        static_text="--",
+        lane_colors=CLN_BLUE_OVERDRIVE_LANE_COLORS,
+    )
+    return _build_cln_drill(
+        title_base="Colours, Letters and Numbers: Overdrive Blue Return",
+        instructions=(
+            "Colours, Letters and Numbers: Overdrive Blue Return",
+            f"Mode: {mode_profile.label}",
+            "Run the full CLN structure again, but bring the fourth blue lane back into the scan and timing problem.",
+            "This is a lane-density overdrive, not a new response format.",
+            "Press Enter to begin practice.",
+        ),
+        profile=profile,
+        clock=clock,
+        seed=seed,
+        difficulty=difficulty,
+        mode=mode,
+        config=cfg,
+    )
+
+
+def build_cln_overdrive_six_choice_memory_drill(
+    *,
+    clock: Clock,
+    seed: int,
+    difficulty: float = 0.5,
+    mode: AntDrillMode | str = AntDrillMode.PRESSURE,
+    config: ClnDrillConfig | None = None,
+) -> ClnDrillEngine:
+    cfg = config or ClnDrillConfig()
+    mode_profile = ANT_DRILL_MODE_PROFILES[_normalize_mode(mode)]
+    profile = ClnDrillProfile(
+        active_channels=("memory", "math", "colour"),
+        generation_profile=ColoursLettersNumbersGenerationProfile(
+            sequence_min_easy=5,
+            sequence_min_hard=7,
+            sequence_max_easy=6,
+            sequence_max_hard=8,
+            memory_option_count=6,
+            option_style="tight",
+            math_profile=NumericalOperationsProblemProfile(operand_profile="clean_compute"),
+            math_difficulty_offset=0.10,
+        ),
+        sequence_show_easy=2.9,
+        sequence_show_hard=1.7,
+        recall_delay_easy=2.8,
+        recall_delay_hard=5.8,
+        recall_delay_max_easy=4.0,
+        recall_delay_max_hard=8.2,
+        recall_window_easy=6.4,
+        recall_window_hard=4.3,
+        diamond_spawn_easy=1.5,
+        diamond_spawn_hard=0.72,
+        diamond_spawn_max_easy=1.9,
+        diamond_spawn_max_hard=0.90,
+        diamond_speed_easy=0.16,
+        diamond_speed_hard=0.38,
+        diamond_speed_max_easy=0.22,
+        diamond_speed_max_hard=0.48,
+        max_live_diamonds_easy=2,
+        max_live_diamonds_hard=5,
+        panel_prompt="Overdrive memory: one sequence, six answer boxes, and the full standard CLN load.",
+        control_hint="Memory: A/S/D/F/G/H or mouse  |  Colour lanes: Q/W/E  |  Enter: math",
+        input_label="Math Answer",
+        show_text_entry=True,
+        static_text="--",
+    )
+    return _build_cln_drill(
+        title_base="Colours, Letters and Numbers: Overdrive Six-Choice Memory",
+        instructions=(
+            "Colours, Letters and Numbers: Overdrive Six-Choice Memory",
+            f"Mode: {mode_profile.label}",
+            "Keep one target sequence, but expand the delayed memory grid to six choices while the standard CLN math and colour channels stay live.",
+            "The extra burden is answer discrimination, not extra target sequences.",
+            "Press Enter to begin practice.",
+        ),
+        profile=profile,
+        clock=clock,
+        seed=seed,
+        difficulty=difficulty,
+        mode=mode,
+        config=cfg,
+    )
+
+
+def build_cln_overdrive_dual_math_drill(
+    *,
+    clock: Clock,
+    seed: int,
+    difficulty: float = 0.5,
+    mode: AntDrillMode | str = AntDrillMode.STRESS,
+    config: ClnDrillConfig | None = None,
+) -> ClnDrillEngine:
+    cfg = config or ClnDrillConfig()
+    mode_profile = ANT_DRILL_MODE_PROFILES[_normalize_mode(mode)]
+    profile = ClnDrillProfile(
+        active_channels=("memory", "math", "colour"),
+        generation_profile=ColoursLettersNumbersGenerationProfile(
+            sequence_min_easy=5,
+            sequence_min_hard=7,
+            sequence_max_easy=7,
+            sequence_max_hard=9,
+            option_style="tight",
+            math_profile=NumericalOperationsProblemProfile(operand_profile="default"),
+            math_difficulty_offset=0.15,
+        ),
+        sequence_show_easy=2.7,
+        sequence_show_hard=1.6,
+        recall_delay_easy=3.2,
+        recall_delay_hard=6.2,
+        recall_delay_max_easy=4.4,
+        recall_delay_max_hard=9.2,
+        recall_window_easy=6.0,
+        recall_window_hard=4.0,
+        diamond_spawn_easy=1.4,
+        diamond_spawn_hard=0.65,
+        diamond_spawn_max_easy=1.8,
+        diamond_spawn_max_hard=0.82,
+        diamond_speed_easy=0.18,
+        diamond_speed_hard=0.42,
+        diamond_speed_max_easy=0.24,
+        diamond_speed_max_hard=0.52,
+        max_live_diamonds_easy=2,
+        max_live_diamonds_hard=5,
+        panel_prompt="Overdrive dual math: typed arithmetic stays live while a second multiple-choice math panel runs in parallel.",
+        control_hint="Memory: A/S/D/F/G or mouse  |  Colour lanes: Q/W/E  |  Enter: main math  |  1-5 or mouse: bonus math",
+        input_label="Main Math",
+        show_text_entry=True,
+        static_text="--",
+        secondary_math_profile=NumericalOperationsProblemProfile(operand_profile="clean_compute"),
+        secondary_math_difficulty_offset=0.10,
+        secondary_math_option_count=5,
+    )
+    return _build_cln_drill(
+        title_base="Colours, Letters and Numbers: Overdrive Dual Math",
+        instructions=(
+            "Colours, Letters and Numbers: Overdrive Dual Math",
+            f"Mode: {mode_profile.label}",
+            "Keep the standard typed CLN math lane, then add a second multiple-choice math panel in parallel while memory and colour stay live.",
+            "Use the mouse on the bonus math panel to keep the channels from collapsing into one response habit.",
             "Press Enter to begin practice.",
         ),
         profile=profile,

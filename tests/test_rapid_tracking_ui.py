@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from typing import cast
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
@@ -32,6 +33,7 @@ class _FakeRapidTrackingEngine:
     def __init__(self, payload: RapidTrackingPayload, *, title: str) -> None:
         self._payload = payload
         self._title = title
+        self.submissions: list[str] = []
 
     def snapshot(self) -> SnapshotModel:
         return SnapshotModel(
@@ -55,6 +57,7 @@ class _FakeRapidTrackingEngine:
         pass
 
     def submit_answer(self, raw: str) -> bool:
+        self.submissions.append(str(raw))
         return True
 
     def update(self) -> None:
@@ -80,6 +83,22 @@ def _build_screen(engine: object) -> tuple[App, CognitiveTestScreen]:
     screen = CognitiveTestScreen(app, engine_factory=lambda: engine)
     app.push(screen)
     return app, screen
+
+
+def _build_live_rt_screen(*, clock: _FakeClock) -> CognitiveTestScreen:
+    screen = _build_screen(
+        build_rapid_tracking_test(
+            clock=clock,
+            seed=551,
+            difficulty=0.5,
+        )
+    )[1]
+    screen._engine.start_scored()
+    screen._engine._target_x = 0.0
+    screen._engine._target_y = 0.0
+    screen._engine._target_terrain_occluded = False
+    screen._engine._reset_camera_pose_to_target()
+    return screen
 
 
 def test_rapid_tracking_title_prefix_routes_to_real_renderer(monkeypatch) -> None:
@@ -173,5 +192,59 @@ def test_rapid_tracking_real_drill_engine_exposes_focus_metadata_on_live_screen(
         assert isinstance(payload, RapidTrackingPayload)
         assert payload.focus_label == "Stable lock quality"
         assert payload.active_target_kinds == ("soldier", "truck")
+    finally:
+        pygame.quit()
+
+
+def test_rapid_tracking_space_hold_starts_zoom_and_release_restores_view() -> None:
+    clock = _FakeClock()
+    screen = _build_live_rt_screen(clock=clock)
+    try:
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_SPACE, "unicode": " "})
+        )
+        clock.advance(0.30)
+        screen._engine.update()
+        zoomed = screen._engine.snapshot().payload
+        assert zoomed is not None
+        assert zoomed.capture_zoom > 0.8
+
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYUP, {"key": pygame.K_SPACE, "unicode": ""})
+        )
+        clock.advance(0.30)
+        screen._engine.update()
+        released = screen._engine.snapshot().payload
+        assert released is not None
+        assert released.capture_zoom < 0.2
+    finally:
+        pygame.quit()
+
+
+def test_rapid_tracking_mouse_and_trigger_use_hold_tokens() -> None:
+    payload = _sample_payload()
+    _app, screen = _build_screen(
+        _FakeRapidTrackingEngine(payload, title="Rapid Tracking: Lock Anchor")
+    )
+    try:
+        screen.handle_event(
+            pygame.event.Event(pygame.MOUSEBUTTONDOWN, {"button": 1, "pos": (20, 20)})
+        )
+        screen.handle_event(
+            pygame.event.Event(pygame.MOUSEBUTTONUP, {"button": 1, "pos": (20, 20)})
+        )
+        screen.handle_event(
+            pygame.event.Event(pygame.JOYBUTTONDOWN, {"button": 0})
+        )
+        screen.handle_event(
+            pygame.event.Event(pygame.JOYBUTTONUP, {"button": 0})
+        )
+
+        assert cast(_FakeRapidTrackingEngine, screen._engine).submissions == [
+            "CAPTURE_HOLD_START",
+            "CAPTURE_HOLD_END",
+            "CAPTURE_HOLD_START",
+            "CAPTURE_HOLD_END",
+        ]
     finally:
         pygame.quit()

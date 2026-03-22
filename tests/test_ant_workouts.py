@@ -356,10 +356,7 @@ def test_workout_dev_skip_hotkeys_advance_shell_skip_block_and_finish(
         pygame.quit()
 
 
-def test_workout_pause_menu_shows_visible_skip_entry(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("CFAST_ENABLE_DEV_TOOLS", "1")
+def test_workout_pause_menu_shows_unified_actions() -> None:
     clock = FakeClock()
     session = AntWorkoutSession(
         clock=clock,
@@ -373,13 +370,18 @@ def test_workout_pause_menu_shows_visible_skip_entry(
             pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_ESCAPE, "unicode": ""})
         )
 
-        assert "Skip Stage" in screen._pause_menu_options()
-        assert "Skip Workout" not in screen._pause_menu_options()
+        assert screen._pause_menu_options() == (
+            "Resume",
+            "Skip Current Segment",
+            "Restart Current",
+            "Settings",
+            "Main Menu",
+        )
     finally:
         pygame.quit()
 
 
-def test_workout_pause_menu_hides_skip_entry_without_dev_tools() -> None:
+def test_workout_pause_menu_skip_current_segment_advances_current_block() -> None:
     clock = FakeClock()
     session = AntWorkoutSession(
         clock=clock,
@@ -389,11 +391,28 @@ def test_workout_pause_menu_hides_skip_entry_without_dev_tools() -> None:
     )
     _app, screen = _build_app_and_workout_screen(clock=clock, session=session)
     try:
+        session.activate()
+        session.append_text("Need better tempo")
+        session.activate()
+        session.append_text("Move on after misses")
+        session.activate()
+        session.activate()
+        assert session.stage is AntWorkoutStage.BLOCK
+
         screen.handle_event(
             pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_ESCAPE, "unicode": ""})
         )
+        skip_index = screen._pause_menu_options().index("Skip Current Segment")
+        for _ in range(skip_index):
+            screen.handle_event(
+                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_DOWN, "unicode": ""})
+            )
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""})
+        )
 
-        assert "Skip Stage" not in screen._pause_menu_options()
+        assert session.stage is AntWorkoutStage.BLOCK_SETUP
+        assert screen._pause_menu_active is False
     finally:
         pygame.quit()
 
@@ -442,11 +461,9 @@ def test_workout_pause_freezes_block_timer() -> None:
         pygame.quit()
 
 
-def test_workout_dev_skip_does_not_persist_attempt(
+def test_workout_pause_menu_skip_does_not_persist_attempt(
     tmp_path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("CFAST_ENABLE_DEV_TOOLS", "1")
     clock = FakeClock()
     session = AntWorkoutSession(
         clock=clock,
@@ -463,9 +480,26 @@ def test_workout_dev_skip_does_not_persist_attempt(
     screen = AntWorkoutScreen(app, session=session, test_code="airborne_numerical_workout")
     app.push(screen)
     try:
+        session.activate()
+        session.append_text("Need better tempo")
+        session.activate()
+        session.append_text("Move on after misses")
+        session.activate()
+        session.activate()
+        assert session.stage is AntWorkoutStage.BLOCK
+
         screen.handle_event(
-            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_F8, "unicode": ""})
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_ESCAPE, "unicode": ""})
         )
+        skip_index = screen._pause_menu_options().index("Skip Current Segment")
+        for _ in range(skip_index):
+            screen.handle_event(
+                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_DOWN, "unicode": ""})
+            )
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""})
+        )
+        session.debug_finish()
         screen.render(surface)
 
         session_summary = store.session_summary()

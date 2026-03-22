@@ -9,9 +9,16 @@ import pygame
 from .aircraft_art import (
     build_panda_palette,
     build_panda3d_fixed_wing_model,
+    panda3d_fixed_wing_hpr_from_screen_heading,
     panda3d_fixed_wing_hpr_from_tangent,
 )
-from .trace_test_2 import TraceTest2AircraftTrack, TraceTest2Payload, trace_test_2_track_position
+from .trace_test_2 import (
+    TraceTest2AircraftTrack,
+    TraceTest2Payload,
+    trace_test_2_track_position,
+    trace_test_2_track_tangent,
+)
+from .trace_test_2_gl import screen_heading_deg
 
 
 def panda3d_trace_test_2_rendering_available() -> bool:
@@ -109,8 +116,8 @@ class TraceTest2Panda3DRenderer:
         ground.reparentTo(self._world_root)
 
     def _update_camera(self) -> None:
-        self._base.cam.setPos(-88.0, 18.0, 28.0)
-        self._base.cam.lookAt(0.0, 100.0, 10.0)
+        self._base.cam.setPos(0.0, -18.0, 14.0)
+        self._base.cam.lookAt(0.0, 96.0, 9.0)
 
     def _update_aircraft(
         self,
@@ -139,7 +146,10 @@ class TraceTest2Panda3DRenderer:
             if tangent is None:
                 hpr = self._aircraft_orientation_by_code.get(int(track.code), (0.0, 0.0, 0.0))
             else:
-                hpr = self._aircraft_hpr_from_tangent(
+                hpr = self._aircraft_hpr_for_track(
+                    track=track,
+                    progress=progress,
+                    size=self._size,
                     tangent=tangent,
                     default_hpr=self._aircraft_orientation_by_code.get(int(track.code), (0.0, 0.0, 0.0)),
                 )
@@ -164,6 +174,23 @@ class TraceTest2Panda3DRenderer:
             default_hpr=default_hpr,
         )
 
+    @classmethod
+    def _aircraft_hpr_for_track(
+        cls,
+        *,
+        track: TraceTest2AircraftTrack,
+        progress: float,
+        size: tuple[int, int],
+        tangent: tuple[float, float, float],
+        default_hpr: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    ) -> tuple[float, float, float]:
+        world_hpr = cls._aircraft_hpr_from_tangent(tangent=tangent, default_hpr=default_hpr)
+        return panda3d_fixed_wing_hpr_from_screen_heading(
+            screen_heading_deg=screen_heading_deg(track=track, progress=progress, size=size),
+            pitch_deg=float(world_hpr[1]),
+            roll_deg=float(world_hpr[2]),
+        )
+
     @staticmethod
     def _track_tangent(
         *,
@@ -171,18 +198,11 @@ class TraceTest2Panda3DRenderer:
         progress: float,
         sample_step: float = 0.03,
     ) -> tuple[float, float, float] | None:
-        t = _clamp(progress, 0.0, 1.0)
-        step = max(0.005, float(sample_step))
-        pos = trace_test_2_track_position(track=track, progress=t)
-        ahead = trace_test_2_track_position(track=track, progress=min(1.0, t + step))
-        dx = ahead.x - pos.x
-        dy = ahead.y - pos.y
-        dz = ahead.z - pos.z
-        if (dx * dx) + (dy * dy) + (dz * dz) <= 1e-8:
-            behind = trace_test_2_track_position(track=track, progress=max(0.0, t - step))
-            dx = pos.x - behind.x
-            dy = pos.y - behind.y
-            dz = pos.z - behind.z
+        _ = sample_step
+        dx, dy, dz = trace_test_2_track_tangent(
+            track=track,
+            progress=_clamp(progress, 0.0, 1.0),
+        )
         if (dx * dx) + (dy * dy) + (dz * dz) <= 1e-8:
             return None
         return (float(dx), float(dy), float(dz))

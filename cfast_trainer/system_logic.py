@@ -165,7 +165,7 @@ class SystemLogicGenerator:
         prompt = (
             f"{payload.scenario_code}\n"
             f"{payload.question}\n"
-            "Use Up/Down to inspect the right-side index, select A-E or 1-5, then press Enter."
+            "Use 1-4 or Up/Down to inspect folders. Answer with A-E or keypad 1-5."
         )
         return Problem(prompt=prompt, answer=payload.correct_choice_code, payload=payload)
 
@@ -217,8 +217,14 @@ class SystemLogicGenerator:
     ) -> SystemLogicPayload:
         builder = getattr(self, spec.builder_name)
         payload = builder(scenario_code=scenario_code, difficulty=difficulty)
+        index_entries = tuple(
+            replace(entry, code=int(entry.code) + 1) for entry in tuple(payload.index_entries)
+        )
+        required_index_codes = tuple(int(code) + 1 for code in tuple(payload.required_index_codes))
         return replace(
             payload,
+            index_entries=index_entries,
+            required_index_codes=required_index_codes,
             content_family=spec.family,
             variant_id=stable_variant_id(spec.family, spec.reasoning_mode, spec.builder_name),
             content_pack="logic_templates",
@@ -1600,9 +1606,8 @@ def build_system_logic_test(
         "Each item uses two visible panes and mixes tables, graphs, equations, diagrams, and fact sheets.",
         "",
         "Controls during questions:",
-        "- Up / Down: move through index entries 0-3",
-        "- A / B / C / D / E or 1-5: choose an answer",
-        "- Enter: submit the selected answer",
+        "- 1 / 2 / 3 / 4 or Up / Down: inspect index entries 1-4",
+        "- A / B / C / D / E or keypad 1-5: answer immediately",
         "",
         "Scoring is exact correct / incorrect.",
         "Once the timed block starts, continue until completion.",

@@ -33,6 +33,20 @@ _MEMORY_LEVEL_RATIOS = (0.00, 0.05, 0.12, 0.22, 0.34, 0.48, 0.62, 0.76, 0.89, 1.
 _SCAN_LEVEL_RATIOS = (0.00, 0.07, 0.16, 0.26, 0.38, 0.50, 0.62, 0.74, 0.87, 1.00)
 _TRACKING_LEVEL_RATIOS = (0.00, 0.10, 0.18, 0.28, 0.40, 0.52, 0.64, 0.76, 0.88, 1.00)
 _SPATIAL_TRACE_LEVEL_RATIOS = (0.00, 0.07, 0.15, 0.24, 0.34, 0.46, 0.59, 0.72, 0.86, 1.00)
+_VISUAL_SEARCH_PROFILE_CODES = frozenset(
+    {
+        "visual_search",
+        "vs_target_preview",
+        "vs_clean_scan",
+        "vs_family_run_letters",
+        "vs_family_run_symbols",
+        "vs_mixed_tempo",
+        "vs_pressure_run",
+        "vs_multi_target_class_search",
+        "vs_priority_switch_search",
+        "vs_matrix_routine_priority_switch",
+    }
+)
 
 
 def clamp_level(level: int) -> int:
@@ -104,6 +118,14 @@ class DifficultyAxes:
             spatial_ambiguity=self.spatial_ambiguity * scaled,
             source_integration_depth=self.source_integration_depth * scaled,
         )
+
+
+_VISUAL_SEARCH_PROFILE_BOOST = DifficultyAxes(
+    time_pressure=0.04,
+    distractor_density=0.18,
+    switch_frequency=0.06,
+    source_integration_depth=0.20,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -750,7 +772,20 @@ def difficulty_profile_for_code(
     level: int,
     mode: object | None = "build",
 ) -> DifficultyProfile:
-    return difficulty_profile_for_family(family_id_for_code(test_code), level, mode)
+    token = str(test_code or "").strip().lower()
+    profile = difficulty_profile_for_family(family_id_for_code(token), level, mode)
+    if token not in _VISUAL_SEARCH_PROFILE_CODES:
+        return profile
+    progress = linear_ratio_for_level(profile.level)
+    return DifficultyProfile(
+        family_id=profile.family_id,
+        level=profile.level,
+        label=profile.label,
+        intended_use=profile.intended_use,
+        axis_values=profile.axes.add(_VISUAL_SEARCH_PROFILE_BOOST.scale(progress)).clamped(),
+        axis_weights=profile.axis_weights,
+        legacy_ratio=profile.legacy_ratio,
+    )
 
 
 def ladder_spec_for_code(test_code: str | None) -> DifficultyLadderSpec:

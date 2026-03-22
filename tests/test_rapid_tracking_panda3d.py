@@ -13,10 +13,11 @@ import pytest
 
 from cfast_trainer.rapid_tracking import build_rapid_tracking_test
 from cfast_trainer.rapid_tracking_panda3d import (
+    _RapidTrackingDecoy,
     RapidTrackingPanda3DRenderer,
     panda3d_rapid_tracking_rendering_available,
 )
-from cfast_trainer.rapid_tracking_view import camera_pose_compat
+from cfast_trainer.rapid_tracking_view import RapidTrackingCameraRigState, camera_pose_compat
 
 
 _HELPER = Path(__file__).with_name("_panda3d_runtime_probe.py")
@@ -44,6 +45,41 @@ def _run_probe(scene_name: str, *, seed: int = 551) -> dict[str, object]:
     lines = [line for line in result.stdout.splitlines() if line.strip()]
     assert lines, "subprocess produced no output"
     return json.loads(lines[-1])
+
+
+def _camera_rig(
+    *,
+    cam_world_x: float = 0.0,
+    cam_world_y: float = 0.0,
+    cam_world_z: float = 12.0,
+    view_heading_deg: float = 0.0,
+    view_pitch_deg: float = 0.0,
+) -> RapidTrackingCameraRigState:
+    return RapidTrackingCameraRigState(
+        cam_world_x=float(cam_world_x),
+        cam_world_y=float(cam_world_y),
+        cam_world_z=float(cam_world_z),
+        carrier_heading_deg=float(view_heading_deg),
+        heading_deg=float(view_heading_deg),
+        pitch_deg=float(view_pitch_deg),
+        view_heading_deg=float(view_heading_deg),
+        view_pitch_deg=float(view_pitch_deg),
+        roll_deg=0.0,
+        fov_deg=60.0,
+        orbit_weight=0.0,
+        orbit_radius=0.0,
+        altitude_agl=12.0,
+        neutral_heading_deg=float(view_heading_deg),
+        neutral_pitch_deg=float(view_pitch_deg),
+    )
+
+
+def _unit_renderer() -> RapidTrackingPanda3DRenderer:
+    renderer = RapidTrackingPanda3DRenderer.__new__(RapidTrackingPanda3DRenderer)
+    renderer._size = (960, 540)
+    renderer._airborne_orientation_cache = {}
+    renderer._terrain_height = lambda _x, _y: 0.0
+    return renderer
 
 
 def test_panda3d_rapid_tracking_rendering_disabled_for_dummy_video(monkeypatch) -> None:
@@ -105,6 +141,40 @@ def test_camera_rig_uses_direct_camera_pose_without_recentering() -> None:
 
     assert rig.heading_deg == pytest.approx(132.0)
     assert rig.pitch_deg == pytest.approx(-18.5)
+
+
+def test_camera_rig_uses_wide_default_fov_and_narrow_hold_zoom() -> None:
+    wide = RapidTrackingPanda3DRenderer._camera_rig_state(
+        elapsed_s=20.0,
+        seed=551,
+        progress=0.45,
+        camera_yaw_deg=132.0,
+        camera_pitch_deg=-18.5,
+        zoom=0.0,
+        target_kind="truck",
+        target_world_x=42.0,
+        target_world_y=96.0,
+        focus_world_x=8.0,
+        focus_world_y=78.0,
+        turbulence_strength=0.6,
+    )
+    zoomed = RapidTrackingPanda3DRenderer._camera_rig_state(
+        elapsed_s=20.0,
+        seed=551,
+        progress=0.45,
+        camera_yaw_deg=132.0,
+        camera_pitch_deg=-18.5,
+        zoom=1.0,
+        target_kind="truck",
+        target_world_x=42.0,
+        target_world_y=96.0,
+        focus_world_x=8.0,
+        focus_world_y=78.0,
+        turbulence_strength=0.6,
+    )
+
+    assert 124.0 <= wide.fov_deg <= 136.0
+    assert 36.0 <= zoomed.fov_deg <= 42.0
 
 
 def test_camera_rig_allows_large_yaw_offsets_past_old_sweep_limit() -> None:
@@ -218,6 +288,101 @@ def test_ground_routes_stay_axis_aligned_and_tanks_spin_in_place() -> None:
     assert convoy_a[1] != convoy_b[1]
     assert tank_a[:2] == tank_b[:2]
     assert tank_a[2] != tank_b[2]
+
+
+def test_airborne_apparent_hpr_prefers_camera_relative_motion_for_active_target() -> None:
+    renderer = _unit_renderer()
+
+    hpr = renderer._airborne_apparent_hpr(
+        cache_key=101,
+        current_pos=(0.0, 120.0, 20.0),
+        next_pos=(0.0, 120.0, 20.0),
+        current_rig=_camera_rig(cam_world_x=0.0),
+        next_rig=_camera_rig(cam_world_x=18.0),
+        default_heading=0.0,
+        pitch_flair=0.0,
+        roll_flair=0.0,
+        pitch_limit=18.0,
+        roll_limit=30.0,
+    )
+
+    assert abs(_angle_delta_deg(hpr[0], 270.0)) <= 5.0
+
+
+def test_airborne_apparent_hpr_falls_back_to_prior_heading_when_motion_is_nearly_zero() -> None:
+    renderer = _unit_renderer()
+    renderer._airborne_orientation_cache[102] = (123.0, -4.0, 0.0)
+
+    hpr = renderer._airborne_apparent_hpr(
+        cache_key=102,
+        current_pos=(0.0, 120.0, 20.0),
+        next_pos=(0.0, 120.0, 20.0),
+        current_rig=_camera_rig(),
+        next_rig=_camera_rig(),
+        default_heading=0.0,
+        pitch_flair=0.0,
+        roll_flair=0.0,
+        pitch_limit=18.0,
+        roll_limit=30.0,
+    )
+
+    assert hpr[0] == pytest.approx(123.0)
+
+
+def test_airborne_apparent_hpr_offsets_apparent_heading_by_camera_heading() -> None:
+    renderer = _unit_renderer()
+
+    hpr = renderer._airborne_apparent_hpr(
+        cache_key=103,
+        current_pos=(0.0, 120.0, 20.0),
+        next_pos=(0.0, 120.0, 20.0),
+        current_rig=_camera_rig(cam_world_x=0.0, view_heading_deg=45.0),
+        next_rig=_camera_rig(cam_world_x=18.0, view_heading_deg=45.0),
+        default_heading=0.0,
+        pitch_flair=0.0,
+        roll_flair=0.0,
+        pitch_limit=18.0,
+        roll_limit=30.0,
+    )
+
+    assert abs(_angle_delta_deg(hpr[0], 315.0)) <= 5.0
+
+
+def test_decoy_air_pose_uses_same_apparent_motion_heading_contract() -> None:
+    renderer = _unit_renderer()
+    decoy = _RapidTrackingDecoy(
+        node=None,
+        kind="plane",
+        phase=0.35,
+        speed=0.62,
+        lateral_bias=16.0,
+        depth_bias=18.0,
+        altitude=20.0,
+        route="air_cross",
+    )
+
+    current_pos, default_heading, pitch_flair, roll_flair = renderer._decoy_air_pose(
+        decoy=decoy,
+        elapsed_s=4.0,
+    )
+    next_pos, _next_heading, _next_pitch, _next_roll = renderer._decoy_air_pose(
+        decoy=decoy,
+        elapsed_s=4.0 + renderer._AIR_MOTION_SAMPLE_DT_S,
+    )
+    hpr = renderer._airborne_apparent_hpr(
+        cache_key=201,
+        current_pos=current_pos,
+        next_pos=next_pos,
+        current_rig=_camera_rig(cam_world_x=0.0),
+        next_rig=_camera_rig(cam_world_x=24.0),
+        default_heading=default_heading,
+        pitch_flair=pitch_flair,
+        roll_flair=roll_flair,
+        pitch_limit=16.0,
+        roll_limit=24.0,
+    )
+
+    assert abs(_angle_delta_deg(hpr[0], 270.0)) <= 35.0
 
 
 def test_world_span_is_expanded_for_large_scene() -> None:

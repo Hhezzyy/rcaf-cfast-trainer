@@ -12,6 +12,7 @@ import pytest
 from cfast_trainer.app import (
     AnalogBinding,
     App,
+    _AuditoryPandaRequirementState,
     AxisCalibrationSettings,
     CognitiveTestScreen,
     DigitalBinding,
@@ -129,6 +130,22 @@ class _FakeClock:
         self.t += dt
 
 
+class _FakePandaRenderer:
+    def __init__(self, *, size: tuple[int, int]) -> None:
+        self.size = tuple(size)
+
+    def render(self, **_: object) -> pygame.Surface:
+        surface = pygame.Surface(self.size)
+        surface.fill((72, 108, 144))
+        return surface
+
+    def close(self) -> None:
+        return None
+
+    def target_overlay_state(self):
+        return None
+
+
 class _PressedKeys:
     def __init__(self, pressed: set[int]) -> None:
         self._pressed = set(pressed)
@@ -171,6 +188,26 @@ def _build_app_and_screen(
     screen = CognitiveTestScreen(app, engine_factory=factory, test_code=test_code)
     app.push(screen)
     return app, screen, created
+
+
+def _mark_auditory_panda_ready(screen: CognitiveTestScreen) -> None:
+    screen._auditory_panda_requirement = _AuditoryPandaRequirementState(
+        checked=True,
+        ready=True,
+    )
+    screen._auditory_panda_failed = False
+
+
+def _mark_scene_panda_ready(screen: CognitiveTestScreen, scene_key: str) -> None:
+    setattr(
+        screen,
+        f"_{scene_key}_panda_requirement",
+        _AuditoryPandaRequirementState(
+            checked=True,
+            ready=True,
+        ),
+    )
+    setattr(screen, f"_{scene_key}_panda_failed", False)
 
 
 def test_pause_menu_escape_then_resume_resumes_test() -> None:
@@ -269,29 +306,69 @@ def test_pause_menu_mouse_click_activates_main_menu_row() -> None:
         pygame.quit()
 
 
-def test_pause_menu_hides_skip_rows_without_dev_tools() -> None:
+def test_pause_menu_shows_unified_actions_without_dev_tools() -> None:
     _app, screen, _engines = _build_app_and_screen(phase=Phase.PRACTICE)
     try:
         screen.handle_event(
             pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_ESCAPE, "mod": 0, "unicode": ""})
         )
 
-        assert "Skip Practice" not in screen._pause_menu_options()
-        assert "Skip All" not in screen._pause_menu_options()
+        assert screen._pause_menu_options() == (
+            "Resume",
+            "Skip Current Segment",
+            "Restart Current",
+            "Settings",
+            "Main Menu",
+        )
     finally:
         pygame.quit()
 
 
-def test_pause_menu_shows_skip_rows_for_dev_flow(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("CFAST_ENABLE_DEV_TOOLS", "1")
-    _app, screen, _engines = _build_app_and_screen(phase=Phase.PRACTICE)
+def test_pause_menu_skip_current_segment_advances_practice_to_practice_done() -> None:
+    _app, screen, engines = _build_app_and_screen(phase=Phase.PRACTICE)
     try:
+        engine = engines[-1]
         screen.handle_event(
             pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_ESCAPE, "mod": 0, "unicode": ""})
         )
+        skip_index = screen._pause_menu_options().index("Skip Current Segment")
+        for _ in range(skip_index):
+            screen.handle_event(
+                pygame.event.Event(
+                    pygame.KEYDOWN,
+                    {"key": pygame.K_DOWN, "mod": 0, "unicode": ""},
+                )
+            )
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "mod": 0, "unicode": ""})
+        )
 
-        assert "Skip Practice" in screen._pause_menu_options()
-        assert "Skip All" in screen._pause_menu_options()
+        assert engine.snapshot().phase is Phase.PRACTICE_DONE
+        assert screen._pause_menu_active is False
+    finally:
+        pygame.quit()
+
+
+def test_pause_menu_skip_current_segment_advances_scored_to_results() -> None:
+    _app, screen, engines = _build_app_and_screen(phase=Phase.SCORED)
+    try:
+        engine = engines[-1]
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_ESCAPE, "mod": 0, "unicode": ""})
+        )
+        skip_index = screen._pause_menu_options().index("Skip Current Segment")
+        for _ in range(skip_index):
+            screen.handle_event(
+                pygame.event.Event(
+                    pygame.KEYDOWN,
+                    {"key": pygame.K_DOWN, "mod": 0, "unicode": ""},
+                )
+            )
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "mod": 0, "unicode": ""})
+        )
+
+        assert engine.snapshot().phase is Phase.RESULTS
     finally:
         pygame.quit()
 
@@ -476,8 +553,7 @@ def test_pause_menu_freezes_scored_timer_until_resumed() -> None:
         pygame.quit()
 
 
-def test_dev_skip_does_not_persist_attempt(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("CFAST_ENABLE_DEV_TOOLS", "1")
+def test_pause_menu_skip_does_not_persist_attempt(tmp_path) -> None:
     pygame.init()
     surface = pygame.display.set_mode((960, 540))
     font = pygame.font.Font(None, 36)
@@ -496,8 +572,22 @@ def test_dev_skip_does_not_persist_attempt(tmp_path, monkeypatch: pytest.MonkeyP
     )
     app.push(screen)
     try:
+        screen._engine.start_practice()
+        screen._force_engine_phase(Phase.PRACTICE_DONE)
+        screen._engine.start_scored()
         screen.handle_event(
-            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_F8, "mod": 0, "unicode": ""})
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_ESCAPE, "mod": 0, "unicode": ""})
+        )
+        skip_index = screen._pause_menu_options().index("Skip Current Segment")
+        for _ in range(skip_index):
+            screen.handle_event(
+                pygame.event.Event(
+                    pygame.KEYDOWN,
+                    {"key": pygame.K_DOWN, "mod": 0, "unicode": ""},
+                )
+            )
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "mod": 0, "unicode": ""})
         )
         screen.render(surface)
 
@@ -713,6 +803,7 @@ def test_auditory_intro_loading_shows_callsigns_and_rule_recap() -> None:
         surface = pygame.display.get_surface()
         assert surface is not None
         engine = engines[-1]
+        _mark_auditory_panda_ready(screen)
         engine._assigned_callsigns = ("RAVEN", "EAGLE", "VIPER")
 
         tiny_font = _SpyFont()
@@ -726,7 +817,8 @@ def test_auditory_intro_loading_shows_callsigns_and_rule_recap() -> None:
         rendered_text = "\n".join(app_font.rendered + small_font.rendered + tiny_font.rendered)
 
         assert "Call signs: RAVEN, EAGLE, VIPER" in rendered_text
-        assert "Digit groups are 5-6 numbers long. Type them with Enter." in rendered_text
+        assert "Digit groups are" in rendered_text
+        assert "Type them with Enter." in rendered_text
         assert "Press Space or trigger once when you hear the beep." in rendered_text
         assert "Next-gate directives apply to the next matching gate only." in rendered_text
     finally:
@@ -741,6 +833,7 @@ def test_auditory_prefixed_title_uses_live_auditory_renderer_path() -> None:
     try:
         surface = pygame.display.get_surface()
         assert surface is not None
+        _mark_auditory_panda_ready(screen)
 
         tiny_font = _SpyFont()
         small_font = _SpyFont()
@@ -777,6 +870,189 @@ def test_auditory_testing_menu_toggles_for_prefixed_title() -> None:
         pygame.quit()
 
 
+def test_auditory_panda_failure_overlay_blocks_enter_until_retry_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _app, screen, engines = _build_app_and_screen(
+        phase=Phase.INSTRUCTIONS,
+        title="Auditory Capacity",
+    )
+    try:
+        surface = pygame.display.get_surface()
+        assert surface is not None
+        engine = engines[-1]
+
+        attempts = iter(
+            [
+                (False, "preflight_timeout", "Timed out waiting for Panda3D."),
+                (True, "ready", "Panda3D ready."),
+            ]
+        )
+        monkeypatch.setattr(screen, "_run_auditory_panda_preflight", lambda: next(attempts))
+        monkeypatch.setattr(
+            screen,
+            "_get_auditory_panda_renderer",
+            lambda *, size: _FakePandaRenderer(size=size),
+        )
+
+        tiny_font = _SpyFont()
+        small_font = _SpyFont()
+        app_font = _SpyFont()
+        screen._tiny_font = tiny_font
+        screen._small_font = small_font
+        screen._app._font = app_font
+
+        screen.render(surface)
+        rendered_text = "\n".join(app_font.rendered + small_font.rendered + tiny_font.rendered)
+
+        assert screen._auditory_panda_requirement.checked is True
+        assert screen._auditory_panda_requirement.ready is False
+        assert "Panda3D Required" in rendered_text
+        assert "Timed out waiting for Panda3D." in rendered_text
+        assert screen._intro_loading_complete(Phase.INSTRUCTIONS) is False
+
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "mod": 0, "unicode": ""})
+        )
+        assert engine.snapshot().phase is Phase.INSTRUCTIONS
+
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_r, "mod": 0, "unicode": "r"})
+        )
+        assert screen._auditory_panda_requirement.checked is False
+
+        for _ in range(8):
+            screen.render(surface)
+
+        assert screen._auditory_panda_requirement.ready is True
+        assert screen._intro_loading_complete(Phase.INSTRUCTIONS) is True
+
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "mod": 0, "unicode": ""})
+        )
+        assert engine.snapshot().phase is Phase.PRACTICE
+    finally:
+        pygame.quit()
+
+
+def test_auditory_panda_failure_escape_backs_out_instead_of_opening_pause_menu() -> None:
+    app, screen, _engines = _build_app_and_screen(
+        phase=Phase.PRACTICE,
+        title="Auditory Capacity",
+    )
+    try:
+        screen._fail_auditory_panda_requirement(
+            category="renderer_render_failed",
+            summary="Renderer crashed.",
+        )
+
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_ESCAPE, "mod": 0, "unicode": ""})
+        )
+
+        assert screen._pause_menu_active is False
+        assert len(app._screens) == 1
+        assert screen._activity_close_reason == "back_abort"
+    finally:
+        pygame.quit()
+
+
+def test_trace_test_1_panda_failure_overlay_blocks_enter_until_retry_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _app, screen, engines = _build_app_and_screen(
+        phase=Phase.INSTRUCTIONS,
+        title="Trace Test 1",
+        test_code="trace_test_1",
+    )
+    try:
+        surface = pygame.display.get_surface()
+        assert surface is not None
+        engine = engines[-1]
+
+        screen._fail_scene_panda_requirement(
+            "trace_test_1",
+            scene_label="Trace Test 1",
+            category="renderer_unavailable",
+            summary="Panda3D renderer unavailable.",
+        )
+        def fake_trace_test_1_getter(*, size: tuple[int, int]) -> _FakePandaRenderer:
+            if screen._trace_test_1_panda_requirement.checked:
+                return None  # type: ignore[return-value]
+            _mark_scene_panda_ready(screen, "trace_test_1")
+            return _FakePandaRenderer(size=size)
+
+        monkeypatch.setattr(
+            screen,
+            "_get_trace_test_1_panda_renderer",
+            fake_trace_test_1_getter,
+        )
+
+        tiny_font = _SpyFont()
+        small_font = _SpyFont()
+        app_font = _SpyFont()
+        screen._tiny_font = tiny_font
+        screen._small_font = small_font
+        screen._app._font = app_font
+
+        screen.render(surface)
+        rendered_text = "\n".join(app_font.rendered + small_font.rendered + tiny_font.rendered)
+
+        assert screen._trace_test_1_panda_requirement.checked is True
+        assert screen._trace_test_1_panda_requirement.ready is False
+        assert "Panda3D Required" in rendered_text
+        assert "Trace Test 1" in rendered_text
+        assert "Press R to retry Panda3D." in rendered_text
+
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "mod": 0, "unicode": ""})
+        )
+        assert engine.snapshot().phase is Phase.INSTRUCTIONS
+
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_r, "mod": 0, "unicode": "r"})
+        )
+        assert screen._trace_test_1_panda_requirement.checked is False
+
+        for _ in range(8):
+            screen.render(surface)
+
+        assert screen._trace_test_1_panda_requirement.ready is True
+        assert screen._intro_loading_complete(Phase.INSTRUCTIONS) is True
+
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "mod": 0, "unicode": ""})
+        )
+        assert engine.snapshot().phase is Phase.PRACTICE
+    finally:
+        pygame.quit()
+
+
+def test_rapid_tracking_panda_failure_escape_backs_out_instead_of_opening_pause_menu() -> None:
+    app, screen, _engines = _build_app_and_screen(
+        phase=Phase.PRACTICE,
+        title="Rapid Tracking",
+        test_code="rapid_tracking",
+    )
+    try:
+        screen._fail_scene_panda_requirement(
+            "rapid_tracking",
+            scene_label="Rapid Tracking",
+            category="renderer_render_failed",
+            summary="Renderer crashed.",
+        )
+
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_ESCAPE, "mod": 0, "unicode": ""})
+        )
+
+        assert screen._pause_menu_active is False
+        assert len(app._screens) == 1
+        assert screen._activity_close_reason == "back_abort"
+    finally:
+        pygame.quit()
+
+
 def test_rapid_tracking_instructions_show_session_seed() -> None:
     pygame.init()
     try:
@@ -804,6 +1080,9 @@ def test_rapid_tracking_instructions_show_session_seed() -> None:
         screen._tiny_font = tiny_font
         screen._small_font = small_font
         screen._app._font = app_font
+        screen._get_rapid_tracking_panda_renderer = (  # type: ignore[method-assign]
+            lambda *, size: (_mark_scene_panda_ready(screen, "rapid_tracking") or _FakePandaRenderer(size=size))
+        )
 
         screen.render(surface)
         rendered_text = "\n".join(app_font.rendered + small_font.rendered + tiny_font.rendered)
@@ -1244,6 +1523,7 @@ def test_auditory_intro_loading_reuses_frozen_world_frame() -> None:
     try:
         surface = pygame.display.get_surface()
         assert surface is not None
+        _mark_auditory_panda_ready(screen)
         engines[-1]._assigned_callsigns = ("RAVEN", "EAGLE", "VIPER")
         draw_calls = 0
 
@@ -1274,6 +1554,7 @@ def test_auditory_pause_reuses_last_live_world_frame_without_advancing() -> None
     try:
         surface = pygame.display.get_surface()
         assert surface is not None
+        _mark_auditory_panda_ready(screen)
         draw_calls = 0
 
         def _fake_world_renderer(**kwargs) -> None:
@@ -1305,7 +1586,10 @@ def test_auditory_pause_reuses_last_live_world_frame_without_advancing() -> None
         pygame.quit()
 
 
-def test_pause_settings_changes_auditory_mix_controls(tmp_path) -> None:
+def test_pause_settings_changes_auditory_mix_controls(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     runtime_defaults_store = RuntimeDefaultsStore(tmp_path / "runtime-defaults.json")
     _app, screen, engines = _build_app_and_screen(
         title="Auditory Capacity",
@@ -1315,6 +1599,12 @@ def test_pause_settings_changes_auditory_mix_controls(tmp_path) -> None:
         surface = pygame.display.get_surface()
         assert surface is not None
         engine = engines[-1]
+        _mark_auditory_panda_ready(screen)
+        monkeypatch.setattr(
+            screen,
+            "_get_auditory_panda_renderer",
+            lambda *, size: _FakePandaRenderer(size=size),
+        )
 
         screen.handle_event(
             pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_ESCAPE, "mod": 0, "unicode": ""})

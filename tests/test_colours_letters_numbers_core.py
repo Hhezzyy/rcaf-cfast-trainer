@@ -61,6 +61,9 @@ def test_sequence_is_shown_first_then_corner_options_activate() -> None:
     assert p1 is not None
     assert p1.target_sequence is not None
     assert p1.options_active is False
+    assert p1.lane_colors == ("RED", "YELLOW", "GREEN")
+    assert p1.lane_start_norm == 0.48
+    assert p1.lane_end_norm == 0.92
 
     clock.advance(1.01)
     engine.update()
@@ -77,7 +80,7 @@ def test_sequence_is_shown_first_then_corner_options_activate() -> None:
     assert p3.options_active is True
 
 
-def test_color_lane_keys_follow_qwer_left_to_right() -> None:
+def test_color_lane_keys_follow_qwe_left_to_right() -> None:
     seed = 42
     clock = FakeClock()
     cfg = ColoursLettersNumbersConfig(
@@ -109,14 +112,11 @@ def test_color_lane_keys_follow_qwer_left_to_right() -> None:
     assert engine.submit_answer("CLR:W") is True
 
     engine._diamonds = [
-        _LiveDiamond(id=3, color="GREEN", row=0, x_norm=0.83, speed_norm_per_s=0.2)
+        _LiveDiamond(id=3, color="GREEN", row=0, x_norm=0.91, speed_norm_per_s=0.2)
     ]  # type: ignore[attr-defined]
     assert engine.submit_answer("CLR:E") is True
 
-    engine._diamonds = [
-        _LiveDiamond(id=4, color="BLUE", row=0, x_norm=0.94, speed_norm_per_s=0.2)
-    ]  # type: ignore[attr-defined]
-    assert engine.submit_answer("CLR:R") is True
+    assert engine.submit_answer("CLR:R") is False
 
 
 def test_scoring_memory_and_math_are_distinct_channels() -> None:
@@ -319,7 +319,7 @@ def test_diamond_spawn_and_speed_vary_within_configured_ranges() -> None:
 def test_default_diamond_ranges_allow_faster_later_hits() -> None:
     cfg = ColoursLettersNumbersConfig()
 
-    distance_to_zone = 0.54 - 0.02
+    distance_to_zone = 0.48 - 0.02
     slow_arrival_s = distance_to_zone / cfg.diamond_speed_norm_per_s
     fast_later_arrival_s = (
         cfg.diamond_spawn_interval_max_s

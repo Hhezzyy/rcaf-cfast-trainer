@@ -5,17 +5,43 @@ from dataclasses import dataclass
 from enum import Enum
 
 from .adaptive_difficulty import build_resolved_difficulty_context, difficulty_ratio_for_level
-from .ant_drills import AntDrillMode
+from .airborne_numerical import build_airborne_numerical_test
+from .angles_bearings_degrees import (
+    AnglesBearingsDegreesConfig,
+    build_angles_bearings_degrees_test,
+)
+from .auditory_capacity import AuditoryCapacityConfig, build_auditory_capacity_test
 from .clock import Clock
+from .cognitive_updating import CognitiveUpdatingConfig, build_cognitive_updating_test
+from .colours_letters_numbers import (
+    ColoursLettersNumbersConfig,
+    build_colours_letters_numbers_test,
+)
 from .cognitive_core import Phase
-from .cln_drills import ClnDrillConfig, build_cln_sequence_math_recall_drill
+from .digit_recognition import build_digit_recognition_test
+from .guide_skill_catalog import OFFICIAL_GUIDE_TESTS
+from .instrument_comprehension import (
+    InstrumentComprehensionConfig,
+    build_instrument_comprehension_test,
+)
+from .math_reasoning import MathReasoningConfig, build_math_reasoning_test
 from .numerical_operations import NumericalOperationsConfig, build_numerical_operations_test
+from .rapid_tracking import RapidTrackingConfig, build_rapid_tracking_test
 from .results import AttemptResult, attempt_result_from_engine
-from .rt_drills import RtDrillConfig, build_rt_lock_anchor_drill
-from .sl_drills import SlDrillConfig, build_sl_graph_rule_anchor_drill
+from .sensory_motor_apparatus import (
+    SensoryMotorApparatusConfig,
+    build_sensory_motor_apparatus_test,
+)
+from .situational_awareness import SituationalAwarenessConfig, build_situational_awareness_test
+from .spatial_integration import SpatialIntegrationConfig, build_spatial_integration_test
+from .system_logic import SystemLogicConfig, build_system_logic_test
 from .table_reading import TableReadingConfig, build_table_reading_test
 from .telemetry import TelemetryAnalytics, TelemetryEvent, telemetry_analytics_from_events
+from .target_recognition import TargetRecognitionConfig, build_target_recognition_test
+from .trace_test_1 import TraceTest1Config, build_trace_test_1_test
+from .trace_test_2 import TraceTest2Config, build_trace_test_2_test
 from .training_modes import split_half_note_fragment
+from .vigilance import VigilanceConfig, build_vigilance_test
 from .visual_search import VisualSearchConfig, build_visual_search_test
 @dataclass(frozen=True, slots=True)
 class BenchmarkProbePlan:
@@ -182,6 +208,36 @@ class BenchmarkSession:
         if not callable(submit):
             return False
         return bool(submit(raw))
+
+    def _submit_current_probe_skip(self, tokens: tuple[str, ...]) -> bool:
+        engine = self._current_engine
+        if self._stage is not BenchmarkStage.PROBE or engine is None:
+            return False
+        submit = getattr(engine, "submit_answer", None)
+        if not callable(submit):
+            return False
+        for token in tokens:
+            if submit(token):
+                return True
+        return False
+
+    def debug_skip_probe(self) -> None:
+        engine = self._current_engine
+        if self._stage is not BenchmarkStage.PROBE or engine is None:
+            return
+        if not self._submit_current_probe_skip(
+            ("__skip_section__", "skip_section", "__skip_all__", "skip_all")
+        ):
+            finish = getattr(engine, "finish", None)
+            if callable(finish):
+                finish()
+            elif hasattr(engine, "phase"):
+                try:
+                    setattr(engine, "phase", Phase.RESULTS)
+                except Exception:
+                    if hasattr(engine, "_phase"):
+                        setattr(engine, "_phase", Phase.RESULTS)
+        self.sync_runtime()
 
     def update(self) -> None:
         if self._stage is not BenchmarkStage.PROBE or self._current_engine is None:
@@ -664,114 +720,365 @@ class BenchmarkSession:
 
 
 def build_benchmark_plan(*, clock: Clock) -> BenchmarkPlan:
+    official_codes = tuple(test.test_code for test in OFFICIAL_GUIDE_TESTS)
+    probe_order = (
+        "numerical_operations",
+        "visual_search",
+        "digit_recognition",
+        "angles_bearings_degrees",
+        "sensory_motor_apparatus",
+        "math_reasoning",
+        "target_recognition",
+        "colours_letters_numbers",
+        "instrument_comprehension",
+        "rapid_tracking",
+        "airborne_numerical",
+        "vigilance",
+        "auditory_capacity",
+        "spatial_integration",
+        "table_reading",
+        "cognitive_updating",
+        "trace_test_1",
+        "system_logic",
+        "situational_awareness",
+        "trace_test_2",
+    )
+    assert tuple(sorted(probe_order)) == tuple(sorted(official_codes))
+
+    def _probe(
+        *,
+        probe_code: str,
+        label: str,
+        seed: int,
+        duration_s: float,
+        builder: Callable[[], object],
+    ) -> BenchmarkProbePlan:
+        return BenchmarkProbePlan(
+            probe_code=probe_code,
+            label=label,
+            builder=builder,
+            seed=seed,
+            difficulty_level=5,
+            duration_s=float(duration_s),
+        )
+
     return BenchmarkPlan(
         code="benchmark_battery",
-        title="Benchmark Battery (13m)",
-        version=1,
+        title="Benchmark Battery (~60m)",
+        version=2,
         description=(
-            "A short fixed benchmark battery covering arithmetic speed, cross-reference lookup, "
-            "visual scanning, symbol/rule extraction, low-load tracking, and mild dual-task recall."
+            "A fixed 20-probe benchmark battery covering every official guide test once with "
+            "balanced domain time and locked level-5 runtime settings."
         ),
         notes=(
             "The benchmark uses a locked probe order and fixed seeds.",
             "Difficulty and test-seed overrides do not apply here.",
+            "Practice is disabled on every probe.",
         ),
         probes=(
-            BenchmarkProbePlan(
+            _probe(
                 probe_code="numerical_operations",
-                label="Mental Arithmetic Speed",
+                label="Numerical Operations",
+                seed=1101,
+                duration_s=90.0,
                 builder=lambda: build_numerical_operations_test(
                     clock=clock,
                     seed=1101,
                     difficulty=difficulty_ratio_for_level("numerical_operations", 5),
                     config=NumericalOperationsConfig(
-                        scored_duration_s=120.0,
+                        scored_duration_s=90.0,
                         practice_questions=0,
                     ),
                 ),
-                seed=1101,
-                difficulty_level=5,
-                duration_s=120.0,
             ),
-            BenchmarkProbePlan(
-                probe_code="table_reading",
-                label="Table Lookup / Cross-Reference Speed",
-                builder=lambda: build_table_reading_test(
-                    clock=clock,
-                    seed=1201,
-                    difficulty=difficulty_ratio_for_level("table_reading", 5),
-                    config=TableReadingConfig(
-                        scored_duration_s=120.0,
-                        practice_questions=0,
-                    ),
-                ),
-                seed=1201,
-                difficulty_level=5,
-                duration_s=120.0,
-            ),
-            BenchmarkProbePlan(
+            _probe(
                 probe_code="visual_search",
-                label="Visual Target Scan Speed",
+                label="Visual Search",
+                seed=1201,
+                duration_s=135.0,
                 builder=lambda: build_visual_search_test(
                     clock=clock,
-                    seed=1301,
+                    seed=1201,
                     difficulty=difficulty_ratio_for_level("visual_search", 5),
                     config=VisualSearchConfig(
+                        scored_duration_s=135.0,
+                        practice_questions=0,
+                    ),
+                ),
+            ),
+            _probe(
+                probe_code="digit_recognition",
+                label="Digit Recognition",
+                seed=1301,
+                duration_s=90.0,
+                builder=lambda: build_digit_recognition_test(
+                    clock=clock,
+                    seed=1301,
+                    difficulty=difficulty_ratio_for_level("digit_recognition", 5),
+                    practice=False,
+                    scored_duration_s=90.0,
+                ),
+            ),
+            _probe(
+                probe_code="angles_bearings_degrees",
+                label="Angles, Bearings and Degrees",
+                seed=1401,
+                duration_s=105.0,
+                builder=lambda: build_angles_bearings_degrees_test(
+                    clock=clock,
+                    seed=1401,
+                    difficulty=difficulty_ratio_for_level("angles_bearings_degrees", 5),
+                    config=AnglesBearingsDegreesConfig(
+                        scored_duration_s=105.0,
+                        practice_questions=0,
+                    ),
+                ),
+            ),
+            _probe(
+                probe_code="sensory_motor_apparatus",
+                label="Sensory Motor Apparatus",
+                seed=1501,
+                duration_s=420.0,
+                builder=lambda: build_sensory_motor_apparatus_test(
+                    clock=clock,
+                    seed=1501,
+                    difficulty=difficulty_ratio_for_level("sensory_motor_apparatus", 5),
+                    config=SensoryMotorApparatusConfig(
+                        practice_duration_s=0.0,
+                        scored_duration_s=420.0,
+                    ),
+                ),
+            ),
+            _probe(
+                probe_code="math_reasoning",
+                label="Mathematics Reasoning",
+                seed=1601,
+                duration_s=150.0,
+                builder=lambda: build_math_reasoning_test(
+                    clock=clock,
+                    seed=1601,
+                    difficulty=difficulty_ratio_for_level("math_reasoning", 5),
+                    config=MathReasoningConfig(
+                        scored_duration_s=150.0,
+                        practice_questions=0,
+                    ),
+                ),
+            ),
+            _probe(
+                probe_code="target_recognition",
+                label="Target Recognition",
+                seed=1701,
+                duration_s=255.0,
+                builder=lambda: build_target_recognition_test(
+                    clock=clock,
+                    seed=1701,
+                    difficulty=difficulty_ratio_for_level("target_recognition", 5),
+                    config=TargetRecognitionConfig(
+                        scored_duration_s=255.0,
+                        practice_questions=0,
+                    ),
+                ),
+            ),
+            _probe(
+                probe_code="colours_letters_numbers",
+                label="Colours, Letters and Numbers",
+                seed=1801,
+                duration_s=120.0,
+                builder=lambda: build_colours_letters_numbers_test(
+                    clock=clock,
+                    seed=1801,
+                    difficulty=difficulty_ratio_for_level("colours_letters_numbers", 5),
+                    practice=False,
+                    scored_duration_s=120.0,
+                    config=ColoursLettersNumbersConfig(
+                        scored_duration_s=120.0,
+                        practice_rounds=0,
+                    ),
+                ),
+            ),
+            _probe(
+                probe_code="instrument_comprehension",
+                label="Instrument Comprehension",
+                seed=1901,
+                duration_s=210.0,
+                builder=lambda: build_instrument_comprehension_test(
+                    clock=clock,
+                    seed=1901,
+                    difficulty=difficulty_ratio_for_level("instrument_comprehension", 5),
+                    config=InstrumentComprehensionConfig(
+                        scored_duration_s=210.0,
+                        practice_questions=0,
+                    ),
+                ),
+            ),
+            _probe(
+                probe_code="rapid_tracking",
+                label="Rapid Tracking",
+                seed=2001,
+                duration_s=300.0,
+                builder=lambda: build_rapid_tracking_test(
+                    clock=clock,
+                    seed=2001,
+                    difficulty=difficulty_ratio_for_level("rapid_tracking", 5),
+                    config=RapidTrackingConfig(
+                        practice_duration_s=0.0,
+                        scored_duration_s=300.0,
+                    ),
+                ),
+            ),
+            _probe(
+                probe_code="airborne_numerical",
+                label="Airborne Numerical",
+                seed=2101,
+                duration_s=300.0,
+                builder=lambda: build_airborne_numerical_test(
+                    clock=clock,
+                    seed=2101,
+                    practice=False,
+                    difficulty=difficulty_ratio_for_level("airborne_numerical", 5),
+                    scored_duration_s=300.0,
+                ),
+            ),
+            _probe(
+                probe_code="vigilance",
+                label="Vigilance",
+                seed=2201,
+                duration_s=330.0,
+                builder=lambda: build_vigilance_test(
+                    clock=clock,
+                    seed=2201,
+                    difficulty=difficulty_ratio_for_level("vigilance", 5),
+                    config=VigilanceConfig(
+                        practice_duration_s=0.0,
+                        scored_duration_s=330.0,
+                    ),
+                ),
+            ),
+            _probe(
+                probe_code="auditory_capacity",
+                label="Auditory Capacity",
+                seed=2301,
+                duration_s=120.0,
+                builder=lambda: build_auditory_capacity_test(
+                    clock=clock,
+                    seed=2301,
+                    difficulty=difficulty_ratio_for_level("auditory_capacity", 5),
+                    config=AuditoryCapacityConfig(
+                        seed=2301,
+                        practice_duration_s=0.0,
+                        scored_duration_s=120.0,
+                        practice_enabled=False,
+                    ),
+                ),
+            ),
+            _probe(
+                probe_code="spatial_integration",
+                label="Spatial Integration",
+                seed=2401,
+                duration_s=210.0,
+                builder=lambda: build_spatial_integration_test(
+                    clock=clock,
+                    seed=2401,
+                    difficulty=difficulty_ratio_for_level("spatial_integration", 5),
+                    config=SpatialIntegrationConfig(
+                        practice_scenes_per_part=0,
+                        static_scored_duration_s=105.0,
+                        aircraft_scored_duration_s=105.0,
+                        skip_practice_for_testing=True,
+                    ),
+                ),
+            ),
+            _probe(
+                probe_code="table_reading",
+                label="Table Reading",
+                seed=2501,
+                duration_s=90.0,
+                builder=lambda: build_table_reading_test(
+                    clock=clock,
+                    seed=2501,
+                    difficulty=difficulty_ratio_for_level("table_reading", 5),
+                    config=TableReadingConfig(
+                        scored_duration_s=90.0,
+                        practice_questions=0,
+                    ),
+                ),
+            ),
+            _probe(
+                probe_code="cognitive_updating",
+                label="Cognitive Updating",
+                seed=2601,
+                duration_s=120.0,
+                builder=lambda: build_cognitive_updating_test(
+                    clock=clock,
+                    seed=2601,
+                    difficulty=difficulty_ratio_for_level("cognitive_updating", 5),
+                    config=CognitiveUpdatingConfig(
                         scored_duration_s=120.0,
                         practice_questions=0,
                     ),
                 ),
-                seed=1301,
-                difficulty_level=5,
-                duration_s=120.0,
             ),
-            BenchmarkProbePlan(
-                probe_code="sl_graph_rule_anchor",
-                label="Symbol / Rule Extraction",
-                builder=lambda: build_sl_graph_rule_anchor_drill(
+            _probe(
+                probe_code="trace_test_1",
+                label="Trace Test 1",
+                seed=2701,
+                duration_s=105.0,
+                builder=lambda: build_trace_test_1_test(
                     clock=clock,
-                    seed=1401,
-                    difficulty=difficulty_ratio_for_level("sl_graph_rule_anchor", 4),
-                    mode=AntDrillMode.BUILD,
-                    config=SlDrillConfig(
+                    seed=2701,
+                    difficulty=difficulty_ratio_for_level("trace_test_1", 5),
+                    config=TraceTest1Config(
+                        scored_duration_s=105.0,
                         practice_questions=0,
-                        scored_duration_s=150.0,
                     ),
                 ),
-                seed=1401,
-                difficulty_level=4,
-                duration_s=150.0,
             ),
-            BenchmarkProbePlan(
-                probe_code="rt_lock_anchor",
-                label="Tracking Stability Under Low Load",
-                builder=lambda: build_rt_lock_anchor_drill(
+            _probe(
+                probe_code="system_logic",
+                label="System Logic",
+                seed=2801,
+                duration_s=90.0,
+                builder=lambda: build_system_logic_test(
                     clock=clock,
-                    seed=1501,
-                    difficulty=difficulty_ratio_for_level("rt_lock_anchor", 4),
-                    mode=AntDrillMode.BUILD,
-                    config=RtDrillConfig(scored_duration_s=120.0),
-                ),
-                seed=1501,
-                difficulty_level=4,
-                duration_s=120.0,
-            ),
-            BenchmarkProbePlan(
-                probe_code="cln_sequence_math_recall",
-                label="Dual-Task Recall Under Mild Load",
-                builder=lambda: build_cln_sequence_math_recall_drill(
-                    clock=clock,
-                    seed=1601,
-                    difficulty=difficulty_ratio_for_level("cln_sequence_math_recall", 4),
-                    mode=AntDrillMode.BUILD,
-                    config=ClnDrillConfig(
-                        practice_rounds=0,
-                        scored_duration_s=150.0,
+                    seed=2801,
+                    difficulty=difficulty_ratio_for_level("system_logic", 5),
+                    config=SystemLogicConfig(
+                        scored_duration_s=90.0,
+                        practice_questions=0,
                     ),
                 ),
-                seed=1601,
-                difficulty_level=4,
-                duration_s=150.0,
+            ),
+            _probe(
+                probe_code="situational_awareness",
+                label="Situational Awareness",
+                seed=2901,
+                duration_s=270.0,
+                builder=lambda: build_situational_awareness_test(
+                    clock=clock,
+                    seed=2901,
+                    difficulty=difficulty_ratio_for_level("situational_awareness", 5),
+                    config=SituationalAwarenessConfig(
+                        scored_duration_s=270.0,
+                        practice_scenarios=0,
+                        practice_scenario_duration_s=0.0,
+                        scored_scenario_duration_s=90.0,
+                    ),
+                ),
+            ),
+            _probe(
+                probe_code="trace_test_2",
+                label="Trace Test 2",
+                seed=3001,
+                duration_s=90.0,
+                builder=lambda: build_trace_test_2_test(
+                    clock=clock,
+                    seed=3001,
+                    difficulty=difficulty_ratio_for_level("trace_test_2", 5),
+                    config=TraceTest2Config(
+                        scored_duration_s=90.0,
+                        practice_questions=0,
+                    ),
+                ),
             ),
         ),
     )

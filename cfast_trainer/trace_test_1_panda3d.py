@@ -8,10 +8,9 @@ import pygame
 from .aircraft_art import (
     build_panda_palette,
     build_panda3d_fixed_wing_model,
-    fixed_wing_heading_from_screen_heading,
-    panda3d_fixed_wing_hpr,
+    panda3d_fixed_wing_hpr_from_screen_heading,
 )
-from .trace_test_1 import TraceTest1Payload
+from .trace_test_1 import TraceTest1Payload, trace_test_1_aircraft_hpr
 from .trace_test_1_gl import project_scene_position, screen_heading_deg
 
 
@@ -123,19 +122,25 @@ class TraceTest1Panda3DRenderer:
 
     def _update_aircraft(self, *, anchor, frame, scale: float) -> None:
         center, projected_scale = project_scene_position(frame.position, size=self._size)
-        heading = screen_heading_deg(frame, size=self._size)
         anchor.setPos(
             float(center[0] - (self._size[0] * 0.5)),
             0.0,
             float((self._size[1] * 0.5) - center[1]),
         )
         anchor.setScale(scale * projected_scale * 11.0)
-        anchor.setHpr(
-            *panda3d_fixed_wing_hpr(
-                heading_deg=fixed_wing_heading_from_screen_heading(heading),
-                pitch_deg=float(frame.attitude.pitch_deg),
-                roll_deg=float(frame.attitude.roll_deg),
-            )
+        anchor.setHpr(*self._aircraft_hpr_for_frame(frame=frame, size=self._size))
+
+    @staticmethod
+    def _aircraft_hpr_for_frame(
+        *,
+        frame,
+        size: tuple[int, int],
+    ) -> tuple[float, float, float]:
+        world_hpr = trace_test_1_aircraft_hpr(frame)
+        return panda3d_fixed_wing_hpr_from_screen_heading(
+            screen_heading_deg=screen_heading_deg(frame, size=size),
+            pitch_deg=float(world_hpr[1]),
+            roll_deg=float(world_hpr[2]),
         )
 
     def _build_aircraft_model(

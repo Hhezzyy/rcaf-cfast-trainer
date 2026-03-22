@@ -11,6 +11,7 @@ from cfast_trainer.app import App, CognitiveTestScreen, MenuItem, MenuScreen
 from cfast_trainer.cognitive_core import Phase
 from cfast_trainer.cognitive_core import TestSnapshot as SnapshotModel
 from cfast_trainer.colours_letters_numbers import (
+    ColoursLettersNumbersDiamond,
     ColoursLettersNumbersOption,
     ColoursLettersNumbersPayload,
     ColoursLettersNumbersRuntimePayload,
@@ -84,13 +85,14 @@ def _build_payload(*, options_active: bool = True) -> ColoursLettersNumbersPaylo
         memory_answered=False,
         math_answered=False,
         math_prompt="2 + 2 =",
-        lane_colors=("RED", "YELLOW", "GREEN", "BLUE"),
-        lane_start_norm=0.54,
-        lane_end_norm=0.98,
+        lane_colors=("RED", "YELLOW", "GREEN"),
+        lane_start_norm=0.48,
+        lane_end_norm=0.92,
         diamonds=(),
         missed_diamonds=0,
         cleared_diamonds=0,
         points=0.0,
+        memory_choice_keys=("A", "S", "D", "F", "G"),
     )
 
 
@@ -102,9 +104,9 @@ def _build_training_payload() -> ColoursLettersNumbersTrainingPayload:
         memory_answered=False,
         math_answered=False,
         math_prompt="Type the full sequence and press Enter.",
-        lane_colors=("RED", "YELLOW", "GREEN", "BLUE"),
-        lane_start_norm=0.54,
-        lane_end_norm=0.98,
+        lane_colors=("RED", "YELLOW", "GREEN"),
+        lane_start_norm=0.48,
+        lane_end_norm=0.92,
         diamonds=(),
         missed_diamonds=0,
         cleared_diamonds=0,
@@ -119,6 +121,69 @@ def _build_training_payload() -> ColoursLettersNumbersTrainingPayload:
         colour_active=False,
         math_active=False,
         memory_active=True,
+    )
+
+
+def _build_six_choice_payload() -> ColoursLettersNumbersPayload:
+    return ColoursLettersNumbersPayload(
+        target_sequence=None,
+        options=(
+            ColoursLettersNumbersOption(code=1, label="ABCDE"),
+            ColoursLettersNumbersOption(code=2, label="ABCDG"),
+            ColoursLettersNumbersOption(code=3, label="ABXDE"),
+            ColoursLettersNumbersOption(code=4, label="AYCDE"),
+            ColoursLettersNumbersOption(code=5, label="BBCDE"),
+            ColoursLettersNumbersOption(code=6, label="QBCDE"),
+        ),
+        options_active=True,
+        memory_answered=False,
+        math_answered=False,
+        math_prompt="7 + 5 =",
+        lane_colors=("RED", "YELLOW", "GREEN"),
+        lane_start_norm=0.48,
+        lane_end_norm=0.92,
+        diamonds=(),
+        missed_diamonds=0,
+        cleared_diamonds=0,
+        points=0.0,
+        memory_choice_keys=("A", "S", "D", "F", "G", "H"),
+    )
+
+
+def _build_dual_math_payload() -> ColoursLettersNumbersTrainingPayload:
+    return ColoursLettersNumbersTrainingPayload(
+        target_sequence="ABCDE",
+        options=(),
+        options_active=False,
+        memory_answered=False,
+        math_answered=False,
+        math_prompt="12 + 4 =",
+        lane_colors=("RED", "YELLOW", "GREEN"),
+        lane_start_norm=0.48,
+        lane_end_norm=0.92,
+        diamonds=(),
+        missed_diamonds=0,
+        cleared_diamonds=0,
+        points=0.0,
+        memory_input_active=False,
+        input_label="Main Math",
+        show_text_entry=True,
+        static_text="--",
+        control_hint="Memory: A/S/D/F/G or mouse  |  Colour lanes: Q/W/E  |  Enter: main math  |  1-5 or mouse: bonus math",
+        colour_active=True,
+        math_active=True,
+        memory_active=True,
+        memory_choice_keys=("A", "S", "D", "F", "G"),
+        secondary_math_prompt="3 + 4 =",
+        secondary_math_options=(
+            ColoursLettersNumbersOption(code=1, label="5"),
+            ColoursLettersNumbersOption(code=2, label="6"),
+            ColoursLettersNumbersOption(code=3, label="7"),
+            ColoursLettersNumbersOption(code=4, label="8"),
+            ColoursLettersNumbersOption(code=5, label="9"),
+        ),
+        secondary_math_choice_active=True,
+        secondary_math_choice_keys=("1", "2", "3", "4", "5"),
     )
 
 
@@ -167,12 +232,91 @@ def test_cln_color_keys_use_qwer_mapping() -> None:
             (pygame.K_q, "CLR:Q"),
             (pygame.K_w, "CLR:W"),
             (pygame.K_e, "CLR:E"),
-            (pygame.K_r, "CLR:R"),
         ):
             screen.handle_event(
                 pygame.event.Event(pygame.KEYDOWN, {"key": key, "mod": 0, "unicode": ""})
             )
             assert engine.answers[-1] == expected
+        before = list(engine.answers)
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_r, "mod": 0, "unicode": ""})
+        )
+        assert engine.answers == before
+    finally:
+        pygame.quit()
+
+
+def test_cln_render_uses_shifted_lane_window_and_filled_diamonds_only() -> None:
+    payload = _build_payload(options_active=False)
+    payload = ColoursLettersNumbersPayload(
+        target_sequence=payload.target_sequence,
+        options=payload.options,
+        options_active=payload.options_active,
+        memory_answered=payload.memory_answered,
+        math_answered=payload.math_answered,
+        math_prompt=payload.math_prompt,
+        lane_colors=payload.lane_colors,
+        lane_start_norm=payload.lane_start_norm,
+        lane_end_norm=payload.lane_end_norm,
+        diamonds=(
+            ColoursLettersNumbersDiamond(id=1, color="RED", row=1, x_norm=0.64),
+        ),
+        missed_diamonds=payload.missed_diamonds,
+        cleared_diamonds=payload.cleared_diamonds,
+        points=payload.points,
+        memory_choice_keys=payload.memory_choice_keys,
+    )
+    _app, screen, _engine = _build_screen(payload)
+    polygon_calls: list[int] = []
+    original_polygon = pygame.draw.polygon
+    try:
+        surface = pygame.display.get_surface()
+        assert surface is not None
+
+        def fake_polygon(surface, color, points, width=0):
+            polygon_calls.append(int(width))
+            return pygame.Rect(0, 0, 1, 1)
+
+        pygame.draw.polygon = fake_polygon  # type: ignore[assignment]
+        screen.render(surface)
+
+        assert payload.lane_start_norm == 0.48
+        assert payload.lane_end_norm == 0.92
+        assert polygon_calls == [0]
+    finally:
+        pygame.draw.polygon = original_polygon  # type: ignore[assignment]
+        pygame.quit()
+
+
+def test_cln_six_choice_payload_accepts_h_mapping() -> None:
+    _app, screen, engine = _build_screen(_build_six_choice_payload())
+    try:
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_h, "mod": 0, "unicode": ""})
+        )
+        assert engine.answers == ["MEM:6"]
+    finally:
+        pygame.quit()
+
+
+def test_cln_dual_math_mouse_click_submits_secondary_math_choice() -> None:
+    _app, screen, engine = _build_screen(
+        _build_dual_math_payload(),
+        title="Colours, Letters and Numbers: Overdrive Dual Math",
+    )
+    try:
+        surface = pygame.display.get_surface()
+        assert surface is not None
+        screen.render(surface)
+
+        hitbox = screen._cln_secondary_math_hitboxes[3]
+        screen.handle_event(
+            pygame.event.Event(
+                pygame.MOUSEBUTTONDOWN,
+                {"button": 1, "pos": hitbox.center},
+            )
+        )
+        assert engine.answers == ["MATH2:3"]
     finally:
         pygame.quit()
 

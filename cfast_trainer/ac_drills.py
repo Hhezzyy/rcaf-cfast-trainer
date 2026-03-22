@@ -42,6 +42,26 @@ def _difficulty_to_level(difficulty: float) -> int:
     return max(1, min(10, int(round(clamp01(difficulty) * 9.0)) + 1))
 
 
+def _live_control_hint(active_channels: tuple[str, ...]) -> str:
+    controls = ["WASD/arrows or HOTAS fly"]
+    rules: list[str] = []
+    enabled = set(active_channels)
+    if "state_commands" in enabled:
+        controls.extend(("Q/W/E/R colour", "keypad 0-9 number"))
+    if "digit_recall" in enabled:
+        controls.append("digits+Enter recall")
+    if "trigger" in enabled:
+        controls.append("Space/trigger beep")
+    if "distractors" in enabled:
+        rules.append("assigned call signs only")
+    if "gate_directives" in enabled:
+        rules.append("next matching gate only")
+    hint = " | ".join(controls)
+    if rules:
+        hint = f"{hint} | Rules: {'; '.join(rules)}"
+    return hint
+
+
 @dataclass(frozen=True, slots=True)
 class AcDrillConfig:
     scored_duration_s: float | None = None
@@ -149,10 +169,7 @@ class AuditoryCapacityContinuousDrill:
             )
             if focus == "":
                 focus = "Full mixed channel set"
-            input_hint = (
-                f"{payload.segment_label} | Focus: {focus} | "
-                "Q/W/E/R colour | keypad 0-9 number | digits+Enter recall | Space/trigger beep"
-            )
+            input_hint = f"{payload.segment_label} | Focus: {focus} | {_live_control_hint(payload.active_channels)}"
         return TestSnapshot(
             title=self._title,
             phase=snap.phase,
@@ -419,8 +436,8 @@ def build_ac_gate_anchor_drill(
         instructions=(
             "Auditory Capacity: Gate Anchor",
             f"Mode: {ANT_DRILL_MODE_PROFILES[normalized_mode].label}",
-            "Fly the ball through the tunnel with gates only.",
-            "No state commands, directives, digit recall, trigger cues, or distractors are active.",
+            "Fly the ball through the tunnel and stay smooth on the gate rhythm.",
+            "No call-sign, state-command, gate-directive, digit-recall, or beep tasks are active.",
             "Press Enter to begin.",
         ),
         scored_segments=(
@@ -474,8 +491,8 @@ def build_ac_state_command_prime_drill(
         instructions=(
             "Auditory Capacity: State Command Prime",
             f"Mode: {ANT_DRILL_MODE_PROFILES[normalized_mode].label}",
-            "Keep low gate pressure while you react to colour and number commands only.",
-            "Digit recall, trigger cues, directives, and distractors are disabled in this block.",
+            "Respond to colour and number commands while the gate load stays light.",
+            "Gate directives, digit recall, trigger cues, and distractors stay off in this block.",
             "Press Enter to begin.",
         ),
         scored_segments=(
@@ -529,8 +546,8 @@ def build_ac_gate_directive_run_drill(
         instructions=(
             "Auditory Capacity: Gate Directive Run",
             f"Mode: {ANT_DRILL_MODE_PROFILES[normalized_mode].label}",
-            "Follow next-matching-gate directives while still flying the gate stream.",
-            "State commands, digit recall, and trigger cues are off; low distractor pressure remains active.",
+            "Respond only to your assigned call signs while you follow gate directives.",
+            "Gate directives apply to the next matching gate only. State commands, digit recall, and trigger cues stay off.",
             "Press Enter to begin.",
         ),
         scored_segments=(
@@ -587,8 +604,8 @@ def build_ac_digit_sequence_prime_drill(
         instructions=(
             "Auditory Capacity: Digit Sequence Prime",
             f"Mode: {ANT_DRILL_MODE_PROFILES[normalized_mode].label}",
-            "Stay on low gate pressure while you memorize and recall the digit groups.",
-            "BUILD stays on 5-digit groups; TEMPO and STRESS allow the normal 5-6 digit range.",
+            "Memorize the spoken digit group, then type it with Enter when recall opens.",
+            "Gate directives, state commands, trigger cues, and distractors stay off while you hold the digits.",
             "Press Enter to begin.",
         ),
         scored_segments=(
@@ -642,8 +659,8 @@ def build_ac_trigger_cue_anchor_drill(
         instructions=(
             "Auditory Capacity: Trigger Cue Anchor",
             f"Mode: {ANT_DRILL_MODE_PROFILES[normalized_mode].label}",
-            "Fly under low gate pressure and answer the trigger/beep cue cleanly.",
-            "State commands, directives, digit recall, and distractors are disabled in this block.",
+            "Fly under light gate pressure and press trigger or Space on the beep.",
+            "State commands, gate directives, digit recall, and distractors stay off in this block.",
             "Press Enter to begin.",
         ),
         scored_segments=(
@@ -697,8 +714,8 @@ def build_ac_callsign_filter_run_drill(
         instructions=(
             "Auditory Capacity: Callsign Filter Run",
             f"Mode: {ANT_DRILL_MODE_PROFILES[normalized_mode].label}",
-            "Fly gates while filtering state commands and next-gate directives through the correct call sign.",
-            "Distractors are active; digit recall and trigger cues stay off for this block.",
+            "Respond only to your assigned call signs while you fly gates, state commands, and gate directives.",
+            "Gate directives apply to the next matching gate. Digit recall and trigger cues stay off in this block.",
             "Press Enter to begin.",
         ),
         scored_segments=(
@@ -847,7 +864,7 @@ def build_ac_mixed_tempo_drill(
             "Auditory Capacity: Mixed Tempo",
             f"Mode: {ANT_DRILL_MODE_PROFILES[normalized_mode].label}",
             "The block repeats six 90-second segments: Gate Flight, State Commands, Gate Directives, Digit Recall, Trigger + Callsign Filter, then Full Mixed.",
-            "Use the segment label in the live screen to anticipate the current channel focus.",
+            "Use the segment label to anticipate the current channel focus. Callsign filtering and next-matching-gate rules stay the same whenever those channels are active.",
             "Press Enter to begin.",
         ),
         scored_segments=_repeat_segments(total_duration_s=scored_duration_s, templates=templates),
@@ -904,7 +921,7 @@ def build_ac_pressure_run_drill(
             "Auditory Capacity: Pressure Run",
             f"Mode: {ANT_DRILL_MODE_PROFILES[normalized_mode].label}",
             "All auditory channels stay active for the entire block under the hardest cadence and disturbance profile in this family.",
-            "Keep moving through misses and recover on the next gate, command, recall, or trigger cue instead of freezing.",
+            "Respond only to your assigned call signs, treat gate directives as next-match only, and recover immediately after misses.",
             "Press Enter to begin.",
         ),
         scored_segments=(

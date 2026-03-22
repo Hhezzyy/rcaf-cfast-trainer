@@ -57,6 +57,59 @@ class AuditoryCapacityConfig:
     min_drift_scale: float = 0.24
 
 
+@dataclass(frozen=True, slots=True)
+class AuditoryCapacityDifficultyProfile:
+    memory_ramp: float
+    overload_ramp: float
+    digit_sequence_min_len: int
+    digit_sequence_max_len: int
+    callsign_count: int
+    gate_interval_s: float
+    background_noise_peak: float
+    background_distortion_peak: float
+    instructor_noise_level: float
+    instructor_distortion_level: float
+    instructor_rate_wpm: int
+    ambient_layer_target: int
+
+    @classmethod
+    def from_ratio(cls, difficulty: float) -> AuditoryCapacityDifficultyProfile:
+        d = clamp01(difficulty)
+        level = max(1, min(10, int(round(d * 9.0)) + 1))
+        overload_input = clamp01((d - (2.0 / 9.0)) / (7.0 / 9.0))
+        overload_ramp = overload_input * overload_input * (3.0 - (2.0 * overload_input))
+
+        if level >= 10:
+            digit_min = 10
+            digit_max = 10
+        else:
+            bucket = max(0, min(4, (level - 1) // 2))
+            digit_min = 4 + bucket
+            digit_max = digit_min + 1
+
+        if level >= 10:
+            ambient_layers = 3
+        elif level >= 8:
+            ambient_layers = 2
+        else:
+            ambient_layers = 1
+
+        return cls(
+            memory_ramp=d,
+            overload_ramp=overload_ramp,
+            digit_sequence_min_len=int(digit_min),
+            digit_sequence_max_len=int(digit_max),
+            callsign_count=4 if level >= 8 else 3,
+            gate_interval_s=4.2 - (2.6 * overload_ramp),
+            background_noise_peak=0.26 + (0.22 * overload_ramp),
+            background_distortion_peak=0.015 + (0.045 * overload_ramp),
+            instructor_noise_level=0.06 + (0.42 * overload_ramp),
+            instructor_distortion_level=0.03 + (0.27 * overload_ramp),
+            instructor_rate_wpm=max(182, int(round(182.0 * (1.0 + (0.5 * overload_ramp))))),
+            ambient_layer_target=int(ambient_layers),
+        )
+
+
 class AuditoryCapacityCommandType(StrEnum):
     CHANGE_COLOUR = "change_colour"
     CHANGE_NUMBER = "change_number"
@@ -195,7 +248,12 @@ class AuditoryCapacityPayload:
     points: float
 
     background_noise_level: float
+    background_distortion_level: float
     distortion_level: float
+    instructor_noise_level: float
+    instructor_distortion_level: float
+    instructor_rate_wpm: int
+    ambient_layer_target: int
     background_noise_source: str | None
 
     command_time_left_s: float | None
@@ -696,6 +754,9 @@ class AuditoryCapacityEngine:
         practice_segments: tuple[AuditoryCapacityTrainingSegment, ...] = (),
         scored_segments: tuple[AuditoryCapacityTrainingSegment, ...] = (),
     ) -> None:
+        use_default_difficulty_profile = (
+            config is None and not practice_segments and not scored_segments
+        )
         cfg = config or AuditoryCapacityConfig()
         d = clamp01(difficulty)
         run_duration_s = (
@@ -734,6 +795,8 @@ class AuditoryCapacityEngine:
         self._seed = int(seed)
         self._difficulty = d
         self._cfg = cfg
+        self._use_default_difficulty_profile = bool(use_default_difficulty_profile)
+        self._difficulty_profile = AuditoryCapacityDifficultyProfile.from_ratio(self._difficulty)
         self._practice_duration_s = practice_duration_s
         self._run_duration_s = run_duration_s
         self._tick_dt = 1.0 / float(cfg.tick_hz)
@@ -771,7 +834,7 @@ class AuditoryCapacityEngine:
         self._next_gate_id = 1
         self._next_gate_at_s = 0.0
 
-        self._assigned_callsigns = self._gen.assign_callsigns(count=self._cfg.callsign_count)
+        self._assigned_callsigns = self._gen.assign_callsigns(count=self._callsign_count())
         self._active_callsign = "ALL ASSIGNED"
         self._ball_color = "RED"
         self._ball_color_strength = 1.0
@@ -1043,7 +1106,10 @@ class AuditoryCapacityEngine:
                     f"- Your call signs for this run: {callsign_roster}",
                     "- Follow instructions addressed to any of your assigned call signs",
                     "- Q/W/E/R changes colour and keypad 0-9 changes the ball number",
-                    "- When you hear a 5-6 digit sequence, remember it and type it with Enter",
+                    (
+                        f"- When you hear a {self._instruction_digit_range_label()} sequence, "
+                        "remember it and type it with Enter"
+                    ),
                     "- When you hear the beep, press the configured trigger binding or Space once",
                     "- Gate instructions apply to the next matching gate only",
                     "- Ignore instructions addressed to call signs that are not yours",
@@ -1085,6 +1151,39 @@ class AuditoryCapacityEngine:
                 ]
             )
         return "Track, filter by call sign, follow next-gate directives, recall digit groups, and answer the beep cue."
+
+    def _callsign_count(self) -> int:
+        if self._use_default_difficulty_profile:
+            return int(self._difficulty_profile.callsign_count)
+        return max(1, int(self._cfg.callsign_count))
+
+    def _digit_sequence_length_bounds(self) -> tuple[int, int]:
+        if self._use_default_difficulty_profile:
+            return (
+                int(self._difficulty_profile.digit_sequence_min_len),
+                int(self._difficulty_profile.digit_sequence_max_len),
+            )
+        max_len = max(
+            1,
+            min(
+                int(self._cfg.digit_sequence_max_len),
+                int(self._segment_profile.digit_sequence_max_len),
+            ),
+        )
+        min_len = max(
+            1,
+            min(max_len, int(self._segment_profile.digit_sequence_min_len)),
+        )
+        return (int(min_len), int(max_len))
+
+    def _digit_memory_cap(self) -> int:
+        return max(1, int(self._digit_sequence_length_bounds()[1]))
+
+    def _instruction_digit_range_label(self) -> str:
+        min_len, max_len = self._digit_sequence_length_bounds()
+        if min_len == max_len:
+            return f"{min_len} digit"
+        return f"{min_len}-{max_len} digit"
 
     def scored_summary(self) -> AttemptSummary:
         duration = float(self._run_duration_s)
@@ -1230,7 +1329,12 @@ class AuditoryCapacityEngine:
 
     def _effective_gate_interval_s(self) -> float:
         scale = max(0.05, float(self._segment_profile.gate_rate_scale))
-        return self._gate_interval_s() / scale
+        base_interval = (
+            float(self._difficulty_profile.gate_interval_s)
+            if self._use_default_difficulty_profile
+            else self._gate_interval_s()
+        )
+        return base_interval / scale
 
     def _effective_command_interval_s(self) -> float:
         base = 1.0 / max(0.05, float(self._cfg.command_rate))
@@ -1364,7 +1468,7 @@ class AuditoryCapacityEngine:
             self._briefing_duration_s = min(8.0, max(3.0, self._phase_duration_s * 0.15))
 
         if not self._assigned_callsigns:
-            self._assigned_callsigns = self._gen.assign_callsigns(count=self._cfg.callsign_count)
+            self._assigned_callsigns = self._gen.assign_callsigns(count=self._callsign_count())
         self._active_callsign = "ALL ASSIGNED"
         self._ball_x = 0.0
         self._ball_y = 0.0
@@ -1749,7 +1853,7 @@ class AuditoryCapacityEngine:
             return
         if event.command_type is AuditoryCapacityCommandType.DIGIT_APPEND:
             digit = "".join(ch for ch in str(event.payload) if ch.isdigit())[:1]
-            if digit and len(self._memory_digits) < self._cfg.digit_sequence_max_len:
+            if digit and len(self._memory_digits) < self._digit_memory_cap():
                 self._memory_digits += digit
             return
         if event.command_type is AuditoryCapacityCommandType.CHANGE_CALLSIGN:
@@ -1808,17 +1912,7 @@ class AuditoryCapacityEngine:
         return event
 
     def _build_runtime_digit_sequence_event(self, *, timestamp_s: float) -> AuditoryCapacityInstructionEvent:
-        max_len = max(
-            1,
-            min(
-                int(self._cfg.digit_sequence_max_len),
-                int(self._segment_profile.digit_sequence_max_len),
-            ),
-        )
-        min_len = max(
-            1,
-            min(max_len, int(self._segment_profile.digit_sequence_min_len)),
-        )
+        min_len, max_len = self._digit_sequence_length_bounds()
         digits = self._gen.digit_sequence(
             minimum_len=min_len,
             maximum_len=max_len,
@@ -1863,10 +1957,12 @@ class AuditoryCapacityEngine:
             return ()
         callsigns = ", ".join(self._assigned_callsigns) if self._assigned_callsigns else "—"
         lines = [
-            "Stay calm. The run starts quiet while the instructor briefs you.",
-            f"Your call signs for this block are {callsigns}. Follow only those.",
-            "Use Q W E R for colour, keypad numbers for the ball, and type digit sequences with Enter.",
-            "When you hear the beep, press trigger or Space once. Next-gate instructions apply only to the next matching gate.",
+            f"Your call signs are {callsigns}. Respond only to those call signs.",
+            (
+                "Use Q W E R for colour, keypad numbers for the ball, and type "
+                f"{self._instruction_digit_range_label()} sequences with Enter."
+            ),
+            "Press trigger or Space on the beep. Gate instructions apply to the next matching gate.",
         ]
         slots = max(1, len(lines))
         spacing = max(0.9, min(2.2, self._briefing_duration_s / float(slots + 1)))
@@ -2271,24 +2367,41 @@ class AuditoryCapacityEngine:
 
         briefing_active = self._sim_elapsed_s < self._briefing_duration_s
         envelope = self._distractor_envelope()
-        noise_peak = 0.30 + (0.50 * self._difficulty)
+        if self._use_default_difficulty_profile:
+            noise_peak = float(self._difficulty_profile.background_noise_peak)
+            background_distortion_peak = float(self._difficulty_profile.background_distortion_peak)
+            instructor_noise_level = clamp01(float(self._difficulty_profile.instructor_noise_level))
+            instructor_distortion_level = clamp01(
+                float(self._difficulty_profile.instructor_distortion_level)
+            )
+            instructor_rate_wpm = int(self._difficulty_profile.instructor_rate_wpm)
+            ambient_layer_target = 0 if briefing_active else int(
+                self._difficulty_profile.ambient_layer_target
+            )
+        else:
+            noise_peak = 0.30 + (0.50 * self._difficulty)
+            background_distortion_peak = 0.04 + (0.20 * self._difficulty)
+            instructor_noise_level = 0.0
+            instructor_distortion_level = 0.0
+            instructor_rate_wpm = 182
+            ambient_layer_target = 0 if briefing_active else 1
         if self._segment_profile.enable_distractors:
             noise_level = clamp01(
                 noise_peak * envelope * max(0.0, float(self._segment_profile.noise_level_scale))
             )
         else:
             noise_level = 0.0
-        distortion_level = 0.0
-        if self._cfg.enable_distortion:
-            distortion_level = clamp01(
-                (0.04 + (0.20 * self._difficulty))
+        background_distortion_level = 0.0
+        if self._use_default_difficulty_profile or self._cfg.enable_distortion:
+            background_distortion_level = clamp01(
+                background_distortion_peak
                 * envelope
                 * max(0.0, float(self._segment_profile.distortion_level_scale))
             )
         if self._noise_level_override is not None:
             noise_level = float(self._noise_level_override)
         if self._distortion_level_override is not None:
-            distortion_level = float(self._distortion_level_override)
+            background_distortion_level = float(self._distortion_level_override)
 
         gates = tuple(
             AuditoryCapacityGate(
@@ -2430,7 +2543,12 @@ class AuditoryCapacityEngine:
             digit_recall_accuracy=float(self._digit_recall_accuracy()),
             points=float(self._scored_total_score),
             background_noise_level=float(noise_level),
-            distortion_level=float(distortion_level),
+            background_distortion_level=float(background_distortion_level),
+            distortion_level=float(background_distortion_level),
+            instructor_noise_level=float(instructor_noise_level),
+            instructor_distortion_level=float(instructor_distortion_level),
+            instructor_rate_wpm=int(instructor_rate_wpm),
+            ambient_layer_target=int(ambient_layer_target),
             background_noise_source=self._noise_source_label(),
             command_time_left_s=command_time_left_s,
             sequence_show_time_left_s=sequence_show_left,
@@ -2547,16 +2665,11 @@ class AuditoryCapacityEngine:
             directive = payload if isinstance(payload, AuditoryCapacityGateDirective) else None
             if directive is None:
                 return f"{cs}. Stand by."
-            label = str(directive.match_value).lower()
-            if directive.match_kind == "COLOR":
-                label = f"{label} gate"
-            else:
-                label = f"the {label}"
+            label = f"{str(directive.match_value).lower()} gate"
             if directive.action == "AVOID":
                 variants = (
-                    f"{cs}. Next gate. Avoid {label}. Do not go through it.",
-                    f"{cs}. Avoid the next {label}. Do not go through it.",
-                    f"{cs}. Next matching gate. Avoid {label}.",
+                    f"{cs}. Avoid the next {label}.",
+                    f"{cs}. Skip the next {label}.",
                 )
                 return variants[
                     self._stable_variant_index(
@@ -2567,9 +2680,8 @@ class AuditoryCapacityEngine:
                     )
                 ]
             variants = (
-                f"{cs}. Go through the next {label}.",
-                f"{cs}. Next matching gate. Go through {label}.",
                 f"{cs}. Take the next {label}.",
+                f"{cs}. Pass the next {label}.",
             )
             return variants[
                 self._stable_variant_index(

@@ -233,6 +233,86 @@ def test_trigger_capture_respects_cooldown() -> None:
     assert summary.capture_hits == 1
 
 
+def test_capture_hold_start_bonus_and_release_drive_zoom_state() -> None:
+    clock = FakeClock()
+    engine = build_rapid_tracking_test(
+        clock=clock,
+        seed=88,
+        difficulty=0.5,
+        config=RapidTrackingConfig(
+            practice_duration_s=0.0,
+            scored_duration_s=5.0,
+            tick_hz=120.0,
+            capture_hold_blend_response_hz=20.0,
+        ),
+    )
+
+    engine.start_scored()
+    engine._target_x = 0.0
+    engine._target_y = 0.0
+    engine._target_kind = "truck"
+    engine._target_terrain_occluded = False
+    engine._reset_camera_pose_to_target()
+    engine._target_in_capture_box = lambda require_visible: True  # type: ignore[method-assign]
+
+    assert engine.submit_answer("CAPTURE_HOLD_START") is True
+    assert engine._capture_hold_active is True
+
+    clock.advance(0.30)
+    engine.update()
+    active_payload = engine.snapshot().payload
+    assert active_payload is not None
+    assert active_payload.capture_zoom > 0.8
+    assert active_payload.capture_points >= 2
+    held_points = active_payload.capture_points
+
+    assert engine.submit_answer("CAPTURE_HOLD_END") is True
+    clock.advance(0.30)
+    engine.update()
+    released_payload = engine.snapshot().payload
+    assert released_payload is not None
+    assert released_payload.capture_points == held_points
+    assert released_payload.capture_zoom < 0.2
+
+
+def test_capture_hold_bonus_only_accrues_while_target_stays_in_box() -> None:
+    clock = FakeClock()
+    engine = build_rapid_tracking_test(
+        clock=clock,
+        seed=89,
+        difficulty=0.5,
+        config=RapidTrackingConfig(
+            practice_duration_s=0.0,
+            scored_duration_s=5.0,
+            tick_hz=120.0,
+            capture_hold_blend_response_hz=20.0,
+        ),
+    )
+
+    engine.start_scored()
+    engine._target_x = 0.0
+    engine._target_y = 0.0
+    engine._target_kind = "truck"
+    engine._target_terrain_occluded = False
+    engine._reset_camera_pose_to_target()
+    engine._target_in_capture_box = lambda require_visible: True  # type: ignore[method-assign]
+
+    assert engine.submit_answer("CAPTURE_HOLD_START") is True
+    clock.advance(0.26)
+    engine.update()
+    points_in_box = engine.snapshot().payload.capture_points
+
+    engine._target_in_capture_box = lambda require_visible: False  # type: ignore[method-assign]
+    engine._target_x = 0.8
+    engine._target_y = 0.8
+    clock.advance(0.30)
+    engine.update()
+    payload = engine.snapshot().payload
+    assert payload is not None
+    assert payload.capture_points == points_in_box
+    assert engine._capture_max_points > payload.capture_points
+
+
 def test_training_segment_payload_metadata_and_filtered_kinds_are_exposed() -> None:
     clock = FakeClock()
     engine = build_rapid_tracking_test(

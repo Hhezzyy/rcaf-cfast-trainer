@@ -8,7 +8,12 @@ from pathlib import Path
 
 import pygame
 
-from .aircraft_art import build_panda_palette, build_panda3d_fixed_wing_model
+from .aircraft_art import (
+    build_panda_palette,
+    build_panda3d_fixed_wing_model,
+    fixed_wing_heading_from_screen_heading,
+    screen_motion_heading_deg,
+)
 from .panda3d_assets import Panda3DAssetCatalog
 from .rapid_tracking import (
     RapidTrackingCompoundLayout,
@@ -19,6 +24,7 @@ from .rapid_tracking_view import (
     RapidTrackingCameraRigState,
     camera_rig_state as shared_camera_rig_state,
     rapid_tracking_seed_unit,
+    world_to_camera_space,
 )
 
 
@@ -99,6 +105,7 @@ class RapidTrackingPanda3DRenderer:
     _RECENTER_ENTER_V_RATIO = 0.82
     _RECENTER_EXIT_H_RATIO = 0.62
     _RECENTER_EXIT_V_RATIO = 0.62
+    _AIR_MOTION_SAMPLE_DT_S = 0.08
 
     def __init__(self, *, size: tuple[int, int]) -> None:
         from panda3d.core import (
@@ -126,6 +133,7 @@ class RapidTrackingPanda3DRenderer:
         self._selected_target_variant = ""
         self._target_overlay_state: RapidTrackingOverlayState | None = None
         self._last_camera_rig: RapidTrackingCameraRigState | None = None
+        self._airborne_orientation_cache: dict[int, tuple[float, float, float]] = {}
         self._scenery_nodes_by_kind: dict[str, list[object]] = {
             "hangar": [],
             "tower": [],
@@ -337,6 +345,250 @@ class RapidTrackingPanda3DRenderer:
         screen_y = (1.0 - norm_y) * 0.5 * height
         on_screen = in_front and abs(norm_x) <= 1.0 and abs(norm_y) <= 1.0
         return float(screen_x), float(screen_y), bool(on_screen), bool(in_front)
+
+    @staticmethod
+    def _basis_vectors_from_angles(
+        *,
+        heading_deg: float,
+        pitch_deg: float,
+    ) -> tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]]:
+        heading_rad = math.radians(float(heading_deg))
+        pitch_rad = math.radians(float(pitch_deg))
+        right = (math.cos(heading_rad), -math.sin(heading_rad), 0.0)
+        forward = (
+            math.sin(heading_rad) * math.cos(pitch_rad),
+            math.cos(heading_rad) * math.cos(pitch_rad),
+            math.sin(pitch_rad),
+        )
+        up = (
+            (right[1] * forward[2]) - (right[2] * forward[1]),
+            (right[2] * forward[0]) - (right[0] * forward[2]),
+            (right[0] * forward[1]) - (right[1] * forward[0]),
+        )
+        return right, forward, up
+
+    @classmethod
+    def _world_vector_from_camera_delta(
+        cls,
+        *,
+        rig: RapidTrackingCameraRigState,
+        cam_dx: float,
+        cam_dy: float,
+        cam_dz: float,
+    ) -> tuple[float, float, float]:
+        right, forward, up = cls._basis_vectors_from_angles(
+            heading_deg=float(rig.view_heading_deg),
+            pitch_deg=float(rig.view_pitch_deg),
+        )
+        return (
+            float((right[0] * cam_dx) + (forward[0] * cam_dy) + (up[0] * cam_dz)),
+            float((right[1] * cam_dx) + (forward[1] * cam_dy) + (up[1] * cam_dz)),
+            float((right[2] * cam_dx) + (forward[2] * cam_dy) + (up[2] * cam_dz)),
+        )
+
+    @staticmethod
+    def _world_heading_pitch_from_vector(
+        *,
+        dx: float,
+        dy: float,
+        dz: float,
+        default_heading: float,
+        default_pitch: float = 0.0,
+    ) -> tuple[float, float]:
+        horiz = math.hypot(float(dx), float(dy))
+        magnitude = math.sqrt((float(dx) * float(dx)) + (float(dy) * float(dy)) + (float(dz) * float(dz)))
+        if magnitude <= 1e-6:
+            return float(default_heading) % 360.0, float(default_pitch)
+        heading = float(default_heading) % 360.0 if horiz <= 1e-3 else float(
+            math.degrees(math.atan2(float(dx), float(dy))) % 360.0
+        )
+        pitch = float(default_pitch) if magnitude <= 1e-6 else -math.degrees(
+            math.atan2(float(dz), max(1e-6, horiz))
+        )
+        return float(heading), float(pitch)
+
+    def _sample_camera_rig(
+        self,
+        *,
+        payload: RapidTrackingPayload | None,
+        elapsed_s: float,
+    ) -> RapidTrackingCameraRigState:
+        delta_s = max(0.0, float(elapsed_s) - float(self._elapsed_s))
+        if payload is None:
+            return self._camera_rig_state(
+                elapsed_s=float(elapsed_s),
+                seed=self._session_seed,
+                progress=0.0,
+                camera_yaw_deg=None,
+                camera_pitch_deg=None,
+                zoom=0.0,
+                target_kind="",
+                target_world_x=0.0,
+                target_world_y=0.0,
+                focus_world_x=self._carrier_focus_world()[0],
+                focus_world_y=self._carrier_focus_world()[1],
+                turbulence_strength=0.65,
+            )
+        return self._camera_rig_state(
+            elapsed_s=float(elapsed_s),
+            seed=int(payload.session_seed),
+            progress=float(payload.scene_progress),
+            camera_yaw_deg=float(payload.camera_yaw_deg),
+            camera_pitch_deg=float(payload.camera_pitch_deg),
+            zoom=float(payload.capture_zoom),
+            target_kind=str(payload.target_kind),
+            target_world_x=float(payload.target_world_x) + (float(payload.target_vx) * delta_s),
+            target_world_y=float(payload.target_world_y) + (float(payload.target_vy) * delta_s),
+            focus_world_x=float(payload.focus_world_x),
+            focus_world_y=float(payload.focus_world_y),
+            turbulence_strength=float(payload.turbulence_strength),
+        )
+
+    def _airborne_apparent_hpr(
+        self,
+        *,
+        cache_key: int,
+        current_pos: tuple[float, float, float],
+        next_pos: tuple[float, float, float],
+        current_rig: RapidTrackingCameraRigState,
+        next_rig: RapidTrackingCameraRigState,
+        default_heading: float,
+        pitch_flair: float,
+        roll_flair: float,
+        pitch_limit: float,
+        roll_limit: float,
+    ) -> tuple[float, float, float]:
+        previous = self._airborne_orientation_cache.get(
+            int(cache_key),
+            (float(default_heading) % 360.0, 0.0, 0.0),
+        )
+        current_cam = world_to_camera_space(
+            cam_world_x=float(current_rig.cam_world_x),
+            cam_world_y=float(current_rig.cam_world_y),
+            cam_world_z=float(current_rig.cam_world_z),
+            heading_deg=float(current_rig.view_heading_deg),
+            pitch_deg=float(current_rig.view_pitch_deg),
+            target_world_x=float(current_pos[0]),
+            target_world_y=float(current_pos[1]),
+            target_world_z=float(current_pos[2]),
+        )
+        next_cam = world_to_camera_space(
+            cam_world_x=float(next_rig.cam_world_x),
+            cam_world_y=float(next_rig.cam_world_y),
+            cam_world_z=float(next_rig.cam_world_z),
+            heading_deg=float(next_rig.view_heading_deg),
+            pitch_deg=float(next_rig.view_pitch_deg),
+            target_world_x=float(next_pos[0]),
+            target_world_y=float(next_pos[1]),
+            target_world_z=float(next_pos[2]),
+        )
+        cam_dx = float(next_cam[0] - current_cam[0])
+        cam_dy = float(next_cam[1] - current_cam[1])
+        cam_dz = float(next_cam[2] - current_cam[2])
+        viewport_size = getattr(self, "_size", (960, 540))
+        current_screen_x, current_screen_y, _current_on_screen, current_in_front = self._camera_space_to_viewport(
+            cam_x=float(current_cam[0]),
+            cam_y=float(current_cam[1]),
+            cam_z=float(current_cam[2]),
+            size=viewport_size,
+            h_fov_deg=float(current_rig.fov_deg),
+            v_fov_deg=max(18.0, float(current_rig.fov_deg) * 0.78),
+        )
+        next_screen_x, next_screen_y, _next_on_screen, next_in_front = self._camera_space_to_viewport(
+            cam_x=float(next_cam[0]),
+            cam_y=float(next_cam[1]),
+            cam_z=float(next_cam[2]),
+            size=viewport_size,
+            h_fov_deg=float(next_rig.fov_deg),
+            v_fov_deg=max(18.0, float(next_rig.fov_deg) * 0.78),
+        )
+        world_dx, world_dy, world_dz = self._world_vector_from_camera_delta(
+            rig=current_rig,
+            cam_dx=cam_dx,
+            cam_dy=cam_dy,
+            cam_dz=cam_dz,
+        )
+        heading_deg, base_pitch = self._world_heading_pitch_from_vector(
+            dx=world_dx,
+            dy=world_dy,
+            dz=world_dz,
+            default_heading=float(previous[0]),
+            default_pitch=float(previous[1]),
+        )
+        apparent_screen_heading = None
+        if current_in_front or next_in_front:
+            apparent_screen_heading = screen_motion_heading_deg(
+                (current_screen_x, current_screen_y),
+                (next_screen_x, next_screen_y),
+                minimum_distance=0.35,
+            )
+        if apparent_screen_heading is not None:
+            heading_deg = (
+                float(current_rig.view_heading_deg)
+                + fixed_wing_heading_from_screen_heading(apparent_screen_heading)
+            ) % 360.0
+        hpr = (
+            float(heading_deg),
+            _clamp((float(base_pitch) * 0.55) + float(pitch_flair), -float(pitch_limit), float(pitch_limit)),
+            _clamp(float(roll_flair), -float(roll_limit), float(roll_limit)),
+        )
+        self._airborne_orientation_cache[int(cache_key)] = hpr
+        return hpr
+
+    def _decoy_air_pose(
+        self,
+        *,
+        decoy: _RapidTrackingDecoy,
+        elapsed_s: float,
+    ) -> tuple[tuple[float, float, float], float, float, float]:
+        t = float(elapsed_s)
+        direction = -1.0 if decoy.lateral_bias < 0.0 else 1.0
+        if decoy.route == "air_cross":
+            angle = (t * decoy.speed * 0.34 * math.tau * direction) + decoy.phase
+            radius = 62.0 + decoy.depth_bias + (math.sin((t * 0.44) + decoy.phase) * 8.0)
+            x = math.cos(angle) * radius + math.sin((t * 1.2) + decoy.phase) * 6.0
+            y = math.sin(angle) * radius + math.cos((t * 0.9) + decoy.phase) * 4.0
+            z = max(
+                self._terrain_height(x, y) + 9.0,
+                12.0 + decoy.altitude + (math.cos((t * 1.1) + decoy.phase) * 3.4),
+            )
+            return (
+                (float(x), float(y), float(z)),
+                float(90.0 - math.degrees(angle) + (180.0 if direction < 0.0 else 0.0)),
+                float(math.cos((t * 1.3) + decoy.phase) * 10.0),
+                float(math.sin((t * 1.6) + decoy.phase) * 22.0),
+            )
+        if decoy.route == "helo_arc":
+            angle = (t * decoy.speed * 0.22 * math.tau * direction) + decoy.phase
+            radius_x = 34.0 + (decoy.depth_bias * 0.55)
+            radius_y = 28.0 + (decoy.depth_bias * 0.42)
+            x = math.cos(angle) * radius_x + math.sin((t * 0.8) + decoy.phase) * 5.0
+            y = math.sin(angle) * radius_y + math.cos((t * 0.6) + decoy.phase) * 3.5
+            z = max(
+                self._terrain_height(x, y) + 5.5,
+                8.0 + decoy.altitude + math.sin((t * 1.7) + decoy.phase) * 1.5,
+            )
+            return (
+                (float(x), float(y), float(z)),
+                float(90.0 - math.degrees(angle) + (180.0 if direction < 0.0 else 0.0)),
+                float(math.cos((t * 1.1) + decoy.phase) * 6.0),
+                float(math.sin((t * 2.8) + decoy.phase) * 8.0),
+            )
+        angle = (t * decoy.speed * 0.28 * math.tau * direction) + decoy.phase
+        radius_x = 54.0 + abs(decoy.lateral_bias) + (math.sin((t * 0.5) + decoy.phase) * 5.0)
+        radius_y = 48.0 + decoy.depth_bias + (math.cos((t * 0.4) + decoy.phase) * 6.0)
+        x = math.cos(angle) * radius_x
+        y = math.sin(angle) * radius_y
+        z = max(
+            self._terrain_height(x, y) + 7.0,
+            10.0 + decoy.altitude + (math.cos((t * 1.1) + decoy.phase) * 2.8),
+        )
+        return (
+            (float(x), float(y), float(z)),
+            float(90.0 - math.degrees(angle) + (180.0 if direction < 0.0 else 0.0)),
+            float(math.cos((t * 1.2) + decoy.phase) * 8.0),
+            float(math.sin((t * 1.4) + decoy.phase) * 20.0),
+        )
 
     def _configure_render_pipeline(self) -> None:
         enable_simplepbr = os.environ.get("CFAST_PANDA_SIMPLEPBR", "").strip().lower() in {
@@ -1439,15 +1691,35 @@ class RapidTrackingPanda3DRenderer:
             )
             if node is None:
                 return
+            current_rig = self._last_camera_rig or self._sample_camera_rig(
+                payload=payload,
+                elapsed_s=self._elapsed_s,
+            )
+            next_rig = self._sample_camera_rig(
+                payload=payload,
+                elapsed_s=self._elapsed_s + self._AIR_MOTION_SAMPLE_DT_S,
+            )
+            next_x, next_y, next_z = self._air_target_world_pos(
+                kind=kind,
+                world_x=track_x + (float(payload.target_vx) * self._AIR_MOTION_SAMPLE_DT_S),
+                world_y=track_y + (float(payload.target_vy) * self._AIR_MOTION_SAMPLE_DT_S),
+                phase_elapsed_s=float(payload.phase_elapsed_s) + self._AIR_MOTION_SAMPLE_DT_S,
+                scene_progress=progress,
+            )
             node.setPos(x, y, z)
             node.setHpr(
-                self._heading_from_velocity(
-                    vx=float(payload.target_vx),
-                    vy=float(payload.target_vy),
+                *self._airborne_apparent_hpr(
+                    cache_key=10_001,
+                    current_pos=(x, y, z),
+                    next_pos=(next_x, next_y, next_z),
+                    current_rig=current_rig,
+                    next_rig=next_rig,
                     default_heading=self._helicopter_heading_deg(progress=progress),
+                    pitch_flair=_clamp(-float(payload.target_vy) * 60.0, -12.0, 12.0),
+                    roll_flair=_clamp(-float(payload.target_vx) * 80.0, -18.0, 18.0),
+                    pitch_limit=14.0,
+                    roll_limit=18.0,
                 ),
-                _clamp(-float(payload.target_vy) * 60.0, -12.0, 12.0),
-                _clamp(-float(payload.target_vx) * 80.0, -18.0, 18.0),
             )
             node.setAlphaScale(visible_alpha)
             node.show()
@@ -1470,15 +1742,35 @@ class RapidTrackingPanda3DRenderer:
         )
         if node is None:
             return
+        current_rig = self._last_camera_rig or self._sample_camera_rig(
+            payload=payload,
+            elapsed_s=self._elapsed_s,
+        )
+        next_rig = self._sample_camera_rig(
+            payload=payload,
+            elapsed_s=self._elapsed_s + self._AIR_MOTION_SAMPLE_DT_S,
+        )
+        next_x, next_y, next_z = self._air_target_world_pos(
+            kind=kind,
+            world_x=track_x + (float(payload.target_vx) * self._AIR_MOTION_SAMPLE_DT_S),
+            world_y=track_y + (float(payload.target_vy) * self._AIR_MOTION_SAMPLE_DT_S),
+            phase_elapsed_s=float(payload.phase_elapsed_s) + self._AIR_MOTION_SAMPLE_DT_S,
+            scene_progress=progress,
+        )
         node.setPos(x, y, z)
         node.setHpr(
-            self._heading_from_velocity(
-                vx=float(payload.target_vx),
-                vy=float(payload.target_vy),
+            *self._airborne_apparent_hpr(
+                cache_key=10_002,
+                current_pos=(x, y, z),
+                next_pos=(next_x, next_y, next_z),
+                current_rig=current_rig,
+                next_rig=next_rig,
                 default_heading=self._helicopter_heading_deg(progress=progress),
+                pitch_flair=_clamp(-float(payload.target_vy) * 80.0, -16.0, 16.0),
+                roll_flair=_clamp(-float(payload.target_vx) * 120.0, -30.0, 30.0),
+                pitch_limit=18.0,
+                roll_limit=30.0,
             ),
-            _clamp(-float(payload.target_vy) * 80.0, -16.0, 16.0),
-            _clamp(-float(payload.target_vx) * 120.0, -30.0, 30.0),
         )
         node.setAlphaScale(visible_alpha)
         node.show()
@@ -1488,7 +1780,15 @@ class RapidTrackingPanda3DRenderer:
     def _update_decoys(self, *, payload: RapidTrackingPayload | None) -> None:
         t = self._elapsed_s
         progress = 0.0 if payload is None else float(payload.scene_progress)
-        for decoy in self._decoys:
+        current_rig = self._last_camera_rig or self._sample_camera_rig(
+            payload=payload,
+            elapsed_s=t,
+        )
+        next_rig = self._sample_camera_rig(
+            payload=payload,
+            elapsed_s=t + self._AIR_MOTION_SAMPLE_DT_S,
+        )
+        for idx, decoy in enumerate(self._decoys):
             fade = _clamp((progress - decoy.activation_progress + 0.18) / 0.18, 0.0, 1.0)
             if decoy.activation_progress > 0.0 and fade <= 0.0:
                 decoy.node.hide()
@@ -1497,39 +1797,52 @@ class RapidTrackingPanda3DRenderer:
             decoy.node.show()
             decoy.node.setAlphaScale(fade)
             if decoy.route == "air_cross":
-                direction = -1.0 if decoy.lateral_bias < 0.0 else 1.0
-                angle = (t * decoy.speed * 0.34 * math.tau * direction) + decoy.phase
-                radius = 62.0 + decoy.depth_bias + (math.sin((t * 0.44) + decoy.phase) * 8.0)
-                x = math.cos(angle) * radius + math.sin((t * 1.2) + decoy.phase) * 6.0
-                y = math.sin(angle) * radius + math.cos((t * 0.9) + decoy.phase) * 4.0
-                z = max(
-                    self._terrain_height(x, y) + 9.0,
-                    12.0 + decoy.altitude + (math.cos((t * 1.1) + decoy.phase) * 3.4),
+                current_pos, default_heading, pitch_flair, roll_flair = self._decoy_air_pose(
+                    decoy=decoy,
+                    elapsed_s=t,
                 )
-                heading = 90.0 - math.degrees(angle) + (180.0 if direction < 0.0 else 0.0)
-                decoy.node.setPos(x, y, z)
+                next_pos, _next_heading, _next_pitch, _next_roll = self._decoy_air_pose(
+                    decoy=decoy,
+                    elapsed_s=t + self._AIR_MOTION_SAMPLE_DT_S,
+                )
+                decoy.node.setPos(*current_pos)
                 decoy.node.setHpr(
-                    heading,
-                    math.cos((t * 1.3) + decoy.phase) * 10.0,
-                    math.sin((t * 1.6) + decoy.phase) * 22.0,
+                    *self._airborne_apparent_hpr(
+                        cache_key=20_000 + idx,
+                        current_pos=current_pos,
+                        next_pos=next_pos,
+                        current_rig=current_rig,
+                        next_rig=next_rig,
+                        default_heading=default_heading,
+                        pitch_flair=pitch_flair,
+                        roll_flair=roll_flair,
+                        pitch_limit=16.0,
+                        roll_limit=24.0,
+                    ),
                 )
             elif decoy.route == "helo_arc":
-                direction = -1.0 if decoy.lateral_bias < 0.0 else 1.0
-                angle = (t * decoy.speed * 0.22 * math.tau * direction) + decoy.phase
-                radius_x = 34.0 + (decoy.depth_bias * 0.55)
-                radius_y = 28.0 + (decoy.depth_bias * 0.42)
-                x = math.cos(angle) * radius_x + math.sin((t * 0.8) + decoy.phase) * 5.0
-                y = math.sin(angle) * radius_y + math.cos((t * 0.6) + decoy.phase) * 3.5
-                z = max(
-                    self._terrain_height(x, y) + 5.5,
-                    8.0 + decoy.altitude + math.sin((t * 1.7) + decoy.phase) * 1.5,
+                current_pos, default_heading, pitch_flair, roll_flair = self._decoy_air_pose(
+                    decoy=decoy,
+                    elapsed_s=t,
                 )
-                heading = 90.0 - math.degrees(angle) + (180.0 if direction < 0.0 else 0.0)
-                decoy.node.setPos(x, y, z)
+                next_pos, _next_heading, _next_pitch, _next_roll = self._decoy_air_pose(
+                    decoy=decoy,
+                    elapsed_s=t + self._AIR_MOTION_SAMPLE_DT_S,
+                )
+                decoy.node.setPos(*current_pos)
                 decoy.node.setHpr(
-                    heading,
-                    math.cos((t * 1.1) + decoy.phase) * 6.0,
-                    math.sin((t * 2.8) + decoy.phase) * 8.0,
+                    *self._airborne_apparent_hpr(
+                        cache_key=20_000 + idx,
+                        current_pos=current_pos,
+                        next_pos=next_pos,
+                        current_rig=current_rig,
+                        next_rig=next_rig,
+                        default_heading=default_heading,
+                        pitch_flair=pitch_flair,
+                        roll_flair=roll_flair,
+                        pitch_limit=12.0,
+                        roll_limit=12.0,
+                    ),
                 )
             elif decoy.route == "ground_side":
                 x, y, heading = self._ground_route_pose(
@@ -1557,22 +1870,28 @@ class RapidTrackingPanda3DRenderer:
                 decoy.node.setPos(x, y, z)
                 decoy.node.setHpr(heading, 0.0, 0.0)
             else:
-                direction = -1.0 if decoy.lateral_bias < 0.0 else 1.0
-                angle = (t * decoy.speed * 0.28 * math.tau * direction) + decoy.phase
-                radius_x = 54.0 + abs(decoy.lateral_bias) + (math.sin((t * 0.5) + decoy.phase) * 5.0)
-                radius_y = 48.0 + decoy.depth_bias + (math.cos((t * 0.4) + decoy.phase) * 6.0)
-                x = math.cos(angle) * radius_x
-                y = math.sin(angle) * radius_y
-                z = max(
-                    self._terrain_height(x, y) + 7.0,
-                    10.0 + decoy.altitude + (math.cos((t * 1.1) + decoy.phase) * 2.8),
+                current_pos, default_heading, pitch_flair, roll_flair = self._decoy_air_pose(
+                    decoy=decoy,
+                    elapsed_s=t,
                 )
-                heading = 90.0 - math.degrees(angle) + (180.0 if direction < 0.0 else 0.0)
-                decoy.node.setPos(x, y, z)
+                next_pos, _next_heading, _next_pitch, _next_roll = self._decoy_air_pose(
+                    decoy=decoy,
+                    elapsed_s=t + self._AIR_MOTION_SAMPLE_DT_S,
+                )
+                decoy.node.setPos(*current_pos)
                 decoy.node.setHpr(
-                    heading,
-                    math.cos((t * 1.2) + decoy.phase) * 8.0,
-                    math.sin((t * 1.4) + decoy.phase) * 20.0,
+                    *self._airborne_apparent_hpr(
+                        cache_key=20_000 + idx,
+                        current_pos=current_pos,
+                        next_pos=next_pos,
+                        current_rig=current_rig,
+                        next_rig=next_rig,
+                        default_heading=default_heading,
+                        pitch_flair=pitch_flair,
+                        roll_flair=roll_flair,
+                        pitch_limit=14.0,
+                        roll_limit=22.0,
+                    ),
                 )
 
     def _update_clouds(self) -> None:

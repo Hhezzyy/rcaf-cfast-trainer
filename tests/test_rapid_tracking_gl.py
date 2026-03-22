@@ -77,6 +77,40 @@ def test_camera_rig_uses_direct_camera_pose_without_recentering() -> None:
     assert rig.pitch_deg == pytest.approx(-18.5)
 
 
+def test_camera_rig_uses_wide_default_fov_and_narrow_hold_zoom() -> None:
+    wide = camera_rig_state(
+        elapsed_s=20.0,
+        seed=551,
+        progress=0.45,
+        camera_yaw_deg=132.0,
+        camera_pitch_deg=-18.5,
+        zoom=0.0,
+        target_kind="truck",
+        target_world_x=42.0,
+        target_world_y=96.0,
+        focus_world_x=8.0,
+        focus_world_y=78.0,
+        turbulence_strength=0.6,
+    )
+    zoomed = camera_rig_state(
+        elapsed_s=20.0,
+        seed=551,
+        progress=0.45,
+        camera_yaw_deg=132.0,
+        camera_pitch_deg=-18.5,
+        zoom=1.0,
+        target_kind="truck",
+        target_world_x=42.0,
+        target_world_y=96.0,
+        focus_world_x=8.0,
+        focus_world_y=78.0,
+        turbulence_strength=0.6,
+    )
+
+    assert 124.0 <= wide.fov_deg <= 136.0
+    assert 36.0 <= zoomed.fov_deg <= 42.0
+
+
 def test_camera_rig_turbulence_variation_is_seeded_and_repeatable() -> None:
     common = dict(
         progress=0.44,

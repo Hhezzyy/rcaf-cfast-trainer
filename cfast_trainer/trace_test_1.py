@@ -155,6 +155,15 @@ def _clamp(v: float, lo: float, hi: float) -> float:
     return float(v)
 
 
+def _smoothstep01(value: float) -> float:
+    t = _clamp(value, 0.0, 1.0)
+    return t * t * (3.0 - (2.0 * t))
+
+
+def _angle_delta_deg(a: float, b: float) -> float:
+    return ((float(a) - float(b) + 180.0) % 360.0) - 180.0
+
+
 def _heading_vector_xy(heading_deg: float) -> tuple[float, float]:
     radians = math.radians(float(heading_deg))
     return (math.sin(radians), math.cos(radians))
@@ -177,6 +186,153 @@ def _move_point(
         float(point[0] + (dx * distance)),
         float(point[1] + (dy * distance)),
         float(point[2] + climb),
+    )
+
+
+def _turn_displacement(
+    *,
+    heading_deg: float,
+    arc_length: float,
+    progress: float,
+    turn_sign: float,
+) -> tuple[float, float]:
+    radius = max(1e-6, float(arc_length) / (math.pi * 0.5))
+    angle = _clamp(float(progress), 0.0, 1.0) * (math.pi * 0.5)
+    forward_x, forward_y = _heading_vector_xy(heading_deg)
+    right_x, right_y = _heading_vector_xy(heading_deg + 90.0)
+    side_x = right_x * float(turn_sign)
+    side_y = right_y * float(turn_sign)
+    return (
+        (forward_x * radius * math.sin(angle)) + (side_x * radius * (1.0 - math.cos(angle))),
+        (forward_y * radius * math.sin(angle)) + (side_y * radius * (1.0 - math.cos(angle))),
+    )
+
+
+def _scene_position_for_plan(
+    *,
+    plan: TraceTest1AircraftPlan,
+    answer_open_progress: float,
+    progress: float,
+) -> tuple[float, float, float]:
+    t = _clamp(progress, 0.0, 1.0)
+    split = _clamp(answer_open_progress, 0.12, 0.88)
+    lead_t = 1.0 if t >= split else _clamp(t / max(0.001, split), 0.0, 1.0)
+    answer_t = 0.0 if t <= split else _clamp((t - split) / max(0.001, 1.0 - split), 0.0, 1.0)
+
+    start = plan.start_state.position
+    start_heading = _cardinal_heading(plan.start_state.heading_deg)
+    corner = _move_point(start, heading_deg=start_heading, distance=plan.lead_distance)
+    if answer_t <= 0.0:
+        return _move_point(start, heading_deg=start_heading, distance=plan.lead_distance * lead_t)
+
+    if plan.command is TraceTest1Command.LEFT:
+        dx, dy = _turn_displacement(
+            heading_deg=start_heading,
+            arc_length=plan.maneuver_distance,
+            progress=answer_t,
+            turn_sign=-1.0,
+        )
+        return (float(corner[0] + dx), float(corner[1] + dy), float(corner[2]))
+    if plan.command is TraceTest1Command.RIGHT:
+        dx, dy = _turn_displacement(
+            heading_deg=start_heading,
+            arc_length=plan.maneuver_distance,
+            progress=answer_t,
+            turn_sign=1.0,
+        )
+        return (float(corner[0] + dx), float(corner[1] + dy), float(corner[2]))
+
+    climb_t = _smoothstep01(answer_t)
+    forward_x, forward_y = _heading_vector_xy(start_heading)
+    forward_distance = plan.maneuver_distance * answer_t
+    return (
+        float(corner[0] + (forward_x * forward_distance)),
+        float(corner[1] + (forward_y * forward_distance)),
+        float(corner[2] + (plan.altitude_delta * climb_t)),
+    )
+
+
+def _sample_frame_tangent(
+    *,
+    plan: TraceTest1AircraftPlan,
+    answer_open_progress: float,
+    progress: float,
+    delta: float = 0.012,
+) -> tuple[float, float, float]:
+    center = _scene_position_for_plan(
+        plan=plan,
+        answer_open_progress=answer_open_progress,
+        progress=progress,
+    )
+    prev = _scene_position_for_plan(
+        plan=plan,
+        answer_open_progress=answer_open_progress,
+        progress=max(0.0, float(progress) - float(delta)),
+    )
+    nxt = _scene_position_for_plan(
+        plan=plan,
+        answer_open_progress=answer_open_progress,
+        progress=min(1.0, float(progress) + float(delta)),
+    )
+    dx = float(nxt[0] - prev[0])
+    dy = float(nxt[1] - prev[1])
+    dz = float(nxt[2] - prev[2])
+    if (dx * dx) + (dy * dy) + (dz * dz) > 1e-8:
+        return (dx, dy, dz)
+    dx = float(nxt[0] - center[0])
+    dy = float(nxt[1] - center[1])
+    dz = float(nxt[2] - center[2])
+    if (dx * dx) + (dy * dy) + (dz * dz) > 1e-8:
+        return (dx, dy, dz)
+    return (
+        float(center[0] - prev[0]),
+        float(center[1] - prev[1]),
+        float(center[2] - prev[2]),
+    )
+
+
+def _frame_attitude_from_tangent(
+    *,
+    plan: TraceTest1AircraftPlan,
+    answer_open_progress: float,
+    progress: float,
+    tangent: tuple[float, float, float],
+) -> tuple[float, TraceTest1Attitude]:
+    dx, dy, dz = tangent
+    horiz = math.hypot(dx, dy)
+    start_heading = _cardinal_heading(plan.start_state.heading_deg)
+    if horiz <= 1e-6 and abs(dz) <= 1e-6:
+        travel_heading = start_heading
+        pitch_deg = 0.0
+    else:
+        travel_heading = _wrap_heading(math.degrees(math.atan2(dx, dy)))
+        pitch_deg = math.degrees(math.atan2(dz, max(1e-6, horiz)))
+
+    prev_tangent = _sample_frame_tangent(
+        plan=plan,
+        answer_open_progress=answer_open_progress,
+        progress=max(0.0, float(progress) - 0.018),
+    )
+    next_tangent = _sample_frame_tangent(
+        plan=plan,
+        answer_open_progress=answer_open_progress,
+        progress=min(1.0, float(progress) + 0.018),
+    )
+    prev_heading = travel_heading if math.hypot(prev_tangent[0], prev_tangent[1]) <= 1e-6 else _wrap_heading(
+        math.degrees(math.atan2(prev_tangent[0], prev_tangent[1]))
+    )
+    next_heading = travel_heading if math.hypot(next_tangent[0], next_tangent[1]) <= 1e-6 else _wrap_heading(
+        math.degrees(math.atan2(next_tangent[0], next_tangent[1]))
+    )
+    turn_rate = _angle_delta_deg(next_heading, prev_heading) / 0.036
+    roll_deg = _clamp(turn_rate * 0.18, -32.0, 32.0)
+    return (
+        float(travel_heading),
+        TraceTest1Attitude(
+            roll_deg=float(roll_deg),
+            pitch_deg=float(pitch_deg),
+            yaw_deg=float(travel_heading),
+        ),
     )
 
 
@@ -252,54 +408,25 @@ def _scene_frame_for_plan(
     answer_open_progress: float,
     progress: float,
 ) -> TraceTest1SceneFrame:
-    t = _clamp(progress, 0.0, 1.0)
-    split = _clamp(answer_open_progress, 0.12, 0.88)
-    lead_t = 1.0 if t >= split else _clamp(t / max(0.001, split), 0.0, 1.0)
-    answer_t = 0.0 if t <= split else _clamp((t - split) / max(0.001, 1.0 - split), 0.0, 1.0)
-
-    start = plan.start_state.position
-    start_heading = _cardinal_heading(plan.start_state.heading_deg)
-    corner = _move_point(start, heading_deg=start_heading, distance=plan.lead_distance)
-    lead_position = _move_point(start, heading_deg=start_heading, distance=plan.lead_distance * lead_t)
-    position = lead_position
-    travel_heading = start_heading
-    roll_deg = 0.0
-    pitch_deg = 0.0
-
-    if answer_t > 0.0:
-        if plan.command is TraceTest1Command.LEFT:
-            travel_heading = _cardinal_heading(start_heading - 90.0)
-            move_t = 0.0 if answer_t <= _TURN_HOLD_FRACTION else _clamp(
-                (answer_t - _TURN_HOLD_FRACTION) / max(0.001, 1.0 - _TURN_HOLD_FRACTION),
-                0.0,
-                1.0,
-            )
-            position = _move_point(corner, heading_deg=travel_heading, distance=plan.maneuver_distance * move_t)
-        elif plan.command is TraceTest1Command.RIGHT:
-            travel_heading = _cardinal_heading(start_heading + 90.0)
-            move_t = 0.0 if answer_t <= _TURN_HOLD_FRACTION else _clamp(
-                (answer_t - _TURN_HOLD_FRACTION) / max(0.001, 1.0 - _TURN_HOLD_FRACTION),
-                0.0,
-                1.0,
-            )
-            position = _move_point(corner, heading_deg=travel_heading, distance=plan.maneuver_distance * move_t)
-        else:
-            position = _move_point(
-                corner,
-                heading_deg=start_heading,
-                distance=plan.maneuver_distance * answer_t,
-                climb=plan.altitude_delta * answer_t,
-            )
-            travel_heading = start_heading
-            pitch_deg = -34.0 if plan.command is TraceTest1Command.PUSH else 34.0
-
+    position = _scene_position_for_plan(
+        plan=plan,
+        answer_open_progress=answer_open_progress,
+        progress=progress,
+    )
+    tangent = _sample_frame_tangent(
+        plan=plan,
+        answer_open_progress=answer_open_progress,
+        progress=progress,
+    )
+    travel_heading, attitude = _frame_attitude_from_tangent(
+        plan=plan,
+        answer_open_progress=answer_open_progress,
+        progress=progress,
+        tangent=tangent,
+    )
     return TraceTest1SceneFrame(
         position=position,
-        attitude=TraceTest1Attitude(
-            roll_deg=roll_deg,
-            pitch_deg=pitch_deg,
-            yaw_deg=float(travel_heading),
-        ),
+        attitude=attitude,
         travel_heading_deg=float(travel_heading),
     )
 
@@ -323,6 +450,14 @@ def trace_test_1_scene_frames(
             )
             for blue_plan in prompt.blue_plans
         ),
+    )
+
+
+def trace_test_1_aircraft_hpr(frame: TraceTest1SceneFrame) -> tuple[float, float, float]:
+    return (
+        float(frame.travel_heading_deg),
+        float(frame.attitude.pitch_deg),
+        float(frame.attitude.roll_deg),
     )
 
 

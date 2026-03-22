@@ -7,6 +7,36 @@ from .clock import Clock
 from .cognitive_core import AttemptSummary, Phase, SeededRng, TestSnapshot, clamp01, lerp_int
 from .numerical_operations import NumericalOperationsGenerator, NumericalOperationsProblemProfile
 
+CLN_STANDARD_LANE_COLORS: tuple[str, ...] = ("RED", "YELLOW", "GREEN")
+CLN_BLUE_OVERDRIVE_LANE_COLORS: tuple[str, ...] = ("RED", "YELLOW", "GREEN", "BLUE")
+CLN_LANE_KEYS: tuple[str, ...] = ("Q", "W", "E", "R", "T", "Y")
+CLN_MEMORY_CHOICE_KEYS: tuple[str, ...] = ("A", "S", "D", "F", "G", "H", "J", "K", "L")
+
+
+def cln_memory_choice_keys(option_count: int) -> tuple[str, ...]:
+    count = max(1, int(option_count))
+    return CLN_MEMORY_CHOICE_KEYS[:count]
+
+
+def cln_lane_key_pairs(lane_colors: tuple[str, ...]) -> tuple[tuple[str, str], ...]:
+    return tuple(
+        (str(color), CLN_LANE_KEYS[idx])
+        for idx, color in enumerate(tuple(lane_colors))
+        if idx < len(CLN_LANE_KEYS)
+    )
+
+
+def cln_lane_key_map(lane_colors: tuple[str, ...]) -> dict[str, str]:
+    mapping: dict[str, str] = {}
+    for color_name, key_label in cln_lane_key_pairs(lane_colors):
+        mapping[key_label] = color_name
+        mapping[color_name] = color_name
+    return mapping
+
+
+def cln_key_label_join(labels: tuple[str, ...]) -> str:
+    return "/".join(str(label) for label in labels if str(label).strip())
+
 
 @dataclass(frozen=True, slots=True)
 class ColoursLettersNumbersConfig:
@@ -23,6 +53,7 @@ class ColoursLettersNumbersConfig:
     diamond_speed_norm_per_s: float = 0.12
     diamond_speed_max_norm_per_s: float = 0.48
     max_live_diamonds: int = 4
+    lane_colors: tuple[str, ...] = CLN_STANDARD_LANE_COLORS
 
 
 class ColoursLettersNumbersQuestionKind(StrEnum):
@@ -72,6 +103,7 @@ class ColoursLettersNumbersGenerationProfile:
     sequence_min_hard: int = 5
     sequence_max_easy: int = 6
     sequence_max_hard: int = 6
+    memory_option_count: int = 5
     option_style: str = "default"
     math_profile: NumericalOperationsProblemProfile | None = None
     math_difficulty_offset: float = 0.0
@@ -92,6 +124,11 @@ class ColoursLettersNumbersPayload:
     missed_diamonds: int
     cleared_diamonds: int
     points: float
+    memory_choice_keys: tuple[str, ...] = ()
+    secondary_math_prompt: str = ""
+    secondary_math_options: tuple[ColoursLettersNumbersOption, ...] = ()
+    secondary_math_choice_active: bool = False
+    secondary_math_choice_keys: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,6 +156,11 @@ class ColoursLettersNumbersTrainingPayload:
     colour_active: bool = True
     math_active: bool = True
     memory_active: bool = True
+    memory_choice_keys: tuple[str, ...] = ()
+    secondary_math_prompt: str = ""
+    secondary_math_options: tuple[ColoursLettersNumbersOption, ...] = ()
+    secondary_math_choice_active: bool = False
+    secondary_math_choice_keys: tuple[str, ...] = ()
 
 
 ColoursLettersNumbersRuntimePayload = ColoursLettersNumbersPayload | ColoursLettersNumbersTrainingPayload
@@ -206,7 +248,8 @@ class ColoursLettersNumbersGenerator:
     ) -> tuple[ColoursLettersNumbersOption, ...]:
         variants = [sequence]
         seen = {sequence}
-        while len(variants) < 5:
+        option_count = max(2, int(self._profile.memory_option_count))
+        while len(variants) < option_count:
             candidate = self._build_option_variant(sequence=sequence, difficulty=difficulty)
             if candidate in seen:
                 continue
@@ -271,9 +314,8 @@ class ColoursLettersNumbersGenerator:
 
 
 class ColoursLettersNumbersTest:
-    _LANE_COLORS = ("RED", "YELLOW", "GREEN", "BLUE")
-    _HIT_ZONE_START = 0.54
-    _HIT_ZONE_END = 0.98
+    _HIT_ZONE_START = 0.48
+    _HIT_ZONE_END = 0.92
     _MAX_UPDATE_DT_S = 0.25
 
     def __init__(
@@ -309,11 +351,16 @@ class ColoursLettersNumbersTest:
             raise ValueError("diamond_speed_max_norm_per_s must be >= diamond_speed_norm_per_s")
         if cfg.max_live_diamonds <= 0:
             raise ValueError("max_live_diamonds must be > 0")
+        if len(cfg.lane_colors) == 0:
+            raise ValueError("lane_colors must not be empty")
+        if len(set(cfg.lane_colors)) != len(cfg.lane_colors):
+            raise ValueError("lane_colors must be unique")
 
         self._title = "Colours, Letters and Numbers"
         self._clock = clock
         self._difficulty = float(difficulty)
         self._cfg = cfg
+        self._lane_colors = tuple(str(color).upper() for color in cfg.lane_colors)
 
         self._gen = ColoursLettersNumbersGenerator(SeededRng(int(seed)))
         self._rng = SeededRng(int(seed) ^ 0xA53F_91B7)
@@ -482,27 +529,30 @@ class ColoursLettersNumbersTest:
             memory_answered=self._memory_answered,
             math_answered=False,
             math_prompt=self._math_current.math_prompt,
-            lane_colors=self._LANE_COLORS,
+            lane_colors=self._lane_colors,
             lane_start_norm=self._HIT_ZONE_START,
             lane_end_norm=self._HIT_ZONE_END,
             diamonds=diamonds,
             missed_diamonds=self._scored_missed,
             cleared_diamonds=self._scored_cleared,
             points=float(self._scored_points),
+            memory_choice_keys=cln_memory_choice_keys(len(self._memory_current.options)),
         )
 
     def _prompt_text(self) -> str:
         if self._phase is Phase.INSTRUCTIONS:
+            lane_pairs = cln_lane_key_pairs(self._lane_colors)
+            lane_help = ", ".join(f"{key}={color.title()}" for color, key in lane_pairs)
             return "\n".join(
                 [
                     "Colours, Letters and Numbers",
                     "",
                     "1) Memorize the sequence shown at the top.",
                     "2) Hold it in memory during the blank gap, then pick the match.",
-                    "3) Choose the matching corner with A/S/D/F or mouse click.",
+                    "3) Choose the matching corner with A/S/D/F/G or mouse click.",
                     "4) Solve math by typing a number then Enter (no math timer).",
                     "5) Clear moving diamonds with color keys while over matching zones:",
-                    "   Q=Red, W=Yellow, E=Green, R=Blue.",
+                    f"   {lane_help}.",
                     "   Blank gap varies between 5 and 60 seconds.",
                     "Memory, math, and colours run on separate loops.",
                     "Letting diamonds pass reduces score.",
@@ -634,7 +684,7 @@ class ColoursLettersNumbersTest:
         self._diamonds = survivors
 
     def _spawn_diamond(self) -> None:
-        color = str(self._rng.choice(self._LANE_COLORS))
+        color = str(self._rng.choice(self._lane_colors))
         row = self._sample_diamond_row()
         d = _LiveDiamond(
             id=self._next_diamond_id,
@@ -751,20 +801,7 @@ class ColoursLettersNumbersTest:
 
     def _submit_color(self, raw_key: str) -> bool:
         key = str(raw_key).strip().upper()
-        key_map = {
-            "Q": "RED",
-            "W": "YELLOW",
-            "E": "GREEN",
-            "R": "BLUE",
-            # Backward-compatible aliases.
-            "RED": "RED",
-            "YELLOW": "YELLOW",
-            "GREEN": "GREEN",
-            "BLUE": "BLUE",
-            "Y": "YELLOW",
-            "G": "GREEN",
-            "B": "BLUE",
-        }
+        key_map = cln_lane_key_map(self._lane_colors)
         color = key_map.get(key)
         if color is None:
             return False
@@ -790,10 +827,10 @@ class ColoursLettersNumbersTest:
 
     def _color_lane_bounds(self, color: str) -> tuple[float, float] | None:
         try:
-            idx = self._LANE_COLORS.index(color)
+            idx = self._lane_colors.index(color)
         except ValueError:
             return None
-        lane_w = (self._HIT_ZONE_END - self._HIT_ZONE_START) / float(len(self._LANE_COLORS))
+        lane_w = (self._HIT_ZONE_END - self._HIT_ZONE_START) / float(len(self._lane_colors))
         lane_start = self._HIT_ZONE_START + (lane_w * float(idx))
         lane_end = lane_start + lane_w
         return lane_start, lane_end
@@ -822,6 +859,7 @@ def build_colours_letters_numbers_test(
             diamond_speed_norm_per_s=cfg.diamond_speed_norm_per_s,
             diamond_speed_max_norm_per_s=cfg.diamond_speed_max_norm_per_s,
             max_live_diamonds=cfg.max_live_diamonds,
+            lane_colors=cfg.lane_colors,
         )
     if scored_duration_s is not None:
         cfg = ColoursLettersNumbersConfig(
@@ -836,6 +874,7 @@ def build_colours_letters_numbers_test(
             diamond_speed_norm_per_s=cfg.diamond_speed_norm_per_s,
             diamond_speed_max_norm_per_s=cfg.diamond_speed_max_norm_per_s,
             max_live_diamonds=cfg.max_live_diamonds,
+            lane_colors=cfg.lane_colors,
         )
     return ColoursLettersNumbersTest(
         clock=clock,

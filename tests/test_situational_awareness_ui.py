@@ -192,7 +192,7 @@ def test_situational_awareness_choice_click_submits_choice_code() -> None:
         pygame.quit()
 
 
-def test_situational_awareness_keyboard_choice_submission_uses_enter() -> None:
+def test_situational_awareness_keyboard_choice_submission_is_immediate() -> None:
     engine = _FakeSituationAwarenessEngine(payload=_sample_payload(answer_mode=SituationalAwarenessAnswerMode.CHOICE))
     screen = _build_screen(engine)
     try:
@@ -201,7 +201,6 @@ def test_situational_awareness_keyboard_choice_submission_uses_enter() -> None:
         screen.render(surface)
 
         screen.handle_event(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_2, "unicode": "2"}))
-        screen.handle_event(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": "\r"}))
 
         assert engine.submissions == ["2"]
     finally:

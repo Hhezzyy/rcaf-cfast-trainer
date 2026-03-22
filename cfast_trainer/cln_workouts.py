@@ -34,7 +34,7 @@ def build_cln_workout_plan(*, duration_scale: float = 1.0) -> AntWorkoutPlan:
             ("Encoding rhythm", "Chunking", "Visible-supported memory"),
             "cln_sequence_copy",
             AntDrillMode.BUILD,
-            10 * scale,
+            8 * scale,
         ),
         _block(
             "sequence_match",
@@ -43,7 +43,7 @@ def build_cln_workout_plan(*, duration_scale: float = 1.0) -> AntWorkoutPlan:
             ("Delayed recall", "Memory response format"),
             "cln_sequence_match",
             AntDrillMode.BUILD,
-            8 * scale,
+            7 * scale,
         ),
         _block(
             "math_prime",
@@ -52,7 +52,7 @@ def build_cln_workout_plan(*, duration_scale: float = 1.0) -> AntWorkoutPlan:
             ("Arithmetic priming", "Typed calculation"),
             "cln_math_prime",
             AntDrillMode.BUILD,
-            10 * scale,
+            8 * scale,
         ),
         _block(
             "colour_lane",
@@ -61,7 +61,7 @@ def build_cln_workout_plan(*, duration_scale: float = 1.0) -> AntWorkoutPlan:
             ("Lane mapping", "Hit timing", "Colour scanning"),
             "cln_colour_lane",
             AntDrillMode.BUILD,
-            10 * scale,
+            8 * scale,
         ),
         _block(
             "memory_math",
@@ -70,7 +70,7 @@ def build_cln_workout_plan(*, duration_scale: float = 1.0) -> AntWorkoutPlan:
             ("Memory under interference", "Arithmetic under interference"),
             "cln_memory_math",
             AntDrillMode.TEMPO,
-            12 * scale,
+            10 * scale,
         ),
         _block(
             "memory_colour",
@@ -79,7 +79,7 @@ def build_cln_workout_plan(*, duration_scale: float = 1.0) -> AntWorkoutPlan:
             ("Memory under interference", "Colour-lane multitask"),
             "cln_memory_colour",
             AntDrillMode.TEMPO,
-            12 * scale,
+            10 * scale,
         ),
         _block(
             "full_steady",
@@ -88,16 +88,34 @@ def build_cln_workout_plan(*, duration_scale: float = 1.0) -> AntWorkoutPlan:
             ("Full multitask integration", "Steady overlap control"),
             "cln_full_steady",
             AntDrillMode.TEMPO,
-            13 * scale,
+            10 * scale,
         ),
         _block(
-            "full_pressure",
-            "Full CLN Pressure",
-            "Finish with the full three-channel CLN structure under denser overlap and harder timing.",
-            ("Full multitask integration", "Pressure tolerance"),
-            "cln_full_pressure",
+            "overdrive_blue_return",
+            "Overdrive Blue Return",
+            "Reintroduce the blue lane so the full CLN structure expands back to four colour lanes under live load.",
+            ("Full multitask integration", "Blue-lane recovery"),
+            "cln_overdrive_blue_return",
+            AntDrillMode.TEMPO,
+            9 * scale,
+        ),
+        _block(
+            "overdrive_six_choice_memory",
+            "Overdrive Six-Choice Memory",
+            "Keep the full CLN shell running while the delayed memory grid expands from five choices to six.",
+            ("Memory discrimination", "Pressure tolerance"),
+            "cln_overdrive_six_choice_memory",
+            AntDrillMode.PRESSURE,
+            10 * scale,
+        ),
+        _block(
+            "overdrive_dual_math",
+            "Overdrive Dual Math",
+            "Finish with the standard typed math lane plus a second multiple-choice math panel while memory and colour stay live.",
+            ("Dual-math switching", "Full multitask integration", "Pressure tolerance"),
+            "cln_overdrive_dual_math",
             AntDrillMode.STRESS,
-            15 * scale,
+            10 * scale,
         ),
     )
 
@@ -106,12 +124,13 @@ def build_cln_workout_plan(*, duration_scale: float = 1.0) -> AntWorkoutPlan:
         title="Colours, Letters and Numbers Workout (90m)",
         description=(
             "Standard 90-minute Colours, Letters and Numbers workout with typed reflection, "
-            "channel-split warm-ups, paired interference blocks, and full multitask pressure."
+            "three-lane baseline warm-ups, paired interference blocks, and late overdrive finishers."
         ),
         notes=(
             "Typed reflections and block setup screens do not count toward the 90-minute drill clock.",
             "Early blocks split memory, math, and colour so each channel is warm before the paired and full CLN blocks.",
-            "The late blocks keep the real CLN control scheme: A/S/D/F/G for memory, digits plus Enter for math, and Q/W/E/R for colour lanes.",
+            "The standard CLN baseline uses A/S/D/F/G for memory, digits plus Enter for math, and Q/W/E for colour lanes.",
+            "The late overdrive blocks reintroduce blue, expand memory choice count, and add a bonus multiple-choice math panel.",
         ),
         blocks=blocks,
     )

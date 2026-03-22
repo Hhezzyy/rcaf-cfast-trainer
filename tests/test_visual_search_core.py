@@ -45,9 +45,9 @@ def test_generated_answer_matches_target_block_code() -> None:
     p = gen.next_problem(difficulty=0.5)
     payload = p.payload
     assert isinstance(payload, VisualSearchPayload)
-    assert payload.rows == 3
+    assert payload.rows == 4
     assert payload.cols == 4
-    assert sorted(payload.cell_codes) == list(range(10, 22))
+    assert sorted(payload.cell_codes) == list(range(10, 26))
 
     target_indices = [i for i, tok in enumerate(payload.cells) if tok == payload.target]
     assert len(target_indices) == 1
@@ -65,9 +65,60 @@ def test_block_numbers_move_between_questions() -> None:
 
     assert isinstance(first_payload, VisualSearchPayload)
     assert isinstance(second_payload, VisualSearchPayload)
-    assert sorted(first_payload.cell_codes) == list(range(10, 22))
-    assert sorted(second_payload.cell_codes) == list(range(10, 22))
+    assert sorted(first_payload.cell_codes) == list(range(10, 26))
+    assert sorted(second_payload.cell_codes) == list(range(10, 26))
     assert first_payload.cell_codes != second_payload.cell_codes
+
+
+def test_official_grid_scales_from_3x4_to_4x5() -> None:
+    gen = VisualSearchGenerator(seed=321)
+
+    low_payload = gen.next_problem(difficulty=0.0).payload
+    high_payload = gen.next_problem(difficulty=1.0).payload
+
+    assert isinstance(low_payload, VisualSearchPayload)
+    assert isinstance(high_payload, VisualSearchPayload)
+    assert (low_payload.rows, low_payload.cols) == (3, 4)
+    assert (high_payload.rows, high_payload.cols) == (4, 5)
+    assert sorted(high_payload.cell_codes) == list(range(10, 30))
+
+
+def _difficulty_for_level(level: int) -> float:
+    clamped = max(1, min(10, int(level)))
+    return float(clamped - 1) / 9.0
+
+
+def test_level_8_still_uses_mixed_base_high_band_before_same_base_overload() -> None:
+    gen = VisualSearchGenerator(seed=654)
+    payload = gen.next_problem(difficulty=_difficulty_for_level(8)).payload
+
+    assert isinstance(payload, VisualSearchPayload)
+    assert len({VisualSearchGenerator.token_base(token) for token in payload.cells}) > 1
+
+
+def test_level_9_official_visual_search_switches_to_same_base_overload() -> None:
+    gen = VisualSearchGenerator(seed=654)
+    payload = gen.next_problem(difficulty=_difficulty_for_level(9)).payload
+
+    assert isinstance(payload, VisualSearchPayload)
+    target_base = VisualSearchGenerator.token_base(payload.target)
+    assert all(VisualSearchGenerator.token_base(token) == target_base for token in payload.cells)
+    assert any("+" in token for token in payload.cells)
+
+
+def test_level_10_official_visual_search_uses_unique_same_base_symbol_boards() -> None:
+    gen = VisualSearchGenerator(seed=654)
+    payload = gen.next_problem(difficulty=1.0).payload
+
+    assert isinstance(payload, VisualSearchPayload)
+    assert payload.kind is VisualSearchTaskKind.SYMBOL_CODE
+    assert len(set(payload.cells)) == len(payload.cells)
+    assert "@" in payload.target
+    assert all("@" in token for token in payload.cells)
+    target_base = VisualSearchGenerator.token_base(payload.target)
+    assert all(VisualSearchGenerator.token_base(token) == target_base for token in payload.cells)
+    assert any("+" in token for token in payload.cells)
+    assert all(len(str(code)) == 2 for code in payload.cell_codes)
 
 
 def test_profile_restricts_generator_to_selected_family() -> None:
@@ -86,44 +137,23 @@ def test_profile_restricts_generator_to_selected_family() -> None:
     } == {VisualSearchTaskKind.ALPHANUMERIC}
 
 
-def test_harder_difficulty_uses_more_confusable_distractors() -> None:
-    letter_clusters = (
-        ("E", "F", "H", "K", "L"),
-        ("A", "M", "R"),
-        ("B", "G", "P", "R", "S"),
-    )
-    symbol_clusters = (
-        ("X_MARK", "DOUBLE_CROSS", "STAR", "BOLT"),
-        ("L_HOOK", "PIN", "FORK"),
-        ("BOX", "TRIANGLE", "RING_SPOKE"),
-        ("S_BEND", "LOLLIPOP"),
-    )
-
-    def confusable_share(problem_payload: VisualSearchPayload) -> float:
-        if problem_payload.kind is VisualSearchTaskKind.ALPHANUMERIC:
-            clusters = letter_clusters
-        else:
-            clusters = symbol_clusters
-        confusable: set[str] = set()
-        for cluster in clusters:
-            if problem_payload.target in cluster:
-                confusable.update(token for token in cluster if token != problem_payload.target)
-        distractors = [token for token in problem_payload.cells if token != problem_payload.target]
-        if not distractors:
-            return 0.0
-        return sum(1 for token in distractors if token in confusable) / float(len(distractors))
-
+def test_top_band_same_base_rule_is_stricter_than_mid_band_similarity() -> None:
     low_gen = VisualSearchGenerator(seed=4321)
     high_gen = VisualSearchGenerator(seed=4321)
 
-    low_share = sum(
-        confusable_share(low_gen.next_problem(difficulty=0.1).payload) for _ in range(40)
-    ) / 40.0
-    high_share = sum(
-        confusable_share(high_gen.next_problem(difficulty=0.9).payload) for _ in range(40)
-    ) / 40.0
+    low_payload = low_gen.next_problem(difficulty=_difficulty_for_level(8)).payload
+    high_payload = high_gen.next_problem(difficulty=_difficulty_for_level(9)).payload
 
-    assert high_share > low_share
+    assert isinstance(low_payload, VisualSearchPayload)
+    assert isinstance(high_payload, VisualSearchPayload)
+    assert len({VisualSearchGenerator.token_base(token) for token in low_payload.cells}) > 1
+    assert len({VisualSearchGenerator.token_base(token) for token in high_payload.cells}) == 1
+
+
+def test_token_marks_parses_single_and_multi_mark_tokens() -> None:
+    assert VisualSearchGenerator.token_marks("BOX@TR") == ("TR",)
+    assert VisualSearchGenerator.token_marks("BOX@T+TR") == ("T", "TR")
+    assert VisualSearchGenerator.token_mark("BOX@T+TR") == "T+TR"
 
 
 def test_scoring_exact_and_estimation_behavior() -> None:

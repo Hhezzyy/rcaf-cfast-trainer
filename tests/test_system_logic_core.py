@@ -72,7 +72,7 @@ def test_generated_payload_has_guide_shape_and_multi_source_reasoning() -> None:
     payload = cast(SystemLogicPayload, gen.next_problem(difficulty=0.5).payload)
 
     assert len(payload.index_entries) == 4
-    assert tuple(entry.code for entry in payload.index_entries) == (0, 1, 2, 3)
+    assert tuple(entry.code for entry in payload.index_entries) == (1, 2, 3, 4)
     assert len(payload.answer_choices) == 5
     assert tuple(choice.code for choice in payload.answer_choices) == (1, 2, 3, 4, 5)
     assert len(set(payload.required_index_codes)) >= 2

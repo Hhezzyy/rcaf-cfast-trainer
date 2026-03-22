@@ -19,6 +19,7 @@ from cfast_trainer.app import (
     MenuItem,
     MenuScreen,
     TestSeedSettingsStore,
+    run,
 )
 from cfast_trainer.benchmark import (
     BenchmarkPlan,
@@ -122,7 +123,10 @@ class _FakeProbeEngine:
         return
 
     def submit_answer(self, raw: str) -> bool:
-        _ = raw
+        token = str(raw).strip().lower()
+        if token in {"__skip_section__", "skip_section", "__skip_all__", "skip_all"}:
+            self.phase = Phase.RESULTS
+            return True
         return False
 
     def finish(self) -> None:
@@ -238,23 +242,80 @@ def _build_small_plan(
     )
 
 
-def test_build_benchmark_plan_is_fixed_and_totals_780_seconds() -> None:
+def test_build_benchmark_plan_is_fixed_and_totals_3600_seconds() -> None:
     plan = build_benchmark_plan(clock=_FakeClock())
 
     assert plan.code == "benchmark_battery"
-    assert plan.version == 1
+    assert plan.title == "Benchmark Battery (~60m)"
+    assert plan.version == 2
     assert tuple(probe.probe_code for probe in plan.probes) == (
         "numerical_operations",
-        "table_reading",
         "visual_search",
-        "sl_graph_rule_anchor",
-        "rt_lock_anchor",
-        "cln_sequence_math_recall",
+        "digit_recognition",
+        "angles_bearings_degrees",
+        "sensory_motor_apparatus",
+        "math_reasoning",
+        "target_recognition",
+        "colours_letters_numbers",
+        "instrument_comprehension",
+        "rapid_tracking",
+        "airborne_numerical",
+        "vigilance",
+        "auditory_capacity",
+        "spatial_integration",
+        "table_reading",
+        "cognitive_updating",
+        "trace_test_1",
+        "system_logic",
+        "situational_awareness",
+        "trace_test_2",
     )
-    assert tuple(probe.seed for probe in plan.probes) == (1101, 1201, 1301, 1401, 1501, 1601)
-    assert tuple(probe.difficulty_level for probe in plan.probes) == (5, 5, 5, 4, 4, 4)
-    assert tuple(int(probe.duration_s) for probe in plan.probes) == (120, 120, 120, 150, 120, 150)
-    assert plan.scored_duration_s == pytest.approx(780.0)
+    assert tuple(probe.seed for probe in plan.probes) == (
+        1101,
+        1201,
+        1301,
+        1401,
+        1501,
+        1601,
+        1701,
+        1801,
+        1901,
+        2001,
+        2101,
+        2201,
+        2301,
+        2401,
+        2501,
+        2601,
+        2701,
+        2801,
+        2901,
+        3001,
+    )
+    assert tuple(probe.difficulty_level for probe in plan.probes) == (5,) * 20
+    assert tuple(int(probe.duration_s) for probe in plan.probes) == (
+        90,
+        135,
+        90,
+        105,
+        420,
+        150,
+        255,
+        120,
+        210,
+        300,
+        300,
+        330,
+        120,
+        210,
+        90,
+        120,
+        105,
+        90,
+        270,
+        90,
+    )
+    assert plan.scored_duration_s == pytest.approx(3600.0)
 
 
 def test_benchmark_session_advances_probe_by_probe_and_accumulates_results() -> None:
@@ -418,6 +479,7 @@ def test_benchmark_screen_uses_nested_runtime_and_restart_is_battery_wide(tmp_pa
         screen.handle_event(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_ESCAPE, "unicode": ""}))
         assert screen._pause_menu_active is True
         screen.handle_event(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_DOWN, "unicode": ""}))
+        screen.handle_event(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_DOWN, "unicode": ""}))
         screen.handle_event(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""}))
 
         new_screen = app._screens[-1]
@@ -432,3 +494,148 @@ def test_benchmark_screen_uses_nested_runtime_and_restart_is_battery_wide(tmp_pa
         assert session.attempt_count == 0
     finally:
         pygame.quit()
+
+
+def test_benchmark_pause_menu_shows_unified_actions_and_settings(tmp_path) -> None:
+    pygame.init()
+    try:
+        surface = pygame.display.set_mode((960, 540))
+        font = pygame.font.Font(None, 36)
+        store = ResultsStore(tmp_path / "benchmark-settings.sqlite3")
+        app = App(surface=surface, font=font, results_store=store)
+        app.push(MenuScreen(app, "Main Menu", [MenuItem("Quit", app.quit)], is_root=True))
+
+        clock = _FakeClock()
+        screen = BenchmarkScreen(
+            app,
+            session=BenchmarkSession(plan=_build_small_plan(clock=clock)),
+            session_factory=lambda: BenchmarkSession(plan=_build_small_plan(clock=clock)),
+        )
+        app.push(screen)
+        screen.handle_event(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""}))
+        screen.render(surface)
+
+        screen.handle_event(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_ESCAPE, "unicode": ""}))
+
+        assert screen._pause_menu_options() == (
+            "Resume",
+            "Skip Current Segment",
+            "Restart Current",
+            "Settings",
+            "Main Menu",
+        )
+
+        settings_index = screen._pause_menu_options().index("Settings")
+        for _ in range(settings_index):
+            screen.handle_event(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_DOWN, "unicode": ""}))
+        screen.handle_event(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""}))
+
+        assert [key for key, _label, _value in screen._pause_settings_rows()] == [
+            "review_mode",
+            "joystick_bindings",
+            "back",
+        ]
+    finally:
+        pygame.quit()
+
+
+def test_benchmark_pause_menu_skip_current_segment_advances_to_next_probe() -> None:
+    pygame.init()
+    try:
+        surface = pygame.display.set_mode((960, 540))
+        font = pygame.font.Font(None, 36)
+        app = App(surface=surface, font=font)
+        app.push(MenuScreen(app, "Main Menu", [MenuItem("Quit", app.quit)], is_root=True))
+        clock = _FakeClock()
+        session = BenchmarkSession(plan=_build_small_plan(clock=clock))
+        screen = BenchmarkScreen(app, session=session, session_factory=lambda: BenchmarkSession(plan=_build_small_plan(clock=clock)))
+        app.push(screen)
+        screen.handle_event(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""}))
+        screen.render(surface)
+
+        assert session.snapshot().current_probe_code == "alpha"
+        screen.handle_event(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_ESCAPE, "unicode": ""}))
+        skip_index = screen._pause_menu_options().index("Skip Current Segment")
+        for _ in range(skip_index):
+            screen.handle_event(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_DOWN, "unicode": ""}))
+        screen.handle_event(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""}))
+
+        assert session.stage is BenchmarkStage.PROBE
+        assert session.snapshot().current_probe_code == "beta"
+    finally:
+        pygame.quit()
+
+
+def test_benchmark_pause_menu_skip_does_not_persist_attempt(tmp_path) -> None:
+    pygame.init()
+    try:
+        surface = pygame.display.set_mode((960, 540))
+        font = pygame.font.Font(None, 36)
+        store = ResultsStore(tmp_path / "benchmark-skip.sqlite3")
+        app = App(surface=surface, font=font, results_store=store)
+        app.push(MenuScreen(app, "Main Menu", [MenuItem("Quit", app.quit)], is_root=True))
+        clock = _FakeClock()
+        session = BenchmarkSession(plan=_build_small_plan(clock=clock))
+        screen = BenchmarkScreen(app, session=session, session_factory=lambda: BenchmarkSession(plan=_build_small_plan(clock=clock)))
+        app.push(screen)
+        screen.handle_event(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""}))
+        screen.render(surface)
+
+        for _ in range(2):
+            screen.handle_event(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_ESCAPE, "unicode": ""}))
+            skip_index = screen._pause_menu_options().index("Skip Current Segment")
+            for _ in range(skip_index):
+                screen.handle_event(
+                    pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_DOWN, "unicode": ""})
+                )
+            screen.handle_event(
+                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""})
+            )
+
+        screen.render(surface)
+
+        session_summary = store.session_summary()
+        assert session_summary is not None
+        assert session_summary.activity_count == 1
+        assert session_summary.completed_activity_count == 0
+        assert session_summary.aborted_activity_count == 1
+        assert session_summary.attempt_count == 0
+        assert screen._results_persistence_lines == ["Local save skipped in dev mode."]
+    finally:
+        pygame.quit()
+
+
+def test_main_menu_places_benchmark_second_after_adaptive() -> None:
+    def inject(frame: int) -> None:
+        if frame == 1:
+            pygame.event.post(
+                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_DOWN, "unicode": ""})
+            )
+        elif frame == 2:
+            pygame.event.post(
+                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""})
+            )
+
+    assert run(max_frames=24, event_injector=inject) == 0
+
+
+def test_tests_menu_places_benchmark_first() -> None:
+    def inject(frame: int) -> None:
+        if frame == 1:
+            pygame.event.post(
+                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_DOWN, "unicode": ""})
+            )
+        elif frame == 2:
+            pygame.event.post(
+                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_DOWN, "unicode": ""})
+            )
+        elif frame == 3:
+            pygame.event.post(
+                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""})
+            )
+        elif frame == 4:
+            pygame.event.post(
+                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""})
+            )
+
+    assert run(max_frames=28, event_injector=inject) == 0
