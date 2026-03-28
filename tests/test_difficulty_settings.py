@@ -11,6 +11,7 @@ import pytest
 from cfast_trainer.app import (
     AnalogBinding,
     App,
+    DisplaySettingsScreen,
     DigitalBinding,
     DifficultySettingsScreen,
     DifficultySettingsStore,
@@ -18,6 +19,8 @@ from cfast_trainer.app import (
     JoystickBindingsScreen,
     MenuItem,
     MenuScreen,
+    OpenGLFailureInfo,
+    OpenGLFailureScreen,
     TestSeedSettingsScreen,
     TestSeedSettingsStore,
 )
@@ -449,6 +452,70 @@ def test_app_applies_and_saves_runtime_defaults(tmp_path) -> None:
         assert reloaded.stored_auditory_noise_level() == pytest.approx(0.6)
         assert reloaded.stored_auditory_distortion_level() == pytest.approx(0.3)
         assert reloaded.stored_auditory_noise_source() == "brown"
+    finally:
+        pygame.quit()
+
+
+def test_display_settings_screen_toggles_stored_use_opengl(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("CFAST_USE_OPENGL", raising=False)
+    pygame.init()
+    try:
+        surface = pygame.display.set_mode((960, 540))
+        font = pygame.font.Font(None, 36)
+        runtime_defaults = RuntimeDefaultsStore(tmp_path / "runtime-defaults.json")
+        app = App(surface=surface, font=font, runtime_defaults_store=runtime_defaults)
+        root = MenuScreen(app, "Main Menu", [MenuItem("Quit", app.quit)], is_root=True)
+        app.push(root)
+        screen = DisplaySettingsScreen(app)
+        app.push(screen)
+
+        assert runtime_defaults.stored_use_opengl() is None
+
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RIGHT, "mod": 0, "unicode": ""})
+        )
+        assert runtime_defaults.stored_use_opengl() is True
+
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RIGHT, "mod": 0, "unicode": ""})
+        )
+        assert runtime_defaults.stored_use_opengl() is False
+    finally:
+        pygame.quit()
+
+
+def test_opengl_failure_screen_blocks_disable_when_env_forces_gl(monkeypatch) -> None:
+    monkeypatch.setenv("CFAST_USE_OPENGL", "1")
+    pygame.init()
+    try:
+        surface = pygame.display.set_mode((960, 540))
+        font = pygame.font.Font(None, 36)
+        app = App(surface=surface, font=font)
+        root = MenuScreen(app, "Main Menu", [MenuItem("Quit", app.quit)], is_root=True)
+        app.push(root)
+        screen = OpenGLFailureScreen(
+            app,
+            failure=OpenGLFailureInfo(
+                stage="render",
+                summary="OpenGL renderer failed.",
+                detail="The app could not continue while rendering the OpenGL frame.",
+                requested=True,
+                attempted=True,
+                env_forced=True,
+            ),
+        )
+        app.push(screen)
+
+        rows = screen._rows()
+        disable_index = next(idx for idx, row in enumerate(rows) if row[0] == "disable_gl")
+        assert rows[disable_index][3] is False
+
+        screen._selected = disable_index
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "mod": 0, "unicode": ""})
+        )
+
+        assert app.consume_renderer_action() is None
     finally:
         pygame.quit()
 

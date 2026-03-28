@@ -9,9 +9,20 @@ os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 import pygame
 
 from cfast_trainer.__main__ import main as cli_main
-from cfast_trainer.app import App, CognitiveTestScreen, MenuItem, MenuScreen, run_headless_sim
+from cfast_trainer.app import (
+    App,
+    CognitiveTestScreen,
+    DisplayBootstrapResult,
+    MenuItem,
+    MenuScreen,
+    OpenGLFailureInfo,
+    OpenGLFailureScreen,
+    run,
+    run_headless_sim,
+)
 from cfast_trainer.cognitive_core import Phase
 from cfast_trainer.cognitive_core import TestSnapshot as SnapshotModel
+from cfast_trainer.runtime_defaults import RuntimeDefaultsStore
 
 
 class _FakeEngine:
@@ -175,6 +186,75 @@ def test_render_failure_recovers_to_root_menu() -> None:
         assert app.current_run_state().shell_state == "MENU"
     finally:
         pygame.quit()
+
+
+def test_present_renderer_failure_aborts_active_run_and_pushes_failure_screen() -> None:
+    pygame.init()
+    surface = pygame.display.set_mode((960, 540))
+    font = pygame.font.Font(None, 36)
+    app = App(surface=surface, font=font, window_mode="windowed")
+    root = MenuScreen(app, "Main Menu", [MenuItem("Quit", app.quit)], is_root=True)
+    failing = _FailingRunScreen(app, fail_in="render")
+    app.push(root)
+    app.push(failing)
+    try:
+        app.present_renderer_failure(
+            OpenGLFailureInfo(
+                stage="render",
+                summary="OpenGL renderer failed.",
+                detail="The app could not continue while rendering the OpenGL frame.",
+                requested=True,
+                attempted=True,
+            )
+        )
+        assert failing.reasons == ["renderer_failure_abort"]
+        assert len(app._screens) == 2
+        assert isinstance(app._screens[-1], OpenGLFailureScreen)
+    finally:
+        pygame.quit()
+
+
+def test_run_startup_gl_failure_can_disable_and_continue(tmp_path, monkeypatch) -> None:
+    runtime_defaults_path = tmp_path / "runtime-defaults.json"
+    runtime_defaults = RuntimeDefaultsStore(runtime_defaults_path)
+    runtime_defaults.set_use_opengl(True)
+    monkeypatch.setenv("CFAST_RUNTIME_DEFAULTS_PATH", str(runtime_defaults_path))
+    monkeypatch.setenv("SDL_VIDEODRIVER", "dummy")
+    monkeypatch.setenv("SDL_AUDIODRIVER", "dummy")
+
+    def fake_initialize_display_surfaces(*, window_size, window_flags, video_driver, want_gl):
+        _ = (video_driver, want_gl)
+        display_surface = pygame.display.set_mode(window_size, window_flags)
+        return DisplayBootstrapResult(
+            display_surface=display_surface,
+            app_surface=display_surface,
+            gl_renderer=None,
+            active_window_flags=window_flags,
+            gl_requested=True,
+            gl_attempted=True,
+            gl_failure=OpenGLFailureInfo(
+                stage="renderer_init",
+                summary="OpenGL renderer failed.",
+                detail="The app could not continue while initializing the OpenGL scene renderer.",
+                requested=True,
+                attempted=True,
+            ),
+        )
+
+    monkeypatch.setattr("cfast_trainer.app._initialize_display_surfaces", fake_initialize_display_surfaces)
+
+    def inject(frame: int) -> None:
+        if frame == 0:
+            pygame.event.post(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_DOWN, "unicode": ""}))
+        elif frame == 1:
+            pygame.event.post(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""}))
+        elif frame == 5:
+            pygame.event.post(pygame.event.Event(pygame.QUIT))
+
+    assert run(max_frames=12, event_injector=inject) == 0
+
+    reloaded = RuntimeDefaultsStore(runtime_defaults_path)
+    assert reloaded.stored_use_opengl() is False
 
 
 def test_run_headless_sim_drill_pause_cycle_returns_menu_summary() -> None:

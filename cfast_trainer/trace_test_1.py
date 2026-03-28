@@ -78,6 +78,7 @@ class TraceTest1SceneFrame:
     position: tuple[float, float, float]
     attitude: TraceTest1Attitude
     travel_heading_deg: float
+    world_tangent: tuple[float, float, float]
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,6 +125,7 @@ class TraceTest1Payload:
     observe_progress: float
     prompt_index: int
     active_command: TraceTest1Command
+    blue_commands: tuple[TraceTest1Command, ...]
     scene: TraceTest1SceneSnapshot
     options: tuple[TraceTest1Option, ...]
     correct_code: int
@@ -428,6 +430,7 @@ def _scene_frame_for_plan(
         position=position,
         attitude=attitude,
         travel_heading_deg=float(travel_heading),
+        world_tangent=tangent,
     )
 
 
@@ -1003,6 +1006,7 @@ class TraceTest1Engine:
             observe_progress=float(progress),
             prompt_index=int(self._current_prompt.prompt_index),
             active_command=self._current_prompt.red_plan.command,
+            blue_commands=tuple(blue_plan.command for blue_plan in self._current_prompt.blue_plans),
             scene=scene,
             options=TraceTest1Generator._OPTIONS,
             correct_code=int(self._current_problem.answer),

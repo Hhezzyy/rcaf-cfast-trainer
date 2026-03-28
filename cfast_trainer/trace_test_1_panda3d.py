@@ -10,14 +10,11 @@ from .aircraft_art import (
     build_panda3d_fixed_wing_model,
     panda3d_fixed_wing_hpr_from_screen_heading,
 )
-from .trace_test_1 import TraceTest1Payload, trace_test_1_aircraft_hpr
+from .trace_test_1 import TraceTest1Command, TraceTest1Payload
 from .trace_test_1_gl import project_scene_position, screen_heading_deg
 
 
 def panda3d_trace_test_1_rendering_available() -> bool:
-    pref = os.environ.get("CFAST_TRACE_TEST_1_RENDERER", "panda").strip().lower()
-    if pref in {"pygame", "2d", "off"}:
-        return False
     if os.environ.get("SDL_VIDEODRIVER", "").strip().lower() == "dummy":
         return False
     return importlib.util.find_spec("direct.showbase.ShowBase") is not None
@@ -25,7 +22,14 @@ def panda3d_trace_test_1_rendering_available() -> bool:
 
 class TraceTest1Panda3DRenderer:
     def __init__(self, *, size: tuple[int, int]) -> None:
-        from panda3d.core import AmbientLight, GraphicsOutput, OrthographicLens, Texture, Vec4, loadPrcFileData
+        from panda3d.core import (
+            AmbientLight,
+            GraphicsOutput,
+            OrthographicLens,
+            Texture,
+            Vec4,
+            loadPrcFileData,
+        )
 
         width = max(320, int(size[0]))
         height = max(200, int(size[1]))
@@ -92,12 +96,20 @@ class TraceTest1Panda3DRenderer:
         self._update_aircraft(
             anchor=self._red_anchor,
             frame=payload.scene.red_frame,
+            command=payload.active_command,
+            observe_progress=payload.observe_progress,
+            answer_open_progress=payload.answer_open_progress,
             scale=1.08,
         )
-        for idx, frame in enumerate(payload.scene.blue_frames):
+        for idx, (frame, command) in enumerate(
+            zip(payload.scene.blue_frames, payload.blue_commands, strict=True)
+        ):
             self._update_aircraft(
                 anchor=self._blue_anchors[idx],
                 frame=frame,
+                command=command,
+                observe_progress=payload.observe_progress,
+                answer_open_progress=payload.answer_open_progress,
                 scale=0.88,
             )
         self._base.graphicsEngine.renderFrame()
@@ -120,7 +132,16 @@ class TraceTest1Panda3DRenderer:
         for idx, anchor in enumerate(self._blue_anchors):
             anchor.show() if idx < count else anchor.hide()
 
-    def _update_aircraft(self, *, anchor, frame, scale: float) -> None:
+    def _update_aircraft(
+        self,
+        *,
+        anchor,
+        frame,
+        command: TraceTest1Command,
+        observe_progress: float,
+        answer_open_progress: float,
+        scale: float,
+    ) -> None:
         center, projected_scale = project_scene_position(frame.position, size=self._size)
         anchor.setPos(
             float(center[0] - (self._size[0] * 0.5)),
@@ -128,19 +149,35 @@ class TraceTest1Panda3DRenderer:
             float((self._size[1] * 0.5) - center[1]),
         )
         anchor.setScale(scale * projected_scale * 11.0)
-        anchor.setHpr(*self._aircraft_hpr_for_frame(frame=frame, size=self._size))
+        anchor.setHpr(
+            *self._aircraft_hpr_for_frame(
+                frame=frame,
+                command=command,
+                observe_progress=observe_progress,
+                answer_open_progress=answer_open_progress,
+                size=self._size,
+            )
+        )
 
     @staticmethod
     def _aircraft_hpr_for_frame(
         *,
         frame,
+        command: TraceTest1Command,
+        observe_progress: float,
+        answer_open_progress: float,
         size: tuple[int, int],
     ) -> tuple[float, float, float]:
-        world_hpr = trace_test_1_aircraft_hpr(frame)
         return panda3d_fixed_wing_hpr_from_screen_heading(
-            screen_heading_deg=screen_heading_deg(frame, size=size),
-            pitch_deg=float(world_hpr[1]),
-            roll_deg=float(world_hpr[2]),
+            screen_heading_deg=screen_heading_deg(
+                frame,
+                command=command,
+                observe_progress=observe_progress,
+                answer_open_progress=answer_open_progress,
+                size=size,
+            ),
+            pitch_deg=0.0,
+            roll_deg=0.0,
         )
 
     def _build_aircraft_model(

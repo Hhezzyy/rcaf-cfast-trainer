@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 
-from .aircraft_art import panda3d_fixed_wing_hpr_from_tangent, screen_motion_heading_deg
+from .aircraft_art import panda3d_fixed_wing_hpr_from_world_tangent, screen_motion_heading_deg
 from .trace_test_2 import (
     TraceTest2AircraftTrack,
     TraceTest2Point3,
@@ -12,7 +12,35 @@ from .trace_test_2 import (
 
 
 def aircraft_hpr_from_tangent(tangent: tuple[float, float, float]) -> tuple[float, float, float]:
-    return panda3d_fixed_wing_hpr_from_tangent(tangent=tangent)
+    dx, dy, _dz = tangent
+    horiz = max(1e-6, math.sqrt((dx * dx) + (dy * dy)))
+    bank_deg = max(-34.0, min(34.0, (dx / horiz) * 28.0))
+    return panda3d_fixed_wing_hpr_from_world_tangent(
+        tangent=tangent,
+        roll_deg=bank_deg,
+    )
+
+
+def aircraft_screen_pose_for_track(
+    *,
+    track: TraceTest2AircraftTrack,
+    progress: float,
+    size: tuple[int, int],
+    tangent: tuple[float, float, float] | None = None,
+) -> tuple[float, float, float]:
+    tangent_value = tangent_for_track(track=track, progress=progress) if tangent is None else tangent
+    hpr = aircraft_hpr_from_tangent(tangent_value)
+    return (
+        float(
+            screen_heading_deg_for_tangent(
+                point=trace_test_2_track_position(track=track, progress=progress),
+                tangent=tangent_value,
+                size=size,
+            )
+        ),
+        float(hpr[1]),
+        float(hpr[2]),
+    )
 
 
 def project_point(point: TraceTest2Point3, *, size: tuple[int, int]) -> tuple[float, float]:
@@ -35,6 +63,34 @@ def tangent_for_track(
     return trace_test_2_track_tangent(track=track, progress=progress)
 
 
+def screen_heading_deg_for_tangent(
+    *,
+    point: TraceTest2Point3,
+    tangent: tuple[float, float, float],
+    size: tuple[int, int],
+) -> float:
+    width = max(1, int(size[0]))
+    height = max(1, int(size[1]))
+    depth = max(24.0, float(point.y))
+    depth_factor = 1.0 / (1.0 + ((depth - 62.0) / 136.0))
+    x_scale = width * 0.015 * depth_factor
+    d_depth_factor_dy = 0.0 if float(point.y) <= 24.0 else (-136.0 / ((depth + 74.0) ** 2))
+    screen_dx = (float(tangent[0]) * x_scale) + (
+        float(point.x) * width * 0.015 * d_depth_factor_dy * float(tangent[1])
+    )
+    screen_dy = -(float(tangent[2]) * height * 0.030) - (
+        (0.0 if float(point.y) <= 24.0 else float(tangent[1])) * height * 0.010
+    )
+    heading = screen_motion_heading_deg(
+        (0.0, 0.0),
+        (screen_dx, screen_dy),
+        minimum_distance=0.01,
+    )
+    if heading is None:
+        raise ValueError("trace_test_2 screen heading requires a non-degenerate tangent")
+    return float(heading)
+
+
 def screen_heading_deg(
     *,
     track: TraceTest2AircraftTrack,
@@ -43,14 +99,8 @@ def screen_heading_deg(
 ) -> float:
     pos = trace_test_2_track_position(track=track, progress=progress)
     tangent = tangent_for_track(track=track, progress=progress)
-    future = TraceTest2Point3(
-        x=pos.x + tangent[0],
-        y=pos.y + tangent[1],
-        z=pos.z + tangent[2],
+    return screen_heading_deg_for_tangent(
+        point=pos,
+        tangent=tangent,
+        size=size,
     )
-    px, py = project_point(pos, size=size)
-    fx, fy = project_point(future, size=size)
-    heading = screen_motion_heading_deg((px, py), (fx, fy), minimum_distance=0.01)
-    if heading is None:
-        return 0.0
-    return heading

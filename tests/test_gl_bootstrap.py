@@ -35,18 +35,19 @@ def test_initialize_display_surfaces_enables_gl_when_renderer_starts(
     monkeypatch.setattr("pygame.display.set_mode", fake_set_mode)
     monkeypatch.setattr("cfast_trainer.app._OpenGLSceneRenderer", _FakeRenderer)
 
-    display, app_surface, renderer, active_flags = _initialize_display_surfaces(
+    result = _initialize_display_surfaces(
         window_size=(320, 240),
         window_flags=pygame.RESIZABLE,
         video_driver="metal",
         want_gl=True,
     )
 
-    assert display is display_surface
-    assert app_surface is not display_surface
-    assert renderer is not None
-    assert renderer.window_size == (320, 240)
-    assert active_flags == (pygame.RESIZABLE | pygame.OPENGL | pygame.DOUBLEBUF)
+    assert result.display_surface is display_surface
+    assert result.app_surface is not display_surface
+    assert result.gl_renderer is not None
+    assert result.gl_renderer.window_size == (320, 240)
+    assert result.active_window_flags == (pygame.RESIZABLE | pygame.OPENGL | pygame.DOUBLEBUF)
+    assert result.gl_failure is None
     assert calls == [pygame.RESIZABLE | pygame.OPENGL | pygame.DOUBLEBUF]
 
 
@@ -70,17 +71,23 @@ def test_initialize_display_surfaces_falls_back_when_gl_renderer_init_fails(
     monkeypatch.setattr("pygame.display.set_mode", fake_set_mode)
     monkeypatch.setattr("cfast_trainer.app._OpenGLSceneRenderer", _BoomRenderer)
 
-    display, app_surface, renderer, active_flags = _initialize_display_surfaces(
+    result = _initialize_display_surfaces(
         window_size=(320, 240),
         window_flags=pygame.RESIZABLE,
         video_driver="metal",
         want_gl=True,
     )
 
-    assert display is display_surface
-    assert app_surface is display_surface
-    assert renderer is None
-    assert active_flags == pygame.RESIZABLE
+    assert result.display_surface is display_surface
+    assert result.app_surface is display_surface
+    assert result.gl_renderer is None
+    assert result.active_window_flags == pygame.RESIZABLE
+    assert result.gl_failure is not None
+    assert result.gl_failure.stage == "renderer_init"
+    assert result.gl_failure.requested is True
+    assert result.gl_failure.attempted is True
+    assert "OpenGL renderer failed." == result.gl_failure.summary
+    assert "gl unavailable" in result.gl_failure.detail
     assert calls == [
         pygame.RESIZABLE | pygame.OPENGL | pygame.DOUBLEBUF,
         pygame.RESIZABLE,
@@ -99,15 +106,16 @@ def test_initialize_display_surfaces_skips_gl_for_dummy_driver(
         lambda size, flags: (calls.append(int(flags)) or display_surface),
     )
 
-    display, app_surface, renderer, active_flags = _initialize_display_surfaces(
+    result = _initialize_display_surfaces(
         window_size=(320, 240),
         window_flags=pygame.RESIZABLE,
         video_driver="dummy",
         want_gl=True,
     )
 
-    assert display is display_surface
-    assert app_surface is display_surface
-    assert renderer is None
-    assert active_flags == pygame.RESIZABLE
+    assert result.display_surface is display_surface
+    assert result.app_surface is display_surface
+    assert result.gl_renderer is None
+    assert result.active_window_flags == pygame.RESIZABLE
+    assert result.gl_failure is None
     assert calls == [pygame.RESIZABLE]

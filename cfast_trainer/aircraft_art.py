@@ -108,6 +108,19 @@ def panda3d_fixed_wing_hpr(
     )
 
 
+def panda3d_fixed_wing_hpr_from_world_hpr(
+    *,
+    heading_deg: float,
+    pitch_deg: float,
+    roll_deg: float,
+) -> tuple[float, float, float]:
+    return panda3d_fixed_wing_hpr(
+        heading_deg=float(heading_deg),
+        pitch_deg=-float(pitch_deg),
+        roll_deg=float(roll_deg),
+    )
+
+
 def fixed_wing_heading_from_screen_heading(screen_heading_deg: float) -> float:
     """Convert a 2-D screen tangent angle into the fixed-wing heading convention.
 
@@ -132,6 +145,23 @@ def screen_motion_heading_deg(
     return float(math.degrees(math.atan2(dy, dx)))
 
 
+def screen_heading_deg_from_world_tangent(
+    tangent: Point3,
+    *,
+    forward_x_mix: float = 0.11,
+    forward_y_mix: float = 0.31,
+    minimum_distance: float = 1e-4,
+) -> float | None:
+    screen_dx = float(tangent[0]) + (float(tangent[1]) * float(forward_x_mix))
+    screen_dy = -(float(tangent[2]) + (float(tangent[1]) * float(forward_y_mix)))
+    heading = screen_motion_heading_deg(
+        (0.0, 0.0),
+        (screen_dx, screen_dy),
+        minimum_distance=minimum_distance,
+    )
+    return heading
+
+
 def panda3d_fixed_wing_hpr_from_screen_heading(
     *,
     screen_heading_deg: float,
@@ -151,21 +181,27 @@ def panda3d_fixed_wing_hpr_from_tangent(
     tangent: Point3,
     *,
     bank_deg: float = 0.0,
-    default_hpr: tuple[float, float, float] = (0.0, 0.0, 0.0),
+) -> tuple[float, float, float]:
+    return panda3d_fixed_wing_hpr_from_world_tangent(
+        tangent=tangent,
+        roll_deg=float(bank_deg),
+    )
+
+
+def panda3d_fixed_wing_hpr_from_world_tangent(
+    tangent: Point3,
+    *,
+    roll_deg: float = 0.0,
 ) -> tuple[float, float, float]:
     dx, dy, dz = (float(tangent[0]), float(tangent[1]), float(tangent[2]))
     if (dx * dx) + (dy * dy) + (dz * dz) <= 1e-8:
-        return panda3d_fixed_wing_hpr(
-            heading_deg=default_hpr[0],
-            pitch_deg=default_hpr[1],
-            roll_deg=default_hpr[2],
-        )
+        raise ValueError("world tangent must be non-zero")
 
     horiz = max(1e-6, math.sqrt((dx * dx) + (dy * dy)))
-    return panda3d_fixed_wing_hpr(
-        heading_deg=math.degrees(math.atan2(dx, dy)),
-        pitch_deg=-math.degrees(math.atan2(dz, horiz)),
-        roll_deg=float(bank_deg),
+    return panda3d_fixed_wing_hpr_from_world_hpr(
+        heading_deg=math.degrees(math.atan2(dx, dy)) % 360.0,
+        pitch_deg=math.degrees(math.atan2(dz, horiz)),
+        roll_deg=float(roll_deg),
     )
 
 

@@ -436,15 +436,13 @@ from .tr_drills import (
 )
 from .tr_workouts import build_tr_workout_plan, tr_workout_menu_entries
 from .trace_test_1 import (
-    TraceTest1Attitude,
     TraceTest1Payload,
     TraceTest1TrialStage,
     build_trace_test_1_test,
 )
 from .trace_test_1_gl import (
-    aircraft_hpr_for_frame as trace_test_1_aircraft_hpr_for_frame,
+    aircraft_screen_poses_for_payload as trace_test_1_aircraft_screen_poses_for_payload,
     project_scene_position as trace_test_1_project_scene_position,
-    screen_heading_deg as trace_test_1_screen_heading_deg,
 )
 from .trace_test_1_panda3d import (
     TraceTest1Panda3DRenderer,
@@ -459,10 +457,8 @@ from .trace_test_2 import (
     trace_test_2_track_position,
 )
 from .trace_test_2_gl import (
-    aircraft_hpr_from_tangent as trace_test_2_aircraft_hpr_from_tangent,
+    aircraft_screen_pose_for_track as trace_test_2_aircraft_screen_pose_for_track,
     project_point as trace_test_2_project_point,
-    screen_heading_deg as trace_test_2_screen_heading_deg,
-    tangent_for_track as trace_test_2_tangent_for_track,
 )
 from .trace_test_2_panda3d import (
     TraceTest2Panda3DRenderer,
@@ -575,6 +571,27 @@ class HeadlessSimResult:
     used_failure_recovery: bool
     exit_reason: str
     exit_code: int
+
+
+@dataclass(frozen=True, slots=True)
+class OpenGLFailureInfo:
+    stage: str
+    summary: str
+    detail: str
+    requested: bool
+    attempted: bool
+    env_forced: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class DisplayBootstrapResult:
+    display_surface: pygame.Surface
+    app_surface: pygame.Surface
+    gl_renderer: "_OpenGLSceneRenderer | None"
+    active_window_flags: int
+    gl_requested: bool
+    gl_attempted: bool
+    gl_failure: OpenGLFailureInfo | None = None
 
 
 class _SharedPauseMenuMixin:
@@ -3692,6 +3709,10 @@ class _OpenGLSceneRenderer:
         )
         if payload is None:
             return 0
+        target_pose, blue_poses = trace_test_1_aircraft_screen_poses_for_payload(
+            payload,
+            size=(vw, vh),
+        )
 
         blue_colors = (
             (0.34, 0.52, 0.90, 0.96),
@@ -3705,24 +3726,21 @@ class _OpenGLSceneRenderer:
             (0.88, 0.94, 0.98, 0.84),
             (0.84, 0.92, 0.98, 0.84),
         )
-        for idx, blue_frame in enumerate(payload.scene.blue_frames):
+        for idx, (blue_frame, blue_pose) in enumerate(
+            zip(payload.scene.blue_frames, blue_poses, strict=True)
+        ):
             blue_center, blue_scale = trace_test_1_project_scene_position(
                 blue_frame.position,
                 size=(vw, vh),
             )
-            blue_hpr = trace_test_1_aircraft_hpr_for_frame(blue_frame)
-            blue_heading = trace_test_1_screen_heading_deg(
-                blue_frame,
-                size=(vw, vh),
-            )
             self._draw_aircraft_marker_2d(
                 center=(blue_center[0], float(vh - blue_center[1])),
-                heading_deg=blue_heading,
+                heading_deg=blue_pose[0],
                 size=max(8.6, blue_scale * 10.2),
                 color=blue_colors[idx % len(blue_colors)],
                 outline=blue_outlines[idx % len(blue_outlines)],
-                pitch_deg=blue_hpr[1],
-                bank_deg=blue_hpr[2],
+                pitch_deg=blue_pose[1],
+                bank_deg=blue_pose[2],
                 view_pitch_deg=0.0,
             )
 
@@ -3731,19 +3749,14 @@ class _OpenGLSceneRenderer:
             target_frame.position,
             size=(vw, vh),
         )
-        target_hpr = trace_test_1_aircraft_hpr_for_frame(target_frame)
-        target_heading = trace_test_1_screen_heading_deg(
-            target_frame,
-            size=(vw, vh),
-        )
         self._draw_aircraft_marker_2d(
             center=(target_center[0], float(vh - target_center[1])),
-            heading_deg=target_heading,
+            heading_deg=target_pose[0],
             size=max(11.6, target_scale * 13.0),
             color=(0.92, 0.24, 0.24, 0.98),
             outline=(1.0, 0.92, 0.92, 0.90),
-            pitch_deg=target_hpr[1],
-            bank_deg=target_hpr[2],
+            pitch_deg=target_pose[1],
+            bank_deg=target_pose[2],
             view_pitch_deg=0.0,
         )
         return 1 + len(payload.scene.blue_frames)
@@ -3762,13 +3775,15 @@ class _OpenGLSceneRenderer:
         for track in payload.aircraft:
             pos = trace_test_2_track_position(track=track, progress=progress)
             center = trace_test_2_project_point(pos, size=(vw, vh))
-            heading = trace_test_2_screen_heading_deg(track=track, progress=progress, size=(vw, vh))
-            tangent = trace_test_2_tangent_for_track(track=track, progress=progress)
-            hpr = trace_test_2_aircraft_hpr_from_tangent(tangent)
+            pose = trace_test_2_aircraft_screen_pose_for_track(
+                track=track,
+                progress=progress,
+                size=(vw, vh),
+            )
             self._draw_aircraft_marker_2d(
                 center=(center[0], float(vh - center[1])),
-                heading_deg=heading,
-                size=max(10.0, 14.0 - (abs(hpr[1]) * 0.05)),
+                heading_deg=pose[0],
+                size=max(10.0, 14.0 - (abs(pose[1]) * 0.05)),
                 color=(
                     track.color_rgb[0] / 255.0,
                     track.color_rgb[1] / 255.0,
@@ -3776,8 +3791,8 @@ class _OpenGLSceneRenderer:
                     0.96,
                 ),
                 outline=(0.96, 0.98, 1.0, 0.88),
-                pitch_deg=hpr[1],
-                bank_deg=hpr[2],
+                pitch_deg=pose[1],
+                bank_deg=pose[2],
                 view_pitch_deg=22.0,
             )
         return len(payload.aircraft)
@@ -4012,6 +4027,7 @@ class App:
         self._renderer_path = "GL" if self._opengl_enabled else "2D"
         self._renderer_fallback_used = False
         self._failure_recovery_used = False
+        self._pending_renderer_action: str | None = None
         self._menu_banner_message: str | None = None
         self._menu_banner_until_ms = 0
         self._shell_pause_active = False
@@ -4154,6 +4170,41 @@ class App:
         token = str(window_mode).strip().lower()
         self._window_mode = token if token in {"windowed", "fullscreen", "borderless"} else "windowed"
 
+    def stored_use_opengl(self) -> bool | None:
+        if self._runtime_defaults_store is None:
+            return None
+        return self._runtime_defaults_store.stored_use_opengl()
+
+    def set_stored_use_opengl(self, value: bool | None) -> None:
+        if self._runtime_defaults_store is None:
+            return
+        self._runtime_defaults_store.set_use_opengl(value)
+
+    @staticmethod
+    def use_opengl_env_override() -> str | None:
+        value = os.environ.get("CFAST_USE_OPENGL")
+        if value is None:
+            return None
+        token = str(value).strip()
+        return token or ""
+
+    @classmethod
+    def use_opengl_env_forces_enabled(cls) -> bool:
+        value = cls.use_opengl_env_override()
+        if value is None:
+            return False
+        return value.strip().lower() not in {"0", "false", "off", "no"}
+
+    def request_renderer_action(self, action: str) -> None:
+        token = str(action).strip().lower()
+        if token in {"retry_gl", "disable_gl"}:
+            self._pending_renderer_action = token
+
+    def consume_renderer_action(self) -> str | None:
+        action = self._pending_renderer_action
+        self._pending_renderer_action = None
+        return action
+
     def note_renderer_fallback(self) -> None:
         self._renderer_fallback_used = True
         self._renderer_path = "FALLBACK"
@@ -4163,6 +4214,33 @@ class App:
         self._renderer_path = token or "2D"
         if token != "FALLBACK":
             self._renderer_fallback_used = False
+
+    def present_renderer_failure(self, failure: OpenGLFailureInfo) -> None:
+        self._set_shell_pause_active(False)
+        screen = self._current_screen()
+        if self._screen_has_activity(screen):
+            emergency = getattr(screen, "shell_emergency_exit", None)
+            if callable(emergency):
+                try:
+                    emergency("renderer_failure_abort")
+                except Exception:
+                    self.pop_to_root()
+            else:
+                abort = getattr(screen, "abort_activity", None)
+                if callable(abort):
+                    try:
+                        abort("renderer_failure_abort")
+                    except Exception:
+                        pass
+                self.pop_to_root()
+        else:
+            self.pop_to_root()
+        self.push(OpenGLFailureScreen(self, failure=failure))
+
+    def dismiss_renderer_failure(self) -> None:
+        screen = self._current_screen()
+        if isinstance(screen, OpenGLFailureScreen):
+            self.pop()
 
     def _current_screen(self) -> Screen | None:
         if not self._screens:
@@ -9414,6 +9492,389 @@ class TestSeedSettingsScreen:
             )
 
 
+class DisplaySettingsScreen:
+    def __init__(self, app: App) -> None:
+        self._app = app
+        self._selected = 0
+        self._title_font = pygame.font.Font(None, 42)
+        self._item_font = pygame.font.Font(None, 30)
+        self._hint_font = pygame.font.Font(None, 22)
+        self._row_hitboxes: dict[int, pygame.Rect] = {}
+        self._control_hitboxes: dict[tuple[int, str], pygame.Rect] = {}
+
+    def _rows(self) -> list[tuple[str, str, str]]:
+        stored = self._app.stored_use_opengl()
+        if stored is None:
+            value = "AUTO"
+        else:
+            value = "ON" if stored else "OFF"
+        return [
+            ("use_opengl", "OpenGL Renderer", value),
+            ("back", "Back", "Return to Settings"),
+        ]
+
+    def _toggle_use_opengl(self) -> None:
+        current = self._app.stored_use_opengl()
+        next_value = True if current is None else not current
+        self._app.set_stored_use_opengl(next_value)
+
+    def handle_event(self, event: pygame.event.Event) -> None:
+        rows = self._rows()
+        if event.type == pygame.MOUSEMOTION:
+            pos = getattr(event, "pos", None)
+            if pos is not None:
+                for idx, rect in self._row_hitboxes.items():
+                    if rect.collidepoint(pos):
+                        self._selected = idx
+                        break
+            return
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            pos = getattr(event, "pos", None)
+            if pos is None:
+                return
+            for (idx, action), rect in self._control_hitboxes.items():
+                if rect.collidepoint(pos):
+                    self._selected = idx
+                    if rows[idx][0] == "use_opengl" and action == "toggle":
+                        self._toggle_use_opengl()
+                    return
+            for idx, rect in self._row_hitboxes.items():
+                if rect.collidepoint(pos):
+                    self._selected = idx
+                    self._activate_row(rows[idx][0])
+                    return
+            return
+        if event.type != pygame.KEYDOWN:
+            return
+
+        key = event.key
+        if key in (pygame.K_ESCAPE, pygame.K_BACKSPACE):
+            self._app.pop()
+            return
+        if key in (pygame.K_UP, pygame.K_w):
+            self._selected = (self._selected - 1) % max(1, len(rows))
+            return
+        if key in (pygame.K_DOWN, pygame.K_s):
+            self._selected = (self._selected + 1) % max(1, len(rows))
+            return
+        if key in (pygame.K_LEFT, pygame.K_a, pygame.K_RIGHT, pygame.K_d):
+            if rows[self._selected][0] == "use_opengl":
+                self._toggle_use_opengl()
+            return
+        if key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE):
+            self._activate_row(rows[self._selected][0])
+
+    def _activate_row(self, key: str) -> None:
+        if key == "back":
+            self._app.pop()
+            return
+        if key == "use_opengl":
+            self._toggle_use_opengl()
+
+    def render(self, surface: pygame.Surface) -> None:
+        w, h = surface.get_size()
+        bg = (4, 10, 72)
+        panel_bg = (8, 18, 104)
+        border = (226, 236, 255)
+        text_main = (238, 245, 255)
+        text_muted = (186, 200, 224)
+        active_bg = (244, 248, 255)
+        active_text = (14, 26, 74)
+
+        surface.fill(bg)
+        panel = pygame.Rect(max(12, w // 28), max(12, h // 24), w - max(24, w // 14), h - max(24, h // 12))
+        pygame.draw.rect(surface, panel_bg, panel)
+        pygame.draw.rect(surface, border, panel, 2)
+
+        title = self._title_font.render("Display Settings", True, text_main)
+        surface.blit(title, title.get_rect(midtop=(panel.centerx, panel.y + 14)))
+        subtitle = self._hint_font.render(
+            "OpenGL changes apply on the next renderer bootstrap or app launch.",
+            True,
+            text_muted,
+        )
+        surface.blit(subtitle, subtitle.get_rect(midtop=(panel.centerx, panel.y + 54)))
+
+        rows = self._rows()
+        self._selected %= max(1, len(rows))
+        list_rect = pygame.Rect(panel.x + 18, panel.y + 86, panel.w - 36, panel.h - 156)
+        pygame.draw.rect(surface, (6, 13, 92), list_rect)
+        pygame.draw.rect(surface, (78, 102, 170), list_rect, 1)
+
+        self._row_hitboxes = {}
+        self._control_hitboxes = {}
+        row_h = 46
+        gap = 10
+        y = list_rect.y + 16
+        for idx, (key, label, value) in enumerate(rows):
+            row = pygame.Rect(list_rect.x + 16, y, list_rect.w - 32, row_h)
+            self._row_hitboxes[idx] = row.copy()
+            selected = idx == self._selected
+            fill = active_bg if selected else (9, 20, 106)
+            edge = (120, 142, 196) if selected else (62, 84, 152)
+            pygame.draw.rect(surface, fill, row, border_radius=6)
+            pygame.draw.rect(surface, edge, row, 2 if selected else 1, border_radius=6)
+            label_color = active_text if selected else text_main
+            value_color = (46, 62, 112) if selected else text_muted
+
+            label_text = MenuScreen._fit_label(self, self._item_font, label, row.w - 240)
+            label_surf = self._item_font.render(label_text, True, label_color)
+            surface.blit(label_surf, (row.x + 12, row.y + (row.h - label_surf.get_height()) // 2))
+
+            if key == "back":
+                value_surf = self._hint_font.render(value, True, value_color)
+                surface.blit(value_surf, value_surf.get_rect(midright=(row.right - 14, row.centery)))
+            else:
+                value_box = pygame.Rect(row.right - 120, row.y + 6, 108, row.h - 12)
+                self._control_hitboxes[(idx, "toggle")] = value_box.copy()
+                pygame.draw.rect(surface, (14, 26, 78), value_box, border_radius=5)
+                pygame.draw.rect(surface, (92, 112, 168), value_box, 1, border_radius=5)
+                value_surf = self._hint_font.render(value, True, text_main)
+                surface.blit(value_surf, value_surf.get_rect(center=value_box.center))
+
+            y += row_h + gap
+
+        note_lines = [
+            f"Stored preference: {_resolve_use_opengl(stored_default=self._app.stored_use_opengl()) and 'GL requested' or '2D requested'}",
+        ]
+        env_override = self._app.use_opengl_env_override()
+        if env_override is not None:
+            note_lines.append(
+                f"CFAST_USE_OPENGL={env_override!r} currently overrides the stored setting."
+            )
+        footer = self._hint_font.render(
+            "Left/Right/Enter toggles OpenGL. Esc returns to Settings.",
+            True,
+            text_muted,
+        )
+        surface.blit(footer, footer.get_rect(midbottom=(panel.centerx, panel.bottom - 12)))
+        for idx, line in enumerate(note_lines):
+            note = self._hint_font.render(line, True, text_muted)
+            surface.blit(note, note.get_rect(midbottom=(panel.centerx, panel.bottom - 40 - (idx * 22))))
+
+    def poll_bound_input(self) -> None:
+        while self._app.consume_bound_action("menu_up"):
+            self.handle_event(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_UP, "unicode": ""}))
+        while self._app.consume_bound_action("menu_down"):
+            self.handle_event(
+                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_DOWN, "unicode": ""})
+            )
+        while self._app.consume_bound_action("menu_left"):
+            self.handle_event(
+                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_LEFT, "unicode": ""})
+            )
+        while self._app.consume_bound_action("menu_right"):
+            self.handle_event(
+                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RIGHT, "unicode": ""})
+            )
+        while self._app.consume_bound_action("menu_select"):
+            self.handle_event(
+                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""})
+            )
+        while self._app.consume_bound_action("menu_back"):
+            self.handle_event(
+                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_ESCAPE, "unicode": ""})
+            )
+
+
+class OpenGLFailureScreen:
+    def __init__(self, app: App, *, failure: OpenGLFailureInfo) -> None:
+        self._app = app
+        self._failure = failure
+        self._selected = 0
+        self._title_font = pygame.font.Font(None, 44)
+        self._item_font = pygame.font.Font(None, 32)
+        self._body_font = pygame.font.Font(None, 28)
+        self._hint_font = pygame.font.Font(None, 22)
+        self._row_hitboxes: dict[int, pygame.Rect] = {}
+
+    def _rows(self) -> list[tuple[str, str, str, bool]]:
+        env_blocked = self._failure.env_forced
+        rows = [
+            ("retry_gl", "Retry OpenGL", "Try the OpenGL bootstrap again.", True),
+            (
+                "disable_gl",
+                "Disable OpenGL and Continue",
+                (
+                    "Blocked by CFAST_USE_OPENGL."
+                    if env_blocked
+                    else "Save 2D mode and continue to the main menu."
+                ),
+                not env_blocked,
+            ),
+            ("quit", "Quit", "Exit the app.", True),
+        ]
+        return rows
+
+    def _activate_selected(self) -> None:
+        action, _label, _detail, enabled = self._rows()[self._selected % len(self._rows())]
+        if not enabled:
+            return
+        if action == "retry_gl":
+            self._app.request_renderer_action("retry_gl")
+            return
+        if action == "disable_gl":
+            self._app.request_renderer_action("disable_gl")
+            return
+        if action == "quit":
+            self._app.quit(exit_reason="renderer_failure_quit", exit_code=1)
+
+    def handle_event(self, event: pygame.event.Event) -> None:
+        rows = self._rows()
+        if event.type == pygame.MOUSEMOTION:
+            pos = getattr(event, "pos", None)
+            if pos is not None:
+                for idx, rect in self._row_hitboxes.items():
+                    if rect.collidepoint(pos):
+                        self._selected = idx
+                        break
+            return
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            pos = getattr(event, "pos", None)
+            if pos is None:
+                return
+            for idx, rect in self._row_hitboxes.items():
+                if rect.collidepoint(pos):
+                    self._selected = idx
+                    self._activate_selected()
+                    return
+            return
+        if event.type != pygame.KEYDOWN:
+            return
+
+        key = event.key
+        if key in (pygame.K_ESCAPE, pygame.K_BACKSPACE):
+            self._app.quit(exit_reason="renderer_failure_quit", exit_code=1)
+            return
+        if key in (pygame.K_UP, pygame.K_w):
+            self._selected = (self._selected - 1) % max(1, len(rows))
+            return
+        if key in (pygame.K_DOWN, pygame.K_s):
+            self._selected = (self._selected + 1) % max(1, len(rows))
+            return
+        if key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE):
+            self._activate_selected()
+
+    def render(self, surface: pygame.Surface) -> None:
+        w, h = surface.get_size()
+        bg = (10, 10, 18)
+        panel_bg = (24, 22, 44)
+        border = (246, 210, 168)
+        text_main = (255, 242, 220)
+        text_muted = (226, 210, 188)
+        active_bg = (255, 243, 224)
+        active_text = (64, 30, 18)
+
+        surface.fill(bg)
+        panel = pygame.Rect(max(20, w // 10), max(20, h // 12), w - max(40, w // 5), h - max(40, h // 6))
+        pygame.draw.rect(surface, panel_bg, panel, border_radius=14)
+        pygame.draw.rect(surface, border, panel, 2, border_radius=14)
+
+        title = self._title_font.render("OpenGL Error", True, text_main)
+        surface.blit(title, title.get_rect(midtop=(panel.centerx, panel.y + 18)))
+
+        summary = self._body_font.render(self._failure.summary, True, text_main)
+        surface.blit(summary, summary.get_rect(midtop=(panel.centerx, panel.y + 66)))
+
+        body = pygame.Rect(panel.x + 28, panel.y + 108, panel.w - 56, 170)
+        detail_lines = [self._failure.detail]
+        if self._failure.env_forced:
+            detail_lines.append(
+                "Disable-and-continue is unavailable because CFAST_USE_OPENGL is forcing OpenGL on."
+            )
+        detail_lines.append("Retry returns to the main menu if OpenGL starts successfully.")
+        self._draw_wrapped_text(
+            surface,
+            "\n\n".join(detail_lines),
+            body,
+            color=text_muted,
+            font=self._hint_font,
+            max_lines=10,
+        )
+
+        rows = self._rows()
+        self._selected %= max(1, len(rows))
+        self._row_hitboxes = {}
+        list_rect = pygame.Rect(panel.x + 28, body.bottom + 10, panel.w - 56, panel.bottom - body.bottom - 58)
+        gap = 10
+        row_h = 54
+        y = list_rect.y
+        for idx, (_action, label, detail, enabled) in enumerate(rows):
+            row = pygame.Rect(list_rect.x, y, list_rect.w, row_h)
+            self._row_hitboxes[idx] = row.copy()
+            selected = idx == self._selected
+            if selected:
+                pygame.draw.rect(surface, active_bg, row, border_radius=8)
+                pygame.draw.rect(surface, border, row, 2, border_radius=8)
+            else:
+                pygame.draw.rect(surface, (38, 34, 64), row, border_radius=8)
+                pygame.draw.rect(surface, (138, 118, 106), row, 1, border_radius=8)
+            label_color = active_text if selected else text_main
+            detail_color = (120, 78, 52) if selected else text_muted
+            if not enabled:
+                label_color = (150, 132, 120)
+                detail_color = (132, 118, 108)
+            title_surf = self._item_font.render(label, True, label_color)
+            surface.blit(title_surf, (row.x + 14, row.y + 8))
+            detail_surf = self._hint_font.render(detail, True, detail_color)
+            surface.blit(detail_surf, (row.x + 14, row.y + 30))
+            y += row_h + gap
+
+        footer = self._hint_font.render(
+            "Up/Down: Select  Enter: Apply  Esc: Quit",
+            True,
+            text_muted,
+        )
+        surface.blit(footer, footer.get_rect(midbottom=(panel.centerx, panel.bottom - 16)))
+
+    def _draw_wrapped_text(
+        self,
+        surface: pygame.Surface,
+        text: str,
+        rect: pygame.Rect,
+        *,
+        color: tuple[int, int, int],
+        font: pygame.font.Font,
+        max_lines: int,
+    ) -> None:
+        lines = []
+        for paragraph in str(text).splitlines():
+            words = paragraph.split()
+            if not words:
+                lines.append("")
+                continue
+            current = words[0]
+            for word in words[1:]:
+                candidate = f"{current} {word}"
+                if font.size(candidate)[0] <= rect.w:
+                    current = candidate
+                else:
+                    lines.append(current)
+                    current = word
+            lines.append(current)
+        y = rect.y
+        for line in lines[:max_lines]:
+            surf = font.render(line, True, color)
+            surface.blit(surf, (rect.x, y))
+            y += font.get_linesize() + 2
+
+    def poll_bound_input(self) -> None:
+        while self._app.consume_bound_action("menu_up"):
+            self.handle_event(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_UP, "unicode": ""}))
+        while self._app.consume_bound_action("menu_down"):
+            self.handle_event(
+                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_DOWN, "unicode": ""})
+            )
+        while self._app.consume_bound_action("menu_select"):
+            self.handle_event(
+                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""})
+            )
+        while self._app.consume_bound_action("menu_back"):
+            self.handle_event(
+                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_ESCAPE, "unicode": ""})
+            )
+
+
 class _AdaptiveRuntimeTracker:
     _WINDOW_INTERVAL_MS = 25_000
 
@@ -11938,15 +12399,6 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         self._dispose_auditory_panda_renderer()
 
     def _run_auditory_panda_preflight(self) -> tuple[bool, str, str]:
-        pref = os.environ.get("CFAST_AUDITORY_RENDERER", "panda").strip().lower()
-        if pref not in {"", "panda"}:
-            return (
-                False,
-                "renderer_pref",
-                "Auditory Capacity requires Panda3D. "
-                f"CFAST_AUDITORY_RENDERER={pref!r} disables the required renderer.",
-            )
-
         request = Panda3DRequest(
             scene=Panda3DScene.AUDITORY_CAPACITY,
             duration_s=AUDITORY_PANDA_PREFLIGHT_DURATION_S,
@@ -13571,9 +14023,6 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
     def _should_use_auditory_panda_renderer(self) -> bool:
         if self._auditory_panda_failed:
             return False
-        pref = os.environ.get("CFAST_AUDITORY_RENDERER", "panda").strip().lower()
-        if pref in {"pygame", "2d", "off"}:
-            return False
         return panda3d_auditory_rendering_available()
 
     def _dispose_auditory_panda_renderer(self) -> None:
@@ -13592,20 +14041,10 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         if not self._should_use_auditory_panda_renderer():
             self._dispose_auditory_panda_renderer()
             if not self._auditory_panda_requirement_failed():
-                pref = os.environ.get("CFAST_AUDITORY_RENDERER", "panda").strip().lower()
-                if pref in {"pygame", "2d", "off"}:
-                    self._fail_auditory_panda_requirement(
-                        category="renderer_pref",
-                        summary=(
-                            "Auditory Capacity requires Panda3D. "
-                            f"CFAST_AUDITORY_RENDERER={pref!r} disables the required renderer."
-                        ),
-                    )
-                else:
-                    self._fail_auditory_panda_requirement(
-                        category="renderer_unavailable",
-                        summary="Auditory Capacity requires Panda3D, but the renderer is unavailable in this environment.",
-                    )
+                self._fail_auditory_panda_requirement(
+                    category="renderer_unavailable",
+                    summary="Auditory Capacity requires Panda3D, but the renderer is unavailable in this environment.",
+                )
             return None
         if self._auditory_panda_renderer is not None and self._auditory_panda_renderer.size != size:
             self._dispose_auditory_panda_renderer()
@@ -13625,16 +14064,10 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
     def _should_use_rapid_tracking_panda_renderer(self) -> bool:
         if self._rapid_tracking_panda_failed:
             return False
-        pref = os.environ.get("CFAST_RAPID_TRACKING_RENDERER", "panda").strip().lower()
-        if pref in {"pygame", "2d", "off"}:
-            return False
         return panda3d_rapid_tracking_rendering_available()
 
     def _should_use_spatial_integration_panda_renderer(self) -> bool:
         if self._spatial_integration_panda_failed:
-            return False
-        pref = os.environ.get("CFAST_SPATIAL_INTEGRATION_RENDERER", "panda").strip().lower()
-        if pref in {"pygame", "2d", "off"}:
             return False
         return panda3d_spatial_integration_rendering_available()
 
@@ -13662,24 +14095,12 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         if not self._should_use_rapid_tracking_panda_renderer():
             self._dispose_rapid_tracking_panda_renderer()
             if not self._scene_panda_requirement_failed("rapid_tracking"):
-                pref = os.environ.get("CFAST_RAPID_TRACKING_RENDERER", "panda").strip().lower()
-                if pref not in {"", "panda"}:
-                    self._fail_scene_panda_requirement(
-                        "rapid_tracking",
-                        scene_label="Rapid Tracking",
-                        category="renderer_pref",
-                        summary=(
-                            "Rapid Tracking requires Panda3D. "
-                            f"CFAST_RAPID_TRACKING_RENDERER={pref!r} disables the required renderer."
-                        ),
-                    )
-                else:
-                    self._fail_scene_panda_requirement(
-                        "rapid_tracking",
-                        scene_label="Rapid Tracking",
-                        category="renderer_unavailable",
-                        summary="Rapid Tracking requires Panda3D, but the renderer is unavailable in this environment.",
-                    )
+                self._fail_scene_panda_requirement(
+                    "rapid_tracking",
+                    scene_label="Rapid Tracking",
+                    category="renderer_unavailable",
+                    summary="Rapid Tracking requires Panda3D, but the renderer is unavailable in this environment.",
+                )
             return None
         if (
             self._rapid_tracking_panda_renderer is not None
@@ -13710,24 +14131,12 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         if not self._should_use_spatial_integration_panda_renderer():
             self._dispose_spatial_integration_panda_renderer()
             if not self._scene_panda_requirement_failed("spatial_integration"):
-                pref = os.environ.get("CFAST_SPATIAL_INTEGRATION_RENDERER", "panda").strip().lower()
-                if pref not in {"", "panda"}:
-                    self._fail_scene_panda_requirement(
-                        "spatial_integration",
-                        scene_label="Spatial Integration",
-                        category="renderer_pref",
-                        summary=(
-                            "Spatial Integration requires Panda3D. "
-                            f"CFAST_SPATIAL_INTEGRATION_RENDERER={pref!r} disables the required renderer."
-                        ),
-                    )
-                else:
-                    self._fail_scene_panda_requirement(
-                        "spatial_integration",
-                        scene_label="Spatial Integration",
-                        category="renderer_unavailable",
-                        summary="Spatial Integration requires Panda3D, but the renderer is unavailable in this environment.",
-                    )
+                self._fail_scene_panda_requirement(
+                    "spatial_integration",
+                    scene_label="Spatial Integration",
+                    category="renderer_unavailable",
+                    summary="Spatial Integration requires Panda3D, but the renderer is unavailable in this environment.",
+                )
             return None
         if (
             self._spatial_integration_panda_renderer is not None
@@ -13753,9 +14162,6 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
     def _should_use_trace_test_1_panda_renderer(self) -> bool:
         if self._trace_test_1_panda_failed:
             return False
-        pref = os.environ.get("CFAST_TRACE_TEST_1_RENDERER", "panda").strip().lower()
-        if pref in {"pygame", "2d", "off"}:
-            return False
         return panda3d_trace_test_1_rendering_available()
 
     def _dispose_trace_test_1_panda_renderer(self) -> None:
@@ -13774,24 +14180,12 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         if not self._should_use_trace_test_1_panda_renderer():
             self._dispose_trace_test_1_panda_renderer()
             if not self._scene_panda_requirement_failed("trace_test_1"):
-                pref = os.environ.get("CFAST_TRACE_TEST_1_RENDERER", "panda").strip().lower()
-                if pref not in {"", "panda"}:
-                    self._fail_scene_panda_requirement(
-                        "trace_test_1",
-                        scene_label="Trace Test 1",
-                        category="renderer_pref",
-                        summary=(
-                            "Trace Test 1 requires Panda3D. "
-                            f"CFAST_TRACE_TEST_1_RENDERER={pref!r} disables the required renderer."
-                        ),
-                    )
-                else:
-                    self._fail_scene_panda_requirement(
-                        "trace_test_1",
-                        scene_label="Trace Test 1",
-                        category="renderer_unavailable",
-                        summary="Trace Test 1 requires Panda3D, but the renderer is unavailable in this environment.",
-                    )
+                self._fail_scene_panda_requirement(
+                    "trace_test_1",
+                    scene_label="Trace Test 1",
+                    category="renderer_unavailable",
+                    summary="Trace Test 1 requires Panda3D, but the renderer is unavailable in this environment.",
+                )
             return None
         if (
             self._trace_test_1_panda_renderer is not None
@@ -13817,9 +14211,6 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
     def _should_use_trace_test_2_panda_renderer(self) -> bool:
         if self._trace_test_2_panda_failed:
             return False
-        pref = os.environ.get("CFAST_TRACE_TEST_2_RENDERER", "panda").strip().lower()
-        if pref in {"pygame", "2d", "off"}:
-            return False
         return panda3d_trace_test_2_rendering_available()
 
     def _dispose_trace_test_2_panda_renderer(self) -> None:
@@ -13838,24 +14229,12 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         if not self._should_use_trace_test_2_panda_renderer():
             self._dispose_trace_test_2_panda_renderer()
             if not self._scene_panda_requirement_failed("trace_test_2"):
-                pref = os.environ.get("CFAST_TRACE_TEST_2_RENDERER", "panda").strip().lower()
-                if pref not in {"", "panda"}:
-                    self._fail_scene_panda_requirement(
-                        "trace_test_2",
-                        scene_label="Trace Test 2",
-                        category="renderer_pref",
-                        summary=(
-                            "Trace Test 2 requires Panda3D. "
-                            f"CFAST_TRACE_TEST_2_RENDERER={pref!r} disables the required renderer."
-                        ),
-                    )
-                else:
-                    self._fail_scene_panda_requirement(
-                        "trace_test_2",
-                        scene_label="Trace Test 2",
-                        category="renderer_unavailable",
-                        summary="Trace Test 2 requires Panda3D, but the renderer is unavailable in this environment.",
-                    )
+                self._fail_scene_panda_requirement(
+                    "trace_test_2",
+                    scene_label="Trace Test 2",
+                    category="renderer_unavailable",
+                    summary="Trace Test 2 requires Panda3D, but the renderer is unavailable in this environment.",
+                )
             return None
         if (
             self._trace_test_2_panda_renderer is not None
@@ -21486,31 +21865,6 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             view_pitch_deg=view_pitch_deg,
         )
 
-    def _draw_trace_test_1_aircraft(
-        self,
-        surface: pygame.Surface,
-        *,
-        center: tuple[int, int],
-        attitude: TraceTest1Attitude,
-        screen_heading_deg: float,
-        color: tuple[int, int, int],
-        outline: tuple[int, int, int],
-        scale: float,
-        anim_s: float,
-    ) -> None:
-        _ = anim_s
-        self._draw_fixed_wing_fallback(
-            surface,
-            center=center,
-            body_color=color,
-            outline_color=outline,
-            scale=max(0.78, float(scale)),
-            screen_heading_deg=screen_heading_deg,
-            pitch_deg=float(attitude.pitch_deg),
-            bank_deg=float(attitude.roll_deg),
-            view_pitch_deg=0.0,
-        )
-
     @staticmethod
     def _trace_test_2_track_position(
         *,
@@ -21518,27 +21872,6 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         progress: float,
     ) -> TraceTest2Point3:
         return trace_test_2_track_position(track=track, progress=progress)
-
-    def _draw_trace_test_2_aircraft_fallback(
-        self,
-        surface: pygame.Surface,
-        *,
-        center: tuple[int, int],
-        color: tuple[int, int, int],
-        scale: float,
-        heading_deg: float,
-        bank_deg: float,
-    ) -> None:
-        self._draw_fixed_wing_fallback(
-            surface,
-            center=center,
-            body_color=color,
-            outline_color=(236, 242, 252),
-            scale=max(0.72, float(scale)),
-            screen_heading_deg=heading_deg,
-            bank_deg=bank_deg,
-            view_pitch_deg=22.0,
-        )
 
     def _render_trace_test_2_screen(
         self,
@@ -26346,33 +26679,89 @@ def _resolve_use_opengl(*, stored_default: bool | None) -> bool:
     return sys.platform != "darwin"
 
 
+def _build_opengl_failure_info(
+    *,
+    stage: str,
+    requested: bool,
+    attempted: bool,
+    exc: Exception,
+) -> OpenGLFailureInfo:
+    stage_detail = {
+        "display_init": "creating the OpenGL display",
+        "renderer_init": "initializing the OpenGL scene renderer",
+        "resize": "resizing the OpenGL display",
+        "render": "rendering the OpenGL frame",
+    }.get(stage, "using the OpenGL renderer")
+    detail = str(exc).strip()
+    suffix = f": {detail}" if detail else ""
+    return OpenGLFailureInfo(
+        stage=stage,
+        summary="OpenGL renderer failed.",
+        detail=f"The app could not continue while {stage_detail}. {type(exc).__name__}{suffix}",
+        requested=bool(requested),
+        attempted=bool(attempted),
+        env_forced=App.use_opengl_env_forces_enabled(),
+    )
+
+
 def _initialize_display_surfaces(
     *,
     window_size: tuple[int, int],
     window_flags: int,
     video_driver: str,
     want_gl: bool,
-) -> tuple[pygame.Surface, pygame.Surface, _OpenGLSceneRenderer | None, int]:
+) -> DisplayBootstrapResult:
     opengl_window_flags = window_flags | pygame.OPENGL | pygame.DOUBLEBUF
     can_try_gl = bool(want_gl and video_driver != "dummy")
     display_surface: pygame.Surface
     app_surface: pygame.Surface
     gl_renderer: _OpenGLSceneRenderer | None = None
     active_window_flags = window_flags
+    gl_failure: OpenGLFailureInfo | None = None
 
     if can_try_gl:
         try:
             display_surface = pygame.display.set_mode(window_size, opengl_window_flags)
-            gl_renderer = _OpenGLSceneRenderer(window_size=display_surface.get_size())
-            app_surface = pygame.Surface(display_surface.get_size(), pygame.SRCALPHA)
-            active_window_flags = opengl_window_flags
-            return display_surface, app_surface, gl_renderer, active_window_flags
-        except Exception:
-            pass
+        except Exception as exc:
+            gl_failure = _build_opengl_failure_info(
+                stage="display_init",
+                requested=want_gl,
+                attempted=True,
+                exc=exc,
+            )
+        else:
+            try:
+                gl_renderer = _OpenGLSceneRenderer(window_size=display_surface.get_size())
+            except Exception as exc:
+                gl_failure = _build_opengl_failure_info(
+                    stage="renderer_init",
+                    requested=want_gl,
+                    attempted=True,
+                    exc=exc,
+                )
+            else:
+                app_surface = pygame.Surface(display_surface.get_size(), pygame.SRCALPHA)
+                active_window_flags = opengl_window_flags
+                return DisplayBootstrapResult(
+                    display_surface=display_surface,
+                    app_surface=app_surface,
+                    gl_renderer=gl_renderer,
+                    active_window_flags=active_window_flags,
+                    gl_requested=bool(want_gl),
+                    gl_attempted=True,
+                )
 
     display_surface = pygame.display.set_mode(window_size, window_flags)
     app_surface = display_surface
-    return display_surface, app_surface, gl_renderer, active_window_flags
+    return DisplayBootstrapResult(
+        display_surface=display_surface,
+        app_surface=app_surface,
+        gl_renderer=gl_renderer,
+        active_window_flags=active_window_flags,
+        gl_requested=bool(want_gl),
+        gl_attempted=bool(can_try_gl),
+        gl_failure=gl_failure,
+    )
 
 
 def run(
@@ -26441,12 +26830,16 @@ def run(
     want_gl = False if headless else _resolve_use_opengl(
         stored_default=runtime_defaults_store.stored_use_opengl(),
     )
-    display_surface, app_surface, gl_renderer, active_window_flags = _initialize_display_surfaces(
+    bootstrap = _initialize_display_surfaces(
         window_size=window_size,
         window_flags=window_flags,
         video_driver=video_driver,
         want_gl=want_gl,
     )
+    display_surface = bootstrap.display_surface
+    app_surface = bootstrap.app_surface
+    gl_renderer = bootstrap.gl_renderer
+    active_window_flags = bootstrap.active_window_flags
 
     font = pygame.font.Font(None, 36)
     clock = pygame.time.Clock()
@@ -26469,14 +26862,13 @@ def run(
         runtime_defaults_store=runtime_defaults_store,
         app_version=app_version,
     )
-    if want_gl and gl_renderer is None and video_driver != "dummy":
-        app.note_renderer_fallback()
 
     axis_calibration = AxisCalibrationScreen(app, profiles=input_profiles_store)
     axis_visualizer = AxisVisualizerScreen(app, profiles=input_profiles_store)
     input_profiles = InputProfilesScreen(app, profiles=input_profiles_store)
     joystick_bindings = JoystickBindingsScreen(app, profiles=input_profiles_store)
     difficulty_settings = DifficultySettingsScreen(app)
+    display_settings = DisplaySettingsScreen(app)
     test_seed_settings = TestSeedSettingsScreen(app)
 
     hotas_menu = MenuScreen(
@@ -26495,6 +26887,7 @@ def run(
         app,
         "Settings",
         [
+            MenuItem("Display Settings", lambda: app.push(display_settings)),
             MenuItem("Difficulty Settings", lambda: app.push(difficulty_settings)),
             MenuItem("Test Seeds", lambda: app.push(test_seed_settings)),
             MenuItem("HOTAS & Input", lambda: app.push(hotas_menu)),
@@ -29411,6 +29804,57 @@ def run(
     ]
 
     app.push(MenuScreen(app, "Main Menu", main_items, is_root=True))
+    if bootstrap.gl_failure is not None:
+        app.push(OpenGLFailureScreen(app, failure=bootstrap.gl_failure))
+
+    def _show_renderer_failure(failure: OpenGLFailureInfo) -> None:
+        nonlocal display_surface, gl_renderer, active_window_flags
+        window_size = display_surface.get_size()
+        try:
+            display_surface = pygame.display.set_mode(window_size, window_flags)
+        except Exception:
+            app.quit(exit_reason="renderer_failure_abort", exit_code=1)
+            return
+        gl_renderer = None
+        active_window_flags = window_flags
+        app.set_opengl_enabled(False)
+        app.set_surface(display_surface)
+        app.present_renderer_failure(failure)
+
+    def _apply_renderer_action(action: str) -> None:
+        nonlocal display_surface, gl_renderer, active_window_flags
+        token = str(action).strip().lower()
+        if token == "retry_gl":
+            retry = _initialize_display_surfaces(
+                window_size=display_surface.get_size(),
+                window_flags=window_flags,
+                video_driver=video_driver,
+                want_gl=True,
+            )
+            display_surface = retry.display_surface
+            gl_renderer = retry.gl_renderer
+            active_window_flags = retry.active_window_flags
+            app.set_opengl_enabled(retry.gl_renderer is not None)
+            app.set_surface(retry.app_surface)
+            if retry.gl_failure is None and retry.gl_renderer is not None:
+                app.dismiss_renderer_failure()
+            elif retry.gl_failure is not None:
+                app.present_renderer_failure(retry.gl_failure)
+            return
+        if token == "disable_gl":
+            if app.use_opengl_env_forces_enabled():
+                return
+            try:
+                display_surface = pygame.display.set_mode(display_surface.get_size(), window_flags)
+            except Exception:
+                app.quit(exit_reason="renderer_failure_abort", exit_code=1)
+                return
+            gl_renderer = None
+            active_window_flags = window_flags
+            app.set_stored_use_opengl(False)
+            app.set_opengl_enabled(False)
+            app.set_surface(display_surface)
+            app.dismiss_renderer_failure()
 
     frame = 0
     resize_events: set[int] = {pygame.VIDEORESIZE}
@@ -29422,6 +29866,12 @@ def run(
         while app.running:
             if event_injector is not None:
                 event_injector(frame)
+
+            renderer_action = app.consume_renderer_action()
+            if renderer_action is not None:
+                _apply_renderer_action(renderer_action)
+                if not app.running:
+                    break
 
             for event in pygame.event.get():
                 if event.type in resize_events:
@@ -29445,22 +29895,16 @@ def run(
                                 display_surface = pygame.display.set_mode(
                                     (next_w, next_h), active_window_flags
                                 )
-                            except Exception:
-                                try:
-                                    display_surface = pygame.display.set_mode(
-                                        (next_w, next_h), window_flags
+                            except Exception as exc:
+                                _show_renderer_failure(
+                                    _build_opengl_failure_info(
+                                        stage="resize",
+                                        requested=True,
+                                        attempted=True,
+                                        exc=exc,
                                     )
-                                except Exception:
-                                    app.recover_to_menu(
-                                        reason="renderer_failure_abort",
-                                        detail="renderer failure",
-                                    )
-                                    continue
-                                gl_renderer = None
-                                active_window_flags = window_flags
-                                app.set_opengl_enabled(False)
-                                app.note_renderer_fallback()
-                                app.set_surface(display_surface)
+                                )
+                                continue
                         else:
                             try:
                                 display_surface = pygame.display.set_mode(
@@ -29494,20 +29938,15 @@ def run(
                     app.set_surface(pygame.Surface(window_size, pygame.SRCALPHA))
                 try:
                     gl_renderer.resize(window_size=window_size)
-                except Exception:
-                    try:
-                        display_surface = pygame.display.set_mode(window_size, window_flags)
-                    except Exception:
-                        app.recover_to_menu(
-                            reason="renderer_failure_abort",
-                            detail="renderer failure",
+                except Exception as exc:
+                    _show_renderer_failure(
+                        _build_opengl_failure_info(
+                            stage="resize",
+                            requested=True,
+                            attempted=True,
+                            exc=exc,
                         )
-                        continue
-                    active_window_flags = window_flags
-                    gl_renderer = None
-                    app.set_opengl_enabled(False)
-                    app.note_renderer_fallback()
-                    app.set_surface(display_surface)
+                    )
                     continue
                 app.surface.fill((0, 0, 0, 0))
             else:
@@ -29526,22 +29965,16 @@ def run(
                         ui_surface=app.surface,
                         scene=app.consume_gl_scene(),
                     )
-                except Exception:
-                    window_size = display_surface.get_size()
-                    try:
-                        display_surface = pygame.display.set_mode(window_size, window_flags)
-                    except Exception:
-                        app.recover_to_menu(
-                            reason="renderer_failure_abort",
-                            detail="renderer failure",
+                except Exception as exc:
+                    _show_renderer_failure(
+                        _build_opengl_failure_info(
+                            stage="render",
+                            requested=True,
+                            attempted=True,
+                            exc=exc,
                         )
-                        continue
-                    active_window_flags = window_flags
-                    gl_renderer = None
-                    app.set_opengl_enabled(False)
-                    app.note_renderer_fallback()
-                    display_surface.blit(app.surface, (0, 0))
-                    app.set_surface(display_surface)
+                    )
+                    continue
             pygame.display.flip()
 
             frame += 1

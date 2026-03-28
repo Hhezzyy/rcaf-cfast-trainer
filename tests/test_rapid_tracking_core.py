@@ -110,6 +110,47 @@ def test_engine_determinism_same_seed_same_control_script() -> None:
     assert e1.snapshot().payload == e2.snapshot().payload
 
 
+def test_same_seed_reproduces_target_motion_and_obscuration_samples() -> None:
+    config = RapidTrackingConfig(
+        practice_duration_s=0.0,
+        scored_duration_s=4.0,
+        tick_hz=120.0,
+    )
+    controls = [(0.35, -0.18), (0.0, 0.0), (-0.22, 0.16), (0.18, -0.08)]
+
+    def sampled_states(seed: int) -> list[tuple[float, float, float, float, bool, str, str]]:
+        clock = FakeClock()
+        engine = build_rapid_tracking_test(
+            clock=clock,
+            seed=seed,
+            difficulty=0.63,
+            config=config,
+        )
+        engine.start_scored()
+        samples: list[tuple[float, float, float, float, bool, str, str]] = []
+        for step in range(24):
+            cx, cy = controls[step % len(controls)]
+            engine.set_control(horizontal=cx, vertical=cy)
+            clock.advance(0.1)
+            engine.update()
+            payload = engine.snapshot().payload
+            assert payload is not None
+            samples.append(
+                (
+                    float(payload.target_world_x),
+                    float(payload.target_world_y),
+                    float(payload.target_vx),
+                    float(payload.target_vy),
+                    bool(payload.target_visible),
+                    str(payload.target_cover_state),
+                    str(payload.target_kind),
+                )
+            )
+        return samples
+
+    assert sampled_states(551) == sampled_states(551)
+
+
 def test_camera_yaw_keeps_advancing_under_sustained_horizontal_input() -> None:
     clock = FakeClock()
     engine = build_rapid_tracking_test(
@@ -625,6 +666,64 @@ def test_terrain_cover_segments_hide_target_without_changing_kind_identity() -> 
     assert payload.target_kind in {"soldier", "truck", "helicopter"}
     assert payload.target_cover_state == "terrain"
     assert payload.target_visible is False
+
+
+def test_smooth_terrain_cover_keeps_target_motion_continuous_across_obscuration_boundary() -> None:
+    clock = FakeClock()
+    engine = build_rapid_tracking_test(clock=clock, seed=551, difficulty=0.63)
+    engine.start_scored()
+
+    script = engine._difficulty_profile().scene_script
+    terrain_index = next(
+        idx
+        for idx, segment in enumerate(script)
+        if segment.kind == "truck"
+        and segment.cover_mode == "terrain"
+        and idx > 0
+        and script[idx - 1].kind == "truck"
+        and script[idx - 1].handoff == "smooth"
+    )
+    previous_index = terrain_index - 1
+
+    engine._script_index = previous_index - 1
+    engine._start_scene_segment(initial=False)
+    engine._sim_elapsed_s = engine._segment_started_s + (engine._segment_duration_s * 0.98)
+    clock.t = engine._phase_started_at_s + engine._sim_elapsed_s
+    engine._advance_target()
+    engine._step(0.0)
+    visible_before = engine.snapshot().payload
+    assert visible_before is not None
+
+    engine._script_index = terrain_index - 1
+    engine._start_scene_segment(initial=False)
+    engine._sim_elapsed_s = engine._segment_started_s
+    clock.t = engine._phase_started_at_s + engine._sim_elapsed_s
+    engine._advance_target()
+    engine._step(0.0)
+    hidden_start = engine.snapshot().payload
+    assert hidden_start is not None
+
+    engine._sim_elapsed_s = engine._segment_started_s + (engine._segment_duration_s * 0.5)
+    clock.t = engine._phase_started_at_s + engine._sim_elapsed_s
+    engine._advance_target()
+    engine._step(0.0)
+    hidden_mid = engine.snapshot().payload
+    assert hidden_mid is not None
+
+    assert visible_before.target_kind == "truck"
+    assert visible_before.target_visible is True
+    assert hidden_start.target_kind == "truck"
+    assert hidden_start.target_cover_state == "terrain"
+    assert hidden_start.target_visible is False
+    assert hidden_mid.target_kind == "truck"
+    assert hidden_mid.target_visible is False
+    assert hidden_start.target_world_x < visible_before.target_world_x
+    assert hidden_mid.target_world_x < hidden_start.target_world_x
+    assert hidden_start.target_world_x == pytest.approx(
+        visible_before.target_world_x,
+        abs=0.5,
+    )
+    assert hidden_mid.target_world_y == pytest.approx(hidden_start.target_world_y)
 
 
 def test_low_difficulty_limits_handoffs_to_ground_targets_and_enables_assist() -> None:

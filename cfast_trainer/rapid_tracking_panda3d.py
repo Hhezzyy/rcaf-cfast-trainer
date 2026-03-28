@@ -11,8 +11,6 @@ import pygame
 from .aircraft_art import (
     build_panda_palette,
     build_panda3d_fixed_wing_model,
-    fixed_wing_heading_from_screen_heading,
-    screen_motion_heading_deg,
 )
 from .panda3d_assets import Panda3DAssetCatalog
 from .rapid_tracking import (
@@ -24,17 +22,10 @@ from .rapid_tracking_view import (
     RapidTrackingCameraRigState,
     camera_rig_state as shared_camera_rig_state,
     rapid_tracking_seed_unit,
-    world_to_camera_space,
 )
 
 
 def panda3d_rapid_tracking_rendering_available() -> bool:
-    if os.environ.get("CFAST_RAPID_TRACKING_RENDERER", "panda").strip().lower() in {
-        "pygame",
-        "2d",
-        "off",
-    }:
-        return False
     if os.environ.get("SDL_VIDEODRIVER", "").strip().lower() == "dummy":
         return False
     return importlib.util.find_spec("direct.showbase.ShowBase") is not None
@@ -133,7 +124,6 @@ class RapidTrackingPanda3DRenderer:
         self._selected_target_variant = ""
         self._target_overlay_state: RapidTrackingOverlayState | None = None
         self._last_camera_rig: RapidTrackingCameraRigState | None = None
-        self._airborne_orientation_cache: dict[int, tuple[float, float, float]] = {}
         self._scenery_nodes_by_kind: dict[str, list[object]] = {
             "hangar": [],
             "tower": [],
@@ -458,82 +448,32 @@ class RapidTrackingPanda3DRenderer:
         pitch_limit: float,
         roll_limit: float,
     ) -> tuple[float, float, float]:
-        previous = self._airborne_orientation_cache.get(
-            int(cache_key),
-            (float(default_heading) % 360.0, 0.0, 0.0),
-        )
-        current_cam = world_to_camera_space(
-            cam_world_x=float(current_rig.cam_world_x),
-            cam_world_y=float(current_rig.cam_world_y),
-            cam_world_z=float(current_rig.cam_world_z),
-            heading_deg=float(current_rig.view_heading_deg),
-            pitch_deg=float(current_rig.view_pitch_deg),
-            target_world_x=float(current_pos[0]),
-            target_world_y=float(current_pos[1]),
-            target_world_z=float(current_pos[2]),
-        )
-        next_cam = world_to_camera_space(
-            cam_world_x=float(next_rig.cam_world_x),
-            cam_world_y=float(next_rig.cam_world_y),
-            cam_world_z=float(next_rig.cam_world_z),
-            heading_deg=float(next_rig.view_heading_deg),
-            pitch_deg=float(next_rig.view_pitch_deg),
-            target_world_x=float(next_pos[0]),
-            target_world_y=float(next_pos[1]),
-            target_world_z=float(next_pos[2]),
-        )
-        cam_dx = float(next_cam[0] - current_cam[0])
-        cam_dy = float(next_cam[1] - current_cam[1])
-        cam_dz = float(next_cam[2] - current_cam[2])
-        viewport_size = getattr(self, "_size", (960, 540))
-        current_screen_x, current_screen_y, _current_on_screen, current_in_front = self._camera_space_to_viewport(
-            cam_x=float(current_cam[0]),
-            cam_y=float(current_cam[1]),
-            cam_z=float(current_cam[2]),
-            size=viewport_size,
-            h_fov_deg=float(current_rig.fov_deg),
-            v_fov_deg=max(18.0, float(current_rig.fov_deg) * 0.78),
-        )
-        next_screen_x, next_screen_y, _next_on_screen, next_in_front = self._camera_space_to_viewport(
-            cam_x=float(next_cam[0]),
-            cam_y=float(next_cam[1]),
-            cam_z=float(next_cam[2]),
-            size=viewport_size,
-            h_fov_deg=float(next_rig.fov_deg),
-            v_fov_deg=max(18.0, float(next_rig.fov_deg) * 0.78),
-        )
-        world_dx, world_dy, world_dz = self._world_vector_from_camera_delta(
-            rig=current_rig,
-            cam_dx=cam_dx,
-            cam_dy=cam_dy,
-            cam_dz=cam_dz,
-        )
+        _ = cache_key
+        world_dx = float(next_pos[0] - current_pos[0])
+        world_dy = float(next_pos[1] - current_pos[1])
+        world_dz = float(next_pos[2] - current_pos[2])
         heading_deg, base_pitch = self._world_heading_pitch_from_vector(
             dx=world_dx,
             dy=world_dy,
             dz=world_dz,
-            default_heading=float(previous[0]),
-            default_pitch=float(previous[1]),
+            default_heading=float(default_heading),
+            default_pitch=0.0,
         )
-        apparent_screen_heading = None
-        if current_in_front or next_in_front:
-            apparent_screen_heading = screen_motion_heading_deg(
-                (current_screen_x, current_screen_y),
-                (next_screen_x, next_screen_y),
-                minimum_distance=0.35,
-            )
-        if apparent_screen_heading is not None:
-            heading_deg = (
-                float(current_rig.view_heading_deg)
-                + fixed_wing_heading_from_screen_heading(apparent_screen_heading)
-            ) % 360.0
         hpr = (
             float(heading_deg),
             _clamp((float(base_pitch) * 0.55) + float(pitch_flair), -float(pitch_limit), float(pitch_limit)),
             _clamp(float(roll_flair), -float(roll_limit), float(roll_limit)),
         )
-        self._airborne_orientation_cache[int(cache_key)] = hpr
         return hpr
+
+    @staticmethod
+    def _apply_dynamic_target_visibility(*, node, visible: bool) -> None:
+        if bool(visible):
+            node.setAlphaScale(1.0)
+            node.show()
+            return
+        node.setAlphaScale(0.0)
+        node.hide()
 
     def _decoy_air_pose(
         self,
@@ -1606,7 +1546,7 @@ class RapidTrackingPanda3DRenderer:
         scene_y = float(payload.target_rel_y)
         track_x = float(payload.target_world_x)
         track_y = float(payload.target_world_y)
-        visible_alpha = 1.0 if bool(payload.target_visible) else 0.76
+        target_visible = bool(payload.target_visible)
 
         if kind == "soldier":
             x, y, z = self._ground_target_world_pos(world_x=track_x, world_y=track_y, clearance=0.05)
@@ -1624,8 +1564,7 @@ class RapidTrackingPanda3DRenderer:
             )
             node.setPos(x, y, z)
             node.setHpr(heading, 0.0, 0.0)
-            node.setAlphaScale(visible_alpha)
-            node.show()
+            self._apply_dynamic_target_visibility(node=node, visible=target_visible)
             self._active_target_node = node
             self._active_target_kind = kind
             return
@@ -1648,8 +1587,7 @@ class RapidTrackingPanda3DRenderer:
                 0.0,
                 0.0,
             )
-            node.setAlphaScale(visible_alpha)
-            node.show()
+            self._apply_dynamic_target_visibility(node=node, visible=target_visible)
             self._active_target_node = node
             self._active_target_kind = kind
             return
@@ -1669,7 +1607,7 @@ class RapidTrackingPanda3DRenderer:
             )
             if node is None:
                 return
-            node.setAlphaScale(0.96 if visible_alpha > 0.0 else 0.76)
+            node.setAlphaScale(0.96 if target_visible else 0.76)
             self._active_scenery_target_node = node
             self._active_target_node = node
             self._active_target_kind = kind
@@ -1721,8 +1659,7 @@ class RapidTrackingPanda3DRenderer:
                     roll_limit=18.0,
                 ),
             )
-            node.setAlphaScale(visible_alpha)
-            node.show()
+            self._apply_dynamic_target_visibility(node=node, visible=target_visible)
             self._active_target_node = node
             self._active_target_kind = kind
             return
@@ -1772,8 +1709,7 @@ class RapidTrackingPanda3DRenderer:
                 roll_limit=30.0,
             ),
         )
-        node.setAlphaScale(visible_alpha)
-        node.show()
+        self._apply_dynamic_target_visibility(node=node, visible=target_visible)
         self._active_target_node = node
         self._active_target_kind = kind
 

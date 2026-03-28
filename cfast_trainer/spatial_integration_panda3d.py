@@ -6,7 +6,11 @@ import os
 
 import pygame
 
-from .aircraft_art import build_panda_palette, build_panda3d_fixed_wing_model
+from .aircraft_art import (
+    build_panda_palette,
+    build_panda3d_fixed_wing_model,
+    panda3d_fixed_wing_hpr_from_world_tangent,
+)
 from .spatial_integration import (
     SpatialIntegrationPayload,
     SpatialIntegrationSceneView,
@@ -14,9 +18,6 @@ from .spatial_integration import (
 
 
 def panda3d_spatial_integration_rendering_available() -> bool:
-    pref = os.environ.get("CFAST_SPATIAL_INTEGRATION_RENDERER", "panda").strip().lower()
-    if pref in {"pygame", "2d", "off"}:
-        return False
     if os.environ.get("SDL_VIDEODRIVER", "").strip().lower() == "dummy":
         return False
     return importlib.util.find_spec("direct.showbase.ShowBase") is not None
@@ -43,7 +44,7 @@ class SpatialIntegrationPanda3DRenderer:
         self._grid_signature = (0, 0)
         self._grid_node = None
         self._landmark_nodes: list[tuple[object, object]] = []
-        self._aircraft_heading_deg = 0.0
+        self._aircraft_hpr = (0.0, 0.0, 0.0)
 
         loadPrcFileData("", "window-type offscreen")
         loadPrcFileData("", "audio-library-name null")
@@ -341,15 +342,16 @@ class SpatialIntegrationPanda3DRenderer:
         dir_z = live_z - prev_wz
         if (dir_x * dir_x) + (dir_y * dir_y) + (dir_z * dir_z) > 1e-8:
             horiz = max(1e-6, math.sqrt((dir_x * dir_x) + (dir_y * dir_y)))
-            self._aircraft_heading_deg = math.degrees(math.atan2(dir_x, dir_y))
-            pitch_deg = -math.degrees(math.atan2(dir_z, horiz))
             bank_deg = _clamp((dir_x / horiz) * 26.0, -34.0, 34.0)
+            self._aircraft_hpr = panda3d_fixed_wing_hpr_from_world_tangent(
+                tangent=(dir_x, dir_y, dir_z),
+                roll_deg=bank_deg,
+            )
         else:
-            pitch_deg = 0.0
-            bank_deg = 0.0
+            self._aircraft_hpr = (0.0, 0.0, 0.0)
 
         self._aircraft.setPos(live_x, live_y, live_z)
-        self._aircraft.setHpr(self._aircraft_heading_deg, pitch_deg, bank_deg)
+        self._aircraft.setHpr(*self._aircraft_hpr)
         self._aircraft.setScale(1.24)
         return (live_x, live_y, live_z)
 

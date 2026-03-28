@@ -9,8 +9,7 @@ import pygame
 from .aircraft_art import (
     build_panda_palette,
     build_panda3d_fixed_wing_model,
-    panda3d_fixed_wing_hpr_from_screen_heading,
-    panda3d_fixed_wing_hpr_from_tangent,
+    panda3d_fixed_wing_hpr_from_world_tangent,
 )
 from .trace_test_2 import (
     TraceTest2AircraftTrack,
@@ -18,13 +17,9 @@ from .trace_test_2 import (
     trace_test_2_track_position,
     trace_test_2_track_tangent,
 )
-from .trace_test_2_gl import screen_heading_deg
 
 
 def panda3d_trace_test_2_rendering_available() -> bool:
-    pref = os.environ.get("CFAST_TRACE_TEST_2_RENDERER", "panda").strip().lower()
-    if pref in {"pygame", "2d", "off"}:
-        return False
     if os.environ.get("SDL_VIDEODRIVER", "").strip().lower() == "dummy":
         return False
     return importlib.util.find_spec("direct.showbase.ShowBase") is not None
@@ -74,7 +69,6 @@ class TraceTest2Panda3DRenderer:
         self._world_root = self._base.render.attachNewNode("trace2-world")
         self._aircraft_root = self._world_root.attachNewNode("trace2-aircraft")
         self._aircraft_nodes: dict[int, object] = {}
-        self._aircraft_orientation_by_code: dict[int, tuple[float, float, float]] = {}
 
         self._build_world()
         self._update_camera()
@@ -129,9 +123,6 @@ class TraceTest2Panda3DRenderer:
         for code, node in self._aircraft_nodes.items():
             if code not in active_codes:
                 node.hide()
-        for code in tuple(self._aircraft_orientation_by_code):
-            if code not in active_codes:
-                del self._aircraft_orientation_by_code[code]
 
         for track in tracks:
             node = self._aircraft_nodes.get(int(track.code))
@@ -143,17 +134,12 @@ class TraceTest2Panda3DRenderer:
 
             pos = trace_test_2_track_position(track=track, progress=progress)
             tangent = self._track_tangent(track=track, progress=progress)
-            if tangent is None:
-                hpr = self._aircraft_orientation_by_code.get(int(track.code), (0.0, 0.0, 0.0))
-            else:
-                hpr = self._aircraft_hpr_for_track(
-                    track=track,
-                    progress=progress,
-                    size=self._size,
-                    tangent=tangent,
-                    default_hpr=self._aircraft_orientation_by_code.get(int(track.code), (0.0, 0.0, 0.0)),
-                )
-                self._aircraft_orientation_by_code[int(track.code)] = hpr
+            hpr = self._aircraft_hpr_for_track(
+                track=track,
+                progress=progress,
+                size=self._size,
+                tangent=tangent,
+            )
 
             node.setPos(float(pos.x), float(pos.y), float(pos.z))
             node.setHpr(*hpr)
@@ -163,15 +149,13 @@ class TraceTest2Panda3DRenderer:
     def _aircraft_hpr_from_tangent(
         *,
         tangent: tuple[float, float, float],
-        default_hpr: tuple[float, float, float] = (0.0, 0.0, 0.0),
     ) -> tuple[float, float, float]:
         dx, dy, _dz = tangent
         horiz = max(1e-6, math.sqrt((dx * dx) + (dy * dy)))
         bank_deg = _clamp((dx / horiz) * 28.0, -34.0, 34.0)
-        return panda3d_fixed_wing_hpr_from_tangent(
+        return panda3d_fixed_wing_hpr_from_world_tangent(
             tangent=tangent,
-            bank_deg=bank_deg,
-            default_hpr=default_hpr,
+            roll_deg=bank_deg,
         )
 
     @classmethod
@@ -182,14 +166,9 @@ class TraceTest2Panda3DRenderer:
         progress: float,
         size: tuple[int, int],
         tangent: tuple[float, float, float],
-        default_hpr: tuple[float, float, float] = (0.0, 0.0, 0.0),
     ) -> tuple[float, float, float]:
-        world_hpr = cls._aircraft_hpr_from_tangent(tangent=tangent, default_hpr=default_hpr)
-        return panda3d_fixed_wing_hpr_from_screen_heading(
-            screen_heading_deg=screen_heading_deg(track=track, progress=progress, size=size),
-            pitch_deg=float(world_hpr[1]),
-            roll_deg=float(world_hpr[2]),
-        )
+        _ = (track, progress, size)
+        return cls._aircraft_hpr_from_tangent(tangent=tangent)
 
     @staticmethod
     def _track_tangent(
@@ -197,14 +176,16 @@ class TraceTest2Panda3DRenderer:
         track: TraceTest2AircraftTrack,
         progress: float,
         sample_step: float = 0.03,
-    ) -> tuple[float, float, float] | None:
+    ) -> tuple[float, float, float]:
         _ = sample_step
         dx, dy, dz = trace_test_2_track_tangent(
             track=track,
             progress=_clamp(progress, 0.0, 1.0),
         )
         if (dx * dx) + (dy * dy) + (dz * dz) <= 1e-8:
-            return None
+            raise ValueError(
+                f"trace_test_2 track tangent must be non-zero for code={int(track.code)} progress={float(progress):.3f}"
+            )
         return (float(dx), float(dy), float(dz))
 
     def _build_aircraft_model(self, *, color_rgb: tuple[int, int, int]):

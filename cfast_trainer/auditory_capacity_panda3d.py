@@ -41,8 +41,6 @@ _TUBE_PATH_POINTS = (
 
 
 def panda3d_auditory_rendering_available() -> bool:
-    if os.environ.get("CFAST_AUDITORY_RENDERER", "panda").strip().lower() == "pygame":
-        return False
     if os.environ.get("SDL_VIDEODRIVER", "").strip().lower() == "dummy":
         return False
     return importlib.util.find_spec("direct.showbase.ShowBase") is not None

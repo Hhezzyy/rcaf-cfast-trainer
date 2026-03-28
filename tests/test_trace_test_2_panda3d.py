@@ -12,7 +12,9 @@ import pytest
 from cfast_trainer.aircraft_art import fixed_wing_heading_from_screen_heading
 from cfast_trainer.trace_test_2 import (
     TraceTest2AircraftTrack,
+    TraceTest2Generator,
     TraceTest2MotionKind,
+    TraceTest2Payload,
     TraceTest2Point3,
     trace_test_2_track_tangent,
 )
@@ -24,6 +26,28 @@ from cfast_trainer.trace_test_2_panda3d import (
 
 
 _HELPER = Path(__file__).with_name("_panda3d_runtime_probe.py")
+
+
+def _angle_delta_deg(current: float, reference: float) -> float:
+    return ((float(current) - float(reference) + 180.0) % 360.0) - 180.0
+
+
+def _turn_track(*, motion_kind: TraceTest2MotionKind) -> TraceTest2AircraftTrack:
+    end_x = -34.0 if motion_kind is TraceTest2MotionKind.LEFT else 34.0
+    return TraceTest2AircraftTrack(
+        code=1,
+        color_name="RED",
+        color_rgb=(220, 64, 72),
+        waypoints=(
+            TraceTest2Point3(0.0, 38.0, 9.0),
+            TraceTest2Point3(0.0, 92.0, 9.0),
+            TraceTest2Point3(end_x, 142.0, 9.0),
+        ),
+        motion_kind=motion_kind,
+        direction_changed=True,
+        ended_screen_x=end_x,
+        ended_altitude_z=9.0,
+    )
 
 
 def _run_probe(scene_name: str) -> dict[str, object]:
@@ -72,11 +96,15 @@ def test_panda3d_trace_test_2_rendering_disabled_for_dummy_video(monkeypatch) ->
     assert panda3d_trace_test_2_rendering_available() is False
 
 
-def test_panda3d_trace_test_2_rendering_disabled_when_forced_to_pygame(monkeypatch) -> None:
+def test_panda3d_trace_test_2_rendering_ignores_non_panda_preference(monkeypatch) -> None:
     monkeypatch.setenv("CFAST_TRACE_TEST_2_RENDERER", "pygame")
     monkeypatch.delenv("SDL_VIDEODRIVER", raising=False)
+    monkeypatch.setattr(
+        "cfast_trainer.trace_test_2_panda3d.importlib.util.find_spec",
+        lambda _name: object(),
+    )
 
-    assert panda3d_trace_test_2_rendering_available() is False
+    assert panda3d_trace_test_2_rendering_available() is True
 
 
 def test_trace_test_2_aircraft_hpr_points_nose_along_motion_tangent() -> None:
@@ -89,21 +117,13 @@ def test_trace_test_2_aircraft_hpr_points_nose_along_motion_tangent() -> None:
     assert climb[1] < 0.0
 
 
-def test_trace_test_2_panda_hpr_prefers_apparent_screen_motion_during_lateral_turn() -> None:
-    track = TraceTest2AircraftTrack(
-        code=1,
-        color_name="RED",
-        color_rgb=(220, 64, 72),
-        waypoints=(
-            TraceTest2Point3(0.0, 38.0, 9.0),
-            TraceTest2Point3(0.0, 92.0, 9.0),
-            TraceTest2Point3(34.0, 142.0, 9.0),
-        ),
-        motion_kind=TraceTest2MotionKind.RIGHT,
-        direction_changed=True,
-        ended_screen_x=18.0,
-        ended_altitude_z=9.0,
-    )
+def test_trace_test_2_aircraft_hpr_rejects_zero_motion() -> None:
+    with pytest.raises(ValueError, match="non-zero"):
+        TraceTest2Panda3DRenderer._aircraft_hpr_from_tangent(tangent=(0.0, 0.0, 0.0))
+
+
+def test_trace_test_2_panda_hpr_uses_world_tangent_not_screen_heading() -> None:
+    track = _turn_track(motion_kind=TraceTest2MotionKind.RIGHT)
     progress = 0.5
     size = (960, 540)
     tangent = trace_test_2_track_tangent(track=track, progress=progress)
@@ -118,9 +138,183 @@ def test_trace_test_2_panda_hpr_prefers_apparent_screen_motion_during_lateral_tu
         screen_heading_deg(track=track, progress=progress, size=size)
     )
 
-    assert hpr[0] == pytest.approx(expected_heading)
-    assert abs(hpr[0] - world_hpr[0]) >= 1.0
+    assert hpr == pytest.approx(world_hpr)
+    assert abs(hpr[0] - expected_heading) >= 1.0
     assert hpr[2] == pytest.approx(world_hpr[2])
+
+
+def test_trace_test_2_panda_left_turn_headings_change_monotonically_without_cardinal_snap() -> None:
+    track = _turn_track(motion_kind=TraceTest2MotionKind.LEFT)
+    headings = []
+    for progress in (0.25, 0.40, 0.55, 0.70):
+        tangent = trace_test_2_track_tangent(track=track, progress=progress)
+        headings.append(
+            TraceTest2Panda3DRenderer._aircraft_hpr_for_track(
+                track=track,
+                progress=progress,
+                size=(960, 540),
+                tangent=tangent,
+            )[0]
+        )
+    deltas = [_angle_delta_deg(heading, 0.0) for heading in headings]
+
+    assert all(later < earlier for earlier, later in zip(deltas, deltas[1:], strict=False))
+    assert all(3.0 <= abs(later - earlier) <= 40.0 for earlier, later in zip(headings, headings[1:], strict=False))
+    assert all(min(abs((heading % 90.0)), abs((heading % 90.0) - 90.0)) > 2.0 for heading in headings)
+
+
+def test_trace_test_2_panda_right_turn_headings_change_monotonically_without_cardinal_snap() -> None:
+    track = _turn_track(motion_kind=TraceTest2MotionKind.RIGHT)
+    headings = []
+    for progress in (0.25, 0.40, 0.55, 0.70):
+        tangent = trace_test_2_track_tangent(track=track, progress=progress)
+        headings.append(
+            TraceTest2Panda3DRenderer._aircraft_hpr_for_track(
+                track=track,
+                progress=progress,
+                size=(960, 540),
+                tangent=tangent,
+            )[0]
+        )
+    deltas = [_angle_delta_deg(heading, 0.0) for heading in headings]
+
+    assert all(later > earlier for earlier, later in zip(deltas, deltas[1:], strict=False))
+    assert all(3.0 <= abs(later - earlier) <= 40.0 for earlier, later in zip(headings, headings[1:], strict=False))
+    assert all(min(abs((heading % 90.0)), abs((heading % 90.0) - 90.0)) > 2.0 for heading in headings)
+
+
+def test_trace_test_2_panda_pitch_sign_changes_for_climb_vs_descent() -> None:
+    climb_track = TraceTest2AircraftTrack(
+        code=1,
+        color_name="RED",
+        color_rgb=(220, 64, 72),
+        waypoints=(TraceTest2Point3(0.0, 38.0, 9.0), TraceTest2Point3(0.0, 138.0, 29.0)),
+        motion_kind=TraceTest2MotionKind.CLIMB,
+        direction_changed=True,
+        ended_screen_x=0.0,
+        ended_altitude_z=29.0,
+    )
+    descent_track = TraceTest2AircraftTrack(
+        code=2,
+        color_name="BLUE",
+        color_rgb=(72, 128, 224),
+        waypoints=(TraceTest2Point3(0.0, 38.0, 29.0), TraceTest2Point3(0.0, 138.0, 9.0)),
+        motion_kind=TraceTest2MotionKind.STRAIGHT,
+        direction_changed=True,
+        ended_screen_x=0.0,
+        ended_altitude_z=9.0,
+    )
+
+    climb_tangent = trace_test_2_track_tangent(track=climb_track, progress=0.5)
+    descent_tangent = trace_test_2_track_tangent(track=descent_track, progress=0.5)
+    climb_hpr = TraceTest2Panda3DRenderer._aircraft_hpr_for_track(
+        track=climb_track,
+        progress=0.5,
+        size=(960, 540),
+        tangent=climb_tangent,
+    )
+    descent_hpr = TraceTest2Panda3DRenderer._aircraft_hpr_for_track(
+        track=descent_track,
+        progress=0.5,
+        size=(960, 540),
+        tangent=descent_tangent,
+    )
+
+    assert climb_hpr[0] == pytest.approx(0.0)
+    assert descent_hpr[0] == pytest.approx(0.0)
+    assert climb_hpr[1] < 0.0
+    assert descent_hpr[1] > 0.0
+
+
+def test_trace_test_2_panda_multi_aircraft_orientation_matches_motion_kind() -> None:
+    payload = TraceTest2Generator(seed=71).next_problem(difficulty=0.58).payload
+
+    assert isinstance(payload, TraceTest2Payload)
+
+    for track in payload.aircraft:
+        tangent = trace_test_2_track_tangent(track=track, progress=0.5)
+        hpr = TraceTest2Panda3DRenderer._aircraft_hpr_for_track(
+            track=track,
+            progress=0.5,
+            size=(960, 540),
+            tangent=tangent,
+        )
+
+        assert hpr == pytest.approx(
+            TraceTest2Panda3DRenderer._aircraft_hpr_from_tangent(tangent=tangent)
+        )
+        if track.motion_kind is TraceTest2MotionKind.LEFT:
+            assert hpr[2] < 0.0
+        elif track.motion_kind is TraceTest2MotionKind.RIGHT:
+            assert hpr[2] > 0.0
+        elif track.motion_kind is TraceTest2MotionKind.CLIMB:
+            assert hpr[1] < 0.0
+        else:
+            assert abs(hpr[1]) <= 0.01
+            assert abs(hpr[2]) <= 0.01
+
+
+def test_trace_test_2_panda_hpr_sampling_is_deterministic_for_same_track() -> None:
+    track = _turn_track(motion_kind=TraceTest2MotionKind.RIGHT)
+    progresses = (0.12, 0.37, 0.63, 0.88)
+
+    samples_a = tuple(
+        TraceTest2Panda3DRenderer._aircraft_hpr_for_track(
+            track=track,
+            progress=progress,
+            size=(960, 540),
+            tangent=trace_test_2_track_tangent(track=track, progress=progress),
+        )
+        for progress in progresses
+    )
+    samples_b = tuple(
+        TraceTest2Panda3DRenderer._aircraft_hpr_for_track(
+            track=track,
+            progress=progress,
+            size=(960, 540),
+            tangent=trace_test_2_track_tangent(track=track, progress=progress),
+        )
+        for progress in progresses
+    )
+
+    assert samples_a == samples_b
+
+
+def test_trace_test_2_panda_hpr_sampling_is_deterministic_for_same_seed() -> None:
+    progresses = (0.18, 0.42, 0.66, 0.84)
+    payload_a = TraceTest2Generator(seed=71).next_problem(difficulty=0.58).payload
+    payload_b = TraceTest2Generator(seed=71).next_problem(difficulty=0.58).payload
+
+    assert isinstance(payload_a, TraceTest2Payload)
+    assert isinstance(payload_b, TraceTest2Payload)
+    assert payload_a.aircraft == payload_b.aircraft
+
+    samples_a = tuple(
+        tuple(
+            TraceTest2Panda3DRenderer._aircraft_hpr_for_track(
+                track=track,
+                progress=progress,
+                size=(960, 540),
+                tangent=trace_test_2_track_tangent(track=track, progress=progress),
+            )
+            for track in payload_a.aircraft
+        )
+        for progress in progresses
+    )
+    samples_b = tuple(
+        tuple(
+            TraceTest2Panda3DRenderer._aircraft_hpr_for_track(
+                track=track,
+                progress=progress,
+                size=(960, 540),
+                tangent=trace_test_2_track_tangent(track=track, progress=progress),
+            )
+            for track in payload_b.aircraft
+        )
+        for progress in progresses
+    )
+
+    assert samples_a == samples_b
 
 
 def test_trace_test_2_camera_matches_gl_centering_and_ordering_contract() -> None:
@@ -168,5 +362,5 @@ def test_trace_test_2_screen_prefers_panda3d_runtime() -> None:
     assert probe["renderer_size"][0] > 0
     assert probe["renderer_size"][1] > 0
     assert probe["aircraft_count"] > 0
-    assert probe["orientation_count"] > 0
+    assert probe["orientation_count"] == 0
     assert sum(probe["avg_color"]) > 60

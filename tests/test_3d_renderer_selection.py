@@ -82,7 +82,6 @@ _SCENES = (
         getter_name="_get_trace_test_2_panda_renderer",
     ),
 )
-_NON_AUDITORY_SCENES = tuple(spec for spec in _SCENES if spec.name != "auditory")
 
 
 @pytest.fixture
@@ -244,20 +243,27 @@ def test_complex_scene_blocks_when_panda_unavailable_instead_of_falling_back_to_
     assert requirement.failure_category == "renderer_unavailable"
 
 
-@pytest.mark.parametrize("spec", _NON_AUDITORY_SCENES, ids=lambda spec: spec.name)
-def test_non_panda_renderer_preference_blocks_panda_required_scene(
+@pytest.mark.parametrize("spec", _SCENES, ids=lambda spec: spec.name)
+def test_non_panda_renderer_preference_does_not_block_panda_required_scene(
     pygame_headless,
     monkeypatch,
     spec: _SceneSpec,
 ) -> None:
     env_var = f"CFAST_{spec.name.upper()}_RENDERER"
     app, screen = _build_screen(spec=spec, opengl_enabled=True)
+    fake_renderer = _FakePandaRenderer(size=(320, 200))
     monkeypatch.setenv(env_var, "pygame")
+    if spec.name == "auditory":
+        _mark_auditory_panda_ready(screen)
+        monkeypatch.setattr(screen, "_sync_auditory_audio", lambda **_: None)
+
+    def fake_getter(*, size: tuple[int, int]):
+        fake_renderer.size = tuple(size)
+        return fake_renderer
+
+    monkeypatch.setattr(screen, spec.getter_name, fake_getter)
 
     app.render()
 
     assert app.consume_gl_scene() is None
-    requirement = getattr(screen, f"_{spec.name}_panda_requirement")
-    assert requirement.checked is True
-    assert requirement.ready is False
-    assert requirement.failure_category == "renderer_pref"
+    assert fake_renderer.render_calls == 1

@@ -30,6 +30,7 @@ from cfast_trainer.auditory_capacity_panda3d import (
     _tube_frame,
     panda3d_auditory_rendering_available,
 )
+from cfast_trainer.panda3d_protocol import Panda3DResult, Panda3DScene
 
 
 _HELPER = Path(__file__).with_name("_panda3d_runtime_probe.py")
@@ -150,11 +151,15 @@ def test_panda3d_auditory_rendering_disabled_for_dummy_video(monkeypatch) -> Non
     assert panda3d_auditory_rendering_available() is False
 
 
-def test_panda3d_auditory_rendering_disabled_when_forced_to_pygame(monkeypatch) -> None:
+def test_panda3d_auditory_rendering_ignores_non_panda_preference(monkeypatch) -> None:
     monkeypatch.setenv("CFAST_AUDITORY_RENDERER", "pygame")
     monkeypatch.delenv("SDL_VIDEODRIVER", raising=False)
+    monkeypatch.setattr(
+        "cfast_trainer.auditory_capacity_panda3d.importlib.util.find_spec",
+        lambda _name: object(),
+    )
 
-    assert panda3d_auditory_rendering_available() is False
+    assert panda3d_auditory_rendering_available() is True
 
 
 def test_auditory_panda_preflight_reports_timeout(
@@ -175,18 +180,26 @@ def test_auditory_panda_preflight_reports_timeout(
     assert "timed out" in summary.lower()
 
 
-def test_auditory_panda_preflight_rejects_non_panda_renderer_preference(
+def test_auditory_panda_preflight_ignores_non_panda_renderer_preference(
     pygame_headless,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _app, screen = _build_screen()
     monkeypatch.setenv("CFAST_AUDITORY_RENDERER", "pygame")
+    monkeypatch.setattr(
+        "cfast_trainer.app.launch_runtime",
+        lambda *_args, **_kwargs: Panda3DResult(
+            ok=True,
+            scene=Panda3DScene.AUDITORY_CAPACITY,
+            summary="ready",
+        ),
+    )
 
     ok, category, summary = screen._run_auditory_panda_preflight()
 
-    assert ok is False
-    assert category == "renderer_pref"
-    assert "requires panda3d" in summary.lower()
+    assert ok is True
+    assert category == "ready"
+    assert summary == "ready"
 
 
 def test_auditory_screen_prefers_panda3d_runtime() -> None:

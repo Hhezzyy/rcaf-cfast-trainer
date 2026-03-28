@@ -274,6 +274,56 @@ def test_target_projection_changes_with_camera_pose_only() -> None:
     assert left.screen_x != pytest.approx(right.screen_x)
 
 
+def test_target_projection_moves_monotonically_with_sampled_camera_yaw_offsets() -> None:
+    neutral = camera_rig_state(
+        elapsed_s=18.0,
+        seed=551,
+        progress=0.42,
+        camera_yaw_deg=None,
+        camera_pitch_deg=None,
+        zoom=0.0,
+        target_kind="truck",
+        target_world_x=42.0,
+        target_world_y=96.0,
+        focus_world_x=8.0,
+        focus_world_y=78.0,
+        turbulence_strength=0.6,
+    )
+
+    sampled_rel_x: list[float] = []
+    sampled_screen_x: list[float] = []
+    for yaw_offset_deg in (-12.0, -6.0, 0.0, 6.0, 12.0):
+        rig = camera_rig_state(
+            elapsed_s=18.0,
+            seed=551,
+            progress=0.42,
+            camera_yaw_deg=float(neutral.neutral_heading_deg) + yaw_offset_deg,
+            camera_pitch_deg=float(neutral.neutral_pitch_deg),
+            zoom=0.0,
+            target_kind="truck",
+            target_world_x=42.0,
+            target_world_y=96.0,
+            focus_world_x=8.0,
+            focus_world_y=78.0,
+            turbulence_strength=0.6,
+        )
+        projection = target_projection(
+            rig=rig,
+            target_kind="truck",
+            target_world_x=42.0,
+            target_world_y=96.0,
+            elapsed_s=18.0,
+            scene_progress=0.42,
+            seed=551,
+            size=(800, 600),
+        )
+        sampled_rel_x.append(float(projection.target_rel_x))
+        sampled_screen_x.append(float(projection.screen_x))
+
+    assert sampled_rel_x == sorted(sampled_rel_x, reverse=True)
+    assert sampled_screen_x == sorted(sampled_screen_x, reverse=True)
+
+
 def test_camera_space_projection_maps_center_and_offscreen_right() -> None:
     center = camera_space_to_viewport(
         cam_x=0.0,

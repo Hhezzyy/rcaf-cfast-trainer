@@ -77,9 +77,39 @@ def _camera_rig(
 def _unit_renderer() -> RapidTrackingPanda3DRenderer:
     renderer = RapidTrackingPanda3DRenderer.__new__(RapidTrackingPanda3DRenderer)
     renderer._size = (960, 540)
-    renderer._airborne_orientation_cache = {}
     renderer._terrain_height = lambda _x, _y: 0.0
     return renderer
+
+
+class _StubNode:
+    def __init__(self) -> None:
+        self.visible = False
+        self.alpha = 0.0
+        self.pos = (0.0, 0.0, 0.0)
+        self.hpr = (0.0, 0.0, 0.0)
+
+    def hide(self) -> None:
+        self.visible = False
+
+    def show(self) -> None:
+        self.visible = True
+
+    def setAlphaScale(self, value: float) -> None:
+        self.alpha = float(value)
+
+    def setPos(self, *args: float) -> None:
+        if len(args) == 1:
+            x, y, z = args[0]
+        else:
+            x, y, z = args
+        self.pos = (float(x), float(y), float(z))
+
+    def setHpr(self, *args: float) -> None:
+        if len(args) == 1:
+            heading, pitch, roll = args[0]
+        else:
+            heading, pitch, roll = args
+        self.hpr = (float(heading), float(pitch), float(roll))
 
 
 def test_panda3d_rapid_tracking_rendering_disabled_for_dummy_video(monkeypatch) -> None:
@@ -89,11 +119,15 @@ def test_panda3d_rapid_tracking_rendering_disabled_for_dummy_video(monkeypatch) 
     assert panda3d_rapid_tracking_rendering_available() is False
 
 
-def test_panda3d_rapid_tracking_rendering_disabled_when_forced_to_pygame(monkeypatch) -> None:
+def test_panda3d_rapid_tracking_rendering_ignores_non_panda_preference(monkeypatch) -> None:
     monkeypatch.setenv("CFAST_RAPID_TRACKING_RENDERER", "pygame")
     monkeypatch.delenv("SDL_VIDEODRIVER", raising=False)
+    monkeypatch.setattr(
+        "cfast_trainer.rapid_tracking_panda3d.importlib.util.find_spec",
+        lambda _name: object(),
+    )
 
-    assert panda3d_rapid_tracking_rendering_available() is False
+    assert panda3d_rapid_tracking_rendering_available() is True
 
 
 def test_camera_rig_descends_from_high_orbit_into_low_run_path() -> None:
@@ -290,7 +324,7 @@ def test_ground_routes_stay_axis_aligned_and_tanks_spin_in_place() -> None:
     assert tank_a[2] != tank_b[2]
 
 
-def test_airborne_apparent_hpr_prefers_camera_relative_motion_for_active_target() -> None:
+def test_airborne_apparent_hpr_ignores_camera_only_motion_for_active_target() -> None:
     renderer = _unit_renderer()
 
     hpr = renderer._airborne_apparent_hpr(
@@ -299,19 +333,18 @@ def test_airborne_apparent_hpr_prefers_camera_relative_motion_for_active_target(
         next_pos=(0.0, 120.0, 20.0),
         current_rig=_camera_rig(cam_world_x=0.0),
         next_rig=_camera_rig(cam_world_x=18.0),
-        default_heading=0.0,
+        default_heading=37.0,
         pitch_flair=0.0,
         roll_flair=0.0,
         pitch_limit=18.0,
         roll_limit=30.0,
     )
 
-    assert abs(_angle_delta_deg(hpr[0], 270.0)) <= 5.0
+    assert hpr[0] == pytest.approx(37.0)
 
 
-def test_airborne_apparent_hpr_falls_back_to_prior_heading_when_motion_is_nearly_zero() -> None:
+def test_airborne_apparent_hpr_uses_scripted_default_heading_when_motion_is_nearly_zero() -> None:
     renderer = _unit_renderer()
-    renderer._airborne_orientation_cache[102] = (123.0, -4.0, 0.0)
 
     hpr = renderer._airborne_apparent_hpr(
         cache_key=102,
@@ -319,7 +352,7 @@ def test_airborne_apparent_hpr_falls_back_to_prior_heading_when_motion_is_nearly
         next_pos=(0.0, 120.0, 20.0),
         current_rig=_camera_rig(),
         next_rig=_camera_rig(),
-        default_heading=0.0,
+        default_heading=123.0,
         pitch_flair=0.0,
         roll_flair=0.0,
         pitch_limit=18.0,
@@ -329,15 +362,15 @@ def test_airborne_apparent_hpr_falls_back_to_prior_heading_when_motion_is_nearly
     assert hpr[0] == pytest.approx(123.0)
 
 
-def test_airborne_apparent_hpr_offsets_apparent_heading_by_camera_heading() -> None:
+def test_airborne_apparent_hpr_uses_world_motion_heading_even_when_camera_turns() -> None:
     renderer = _unit_renderer()
 
     hpr = renderer._airborne_apparent_hpr(
         cache_key=103,
         current_pos=(0.0, 120.0, 20.0),
-        next_pos=(0.0, 120.0, 20.0),
+        next_pos=(18.0, 120.0, 20.0),
         current_rig=_camera_rig(cam_world_x=0.0, view_heading_deg=45.0),
-        next_rig=_camera_rig(cam_world_x=18.0, view_heading_deg=45.0),
+        next_rig=_camera_rig(cam_world_x=18.0, view_heading_deg=225.0),
         default_heading=0.0,
         pitch_flair=0.0,
         roll_flair=0.0,
@@ -345,10 +378,10 @@ def test_airborne_apparent_hpr_offsets_apparent_heading_by_camera_heading() -> N
         roll_limit=30.0,
     )
 
-    assert abs(_angle_delta_deg(hpr[0], 315.0)) <= 5.0
+    assert abs(_angle_delta_deg(hpr[0], 90.0)) <= 1.0
 
 
-def test_decoy_air_pose_uses_same_apparent_motion_heading_contract() -> None:
+def test_decoy_air_pose_uses_world_motion_heading_contract() -> None:
     renderer = _unit_renderer()
     decoy = _RapidTrackingDecoy(
         node=None,
@@ -381,8 +414,93 @@ def test_decoy_air_pose_uses_same_apparent_motion_heading_contract() -> None:
         pitch_limit=16.0,
         roll_limit=24.0,
     )
+    expected_heading = math.degrees(
+        math.atan2(
+            float(next_pos[0] - current_pos[0]),
+            float(next_pos[1] - current_pos[1]),
+        )
+    ) % 360.0
 
-    assert abs(_angle_delta_deg(hpr[0], 270.0)) <= 35.0
+    assert abs(_angle_delta_deg(hpr[0], expected_heading)) <= 5.0
+
+
+def test_update_target_hides_obscured_dynamic_target_and_reacquires_at_world_position() -> None:
+    class _FakeClock:
+        def __init__(self) -> None:
+            self.t = 0.0
+
+        def now(self) -> float:
+            return self.t
+
+    clock = _FakeClock()
+    engine = build_rapid_tracking_test(clock=clock, seed=551, difficulty=0.63)
+    engine.start_scored()
+    payload = engine.snapshot().payload
+    assert payload is not None
+
+    renderer = _unit_renderer()
+    node = _StubNode()
+    renderer._active_target_node = None
+    renderer._active_target_kind = ""
+    renderer._active_scenery_target_node = None
+    renderer._dynamic_target_nodes = [node]
+    renderer._truck_pool = [node]
+    renderer._soldier_pool = []
+    renderer._helicopter_pool = []
+    renderer._jet_pool = []
+    renderer._selected_target_node = None
+    renderer._selected_target_kind = ""
+    renderer._selected_target_variant = ""
+    renderer._scenery_nodes_by_kind = {
+        "hangar": [],
+        "tower": [],
+        "truck": [],
+        "soldiers": [],
+    }
+    renderer._ground_target_world_pos = lambda world_x, world_y, clearance: (
+        float(world_x),
+        float(world_y),
+        float(clearance),
+    )
+    renderer._select_target_node_from_candidates = lambda **_kwargs: node
+
+    visible_payload = replace(
+        payload,
+        target_kind="truck",
+        target_variant="olive",
+        target_world_x=5.0,
+        target_world_y=90.0,
+        target_vx=0.7,
+        target_vy=0.0,
+        target_visible=True,
+    )
+    hidden_payload = replace(
+        visible_payload,
+        target_world_x=7.0,
+        target_visible=False,
+    )
+    reacquired_payload = replace(
+        visible_payload,
+        target_world_x=9.0,
+        target_visible=True,
+    )
+
+    renderer._update_target(payload=visible_payload)
+    assert node.visible is True
+    assert node.alpha == pytest.approx(1.0)
+    assert node.pos == pytest.approx((5.0, 90.0, 0.34))
+    assert abs(_angle_delta_deg(node.hpr[0], 90.0)) <= 1e-6
+
+    renderer._update_target(payload=hidden_payload)
+    assert node.visible is False
+    assert node.alpha == pytest.approx(0.0)
+    assert node.pos == pytest.approx((7.0, 90.0, 0.34))
+    assert renderer._active_target_node is node
+
+    renderer._update_target(payload=reacquired_payload)
+    assert node.visible is True
+    assert node.alpha == pytest.approx(1.0)
+    assert node.pos == pytest.approx((9.0, 90.0, 0.34))
 
 
 def test_world_span_is_expanded_for_large_scene() -> None:
