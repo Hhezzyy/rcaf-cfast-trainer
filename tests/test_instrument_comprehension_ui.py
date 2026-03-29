@@ -15,7 +15,15 @@ from cfast_trainer.ant_workouts import (
     AntWorkoutPlan,
     AntWorkoutSession,
 )
-from cfast_trainer.app import App, AntWorkoutScreen, CognitiveTestScreen, MenuItem, MenuScreen
+from cfast_trainer.app import (
+    App,
+    AntWorkoutScreen,
+    CognitiveTestScreen,
+    DisplayBootstrapResult,
+    MenuItem,
+    MenuScreen,
+    _apply_display_bootstrap_to_app,
+)
 from cfast_trainer.cognitive_core import Phase
 from cfast_trainer.cognitive_core import TestSnapshot as SnapshotModel
 from cfast_trainer.ic_drills import build_ic_description_run_drill
@@ -77,6 +85,14 @@ class _FakeClock:
 
     def advance(self, dt: float) -> None:
         self.t += dt
+
+
+class _FakeGlRenderer:
+    def resize(self, *, window_size: tuple[int, int]) -> None:
+        _ = window_size
+
+    def render_frame(self, *, ui_surface: pygame.Surface, scene) -> None:
+        _ = (ui_surface, scene)
 
 
 def _base_state() -> InstrumentState:
@@ -197,6 +213,33 @@ def _build_live_screen(
     screen = CognitiveTestScreen(app, engine_factory=lambda: engine)
     app.push(screen)
     return app, screen
+
+
+def test_instrument_screen_renders_after_display_bootstrap_sync() -> None:
+    app, screen = _build_screen(_build_payload())
+    try:
+        display_surface = pygame.display.set_mode((1440, 900))
+        bootstrap = DisplayBootstrapResult(
+            display_surface=display_surface,
+            app_surface=pygame.Surface(display_surface.get_size(), pygame.SRCALPHA),
+            gl_renderer=_FakeGlRenderer(),
+            active_window_flags=pygame.FULLSCREEN | pygame.OPENGL | pygame.DOUBLEBUF,
+            gl_requested=True,
+            gl_attempted=True,
+        )
+        _apply_display_bootstrap_to_app(
+            app=app,
+            bootstrap=bootstrap,
+            window_mode="fullscreen",
+        )
+
+        app.render()
+
+        assert app.surface.get_size() == (1440, 900)
+        assert screen._instrument_part1_layout is not None
+        assert app.current_run_state().display_mode == "FULLSCREEN"
+    finally:
+        pygame.quit()
 
 
 def _assert_uniform_guide_card_grid(layout) -> None:
@@ -693,6 +736,27 @@ def test_live_aircraft_cards_keep_aircraft_inside_small_wide_card_bounds() -> No
             assert min_y >= rect.y + inset, preset
             assert max_x <= rect.right - inset, preset
             assert max_y <= rect.bottom - inset, preset
+    finally:
+        pygame.quit()
+
+
+def test_live_instrument_screen_uses_software_or_cached_cards_without_gl_generation(
+    monkeypatch,
+) -> None:
+    _app, screen = _build_live_screen(_FakeInstrumentEngine(_build_payload()))
+    try:
+        surface = pygame.display.get_surface()
+        assert surface is not None
+        assert screen._instrument_card_bank._allow_generation is False
+
+        def fail_renderer():
+            raise AssertionError("standalone GL renderer should not be used during live IC rendering")
+
+        monkeypatch.setattr(screen._instrument_card_bank, "_get_renderer", fail_renderer)
+
+        screen.render(surface)
+
+        assert screen._instrument_part1_layout is not None
     finally:
         pygame.quit()
 

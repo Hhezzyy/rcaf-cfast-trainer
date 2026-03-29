@@ -6,6 +6,7 @@ import math
 import pytest
 
 from cfast_trainer.cognitive_core import Phase
+from cfast_trainer.trace_lattice import DEFAULT_TRACE_LATTICE_SPEC
 from cfast_trainer.trace_test_2 import (
     TraceTest2AircraftTrack,
     TraceTest2Config,
@@ -143,6 +144,21 @@ def test_generated_scene_contains_unique_answer_facts() -> None:
     assert len(left) == 1
     assert len(right) == 1
     assert len({straight[0], left[0], right[0], leftmost, highest}) >= 4
+
+
+def test_generated_tracks_use_lattice_paths_that_stay_in_bounds() -> None:
+    payload = TraceTest2Generator(seed=33).next_problem(difficulty=0.6).payload
+    assert isinstance(payload, TraceTest2Payload)
+
+    for track in payload.aircraft:
+        assert track.lattice_path is not None
+        assert track.lattice_path.start_state.node.col in range(DEFAULT_TRACE_LATTICE_SPEC.cols)
+        assert track.lattice_path.start_state.node.row in range(DEFAULT_TRACE_LATTICE_SPEC.rows)
+        assert track.lattice_path.start_state.node.level in range(DEFAULT_TRACE_LATTICE_SPEC.levels)
+        for step in track.lattice_path.steps:
+            assert step.end_state.node.col in range(DEFAULT_TRACE_LATTICE_SPEC.cols)
+            assert step.end_state.node.row in range(DEFAULT_TRACE_LATTICE_SPEC.rows)
+            assert step.end_state.node.level in range(DEFAULT_TRACE_LATTICE_SPEC.levels)
 
 
 def test_generated_tracks_preserve_role_specific_smooth_tangent_behavior() -> None:

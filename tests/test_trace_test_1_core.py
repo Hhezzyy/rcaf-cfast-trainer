@@ -6,21 +6,25 @@ import math
 import pytest
 
 from cfast_trainer.cognitive_core import Phase
+from cfast_trainer.trace_lattice import TraceLatticeAction, trace_lattice_state
 from cfast_trainer.trace_test_1 import (
     TraceTest1AircraftPlan,
-    TraceTest1AircraftState,
     TraceTest1Command,
     TraceTest1Config,
     TraceTest1Generator,
     TraceTest1Payload,
     TraceTest1PromptPlan,
     TraceTest1TrialStage,
+    _tt1_action_for_command,
+    _tt1_aircraft_state_from_lattice_state,
+    _tt1_build_lattice_path,
     build_trace_test_1_test,
     trace_test_1_answer_code,
     trace_test_1_difficulty_tier,
     trace_test_1_normalized_position,
     trace_test_1_scene_frames,
 )
+from cfast_trainer.trace_test_1_gl import project_scene_position
 
 
 @dataclass
@@ -50,16 +54,29 @@ def _manual_prompt(
     command: TraceTest1Command,
     heading_deg: float = 0.0,
 ) -> TraceTest1PromptPlan:
+    del heading_deg
+    state = {
+        TraceTest1Command.LEFT: trace_lattice_state(col=4, row=1, level=2, forward=(0, 1, 0), up=(0, 0, 1)),
+        TraceTest1Command.RIGHT: trace_lattice_state(col=2, row=1, level=2, forward=(0, 1, 0), up=(0, 0, 1)),
+        TraceTest1Command.PUSH: trace_lattice_state(col=3, row=1, level=3, forward=(0, 1, 0), up=(0, 0, 1)),
+        TraceTest1Command.PULL: trace_lattice_state(col=3, row=1, level=1, forward=(0, 1, 0), up=(0, 0, 1)),
+    }[command]
     return TraceTest1PromptPlan(
         prompt_index=0,
-        answer_open_progress=0.42,
-        speed_multiplier=1.0,
+        answer_open_progress=0.36,
+        speed_multiplier=1.15,
         red_plan=TraceTest1AircraftPlan(
-            start_state=TraceTest1AircraftState(position=(0.0, 8.0, 12.0), heading_deg=heading_deg),
+            start_state=_tt1_aircraft_state_from_lattice_state(state),
             command=command,
-            lead_distance=4.0,
-            maneuver_distance=3.0,
+            lead_distance=5.0,
+            maneuver_distance=4.0,
             altitude_delta=2.0 if command is TraceTest1Command.PULL else -2.0,
+            lattice_start=state,
+            lattice_actions=(
+                TraceLatticeAction.STRAIGHT,
+                _tt1_action_for_command(command),
+                TraceLatticeAction.STRAIGHT,
+            ),
         ),
         blue_plans=(),
     )
@@ -266,7 +283,7 @@ def test_answer_parser_accepts_arrow_aliases() -> None:
     assert trace_test_1_answer_code("bogus") is None
 
 
-def test_left_and_right_bank_into_turn_and_finish_in_expected_heading_family() -> None:
+def test_left_and_right_lattice_paths_finish_in_expected_heading_family() -> None:
     left_prompt = _manual_prompt(command=TraceTest1Command.LEFT)
     right_prompt = _manual_prompt(command=TraceTest1Command.RIGHT)
 
@@ -276,71 +293,67 @@ def test_left_and_right_bank_into_turn_and_finish_in_expected_heading_family() -
     right_end = trace_test_1_scene_frames(prompt=right_prompt, progress=1.0).red_frame
 
     assert left_mid.position[0] < 0.0
-    assert left_mid.position[1] > 12.0
-    assert left_mid.attitude.roll_deg < 0.0
-    assert _angle_delta_deg(left_mid.travel_heading_deg, 0.0) < 0.0
+    assert left_mid.position[1] == pytest.approx(40.0)
+    assert left_mid.attitude.roll_deg == pytest.approx(0.0)
+    assert abs(_angle_delta_deg(left_mid.travel_heading_deg, 270.0)) <= 2.0
     assert abs(_angle_delta_deg(left_end.travel_heading_deg, 270.0)) <= 2.0
 
     assert right_mid.position[0] > 0.0
-    assert right_mid.position[1] > 12.0
-    assert right_mid.attitude.roll_deg > 0.0
+    assert right_mid.position[1] == pytest.approx(40.0)
+    assert right_mid.attitude.roll_deg == pytest.approx(0.0)
     assert _angle_delta_deg(right_mid.travel_heading_deg, 0.0) > 0.0
     assert abs(_angle_delta_deg(right_end.travel_heading_deg, 90.0)) <= 2.0
 
 
-def test_left_and_right_turn_paths_progress_smoothly_after_answer_open() -> None:
+def test_left_and_right_turn_paths_rotate_in_place_before_translation() -> None:
     left_prompt = _manual_prompt(command=TraceTest1Command.LEFT)
     right_prompt = _manual_prompt(command=TraceTest1Command.RIGHT)
 
     left_positions = [
         trace_test_1_scene_frames(prompt=left_prompt, progress=progress).red_frame.position
-        for progress in (0.44, 0.48, 0.56, 0.72)
+        for progress in (0.36, 0.40, 0.68, 1.0)
     ]
     right_positions = [
         trace_test_1_scene_frames(prompt=right_prompt, progress=progress).red_frame.position
-        for progress in (0.44, 0.48, 0.56, 0.72)
+        for progress in (0.36, 0.40, 0.68, 1.0)
     ]
 
-    assert all(later[0] < earlier[0] for earlier, later in zip(left_positions, left_positions[1:], strict=False))
-    assert all(later[1] > earlier[1] for earlier, later in zip(left_positions, left_positions[1:], strict=False))
-    assert all(
-        math.dist(earlier, later) > 0.01
-        for earlier, later in zip(left_positions, left_positions[1:], strict=False)
-    )
+    assert left_positions[0] == pytest.approx(left_positions[1])
+    assert left_positions[2][0] < left_positions[1][0]
+    assert left_positions[3][0] < left_positions[2][0]
+    assert left_positions[2][1] == pytest.approx(left_positions[1][1], abs=0.01)
 
-    assert all(
-        later[0] > earlier[0] for earlier, later in zip(right_positions, right_positions[1:], strict=False)
-    )
-    assert all(
-        later[1] > earlier[1] for earlier, later in zip(right_positions, right_positions[1:], strict=False)
-    )
-    assert all(
-        math.dist(earlier, later) > 0.01
-        for earlier, later in zip(right_positions, right_positions[1:], strict=False)
-    )
+    assert right_positions[0] == pytest.approx(right_positions[1])
+    assert right_positions[2][0] > right_positions[1][0]
+    assert right_positions[3][0] > right_positions[2][0]
+    assert right_positions[2][1] == pytest.approx(right_positions[1][1], abs=0.01)
 
 
-def test_push_and_pull_keep_forward_motion_while_changing_altitude() -> None:
+def test_push_and_pull_pitch_in_place_before_vertical_translation() -> None:
     push_prompt = _manual_prompt(command=TraceTest1Command.PUSH)
     pull_prompt = _manual_prompt(command=TraceTest1Command.PULL)
 
-    push_start = trace_test_1_scene_frames(prompt=push_prompt, progress=0.30).red_frame
+    push_start = trace_test_1_scene_frames(prompt=push_prompt, progress=0.36).red_frame
+    push_turn = trace_test_1_scene_frames(prompt=push_prompt, progress=0.40).red_frame
     push_mid = trace_test_1_scene_frames(prompt=push_prompt, progress=0.82).red_frame
-    pull_start = trace_test_1_scene_frames(prompt=pull_prompt, progress=0.30).red_frame
+    pull_start = trace_test_1_scene_frames(prompt=pull_prompt, progress=0.36).red_frame
+    pull_turn = trace_test_1_scene_frames(prompt=pull_prompt, progress=0.40).red_frame
     pull_mid = trace_test_1_scene_frames(prompt=pull_prompt, progress=0.82).red_frame
 
-    assert push_mid.position[1] > push_start.position[1]
+    assert push_turn.position == pytest.approx(push_start.position)
+    assert push_mid.position[1] == pytest.approx(push_start.position[1], abs=0.01)
     assert push_mid.position[2] < push_start.position[2]
     assert push_mid.travel_heading_deg == pytest.approx(0.0, abs=0.01)
     assert push_mid.attitude.pitch_deg < 0.0
 
-    assert pull_mid.position[1] > pull_start.position[1]
+    assert pull_turn.position == pytest.approx(pull_start.position)
+    assert pull_mid.position[1] == pytest.approx(pull_start.position[1], abs=0.01)
     assert pull_mid.position[2] > pull_start.position[2]
     assert pull_mid.travel_heading_deg == pytest.approx(0.0, abs=0.01)
     assert pull_mid.attitude.pitch_deg > 0.0
 
 
-def test_stream_continues_from_current_world_state_after_answer() -> None:
+def test_submit_answer_deals_next_lattice_prompt_without_repeating_command() -> None:
     clock = FakeClock()
     engine = build_trace_test_1_test(
         clock=clock,
@@ -359,19 +372,23 @@ def test_stream_continues_from_current_world_state_after_answer() -> None:
     engine.update()
     before = engine.snapshot().payload
     assert isinstance(before, TraceTest1Payload)
-    answered_position = before.scene.red_frame.position
     correct_code = before.correct_code
 
     assert engine.submit_answer(str(correct_code)) is True
     after = engine.snapshot().payload
     assert isinstance(after, TraceTest1Payload)
     assert after.prompt_index == before.prompt_index + 1
-    assert after.scene.red_frame.position[0] == pytest.approx(answered_position[0], abs=0.01)
-    assert after.scene.red_frame.position[1] == pytest.approx(answered_position[1], abs=0.01)
-    assert after.scene.red_frame.position[2] == pytest.approx(answered_position[2], abs=0.01)
+    assert engine._current_prompt is not None
+    assert engine._current_prompt.red_plan.lattice_start is not None
+    assert engine._current_prompt.red_plan.lattice_actions == (
+        TraceLatticeAction.STRAIGHT,
+        _tt1_action_for_command(engine._current_prompt.red_plan.command),
+        TraceLatticeAction.STRAIGHT,
+    )
+    assert after.active_command is not before.active_command
 
 
-def test_auto_miss_records_event_and_keeps_stream_continuous() -> None:
+def test_auto_miss_records_event_and_deals_next_lattice_prompt() -> None:
     clock = FakeClock()
     engine = build_trace_test_1_test(
         clock=clock,
@@ -398,12 +415,15 @@ def test_auto_miss_records_event_and_keeps_stream_continuous() -> None:
     payload = engine.snapshot().payload
     assert isinstance(payload, TraceTest1Payload)
     assert payload.prompt_index == current_prompt.prompt_index + 1
-    assert payload.scene.red_frame.position[0] == pytest.approx(expected_end[0], abs=0.01)
-    assert payload.scene.red_frame.position[1] == pytest.approx(expected_end[1], abs=0.01)
-    assert payload.scene.red_frame.position[2] == pytest.approx(expected_end[2], abs=0.01)
+    assert engine._current_prompt is not None
+    assert engine._current_prompt.red_plan.lattice_start is not None
+    assert engine._current_prompt.red_plan.lattice_actions[1] is _tt1_action_for_command(
+        engine._current_prompt.red_plan.command
+    )
+    assert payload.scene.red_frame.position != pytest.approx(expected_end, abs=0.01)
 
 
-def test_no_reset_between_practice_and_scored_start() -> None:
+def test_scored_start_deals_valid_lattice_prompt_after_practice() -> None:
     clock = FakeClock()
     engine = build_trace_test_1_test(
         clock=clock,
@@ -421,7 +441,6 @@ def test_no_reset_between_practice_and_scored_start() -> None:
     engine.update()
     payload = engine.snapshot().payload
     assert isinstance(payload, TraceTest1Payload)
-    practice_position = payload.scene.red_frame.position
 
     assert engine.submit_answer(str(payload.correct_code)) is True
     assert engine.phase is Phase.PRACTICE_DONE
@@ -429,23 +448,26 @@ def test_no_reset_between_practice_and_scored_start() -> None:
     engine.start_scored()
     scored_payload = engine.snapshot().payload
     assert isinstance(scored_payload, TraceTest1Payload)
-    assert scored_payload.scene.red_frame.position[0] == pytest.approx(practice_position[0], abs=0.01)
-    assert scored_payload.scene.red_frame.position[1] == pytest.approx(practice_position[1], abs=0.01)
-    assert scored_payload.scene.red_frame.position[2] == pytest.approx(practice_position[2], abs=0.01)
+    assert engine._current_prompt is not None
+    assert engine._current_prompt.red_plan.lattice_start is not None
+    assert scored_payload.correct_code in {1, 2, 3, 4}
 
 
-def test_red_stays_inside_safe_box_across_tiers() -> None:
+def test_red_lattice_paths_stay_on_screen_across_tiers() -> None:
     for difficulty in (0.10, 0.50, 0.80, 0.95):
         gen = TraceTest1Generator(seed=int(1000 + (difficulty * 100.0)))
         for _ in range(16):
             prompt = gen.next_problem(difficulty=difficulty).payload
             assert isinstance(prompt, TraceTest1PromptPlan)
+            path = _tt1_build_lattice_path(prompt.red_plan)
+            assert path is not None
+            assert path.steps[1].effective_action is _tt1_action_for_command(prompt.red_plan.command)
             for progress in (0.0, prompt.answer_open_progress, 1.0):
                 red = trace_test_1_scene_frames(prompt=prompt, progress=progress).red_frame
-                nx, ny = trace_test_1_normalized_position(red.position)
-                assert 0.15 <= nx <= 0.85
-                assert 0.15 <= ny <= 0.85
-                assert 4.0 <= red.position[1] <= 48.0
+                center, _scale = project_scene_position(red.position, size=(960, 540))
+                assert 0.0 <= center[0] <= 960.0
+                assert 0.0 <= center[1] <= 540.0
+                assert 0.0 <= red.position[2] <= 24.0
             gen.commit_prompt(prompt=prompt, progress=1.0)
 
 

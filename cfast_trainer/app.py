@@ -134,12 +134,6 @@ from .auditory_capacity import (
     build_auditory_capacity_test,
 )
 from .ac_workouts import ac_workout_menu_entries, build_ac_workout_plan
-from .auditory_capacity_panda3d import (
-    AuditoryCapacityPanda3DRenderer,
-    panda3d_auditory_rendering_available,
-)
-from .panda3d_launcher import launch_runtime
-from .panda3d_protocol import Panda3DRequest, Panda3DScene
 from .adaptive_difficulty import (
     AdaptiveDifficultyController,
     AdaptiveDifficultyDecision,
@@ -235,6 +229,8 @@ from .gl_scenes import (
     TraceTest2GlScene,
     gl_scene_name,
 )
+from .modern_gl_renderer import ModernInstrumentCardRenderer, ModernSceneRenderer
+from .render_assets import RenderAssetCatalog, RenderAssetResolutionError
 from .instrument_aircraft_cards import (
     InstrumentAircraftCardSpriteBank,
     instrument_aircraft_card_view_projection,
@@ -308,10 +304,6 @@ from .rapid_tracking_gl import (
     camera_rig_state as rapid_tracking_camera_rig_state,
     overlay_from_target_rel as rapid_tracking_overlay_from_target_rel,
 )
-from .rapid_tracking_panda3d import (
-    RapidTrackingPanda3DRenderer,
-    panda3d_rapid_tracking_rendering_available,
-)
 from .rt_workouts import build_rt_workout_plan, rt_workout_menu_entries
 from .results import attempt_result_from_engine
 from .runtime_defaults import RuntimeDefaultsStore
@@ -373,10 +365,6 @@ from .spatial_integration import (
     build_spatial_integration_test,
 )
 from .spatial_integration_gl import build_scene_layout as build_spatial_integration_scene_layout
-from .spatial_integration_panda3d import (
-    SpatialIntegrationPanda3DRenderer,
-    panda3d_spatial_integration_rendering_available,
-)
 from .system_logic import (
     SystemLogicAnswerChoice,
     SystemLogicDocument,
@@ -444,10 +432,6 @@ from .trace_test_1_gl import (
     aircraft_screen_poses_for_payload as trace_test_1_aircraft_screen_poses_for_payload,
     project_scene_position as trace_test_1_project_scene_position,
 )
-from .trace_test_1_panda3d import (
-    TraceTest1Panda3DRenderer,
-    panda3d_trace_test_1_rendering_available,
-)
 from .trace_test_2 import (
     TraceTest2AircraftTrack,
     TraceTest2Payload,
@@ -459,10 +443,6 @@ from .trace_test_2 import (
 from .trace_test_2_gl import (
     aircraft_screen_pose_for_track as trace_test_2_aircraft_screen_pose_for_track,
     project_point as trace_test_2_project_point,
-)
-from .trace_test_2_panda3d import (
-    TraceTest2Panda3DRenderer,
-    panda3d_trace_test_2_rendering_available,
 )
 from .trace_workouts import (
     build_trace_test_1_workout_plan,
@@ -587,11 +567,26 @@ class OpenGLFailureInfo:
 class DisplayBootstrapResult:
     display_surface: pygame.Surface
     app_surface: pygame.Surface
-    gl_renderer: "_OpenGLSceneRenderer | None"
+    gl_renderer: "ModernSceneRenderer | None"
     active_window_flags: int
     gl_requested: bool
     gl_attempted: bool
     gl_failure: OpenGLFailureInfo | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DisplayLifecycleState:
+    window_size: tuple[int, int]
+    surface_size: tuple[int, int]
+    desktop_size: tuple[int, int] | None
+    active_window_flags: int
+    window_mode: str
+
+
+@dataclass(frozen=True, slots=True)
+class DisplayRebootstrapDecision:
+    window_size: tuple[int, int]
+    window_mode: str
 
 
 class _SharedPauseMenuMixin:
@@ -1347,6 +1342,10 @@ class _AuditoryCapacityAudioAdapter:
             )
             self._ambient_tracks = self._load_ambient_tracks()
             self._prepare_ambient_snippet_bank()
+            if not self._ambient_cache_ready:
+                raise RuntimeError(
+                    "Auditory Capacity ambient audio assets are missing or could not be loaded."
+                )
             self._interrupt_sounds = self._load_interrupt_sounds()
             self._beep_sound = self._build_tone_sound(1120.0, 0.11, gain=0.42)
             self._color_sounds = {
@@ -1366,8 +1365,11 @@ class _AuditoryCapacityAudioAdapter:
             self._ambient_aux_channel = pygame.mixer.Channel(7)
 
             self._available = True
-        except Exception:
+        except Exception as exc:
             self._available = False
+            raise RuntimeError(
+                f"Auditory Capacity audio initialization failed: {type(exc).__name__}: {exc}"
+            ) from exc
 
     def _rng_seed(self, tag: str) -> int:
         total = int(self._session_seed) & 0xFFFFFFFF
@@ -2171,8 +2173,6 @@ class _AuditoryCapacityAudioAdapter:
                 is_generated_noise=False,
             )
 
-        if not tracks:
-            tracks["generated_noise"] = self._build_generated_noise_ambient_track()
         return tracks
 
     def _build_generated_noise_ambient_track(self) -> _AmbientTrack:
@@ -2216,28 +2216,6 @@ class _AuditoryCapacityAudioAdapter:
             if variants:
                 prepared_tracks[key] = track
                 prepared_bank[key] = tuple(variants)
-
-        if not prepared_bank:
-            fallback_key = "generated_noise"
-            fallback_track = self._build_generated_noise_ambient_track()
-            self._ambient_tracks = {fallback_key: fallback_track}
-            fallback_variants: list[pygame.mixer.Sound] = []
-            for _ in range(self._ambient_snippet_variant_count):
-                sound = self._build_ambient_snippet_sound(
-                    fallback_key,
-                    elapsed_ratio=0.0,
-                    duration_s=self._ambient_noise_snippet_duration_s,
-                )
-                if sound is None:
-                    fallback_variants = []
-                    break
-                fallback_variants.append(sound)
-            if fallback_variants:
-                prepared_tracks = {fallback_key: fallback_track}
-                prepared_bank = {fallback_key: tuple(fallback_variants)}
-            else:
-                prepared_tracks = {}
-                prepared_bank = {}
 
         self._ambient_tracks = prepared_tracks
         self._ambient_snippet_bank = prepared_bank
@@ -3989,7 +3967,8 @@ class _OpenGLSceneRenderer:
         gl.glEnd()
 
 
-_OpenGLAuditoryRenderer = _OpenGLSceneRenderer
+_OpenGLSceneRenderer = ModernSceneRenderer
+_OpenGLAuditoryRenderer = ModernSceneRenderer
 
 
 class App:
@@ -4024,7 +4003,7 @@ class App:
         self._runtime_defaults_store = runtime_defaults_store
         self._app_version = str(app_version).strip() or "dev"
         self._activity_sessions: dict[int, _ActiveActivitySession] = {}
-        self._renderer_path = "GL" if self._opengl_enabled else "2D"
+        self._renderer_path = "MODERN_GL" if self._opengl_enabled else "HEADLESS"
         self._renderer_fallback_used = False
         self._failure_recovery_used = False
         self._pending_renderer_action: str | None = None
@@ -4072,8 +4051,7 @@ class App:
         self._opengl_enabled = bool(enabled)
         if not self._opengl_enabled:
             self._gl_scene = None
-        if self._renderer_path != "FALLBACK":
-            self._renderer_path = "GL" if self._opengl_enabled else "2D"
+        self._renderer_path = "MODERN_GL" if self._opengl_enabled else "HEADLESS"
 
     def push(self, screen: Screen) -> None:
         self._screens.append(screen)
@@ -4143,11 +4121,7 @@ class App:
         else:
             shell_state = "MENU"
         warning = None
-        if self._renderer_path == "FALLBACK":
-            warning = "FALLBACK"
-        elif self._failure_recovery_used:
-            warning = "RECOVERED"
-        elif self._headless_mode:
+        if self._headless_mode:
             warning = "HEADLESS"
         return RunStateIndicator(
             shell_state=shell_state,
@@ -4158,7 +4132,7 @@ class App:
         )
 
     def used_renderer_fallback(self) -> bool:
-        return bool(self._renderer_fallback_used)
+        return False
 
     def used_failure_recovery(self) -> bool:
         return bool(self._failure_recovery_used)
@@ -4171,33 +4145,23 @@ class App:
         self._window_mode = token if token in {"windowed", "fullscreen", "borderless"} else "windowed"
 
     def stored_use_opengl(self) -> bool | None:
-        if self._runtime_defaults_store is None:
-            return None
-        return self._runtime_defaults_store.stored_use_opengl()
+        return True
 
     def set_stored_use_opengl(self, value: bool | None) -> None:
-        if self._runtime_defaults_store is None:
-            return
-        self._runtime_defaults_store.set_use_opengl(value)
+        _ = value
 
     @staticmethod
     def use_opengl_env_override() -> str | None:
-        value = os.environ.get("CFAST_USE_OPENGL")
-        if value is None:
-            return None
-        token = str(value).strip()
-        return token or ""
+        return None
 
     @classmethod
     def use_opengl_env_forces_enabled(cls) -> bool:
-        value = cls.use_opengl_env_override()
-        if value is None:
-            return False
-        return value.strip().lower() not in {"0", "false", "off", "no"}
+        _ = cls
+        return False
 
     def request_renderer_action(self, action: str) -> None:
         token = str(action).strip().lower()
-        if token in {"retry_gl", "disable_gl"}:
+        if token in {"quit"}:
             self._pending_renderer_action = token
 
     def consume_renderer_action(self) -> str | None:
@@ -4206,14 +4170,11 @@ class App:
         return action
 
     def note_renderer_fallback(self) -> None:
-        self._renderer_fallback_used = True
-        self._renderer_path = "FALLBACK"
+        return
 
     def set_renderer_path(self, path: str) -> None:
         token = str(path).strip().upper()
-        self._renderer_path = token or "2D"
-        if token != "FALLBACK":
-            self._renderer_fallback_used = False
+        self._renderer_path = token or "MODERN_GL"
 
     def present_renderer_failure(self, failure: OpenGLFailureInfo) -> None:
         self._set_shell_pause_active(False)
@@ -9689,32 +9650,11 @@ class OpenGLFailureScreen:
         self._row_hitboxes: dict[int, pygame.Rect] = {}
 
     def _rows(self) -> list[tuple[str, str, str, bool]]:
-        env_blocked = self._failure.env_forced
-        rows = [
-            ("retry_gl", "Retry OpenGL", "Try the OpenGL bootstrap again.", True),
-            (
-                "disable_gl",
-                "Disable OpenGL and Continue",
-                (
-                    "Blocked by CFAST_USE_OPENGL."
-                    if env_blocked
-                    else "Save 2D mode and continue to the main menu."
-                ),
-                not env_blocked,
-            ),
-            ("quit", "Quit", "Exit the app.", True),
-        ]
-        return rows
+        return [("quit", "Quit", "Exit the app.", True)]
 
     def _activate_selected(self) -> None:
         action, _label, _detail, enabled = self._rows()[self._selected % len(self._rows())]
         if not enabled:
-            return
-        if action == "retry_gl":
-            self._app.request_renderer_action("retry_gl")
-            return
-        if action == "disable_gl":
-            self._app.request_renderer_action("disable_gl")
             return
         if action == "quit":
             self._app.quit(exit_reason="renderer_failure_quit", exit_code=1)
@@ -9770,19 +9710,14 @@ class OpenGLFailureScreen:
         pygame.draw.rect(surface, panel_bg, panel, border_radius=14)
         pygame.draw.rect(surface, border, panel, 2, border_radius=14)
 
-        title = self._title_font.render("OpenGL Error", True, text_main)
+        title = self._title_font.render("Renderer Error", True, text_main)
         surface.blit(title, title.get_rect(midtop=(panel.centerx, panel.y + 18)))
 
         summary = self._body_font.render(self._failure.summary, True, text_main)
         surface.blit(summary, summary.get_rect(midtop=(panel.centerx, panel.y + 66)))
 
         body = pygame.Rect(panel.x + 28, panel.y + 108, panel.w - 56, 170)
-        detail_lines = [self._failure.detail]
-        if self._failure.env_forced:
-            detail_lines.append(
-                "Disable-and-continue is unavailable because CFAST_USE_OPENGL is forcing OpenGL on."
-            )
-        detail_lines.append("Retry returns to the main menu if OpenGL starts successfully.")
+        detail_lines = [self._failure.detail, "The interactive app requires the ModernGL renderer."]
         self._draw_wrapped_text(
             surface,
             "\n\n".join(detail_lines),
@@ -9820,11 +9755,7 @@ class OpenGLFailureScreen:
             surface.blit(detail_surf, (row.x + 14, row.y + 30))
             y += row_h + gap
 
-        footer = self._hint_font.render(
-            "Up/Down: Select  Enter: Apply  Esc: Quit",
-            True,
-            text_muted,
-        )
+        footer = self._hint_font.render("Enter or Esc quits the app.", True, text_muted)
         surface.blit(footer, footer.get_rect(midbottom=(panel.centerx, panel.bottom - 16)))
 
     def _draw_wrapped_text(
@@ -10103,7 +10034,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
 
         # Cached procedural sprites for Instrument Comprehension dials.
         self._instrument_sprite_cache: dict[tuple[object, ...], pygame.Surface] = {}
-        self._instrument_card_bank = InstrumentAircraftCardSpriteBank()
+        self._instrument_card_bank = InstrumentAircraftCardSpriteBank(allow_generation=False)
         self._instrument_part1_layout: _InstrumentPart1Layout | None = None
         self._instrument_part3_layout: _InstrumentPart3Layout | None = None
 
@@ -10317,14 +10248,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             return True
         if self._intro_loading_token != token or not self._intro_loading_ready:
             return False
-        snap = self._engine.snapshot()
-        info = self._panda_scene_info_for_snapshot(snap)
-        if info is None:
-            return True
-        scene_key, _scene_label = info
-        if scene_key == "auditory":
-            return self._auditory_panda_requirement_ready()
-        return self._scene_panda_requirement_ready(scene_key)
+        return True
 
     def _advance_intro_loading(
         self,
@@ -10337,14 +10261,6 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             return
 
         self._prime_intro_stage_assets(surface_size=surface_size, snap=snap)
-        info = self._panda_scene_info_for_snapshot(snap)
-        if info is not None:
-            scene_key, _scene_label = info
-            if scene_key == "auditory":
-                if not self._auditory_panda_requirement_ready():
-                    return
-            elif not self._scene_panda_requirement_ready(scene_key):
-                return
         self._intro_loading_frames_rendered += 1
         if self._intro_loading_frames_rendered >= INTRO_LOADING_MIN_FRAMES:
             self._intro_loading_ready = True
@@ -10355,33 +10271,9 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         surface_size: tuple[int, int],
         snap: TestSnapshot,
     ) -> None:
-        payload = snap.payload
-        is_auditory_capacity = self._is_auditory_capacity_snapshot(snap)
-        is_rapid_tracking = self._is_rapid_tracking_snapshot(snap)
-        is_spatial_integration = self._is_spatial_integration_snapshot(snap)
-        is_trace_test_1 = self._is_trace_test_1_snapshot(snap)
-        is_trace_test_2 = self._is_trace_test_2_snapshot(snap)
-        try:
-            if is_rapid_tracking:
-                self._get_rapid_tracking_panda_renderer(size=surface_size)
-                return
-            if is_spatial_integration:
-                self._get_spatial_integration_panda_renderer(size=surface_size)
-                return
-            if is_trace_test_1:
-                self._get_trace_test_1_panda_renderer(size=surface_size)
-                return
-            if is_trace_test_2:
-                renderer = self._get_trace_test_2_panda_renderer(size=surface_size)
-                if renderer is not None:
-                    renderer.render(
-                        payload=payload if isinstance(payload, TraceTest2Payload) else None
-                    )
-                return
-            if is_auditory_capacity:
-                return
-        except Exception:
-            return
+        _ = surface_size
+        _ = snap
+        return
 
     def _render_intro_loading_indicator(
         self,
@@ -10391,14 +10283,8 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         if self._intro_loading_complete(snap.phase):
             return
 
-        blocked_non_auditory = self._blocked_non_auditory_panda_scene_info(snap)
-        if blocked_non_auditory is not None:
-            label = "Panda3D Required"
-        elif self._is_auditory_capacity_snapshot(snap) and self._auditory_panda_requirement_failed():
-            label = "Panda3D Required"
-        else:
-            dot_count = (pygame.time.get_ticks() // 220) % 4
-            label = f"Loading{'.' * dot_count}"
+        dot_count = (pygame.time.get_ticks() // 220) % 4
+        label = f"Loading{'.' * dot_count}"
         text = self._tiny_font.render(label, True, (238, 245, 255))
         pill = text.get_rect()
         pill.inflate_ip(18, 10)
@@ -10460,9 +10346,6 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
 
     def _render_test_intro_overlay(self, surface: pygame.Surface, snap: TestSnapshot) -> None:
         if snap.phase not in (Phase.INSTRUCTIONS, Phase.PRACTICE_DONE):
-            return
-        if self._is_auditory_capacity_snapshot(snap) and self._auditory_panda_requirement_failed():
-            self._render_auditory_panda_requirement_overlay(surface, phase=snap.phase)
             return
         if self._test_code is None:
             return
@@ -12271,12 +12154,12 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         )
 
     def _scene_panda_requirement_ready(self, scene_key: str) -> bool:
-        state = getattr(self, f"_{scene_key}_panda_requirement")
-        return bool(state.checked and state.ready)
+        _ = scene_key
+        return bool(self._app.opengl_enabled)
 
     def _scene_panda_requirement_failed(self, scene_key: str) -> bool:
-        state = getattr(self, f"_{scene_key}_panda_requirement")
-        return bool(state.checked and not state.ready)
+        _ = scene_key
+        return False
 
     def _scene_panda_failure_summary(self, scene_key: str, *, scene_label: str) -> str:
         state = getattr(self, f"_{scene_key}_panda_requirement")
@@ -12358,12 +12241,10 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         )
 
     def _auditory_panda_requirement_ready(self) -> bool:
-        state = self._auditory_panda_requirement
-        return bool(state.checked and state.ready)
+        return bool(self._app.opengl_enabled)
 
     def _auditory_panda_requirement_failed(self) -> bool:
-        state = self._auditory_panda_requirement
-        return bool(state.checked and not state.ready)
+        return False
 
     def _auditory_panda_failure_summary(self) -> str:
         summary = self._auditory_panda_requirement.failure_summary.strip()
@@ -14006,9 +13887,17 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             or getattr(self._auditory_audio, "_session_seed", None) != int(payload.session_seed)
         ):
             self._stop_auditory_audio()
-            self._auditory_audio = _AuditoryCapacityAudioAdapter(
-                session_seed=int(payload.session_seed)
-            )
+            try:
+                self._auditory_audio = _AuditoryCapacityAudioAdapter(
+                    session_seed=int(payload.session_seed)
+                )
+            except Exception as exc:
+                detail = str(exc).strip() or "required auditory audio is unavailable"
+                self._app.recover_to_menu(
+                    reason="auditory_audio_required",
+                    detail=detail,
+                )
+                return
         self._auditory_audio.sync(phase=phase, payload=payload)
         self._auditory_audio_debug = self._auditory_audio.debug_state(payload=payload)
 
@@ -14021,9 +13910,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         self._auditory_audio_debug = {}
 
     def _should_use_auditory_panda_renderer(self) -> bool:
-        if self._auditory_panda_failed:
-            return False
-        return panda3d_auditory_rendering_available()
+        return False
 
     def _dispose_auditory_panda_renderer(self) -> None:
         if self._auditory_panda_renderer is not None:
@@ -14062,14 +13949,10 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         return self._auditory_panda_renderer
 
     def _should_use_rapid_tracking_panda_renderer(self) -> bool:
-        if self._rapid_tracking_panda_failed:
-            return False
-        return panda3d_rapid_tracking_rendering_available()
+        return False
 
     def _should_use_spatial_integration_panda_renderer(self) -> bool:
-        if self._spatial_integration_panda_failed:
-            return False
-        return panda3d_spatial_integration_rendering_available()
+        return False
 
     def _dispose_rapid_tracking_panda_renderer(self) -> None:
         if self._rapid_tracking_panda_renderer is not None:
@@ -14160,9 +14043,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         return self._spatial_integration_panda_renderer
 
     def _should_use_trace_test_1_panda_renderer(self) -> bool:
-        if self._trace_test_1_panda_failed:
-            return False
-        return panda3d_trace_test_1_rendering_available()
+        return False
 
     def _dispose_trace_test_1_panda_renderer(self) -> None:
         if self._trace_test_1_panda_renderer is not None:
@@ -14209,9 +14090,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         return self._trace_test_1_panda_renderer
 
     def _should_use_trace_test_2_panda_renderer(self) -> bool:
-        if self._trace_test_2_panda_failed:
-            return False
-        return panda3d_trace_test_2_rendering_available()
+        return False
 
     def _dispose_trace_test_2_panda_renderer(self) -> None:
         if self._trace_test_2_panda_renderer is not None:
@@ -14636,9 +14515,9 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             footer = "Enter: Continue  |  Esc/Backspace: Back"
         elif snap.phase in (Phase.PRACTICE, Phase.SCORED):
             if payload is not None and payload.control_mode == "joystick_only":
-                footer = "Joystick X controls left/right; joystick axis 1 controls up/down (WASD/arrow fallback)."
+                footer = "Joystick X controls left/right; joystick axis 1 controls up/down."
             else:
-                footer = "Rudder controls left/right; joystick axis 1 controls up/down (WASD/arrow fallback)."
+                footer = "Rudder controls left/right; joystick axis 1 controls up/down."
             if payload is not None and payload.axis_focus == "horizontal":
                 footer = f"{footer} Vertical input ignored."
             elif payload is not None and payload.axis_focus == "vertical":
@@ -14892,7 +14771,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         focus_world_y_for_rig = float(payload.focus_world_y) if payload is not None else 70.0
         capture_zoom_for_rig = float(payload.capture_zoom) if payload is not None else 0.0
         turbulence_strength_for_rig = float(payload.turbulence_strength) if payload is not None else 0.65
-        panda_renderer = self._get_rapid_tracking_panda_renderer(size=(track.w, track.h))
+        panda_renderer = None
         using_panda = False
         panda_overlay = None
         scene_blocked = False
@@ -14922,37 +14801,15 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         vanish_x = max(track.x + 34, min(track.right - 34, vanish_x))
         anim_s = pygame.time.get_ticks() / 1000.0
 
-        if panda_renderer is not None:
-            using_panda = self._render_rapid_tracking_panda_view(
-                surface=surface,
-                world=track,
-                payload=payload,
-                renderer=panda_renderer,
-                active_phase=snap.phase in (Phase.PRACTICE, Phase.SCORED),
-            )
-            if using_panda:
-                panda_overlay = panda_renderer.target_overlay_state()
-
-        if not using_panda:
-            if not self._scene_panda_requirement_failed("rapid_tracking"):
-                self._fail_scene_panda_requirement(
-                    "rapid_tracking",
-                    scene_label="Rapid Tracking",
-                    category="renderer_unavailable",
-                    summary="Rapid Tracking requires Panda3D, but no renderer instance could be created.",
+        if self._app.opengl_enabled and payload is not None:
+            self._app.queue_gl_scene(
+                RapidTrackingGlScene(
+                    world=pygame.Rect(track),
+                    payload=payload,
+                    active_phase=snap.phase in (Phase.PRACTICE, Phase.SCORED),
                 )
-            self._render_scene_panda_blocked_world(
-                surface=surface,
-                world=track,
-                scene_label=title_prefix,
-                failed=True,
-                detail=self._scene_panda_failure_summary(
-                    "rapid_tracking",
-                    scene_label="Rapid Tracking",
-                ),
             )
-            scene_blocked = True
-            payload = None
+            using_panda = True
 
         cx = track.centerx
         cy = track.centery
@@ -15796,13 +15653,13 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         elif snap.phase in (Phase.PRACTICE, Phase.SCORED):
             if is_dual_task_bridge:
                 footer = (
-                    "Configured HOTAS movement axes, arrows, or A/D control the camera. "
-                    "Hold Space/LMB to zoom and capture | Q/W/E/R command filter | digits + Enter delayed report."
+                    "Configured HOTAS movement axes control the camera. "
+                    "Hold the configured capture binding to zoom and capture | Q/W/E/R command filter | digits + Enter delayed report."
                 )
             else:
                 footer = (
-                    "Configured HOTAS movement axes, arrows, or A/D control the camera. "
-                    "Hold the configured capture binding, Space, or LMB to zoom and capture in the center box."
+                    "Configured HOTAS movement axes control the camera. "
+                    "Hold the configured capture binding to zoom and capture in the center box."
                 )
         else:
             footer = "Enter: Return to Tests"
@@ -15939,7 +15796,10 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 time_remaining_s=snap.time_remaining_s,
                 time_fill_ratio=time_fill_ratio,
                 freeze_mode=freeze_mode,
+                gl_scene_world=world,
             )
+            if self._app.opengl_enabled:
+                surface.fill((0, 0, 0, 0), world)
             surface.blit(world_frame, world.topleft)
         else:
             self._render_auditory_capacity_blocked_world(
@@ -16195,7 +16055,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
 
         footer_text = (
             "Q/W/E/R: colour  Keypad 0-9: number  Digits+Enter: recall  Space/trigger: beep  |  "
-            "WASD/arrows or HOTAS to fly"
+            "Configured HOTAS axes to fly"
         )
         if auditory_panda_failed:
             footer_text = "R: Retry Panda3D  |  Esc/Backspace: Back"
@@ -16231,9 +16091,12 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         time_remaining_s: float | None,
         time_fill_ratio: float | None,
         freeze_mode: str | None,
+        gl_scene_world: pygame.Rect | None = None,
     ) -> pygame.Surface:
         if freeze_mode is None:
-            frame = pygame.Surface(size)
+            frame = pygame.Surface(size, pygame.SRCALPHA if self._app.opengl_enabled else 0)
+            if self._app.opengl_enabled:
+                frame.fill((0, 0, 0, 0))
             self._render_auditory_capacity_tube_chase_view(
                 surface=frame,
                 world=frame.get_rect(),
@@ -16241,6 +16104,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 time_remaining_s=time_remaining_s,
                 time_fill_ratio=time_fill_ratio,
                 advance_animation=True,
+                gl_scene_world=gl_scene_world,
             )
             self._auditory_live_world_frame = frame.copy()
             self._auditory_frozen_world_frame = None
@@ -16255,7 +16119,9 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             ):
                 self._auditory_frozen_world_frame = self._auditory_live_world_frame.copy()
             else:
-                frame = pygame.Surface(size)
+                frame = pygame.Surface(size, pygame.SRCALPHA if self._app.opengl_enabled else 0)
+                if self._app.opengl_enabled:
+                    frame.fill((0, 0, 0, 0))
                 self._render_auditory_capacity_tube_chase_view(
                     surface=frame,
                     world=frame.get_rect(),
@@ -16263,6 +16129,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                     time_remaining_s=time_remaining_s,
                     time_fill_ratio=time_fill_ratio,
                     advance_animation=False,
+                    gl_scene_world=gl_scene_world,
                 )
                 self._auditory_frozen_world_frame = frame
             self._auditory_freeze_key = freeze_key
@@ -16565,52 +16432,21 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         time_remaining_s: float | None,
         time_fill_ratio: float | None,
         advance_animation: bool = True,
+        gl_scene_world: pygame.Rect | None = None,
     ) -> None:
-        if not self._auditory_panda_requirement_ready():
-            self._render_auditory_capacity_blocked_world(
-                surface=surface,
-                world=world,
-                failed=self._auditory_panda_requirement_failed(),
-                detail=(
-                    self._auditory_panda_failure_summary()
-                    if self._auditory_panda_requirement_failed()
-                    else "Running Panda3D readiness check..."
-                ),
+        _ = advance_animation
+        if self._app.opengl_enabled:
+            surface.fill((0, 0, 0, 0), world)
+            pygame.draw.rect(surface, (20, 42, 140), world, 2)
+            pygame.draw.rect(surface, (78, 104, 178), world.inflate(-4, -4), 1)
+            self._app.queue_auditory_gl_scene(
+                world=pygame.Rect(gl_scene_world if gl_scene_world is not None else world),
+                payload=payload,
+                time_remaining_s=time_remaining_s,
+                time_fill_ratio=time_fill_ratio,
             )
             return
-
-        panda_renderer = self._get_auditory_panda_renderer(size=world.size)
-        if panda_renderer is None:
-            if not self._auditory_panda_requirement_failed():
-                self._fail_auditory_panda_requirement(
-                    category="renderer_unavailable",
-                    summary="Auditory Capacity requires Panda3D, but no renderer instance could be created.",
-                )
-            self._render_auditory_capacity_blocked_world(
-                surface=surface,
-                world=world,
-                failed=True,
-                detail=self._auditory_panda_failure_summary(),
-            )
-            return
-
-        if self._render_auditory_capacity_panda_view(
-            surface=surface,
-            world=world,
-            payload=payload,
-            time_remaining_s=time_remaining_s,
-            time_fill_ratio=time_fill_ratio,
-            renderer=panda_renderer,
-            advance_animation=advance_animation,
-        ):
-            return
-
-        self._render_auditory_capacity_blocked_world(
-            surface=surface,
-            world=world,
-            failed=True,
-            detail=self._auditory_panda_failure_summary(),
-        )
+        surface.fill((8, 16, 40), world)
 
     @staticmethod
     def _auditory_mix_rgb(
@@ -21792,6 +21628,18 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         *,
         payload: TraceTest1Payload | None,
     ) -> None:
+        if self._app.opengl_enabled:
+            surface.fill((0, 0, 0, 0), rect)
+            pygame.draw.rect(surface, (208, 222, 248), rect, 1)
+            inner = rect.inflate(-8, -8)
+            if inner.w > 0 and inner.h > 0 and payload is not None:
+                self._app.queue_gl_scene(
+                    TraceTest1GlScene(
+                        world=pygame.Rect(inner),
+                        payload=payload,
+                    )
+                )
+            return
         sky_top = (92, 138, 208)
         sky_bottom = (128, 168, 222)
         ground_top = (118, 142, 176)
@@ -21902,6 +21750,18 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         surface.blit(title, title.get_rect(center=(w // 2, top_line_y - 8)))
 
         def render_scene(scene_rect: pygame.Rect, scene_payload: TraceTest2Payload | None) -> None:
+            if self._app.opengl_enabled:
+                surface.fill((0, 0, 0, 0), scene_rect)
+                pygame.draw.rect(surface, border, scene_rect, 1)
+                inner = scene_rect.inflate(-8, -8)
+                if inner.w > 0 and inner.h > 0 and scene_payload is not None:
+                    self._app.queue_gl_scene(
+                        TraceTest2GlScene(
+                            world=pygame.Rect(inner),
+                            payload=scene_payload,
+                        )
+                    )
+                return
             if self._app.opengl_enabled:
                 pygame.draw.rect(surface, (8, 14, 62, 26), scene_rect)
             else:
@@ -22603,6 +22463,18 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         title_override: str | None = None,
         allow_external_3d: bool = True,
     ) -> None:
+        if allow_external_3d and self._app.opengl_enabled:
+            surface.fill((0, 0, 0, 0), rect)
+            pygame.draw.rect(surface, (190, 204, 236), rect, 1)
+            inner = rect.inflate(-8, -8)
+            if inner.w > 0 and inner.h > 0:
+                self._app.queue_gl_scene(
+                    SpatialIntegrationGlScene(
+                        world=pygame.Rect(inner),
+                        payload=payload,
+                    )
+                )
+            return
         panel_bg = (8, 12, 36)
         panel_border = (190, 204, 236)
         if self._app.opengl_enabled:
@@ -24659,44 +24531,14 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
     ) -> None:
         border = (170, 184, 212)
         self._draw_aircraft_card_backdrop(surface, rect)
-        use_cached_sprite = abs((rect.w / max(1.0, rect.h)) - (448.0 / 280.0)) <= 0.20
-        if use_cached_sprite:
-            sprite = self._instrument_card_bank.get_scaled_surface(
-                state=state,
-                size=(max(8, rect.w), max(8, rect.h)),
-                view_preset=view_preset,
-            )
-        else:
-            sprite = None
-        if sprite is not None:
-            surface.blit(sprite, rect.topleft)
-            pygame.draw.rect(surface, border, rect, 1)
-            return
-
-        pitch = max(-20.0, min(20.0, float(state.pitch_deg)))
-        bank = max(-45.0, min(45.0, float(state.bank_deg)))
-        heading = float(int(state.heading_deg) % 360)
-        projection = instrument_aircraft_card_view_projection(view_preset)
-        plane_layer = pygame.Surface(rect.size, pygame.SRCALPHA)
-        cx = plane_layer.get_width() // 2 + int(round(projection.offset_x))
-        cy = plane_layer.get_height() // 2 + int(round(projection.offset_y))
-        scale = max(16.0, float(min(rect.w, rect.h)) * (projection.scale / 55.0))
-        draw_fixed_wing_pygame(
-            plane_layer,
-            heading_deg=heading,
-            pitch_deg=pitch,
-            bank_deg=bank,
-            cx=cx,
-            cy=cy,
-            scale=scale,
-            palette=instrument_card_pygame_palette(),
-            view_yaw_deg=projection.view_yaw_deg,
-            view_pitch_deg=projection.view_pitch_deg,
-            view_roll_deg=projection.view_roll_deg,
-            forward_x_mix=projection.forward_x_mix,
-            forward_y_mix=projection.forward_y_mix,
+        sprite = self._instrument_card_bank.get_scaled_surface(
+            state=state,
+            size=(max(8, rect.w), max(8, rect.h)),
+            view_preset=view_preset,
         )
-        self._blit_centered_aircraft_layer(surface, rect, plane_layer)
+        if sprite is None:
+            raise RuntimeError("Modern instrument card renderer failed to generate a card sprite.")
+        surface.blit(sprite, rect.topleft)
         pygame.draw.rect(surface, border, rect, 1)
 
     def _draw_aircraft_card_backdrop(
@@ -26671,12 +26513,8 @@ def _resolve_window_mode(
 
 
 def _resolve_use_opengl(*, stored_default: bool | None) -> bool:
-    env_value = os.environ.get("CFAST_USE_OPENGL")
-    if env_value is not None:
-        return env_value.strip().lower() not in {"0", "false", "off", "no"}
-    if stored_default is not None:
-        return bool(stored_default)
-    return sys.platform != "darwin"
+    _ = stored_default
+    return True
 
 
 def _build_opengl_failure_info(
@@ -26687,21 +26525,166 @@ def _build_opengl_failure_info(
     exc: Exception,
 ) -> OpenGLFailureInfo:
     stage_detail = {
-        "display_init": "creating the OpenGL display",
-        "renderer_init": "initializing the OpenGL scene renderer",
-        "resize": "resizing the OpenGL display",
-        "render": "rendering the OpenGL frame",
-    }.get(stage, "using the OpenGL renderer")
+        "display_init": "creating the ModernGL display",
+        "renderer_init": "initializing the ModernGL renderer",
+        "resize": "resizing the renderer display",
+        "render": "rendering the frame",
+    }.get(stage, "using the renderer")
     detail = str(exc).strip()
     suffix = f": {detail}" if detail else ""
     return OpenGLFailureInfo(
         stage=stage,
-        summary="OpenGL renderer failed.",
+        summary="Renderer failed.",
         detail=f"The app could not continue while {stage_detail}. {type(exc).__name__}{suffix}",
         requested=bool(requested),
         attempted=bool(attempted),
-        env_forced=App.use_opengl_env_forces_enabled(),
+        env_forced=False,
     )
+
+
+def _window_flags_for_mode(window_mode: str) -> int:
+    token = str(window_mode).strip().lower()
+    if token == "fullscreen":
+        return pygame.FULLSCREEN
+    if token == "borderless":
+        return pygame.NOFRAME
+    return pygame.RESIZABLE
+
+
+def _desktop_window_size() -> tuple[int, int] | None:
+    try:
+        desktop_sizes = list(pygame.display.get_desktop_sizes())
+    except Exception:
+        desktop_sizes = []
+    if desktop_sizes:
+        width = max(1, int(desktop_sizes[0][0]))
+        height = max(1, int(desktop_sizes[0][1]))
+        return (width, height)
+    try:
+        info = pygame.display.Info()
+    except Exception:
+        return None
+    if info.current_w > 0 and info.current_h > 0:
+        return (int(info.current_w), int(info.current_h))
+    return None
+
+
+def _window_size_for_mode(
+    *,
+    window_mode: str,
+    default_size: tuple[int, int] = WINDOW_SIZE,
+) -> tuple[int, int]:
+    if str(window_mode).strip().lower() not in {"fullscreen", "borderless"}:
+        return (max(1, int(default_size[0])), max(1, int(default_size[1])))
+    desktop_size = _desktop_window_size()
+    if desktop_size is not None:
+        return desktop_size
+    return (max(1, int(default_size[0])), max(1, int(default_size[1])))
+
+
+def _apply_opengl_display_attributes() -> None:
+    pygame.display.gl_set_attribute(pygame.GL_CONTEXT_MAJOR_VERSION, 3)
+    pygame.display.gl_set_attribute(pygame.GL_CONTEXT_MINOR_VERSION, 3)
+    pygame.display.gl_set_attribute(
+        pygame.GL_CONTEXT_PROFILE_MASK,
+        pygame.GL_CONTEXT_PROFILE_CORE,
+    )
+    pygame.display.gl_set_attribute(pygame.GL_DOUBLEBUFFER, 1)
+
+
+def _read_display_lifecycle_state(
+    *,
+    display_surface: pygame.Surface,
+    active_window_flags: int,
+    window_mode: str,
+) -> DisplayLifecycleState:
+    current_display = pygame.display.get_surface()
+    if current_display is None:
+        current_display = display_surface
+    surface_size = (
+        max(1, int(current_display.get_width())),
+        max(1, int(current_display.get_height())),
+    )
+    window_size = surface_size
+    get_window_size = getattr(pygame.display, "get_window_size", None)
+    if callable(get_window_size):
+        try:
+            raw_window_size = get_window_size()
+        except Exception:
+            raw_window_size = None
+        if raw_window_size is not None:
+            try:
+                next_w = max(1, int(raw_window_size[0]))
+                next_h = max(1, int(raw_window_size[1]))
+            except Exception:
+                pass
+            else:
+                window_size = (next_w, next_h)
+    return DisplayLifecycleState(
+        window_size=window_size,
+        surface_size=surface_size,
+        desktop_size=_desktop_window_size(),
+        active_window_flags=int(active_window_flags),
+        window_mode=str(window_mode).strip().lower() or "windowed",
+    )
+
+
+def _resolve_display_rebootstrap(
+    state: DisplayLifecycleState,
+) -> DisplayRebootstrapDecision | None:
+    desktop_size = state.desktop_size
+    surface_smaller_than_window = (
+        state.surface_size[0] < state.window_size[0]
+        or state.surface_size[1] < state.window_size[1]
+    )
+    matches_desktop = desktop_size is not None and (
+        state.window_size[0] >= desktop_size[0] and state.window_size[1] >= desktop_size[1]
+    )
+
+    if surface_smaller_than_window:
+        next_mode = "fullscreen" if matches_desktop else "windowed"
+        next_size = desktop_size if next_mode == "fullscreen" and desktop_size is not None else state.window_size
+        return DisplayRebootstrapDecision(window_size=next_size, window_mode=next_mode)
+
+    if (
+        state.window_mode == "fullscreen"
+        and desktop_size is not None
+        and state.window_size[1] < desktop_size[1]
+    ):
+        return DisplayRebootstrapDecision(
+            window_size=state.window_size,
+            window_mode="windowed",
+        )
+
+    return None
+
+
+def _rebootstrap_display_for_transition(
+    *,
+    decision: DisplayRebootstrapDecision,
+    video_driver: str,
+    want_gl: bool,
+) -> DisplayBootstrapResult:
+    pygame.display.quit()
+    pygame.display.init()
+    pygame.display.set_caption("RCAF CFAST Trainer")
+    return _initialize_display_surfaces(
+        window_size=decision.window_size,
+        window_flags=_window_flags_for_mode(decision.window_mode),
+        video_driver=video_driver,
+        want_gl=want_gl,
+    )
+
+
+def _apply_display_bootstrap_to_app(
+    *,
+    app: "App",
+    bootstrap: DisplayBootstrapResult,
+    window_mode: str,
+) -> None:
+    app.set_window_mode(window_mode)
+    app.set_opengl_enabled(bootstrap.gl_renderer is not None)
+    app.set_surface(bootstrap.app_surface)
 
 
 def _initialize_display_surfaces(
@@ -26715,11 +26698,15 @@ def _initialize_display_surfaces(
     can_try_gl = bool(want_gl and video_driver != "dummy")
     display_surface: pygame.Surface
     app_surface: pygame.Surface
-    gl_renderer: _OpenGLSceneRenderer | None = None
+    gl_renderer: ModernSceneRenderer | None = None
     active_window_flags = window_flags
     gl_failure: OpenGLFailureInfo | None = None
 
     if can_try_gl:
+        try:
+            _apply_opengl_display_attributes()
+        except Exception:
+            pass
         try:
             display_surface = pygame.display.set_mode(window_size, opengl_window_flags)
         except Exception as exc:
@@ -26731,7 +26718,7 @@ def _initialize_display_surfaces(
             )
         else:
             try:
-                gl_renderer = _OpenGLSceneRenderer(window_size=display_surface.get_size())
+                gl_renderer = ModernSceneRenderer(window_size=display_surface.get_size())
             except Exception as exc:
                 gl_failure = _build_opengl_failure_info(
                     stage="renderer_init",
@@ -26801,35 +26788,10 @@ def run(
         )
     )
 
-    window_size = WINDOW_SIZE
-    if window_mode in {"fullscreen", "borderless"}:
-        desktop_sizes: list[tuple[int, int]] = []
-        try:
-            desktop_sizes = list(pygame.display.get_desktop_sizes())
-        except Exception:
-            desktop_sizes = []
-        if desktop_sizes:
-            window_size = desktop_sizes[0]
-        else:
-            try:
-                info = pygame.display.Info()
-                if info.current_w > 0 and info.current_h > 0:
-                    window_size = (int(info.current_w), int(info.current_h))
-            except Exception:
-                window_size = WINDOW_SIZE
+    window_size = _window_size_for_mode(window_mode=window_mode)
+    window_flags = _window_flags_for_mode(window_mode)
 
-    if window_mode == "fullscreen":
-        window_flags = pygame.FULLSCREEN
-    elif window_mode == "borderless":
-        window_flags = pygame.NOFRAME
-    else:
-        window_flags = pygame.RESIZABLE
-
-    opengl_window_flags = window_flags | pygame.OPENGL | pygame.DOUBLEBUF
-
-    want_gl = False if headless else _resolve_use_opengl(
-        stored_default=runtime_defaults_store.stored_use_opengl(),
-    )
+    want_gl = not headless
     bootstrap = _initialize_display_surfaces(
         window_size=window_size,
         window_flags=window_flags,
@@ -26862,13 +26824,13 @@ def run(
         runtime_defaults_store=runtime_defaults_store,
         app_version=app_version,
     )
+    _apply_display_bootstrap_to_app(app=app, bootstrap=bootstrap, window_mode=window_mode)
 
     axis_calibration = AxisCalibrationScreen(app, profiles=input_profiles_store)
     axis_visualizer = AxisVisualizerScreen(app, profiles=input_profiles_store)
     input_profiles = InputProfilesScreen(app, profiles=input_profiles_store)
     joystick_bindings = JoystickBindingsScreen(app, profiles=input_profiles_store)
     difficulty_settings = DifficultySettingsScreen(app)
-    display_settings = DisplaySettingsScreen(app)
     test_seed_settings = TestSeedSettingsScreen(app)
 
     hotas_menu = MenuScreen(
@@ -26887,7 +26849,6 @@ def run(
         app,
         "Settings",
         [
-            MenuItem("Display Settings", lambda: app.push(display_settings)),
             MenuItem("Difficulty Settings", lambda: app.push(difficulty_settings)),
             MenuItem("Test Seeds", lambda: app.push(test_seed_settings)),
             MenuItem("HOTAS & Input", lambda: app.push(hotas_menu)),
@@ -29824,37 +29785,9 @@ def run(
     def _apply_renderer_action(action: str) -> None:
         nonlocal display_surface, gl_renderer, active_window_flags
         token = str(action).strip().lower()
-        if token == "retry_gl":
-            retry = _initialize_display_surfaces(
-                window_size=display_surface.get_size(),
-                window_flags=window_flags,
-                video_driver=video_driver,
-                want_gl=True,
-            )
-            display_surface = retry.display_surface
-            gl_renderer = retry.gl_renderer
-            active_window_flags = retry.active_window_flags
-            app.set_opengl_enabled(retry.gl_renderer is not None)
-            app.set_surface(retry.app_surface)
-            if retry.gl_failure is None and retry.gl_renderer is not None:
-                app.dismiss_renderer_failure()
-            elif retry.gl_failure is not None:
-                app.present_renderer_failure(retry.gl_failure)
-            return
-        if token == "disable_gl":
-            if app.use_opengl_env_forces_enabled():
-                return
-            try:
-                display_surface = pygame.display.set_mode(display_surface.get_size(), window_flags)
-            except Exception:
-                app.quit(exit_reason="renderer_failure_abort", exit_code=1)
-                return
-            gl_renderer = None
-            active_window_flags = window_flags
-            app.set_stored_use_opengl(False)
-            app.set_opengl_enabled(False)
-            app.set_surface(display_surface)
-            app.dismiss_renderer_failure()
+        _ = (display_surface, gl_renderer, active_window_flags)
+        if token == "quit":
+            app.quit(exit_reason="renderer_failure_quit", exit_code=1)
 
     frame = 0
     resize_events: set[int] = {pygame.VIDEORESIZE}
@@ -29933,6 +29866,30 @@ def run(
                 current_display = pygame.display.get_surface()
                 if current_display is not None:
                     display_surface = current_display
+                lifecycle_state = _read_display_lifecycle_state(
+                    display_surface=display_surface,
+                    active_window_flags=active_window_flags,
+                    window_mode=window_mode,
+                )
+                rebootstrap = _resolve_display_rebootstrap(lifecycle_state)
+                if rebootstrap is not None:
+                    bootstrap = _rebootstrap_display_for_transition(
+                        decision=rebootstrap,
+                        video_driver=video_driver,
+                        want_gl=want_gl,
+                    )
+                    display_surface = bootstrap.display_surface
+                    gl_renderer = bootstrap.gl_renderer
+                    active_window_flags = bootstrap.active_window_flags
+                    window_mode = rebootstrap.window_mode
+                    window_flags = _window_flags_for_mode(window_mode)
+                    _apply_display_bootstrap_to_app(
+                        app=app,
+                        bootstrap=bootstrap,
+                        window_mode=window_mode,
+                    )
+                    if gl_renderer is None:
+                        continue
                 window_size = display_surface.get_size()
                 if app.surface.get_size() != window_size:
                     app.set_surface(pygame.Surface(window_size, pygame.SRCALPHA))
@@ -29955,7 +29912,20 @@ def run(
                     display_surface = current_display
                     app.set_surface(display_surface)
 
-            app.render()
+            try:
+                app.render()
+            except Exception as exc:
+                if gl_renderer is not None:
+                    _show_renderer_failure(
+                        _build_opengl_failure_info(
+                            stage="render",
+                            requested=True,
+                            attempted=True,
+                            exc=exc,
+                        )
+                    )
+                    continue
+                raise
             if not app.running:
                 break
 

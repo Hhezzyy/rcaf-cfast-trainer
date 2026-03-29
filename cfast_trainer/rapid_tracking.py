@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import heapq
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -128,6 +129,61 @@ class RapidTrackingFoliageCluster:
 
 
 @dataclass(frozen=True, slots=True)
+class RapidTrackingPoi:
+    poi_id: str
+    kind: str
+    variant: str
+    x: float
+    y: float
+    radius: float
+
+
+@dataclass(frozen=True, slots=True)
+class RapidTrackingObstacle:
+    obstacle_id: str
+    kind: str
+    x: float
+    y: float
+    radius_x: float
+    radius_y: float
+    rotation_deg: float
+    height: float
+
+
+@dataclass(frozen=True, slots=True)
+class RapidTrackingRoadSegment:
+    segment_id: str
+    surface: str
+    start_anchor_id: str
+    end_anchor_id: str
+    anchor_ids: tuple[str, ...]
+    points: tuple[tuple[float, float], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class RapidTrackingHandoffZone:
+    zone_id: str
+    anchor_id: str
+    x: float
+    y: float
+    carrier_kinds: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class RapidTrackingTrafficRoute:
+    route_id: str
+    route_kind: str
+    carrier_kind: str
+    variant: str
+    start_anchor_id: str
+    end_anchor_id: str
+    base_duration_s: float
+    cover_mode: str
+    focus_anchor_id: str = ""
+    surface: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class RapidTrackingCompoundLayout:
     seed: int
     orbit_direction: int
@@ -139,6 +195,13 @@ class RapidTrackingCompoundLayout:
     path_lateral_bias: float
     compound_center_x: float
     compound_center_y: float
+    bases: tuple[RapidTrackingPoi, ...]
+    pois: tuple[RapidTrackingPoi, ...]
+    obstacles: tuple[RapidTrackingObstacle, ...]
+    road_segments: tuple[RapidTrackingRoadSegment, ...]
+    handoff_zones: tuple[RapidTrackingHandoffZone, ...]
+    traffic_routes: tuple[RapidTrackingTrafficRoute, ...]
+    scenic_clusters: tuple[RapidTrackingFoliageCluster, ...]
     building_anchors: tuple[RapidTrackingAnchor, ...]
     patrol_anchors: tuple[RapidTrackingAnchor, ...]
     road_anchors: tuple[RapidTrackingAnchor, ...]
@@ -302,6 +365,8 @@ def rapid_tracking_target_label(*, kind: str, variant: str = "") -> str:
     if target_kind == "soldier":
         return "SOLDIER"
     if target_kind == "truck":
+        if target_variant in {"tracked", "armor", "armored"}:
+            return "ARMOURED VEHICLE"
         return "VEHICLE"
     if target_kind == "helicopter":
         return "HELICOPTER"
@@ -322,6 +387,8 @@ def rapid_tracking_target_description(*, kind: str, variant: str = "") -> str:
     if target_kind == "soldier":
         return "FOOT PATROL MOVING BETWEEN STRUCTURES AND COVER"
     if target_kind == "truck":
+        if target_variant in {"tracked", "armor", "armored"}:
+            return "TRACKED VEHICLE MOVING OFF ROAD BETWEEN POINTS OF INTEREST"
         return "ROAD VEHICLE MOVING THROUGH THE COMPOUND"
     if target_kind == "helicopter":
         return "ROTARY-WING AIRCRAFT CUTTING ACROSS THE COMPOUND"
@@ -332,13 +399,14 @@ def rapid_tracking_target_description(*, kind: str, variant: str = "") -> str:
 
 def rapid_tracking_target_cue(*, kind: str, variant: str = "", handoff_mode: str = "") -> str:
     target_kind = str(kind).strip().lower()
+    target_variant = str(variant).strip().lower()
     mode = str(handoff_mode).strip().lower()
     if target_kind == "soldier":
         cue = "FOOT PATROL / SLOW"
     elif target_kind == "building":
         cue = "BUILDING HANDOFF"
     elif target_kind == "truck":
-        cue = "ROAD MOVEMENT / FAST"
+        cue = "TRACKED VEHICLE / FAST" if target_variant in {"tracked", "armor", "armored"} else "ROAD MOVEMENT / FAST"
     elif target_kind == "helicopter":
         cue = "AIR HANDOFF / FASTER"
     elif target_kind == "jet":
@@ -382,6 +450,40 @@ def _rotate_point(x: float, y: float, angle_rad: float) -> tuple[float, float]:
     c = math.cos(angle_rad)
     s = math.sin(angle_rad)
     return ((x * c) - (y * s), (x * s) + (y * c))
+
+
+def _distance_sq(ax: float, ay: float, bx: float, by: float) -> float:
+    dx = float(ax) - float(bx)
+    dy = float(ay) - float(by)
+    return (dx * dx) + (dy * dy)
+
+
+def _distance(ax: float, ay: float, bx: float, by: float) -> float:
+    return math.sqrt(_distance_sq(ax, ay, bx, by))
+
+
+def _ellipse_contains_point(
+    *,
+    x: float,
+    y: float,
+    center_x: float,
+    center_y: float,
+    radius_x: float,
+    radius_y: float,
+    rotation_deg: float = 0.0,
+    padding: float = 0.0,
+) -> bool:
+    rx = max(1e-6, float(radius_x) + float(padding))
+    ry = max(1e-6, float(radius_y) + float(padding))
+    angle = math.radians(-float(rotation_deg))
+    local_x, local_y = _rotate_point(float(x) - float(center_x), float(y) - float(center_y), angle)
+    value = ((local_x / rx) ** 2) + ((local_y / ry) ** 2)
+    return value <= 1.0
+
+
+def _point_in_bounds(*, x: float, y: float, bounds: tuple[float, float, float, float]) -> bool:
+    x_lo, x_hi, y_lo, y_hi = bounds
+    return float(x_lo) <= float(x) <= float(x_hi) and float(y_lo) <= float(y) <= float(y_hi)
 
 
 def _anchor_lookup(layout: RapidTrackingCompoundLayout) -> dict[str, RapidTrackingAnchor]:
@@ -541,14 +643,22 @@ class RapidTrackingScenarioGenerator:
         self._seed = int(seed)
 
     def build(self) -> RapidTrackingScenarioBundle:
-        layout = self._build_layout()
-        ground_script = self._build_schedule(layout=layout, phase_key="ground", templates=self._GROUND_TEMPLATES)
-        practice_script = self._build_schedule(
+        layout = _build_seeded_rapid_tracking_layout(seed=self._seed)
+        ground_script = _build_seeded_rapid_tracking_schedule(
+            seed=self._seed,
+            layout=layout,
+            phase_key="ground",
+        )
+        practice_script = _build_seeded_rapid_tracking_schedule(
+            seed=self._seed,
             layout=layout,
             phase_key="practice",
-            templates=self._PRACTICE_TEMPLATES,
         )
-        scored_script = self._build_schedule(layout=layout, phase_key="scored", templates=self._SCORED_TEMPLATES)
+        scored_script = _build_seeded_rapid_tracking_schedule(
+            seed=self._seed,
+            layout=layout,
+            phase_key="scored",
+        )
         return RapidTrackingScenarioBundle(
             layout=layout,
             ground_script=ground_script,
@@ -564,28 +674,13 @@ class RapidTrackingScenarioGenerator:
         profile: RapidTrackingTrainingProfile,
         salt: str = "",
     ) -> tuple[RapidTrackingSceneSegment, ...]:
-        token = str(phase_key).strip().lower()
-        if token == "ground":
-            templates = self._GROUND_TEMPLATES
-        elif token == "practice":
-            templates = self._PRACTICE_TEMPLATES
-        else:
-            templates = self._SCORED_TEMPLATES
-        allowed_kinds = {str(kind).strip().lower() for kind in profile.target_kinds}
-        allowed_cover = {str(mode).strip().lower() for mode in profile.cover_modes}
-        allowed_handoffs = {str(mode).strip().lower() for mode in profile.handoff_modes}
-        filtered = tuple(
-            template
-            for template in templates
-            if str(template[0]).strip().lower() in allowed_kinds
-            and str(template[1]).strip().lower() in allowed_cover
-            and str(template[2]).strip().lower() in allowed_handoffs
-        )
-        active_templates = filtered or templates
-        return self._build_schedule(
+        return _build_seeded_rapid_tracking_schedule(
+            seed=self._seed,
             layout=layout,
-            phase_key=f"{token}:{salt}",
-            templates=active_templates,
+            phase_key=f"{str(phase_key).strip().lower()}:{salt}",
+            allowed_target_kinds=tuple(profile.target_kinds),
+            allowed_cover_modes=tuple(profile.cover_modes),
+            allowed_handoff_modes=tuple(profile.handoff_modes),
         )
 
     def _rng(self, *, salt: str) -> SeededRng:
@@ -1015,6 +1110,1171 @@ class RapidTrackingScenarioGenerator:
 
         return min(buildings, key=score)
 
+
+_RAPID_TRACKING_WORLD_BOUNDS = (-4.2, 4.0, -1.10, 1.55)
+_RAPID_TRACKING_GRID_W = 57
+_RAPID_TRACKING_GRID_H = 29
+_RAPID_TRACKING_BASE_ZONE_BOXES: tuple[tuple[float, float, float, float], ...] = (
+    (-3.70, -1.55, 0.72, 1.36),
+    (1.35, 3.45, 0.72, 1.36),
+    (-3.62, -1.42, -0.76, 0.14),
+    (1.30, 3.40, -0.74, 0.16),
+)
+_RAPID_TRACKING_PHASE_SEGMENT_COUNTS = {
+    "ground": 14,
+    "practice": 16,
+    "scored": 18,
+}
+_RAPID_TRACKING_PHASE_ROUTE_WEIGHTS: dict[str, dict[str, float]] = {
+    "ground": {
+        "foot_handoff": 4.0,
+        "building_hold": 2.4,
+        "road_convoy": 3.6,
+        "dirt_transfer": 1.8,
+    },
+    "practice": {
+        "foot_handoff": 3.0,
+        "building_hold": 1.8,
+        "road_convoy": 3.0,
+        "dirt_transfer": 1.9,
+        "helo_insert": 1.6,
+        "jet_pass": 0.7,
+        "offroad_armor_leg": 0.6,
+    },
+    "scored": {
+        "foot_handoff": 1.8,
+        "building_hold": 1.2,
+        "road_convoy": 2.8,
+        "dirt_transfer": 1.9,
+        "helo_insert": 2.3,
+        "jet_pass": 2.0,
+        "offroad_armor_leg": 1.3,
+    },
+}
+_RAPID_TRACKING_PHASE_JUMP_RATE = {
+    "ground": 0.08,
+    "practice": 0.18,
+    "scored": 0.34,
+}
+
+
+def _rapid_tracking_rng(*, seed: int, salt: str) -> SeededRng:
+    total = int(seed) ^ 0x45D9F3B
+    for ch in str(salt):
+        total ^= ord(ch) & 0xFFFFFFFF
+        total = (total * 1103515245 + 12345) & 0x7FFFFFFF
+    return SeededRng(total or 1)
+
+
+def _weighted_choice(rng: SeededRng, weighted_items: Sequence[tuple[str, float]]) -> str:
+    total = sum(max(0.0, float(weight)) for _item, weight in weighted_items)
+    if total <= 0.0:
+        return str(weighted_items[0][0])
+    target = rng.uniform(0.0, total)
+    acc = 0.0
+    for item, weight in weighted_items:
+        acc += max(0.0, float(weight))
+        if target <= acc:
+            return str(item)
+    return str(weighted_items[-1][0])
+
+
+def _phase_token(value: str) -> str:
+    return str(value).split(":", 1)[0].strip().lower() or "scored"
+
+
+def _route_arc(route_kind: str, *, rng: SeededRng) -> tuple[float, float]:
+    token = str(route_kind).strip().lower()
+    if token == "foot_handoff":
+        return (rng.uniform(-0.22, 0.22), rng.uniform(0.03, 0.12))
+    if token == "helo_insert":
+        return (
+            rng.uniform(0.12, 0.30) * (-1.0 if rng.random() < 0.5 else 1.0),
+            rng.uniform(-0.20, 0.14),
+        )
+    if token == "jet_pass":
+        return (rng.uniform(-0.38, -0.12), rng.uniform(-0.24, -0.08))
+    return (0.0, 0.0)
+
+
+def _grid_point(ix: int, iy: int) -> tuple[float, float]:
+    x_lo, x_hi, y_lo, y_hi = _RAPID_TRACKING_WORLD_BOUNDS
+    tx = float(ix) / float(max(1, _RAPID_TRACKING_GRID_W - 1))
+    ty = float(iy) / float(max(1, _RAPID_TRACKING_GRID_H - 1))
+    return (
+        _lerp(x_lo, x_hi, tx),
+        _lerp(y_lo, y_hi, ty),
+    )
+
+
+def _grid_index(x: float, y: float) -> tuple[int, int]:
+    x_lo, x_hi, y_lo, y_hi = _RAPID_TRACKING_WORLD_BOUNDS
+    tx = _clamp((float(x) - x_lo) / max(1e-6, x_hi - x_lo), 0.0, 1.0)
+    ty = _clamp((float(y) - y_lo) / max(1e-6, y_hi - y_lo), 0.0, 1.0)
+    return (
+        int(round(tx * (_RAPID_TRACKING_GRID_W - 1))),
+        int(round(ty * (_RAPID_TRACKING_GRID_H - 1))),
+    )
+
+
+def _polyline_midpoint(points: tuple[tuple[float, float], ...]) -> tuple[float, float]:
+    if not points:
+        return (0.0, 0.0)
+    idx = max(0, len(points) // 2)
+    return (float(points[idx][0]), float(points[idx][1]))
+
+
+def _simplify_polyline(points: list[tuple[float, float]]) -> tuple[tuple[float, float], ...]:
+    if len(points) <= 2:
+        return tuple((float(x), float(y)) for x, y in points)
+    simplified = [points[0]]
+    for idx in range(1, len(points) - 1):
+        prev_x, prev_y = simplified[-1]
+        cur_x, cur_y = points[idx]
+        next_x, next_y = points[idx + 1]
+        dx0 = cur_x - prev_x
+        dy0 = cur_y - prev_y
+        dx1 = next_x - cur_x
+        dy1 = next_y - cur_y
+        cross = abs((dx0 * dy1) - (dy0 * dx1))
+        if cross > 1e-4 or idx == len(points) - 2:
+            simplified.append((cur_x, cur_y))
+    simplified.append(points[-1])
+    cleaned = [simplified[0]]
+    for point in simplified[1:]:
+        if _distance_sq(cleaned[-1][0], cleaned[-1][1], point[0], point[1]) > 1e-5:
+            cleaned.append(point)
+    return tuple((float(x), float(y)) for x, y in cleaned)
+
+
+def _placement_clear(
+    *,
+    x: float,
+    y: float,
+    radius: float,
+    pois: Sequence[RapidTrackingPoi],
+    obstacles: Sequence[RapidTrackingObstacle],
+    bounds: tuple[float, float, float, float] = _RAPID_TRACKING_WORLD_BOUNDS,
+) -> bool:
+    if not _point_in_bounds(x=x, y=y, bounds=bounds):
+        return False
+    x_lo, x_hi, y_lo, y_hi = bounds
+    if float(x) < (x_lo + radius) or float(x) > (x_hi - radius):
+        return False
+    if float(y) < (y_lo + radius) or float(y) > (y_hi - radius):
+        return False
+    for poi in pois:
+        if _distance(float(x), float(y), float(poi.x), float(poi.y)) < (float(radius) + float(poi.radius)):
+            return False
+    for obstacle in obstacles:
+        padding = float(radius) + (0.18 if obstacle.kind == "lake" else 0.10)
+        if _ellipse_contains_point(
+            x=float(x),
+            y=float(y),
+            center_x=float(obstacle.x),
+            center_y=float(obstacle.y),
+            radius_x=float(obstacle.radius_x),
+            radius_y=float(obstacle.radius_y),
+            rotation_deg=float(obstacle.rotation_deg),
+            padding=padding,
+        ):
+            return False
+    return True
+
+
+def _sample_point_in_box(rng: SeededRng, box: tuple[float, float, float, float]) -> tuple[float, float]:
+    x_lo, x_hi, y_lo, y_hi = box
+    return (
+        rng.uniform(float(x_lo), float(x_hi)),
+        rng.uniform(float(y_lo), float(y_hi)),
+    )
+
+
+def _build_seeded_bases(*, seed: int, rng: SeededRng) -> tuple[RapidTrackingPoi, ...]:
+    base_variants = ("airbase", "motorpool", "radar", "outpost")
+    bases: list[RapidTrackingPoi] = []
+    for idx, box in enumerate(_RAPID_TRACKING_BASE_ZONE_BOXES):
+        x, y = _sample_point_in_box(rng, box)
+        bases.append(
+            RapidTrackingPoi(
+                poi_id=f"base-{idx}",
+                kind="base",
+                variant=base_variants[idx % len(base_variants)],
+                x=float(x),
+                y=float(y),
+                radius=0.36 + (rapid_tracking_seed_unit(seed=seed, salt=f"base-radius:{idx}") * 0.08),
+            )
+        )
+    return tuple(bases)
+
+
+def _build_seeded_pois(
+    *,
+    seed: int,
+    rng: SeededRng,
+    bases: Sequence[RapidTrackingPoi],
+) -> tuple[RapidTrackingPoi, ...]:
+    poi_variants = ("relay", "depot", "checkpoint", "village", "fuel", "lookout")
+    poi_boxes = (
+        (-3.10, -0.95, 0.22, 0.66),
+        (0.84, 3.00, 0.22, 0.68),
+        (-1.00, 0.88, 0.30, 0.84),
+        (-3.20, -0.96, -0.10, 0.34),
+        (1.00, 3.10, -0.12, 0.34),
+        (-0.88, 0.90, -0.60, 0.02),
+    )
+    pois: list[RapidTrackingPoi] = []
+    used: list[RapidTrackingPoi] = list(bases)
+    for idx, box in enumerate(poi_boxes):
+        radius = 0.20 + (rapid_tracking_seed_unit(seed=seed, salt=f"poi-radius:{idx}") * 0.08)
+        point = None
+        for _ in range(72):
+            x, y = _sample_point_in_box(rng, box)
+            if _placement_clear(x=x, y=y, radius=radius + 0.16, pois=used, obstacles=()):
+                point = (x, y)
+                break
+        if point is None:
+            point = _sample_point_in_box(rng, box)
+        poi = RapidTrackingPoi(
+            poi_id=f"poi-{idx}",
+            kind="poi",
+            variant=poi_variants[idx % len(poi_variants)],
+            x=float(point[0]),
+            y=float(point[1]),
+            radius=float(radius),
+        )
+        pois.append(poi)
+        used.append(poi)
+    return tuple(pois)
+
+
+def _build_seeded_obstacles(
+    *,
+    seed: int,
+    rng: SeededRng,
+    pois: Sequence[RapidTrackingPoi],
+) -> tuple[RapidTrackingObstacle, ...]:
+    specs = (
+        ("lake", (-2.15, -0.55, -0.78, -0.10), 0.46, 0.78, 0.20),
+        ("lake", (0.48, 2.30, 0.02, 0.58), 0.42, 0.70, 0.18),
+        ("hill", (-2.90, -1.20, 0.12, 0.88), 0.42, 0.56, 1.10),
+        ("hill", (-0.42, 1.20, 0.74, 1.34), 0.44, 0.62, 1.30),
+        ("hill", (1.10, 2.86, -0.72, -0.04), 0.40, 0.54, 0.96),
+        ("rock", (-3.38, -2.00, 0.18, 0.82), 0.20, 0.28, 0.32),
+        ("rock", (-0.52, 0.84, -0.80, -0.22), 0.18, 0.24, 0.28),
+        ("rock", (1.42, 2.62, 0.70, 1.28), 0.20, 0.30, 0.30),
+        ("rock", (2.30, 3.42, -0.24, 0.34), 0.18, 0.24, 0.26),
+    )
+    obstacles: list[RapidTrackingObstacle] = []
+    for idx, (kind, box, base_rx, base_ry, base_height) in enumerate(specs):
+        radius_scale = 0.90 + (rapid_tracking_seed_unit(seed=seed, salt=f"obstacle-scale:{idx}") * 0.24)
+        radius_x = base_rx * radius_scale
+        radius_y = base_ry * radius_scale
+        point = None
+        for _ in range(96):
+            x, y = _sample_point_in_box(rng, box)
+            if _placement_clear(x=x, y=y, radius=max(radius_x, radius_y) + 0.20, pois=pois, obstacles=obstacles):
+                point = (x, y)
+                break
+        if point is None:
+            x, y = _sample_point_in_box(rng, box)
+            point = (x, y)
+        obstacles.append(
+            RapidTrackingObstacle(
+                obstacle_id=f"{kind}-{idx}",
+                kind=str(kind),
+                x=float(point[0]),
+                y=float(point[1]),
+                radius_x=float(radius_x),
+                radius_y=float(radius_y),
+                rotation_deg=(rapid_tracking_seed_unit(seed=seed, salt=f"obstacle-rot:{idx}") * 50.0) - 25.0,
+                height=float(base_height) * (0.90 + (rapid_tracking_seed_unit(seed=seed, salt=f"obstacle-height:{idx}") * 0.22)),
+            )
+        )
+    return tuple(obstacles)
+
+
+def _routing_penalty(
+    *,
+    x: float,
+    y: float,
+    obstacles: Sequence[RapidTrackingObstacle],
+) -> float | None:
+    penalty = 0.0
+    for obstacle in obstacles:
+        if obstacle.kind in {"lake", "rock"} and _ellipse_contains_point(
+            x=float(x),
+            y=float(y),
+            center_x=float(obstacle.x),
+            center_y=float(obstacle.y),
+            radius_x=float(obstacle.radius_x),
+            radius_y=float(obstacle.radius_y),
+            rotation_deg=float(obstacle.rotation_deg),
+            padding=0.05,
+        ):
+            return None
+        if obstacle.kind == "hill":
+            if _ellipse_contains_point(
+                x=float(x),
+                y=float(y),
+                center_x=float(obstacle.x),
+                center_y=float(obstacle.y),
+                radius_x=float(obstacle.radius_x),
+                radius_y=float(obstacle.radius_y),
+                rotation_deg=float(obstacle.rotation_deg),
+                padding=0.04,
+            ):
+                penalty += 2.8
+            elif _ellipse_contains_point(
+                x=float(x),
+                y=float(y),
+                center_x=float(obstacle.x),
+                center_y=float(obstacle.y),
+                radius_x=float(obstacle.radius_x),
+                radius_y=float(obstacle.radius_y),
+                rotation_deg=float(obstacle.rotation_deg),
+                padding=0.22,
+            ):
+                penalty += 0.85
+    return penalty
+
+
+def _astar_track_path(
+    *,
+    start: tuple[float, float],
+    goal: tuple[float, float],
+    obstacles: Sequence[RapidTrackingObstacle],
+) -> tuple[tuple[float, float], ...]:
+    start_idx = _grid_index(float(start[0]), float(start[1]))
+    goal_idx = _grid_index(float(goal[0]), float(goal[1]))
+    open_heap: list[tuple[float, float, tuple[int, int]]] = []
+    heapq.heappush(open_heap, (0.0, 0.0, start_idx))
+    came_from: dict[tuple[int, int], tuple[int, int]] = {}
+    g_score: dict[tuple[int, int], float] = {start_idx: 0.0}
+    visited: set[tuple[int, int]] = set()
+    neighbors = (
+        (-1, 0),
+        (1, 0),
+        (0, -1),
+        (0, 1),
+        (-1, -1),
+        (-1, 1),
+        (1, -1),
+        (1, 1),
+    )
+
+    while open_heap:
+        _f_score, current_g, current = heapq.heappop(open_heap)
+        if current in visited:
+            continue
+        visited.add(current)
+        if current == goal_idx:
+            break
+
+        current_x, current_y = _grid_point(current[0], current[1])
+        for dx, dy in neighbors:
+            nxt = (current[0] + dx, current[1] + dy)
+            if nxt[0] < 0 or nxt[0] >= _RAPID_TRACKING_GRID_W or nxt[1] < 0 or nxt[1] >= _RAPID_TRACKING_GRID_H:
+                continue
+            nxt_x, nxt_y = _grid_point(nxt[0], nxt[1])
+            penalty = _routing_penalty(x=nxt_x, y=nxt_y, obstacles=obstacles)
+            if penalty is None:
+                continue
+            step_cost = _distance(current_x, current_y, nxt_x, nxt_y)
+            tentative = float(current_g) + step_cost + float(penalty)
+            if tentative >= g_score.get(nxt, math.inf):
+                continue
+            came_from[nxt] = current
+            g_score[nxt] = tentative
+            heuristic = _distance(nxt_x, nxt_y, float(goal[0]), float(goal[1]))
+            heapq.heappush(open_heap, (tentative + heuristic, tentative, nxt))
+
+    if goal_idx not in came_from and goal_idx != start_idx:
+        return (tuple(float(v) for v in start), tuple(float(v) for v in goal))
+
+    path_indices = [goal_idx]
+    while path_indices[-1] != start_idx:
+        path_indices.append(came_from[path_indices[-1]])
+    path_indices.reverse()
+    path_points = [_grid_point(ix, iy) for ix, iy in path_indices]
+    path_points[0] = (float(start[0]), float(start[1]))
+    path_points[-1] = (float(goal[0]), float(goal[1]))
+    return _simplify_polyline(path_points)
+
+
+def _build_seeded_building_anchors(
+    *,
+    seed: int,
+    bases: Sequence[RapidTrackingPoi],
+    pois: Sequence[RapidTrackingPoi],
+) -> tuple[RapidTrackingAnchor, ...]:
+    anchors: list[RapidTrackingAnchor] = []
+    for idx, base in enumerate(bases):
+        offsets = ((-0.18, 0.12, "hangar"), (0.22, -0.04, "tower"))
+        for sub_idx, (off_x, off_y, variant) in enumerate(offsets):
+            anchors.append(
+                RapidTrackingAnchor(
+                    anchor_id=f"{base.poi_id}-{variant}-{sub_idx}",
+                    family="building",
+                    variant=variant,
+                    x=float(base.x + off_x),
+                    y=float(base.y + off_y),
+                )
+            )
+    poi_variants = ("garage", "hangar", "tower", "garage", "hangar", "tower")
+    for idx, poi in enumerate(pois):
+        variant = poi_variants[idx % len(poi_variants)]
+        anchors.append(
+            RapidTrackingAnchor(
+                anchor_id=f"{poi.poi_id}-{variant}",
+                family="building",
+                variant=variant,
+                x=float(poi.x + (0.10 if idx % 2 == 0 else -0.10)),
+                y=float(poi.y + (0.06 if idx % 3 == 0 else -0.04)),
+            )
+        )
+    return tuple(anchors)
+
+
+def _build_seeded_patrol_anchors(
+    *,
+    seed: int,
+    pois: Sequence[RapidTrackingPoi],
+) -> tuple[RapidTrackingAnchor, ...]:
+    anchors: list[RapidTrackingAnchor] = []
+    for idx, poi in enumerate(pois):
+        angle = rapid_tracking_seed_unit(seed=seed, salt=f"patrol-angle:{poi.poi_id}") * math.tau
+        radius = max(0.16, float(poi.radius) + 0.08)
+        for sub_idx, phase in enumerate((0.0, math.pi)):
+            anchors.append(
+                RapidTrackingAnchor(
+                    anchor_id=f"patrol-{poi.poi_id}-{sub_idx}",
+                    family="patrol",
+                    variant="patrol",
+                    x=float(poi.x + (math.cos(angle + phase) * radius)),
+                    y=float(poi.y + (math.sin(angle + phase) * radius)),
+                )
+            )
+    return tuple(anchors)
+
+
+def _build_handoff_zones(
+    *,
+    pois: Sequence[RapidTrackingPoi],
+    patrols: Sequence[RapidTrackingAnchor],
+) -> tuple[RapidTrackingHandoffZone, ...]:
+    patrol_lookup = {anchor.anchor_id.split("-")[1]: anchor for anchor in patrols}
+    zones: list[RapidTrackingHandoffZone] = []
+    for poi in pois:
+        anchor = patrol_lookup.get(str(poi.poi_id).split("-", 1)[1], patrols[0] if patrols else None)
+        anchor_id = anchor.anchor_id if anchor is not None else ""
+        carrier_kinds = ("soldier", "truck") if poi.kind == "base" else ("soldier",)
+        zones.append(
+            RapidTrackingHandoffZone(
+                zone_id=f"handoff-{poi.poi_id}",
+                anchor_id=anchor_id,
+                x=float(poi.x),
+                y=float(poi.y),
+                carrier_kinds=carrier_kinds,
+            )
+        )
+    return tuple(zones)
+
+
+def _build_ridge_anchors(obstacles: Sequence[RapidTrackingObstacle]) -> tuple[RapidTrackingAnchor, ...]:
+    ridges: list[RapidTrackingAnchor] = []
+    for idx, obstacle in enumerate(obstacles):
+        if obstacle.kind != "hill":
+            continue
+        ridges.append(
+            RapidTrackingAnchor(
+                anchor_id=f"ridge-{idx}",
+                family="ridge",
+                variant="ridge",
+                x=float(obstacle.x),
+                y=float(obstacle.y),
+            )
+        )
+    return tuple(ridges)
+
+
+def _minimum_spanning_edges(pois: Sequence[RapidTrackingPoi]) -> list[tuple[int, int]]:
+    if len(pois) <= 1:
+        return []
+    remaining = set(range(1, len(pois)))
+    connected = {0}
+    edges: list[tuple[int, int]] = []
+    while remaining:
+        best: tuple[float, int, int] | None = None
+        for a in connected:
+            for b in remaining:
+                distance = _distance(float(pois[a].x), float(pois[a].y), float(pois[b].x), float(pois[b].y))
+                candidate = (distance, a, b)
+                if best is None or candidate < best:
+                    best = candidate
+        assert best is not None
+        _, a_idx, b_idx = best
+        edges.append((a_idx, b_idx))
+        connected.add(b_idx)
+        remaining.remove(b_idx)
+    return edges
+
+
+def _build_seeded_road_network(
+    *,
+    seed: int,
+    bases: Sequence[RapidTrackingPoi],
+    pois: Sequence[RapidTrackingPoi],
+    obstacles: Sequence[RapidTrackingObstacle],
+) -> tuple[tuple[RapidTrackingRoadSegment, ...], tuple[RapidTrackingAnchor, ...]]:
+    segments: list[RapidTrackingRoadSegment] = []
+    anchors: list[RapidTrackingAnchor] = []
+    edge_pairs = _minimum_spanning_edges(bases)
+    extra_pair: tuple[int, int] | None = None
+    best_extra = -1.0
+    for a_idx in range(len(bases)):
+        for b_idx in range(a_idx + 1, len(bases)):
+            if (a_idx, b_idx) in edge_pairs or (b_idx, a_idx) in edge_pairs:
+                continue
+            distance = _distance(float(bases[a_idx].x), float(bases[a_idx].y), float(bases[b_idx].x), float(bases[b_idx].y))
+            if distance > best_extra:
+                best_extra = distance
+                extra_pair = (a_idx, b_idx)
+    if extra_pair is not None:
+        edge_pairs.append(extra_pair)
+
+    def add_segment(*, surface: str, start_id: str, start_xy: tuple[float, float], end_id: str, end_xy: tuple[float, float], seg_idx: int) -> None:
+        polyline = _astar_track_path(start=start_xy, goal=end_xy, obstacles=obstacles)
+        anchor_ids: list[str] = []
+        for point_idx, point in enumerate(polyline):
+            anchor_id = f"road-{surface}-{seg_idx}-{point_idx}"
+            anchors.append(
+                RapidTrackingAnchor(
+                    anchor_id=anchor_id,
+                    family="road",
+                    variant=surface,
+                    x=float(point[0]),
+                    y=float(point[1]),
+                )
+            )
+            anchor_ids.append(anchor_id)
+        if len(anchor_ids) < 2:
+            return
+        segments.append(
+            RapidTrackingRoadSegment(
+                segment_id=f"{surface}-{start_id}-{end_id}",
+                surface=surface,
+                start_anchor_id=anchor_ids[0],
+                end_anchor_id=anchor_ids[-1],
+                anchor_ids=tuple(anchor_ids),
+                points=polyline,
+            )
+        )
+
+    for seg_idx, (a_idx, b_idx) in enumerate(edge_pairs):
+        add_segment(
+            surface="paved",
+            start_id=bases[a_idx].poi_id,
+            start_xy=(float(bases[a_idx].x), float(bases[a_idx].y)),
+            end_id=bases[b_idx].poi_id,
+            end_xy=(float(bases[b_idx].x), float(bases[b_idx].y)),
+            seg_idx=seg_idx,
+        )
+    offset = len(segments)
+    for seg_idx, poi in enumerate(pois):
+        nearest = min(
+            bases,
+            key=lambda base: _distance(float(base.x), float(base.y), float(poi.x), float(poi.y)),
+        )
+        add_segment(
+            surface="dirt",
+            start_id=poi.poi_id,
+            start_xy=(float(poi.x), float(poi.y)),
+            end_id=nearest.poi_id,
+            end_xy=(float(nearest.x), float(nearest.y)),
+            seg_idx=offset + seg_idx,
+        )
+    return tuple(segments), tuple(anchors)
+
+
+def _build_air_anchors(
+    *,
+    bases: Sequence[RapidTrackingPoi],
+    pois: Sequence[RapidTrackingPoi],
+) -> tuple[tuple[RapidTrackingAnchor, ...], tuple[RapidTrackingAnchor, ...]]:
+    helos: list[RapidTrackingAnchor] = []
+    for idx, poi in enumerate((*bases[:2], *pois[:4])):
+        helos.append(
+            RapidTrackingAnchor(
+                anchor_id=f"helo-{idx}",
+                family="helicopter",
+                variant="air",
+                x=float(poi.x + (0.18 if idx % 2 == 0 else -0.20)),
+                y=float(poi.y - 0.26),
+            )
+        )
+    jets = [
+        RapidTrackingAnchor(anchor_id="jet-left-low", family="jet", variant="red", x=-4.0, y=-0.72),
+        RapidTrackingAnchor(anchor_id="jet-right-low", family="jet", variant="yellow", x=3.85, y=-0.52),
+        RapidTrackingAnchor(anchor_id="jet-left-mid", family="jet", variant="blue", x=-3.95, y=0.12),
+        RapidTrackingAnchor(anchor_id="jet-right-mid", family="jet", variant="green", x=3.92, y=0.18),
+        RapidTrackingAnchor(anchor_id="jet-left-high", family="jet", variant="red", x=-4.05, y=0.88),
+        RapidTrackingAnchor(anchor_id="jet-right-high", family="jet", variant="yellow", x=3.88, y=0.98),
+    ]
+    return tuple(helos), tuple(jets)
+
+
+def _build_scenic_clusters(
+    *,
+    seed: int,
+    rng: SeededRng,
+    pois: Sequence[RapidTrackingPoi],
+    obstacles: Sequence[RapidTrackingObstacle],
+    road_anchors: Sequence[RapidTrackingAnchor],
+) -> tuple[RapidTrackingFoliageCluster, ...]:
+    clusters: list[RapidTrackingFoliageCluster] = []
+    for idx, poi in enumerate(pois[:8]):
+        clusters.append(
+            RapidTrackingFoliageCluster(
+                cluster_id=f"shrub-{idx}",
+                asset_id="shrubs_low_cluster",
+                fallback="shrub",
+                x=float(poi.x + (0.14 if idx % 2 == 0 else -0.14)),
+                y=float(poi.y + (0.18 if idx % 3 == 0 else -0.12)),
+                radius=0.10 + (rapid_tracking_seed_unit(seed=seed, salt=f"shrub-radius:{idx}") * 0.10),
+                count=4 + int(idx % 3),
+                scale=0.92 + (rapid_tracking_seed_unit(seed=seed, salt=f"shrub-scale:{idx}") * 0.28),
+            )
+        )
+    hill_obstacles = [obstacle for obstacle in obstacles if obstacle.kind == "hill"]
+    for idx, obstacle in enumerate(hill_obstacles):
+        clusters.append(
+            RapidTrackingFoliageCluster(
+                cluster_id=f"tree-{idx}",
+                asset_id="trees_field_cluster",
+                fallback="trees",
+                x=float(obstacle.x),
+                y=float(obstacle.y + obstacle.radius_y + 0.14),
+                radius=0.20 + (rapid_tracking_seed_unit(seed=seed, salt=f"tree-radius:{idx}") * 0.10),
+                count=4 + idx,
+                scale=1.10 + (rapid_tracking_seed_unit(seed=seed, salt=f"tree-scale:{idx}") * 0.34),
+            )
+        )
+    for idx, obstacle in enumerate(obstacles):
+        if obstacle.kind != "lake":
+            continue
+        clusters.append(
+            RapidTrackingFoliageCluster(
+                cluster_id=f"forest-{idx}",
+                asset_id="forest_canopy_patch",
+                fallback="forest",
+                x=float(obstacle.x + obstacle.radius_x + 0.22),
+                y=float(obstacle.y),
+                radius=0.26 + (rapid_tracking_seed_unit(seed=seed, salt=f"forest-radius:{idx}") * 0.10),
+                count=5 + idx,
+                scale=1.90 + (rapid_tracking_seed_unit(seed=seed, salt=f"forest-scale:{idx}") * 0.42),
+            )
+        )
+    road_sample = road_anchors[:: max(1, len(road_anchors) // 6)] if road_anchors else ()
+    for idx, anchor in enumerate(road_sample[:6]):
+        clusters.append(
+            RapidTrackingFoliageCluster(
+                cluster_id=f"pine-{idx}",
+                asset_id="trees_pine_cluster" if idx % 2 == 0 else "trees_field_cluster",
+                fallback="trees",
+                x=float(anchor.x + (0.12 if idx % 2 == 0 else -0.12)),
+                y=float(anchor.y + (0.16 if idx % 3 == 0 else -0.14)),
+                radius=0.18 + (rng.uniform(0.0, 0.10)),
+                count=3 + int(idx % 3),
+                scale=1.18 + rng.uniform(0.0, 0.32),
+            )
+        )
+    return tuple(clusters)
+
+
+def _cover_for_points(
+    *,
+    points: tuple[tuple[float, float], ...],
+    ridges: Sequence[RapidTrackingAnchor],
+) -> tuple[str, str]:
+    if not points or not ridges:
+        return "open", ""
+    mid_x, mid_y = _polyline_midpoint(points)
+    nearest = min(ridges, key=lambda ridge: _distance(float(ridge.x), float(ridge.y), mid_x, mid_y))
+    if _distance(float(nearest.x), float(nearest.y), mid_x, mid_y) <= 0.95:
+        return "terrain", str(nearest.anchor_id)
+    return "open", ""
+
+
+def _build_seeded_traffic_routes(
+    *,
+    seed: int,
+    bases: Sequence[RapidTrackingPoi],
+    pois: Sequence[RapidTrackingPoi],
+    buildings: Sequence[RapidTrackingAnchor],
+    patrols: Sequence[RapidTrackingAnchor],
+    roads: Sequence[RapidTrackingRoadSegment],
+    road_anchors: Sequence[RapidTrackingAnchor],
+    helos: Sequence[RapidTrackingAnchor],
+    jets: Sequence[RapidTrackingAnchor],
+    ridges: Sequence[RapidTrackingAnchor],
+) -> tuple[RapidTrackingTrafficRoute, ...]:
+    routes: list[RapidTrackingTrafficRoute] = []
+    patrol_by_zone: dict[str, list[RapidTrackingAnchor]] = {}
+    for anchor in patrols:
+        zone_key = str(anchor.anchor_id).rsplit("-", 1)[0].removeprefix("patrol-")
+        patrol_by_zone.setdefault(zone_key, []).append(anchor)
+
+    for building in buildings:
+        routes.append(
+            RapidTrackingTrafficRoute(
+                route_id=f"building:{building.anchor_id}",
+                route_kind="building_hold",
+                carrier_kind="building",
+                variant=str(building.variant),
+                start_anchor_id=str(building.anchor_id),
+                end_anchor_id=str(building.anchor_id),
+                base_duration_s=1.20 + (rapid_tracking_seed_unit(seed=seed, salt=f"duration:{building.anchor_id}") * 0.28),
+                cover_mode="building",
+                focus_anchor_id=str(building.anchor_id),
+            )
+        )
+
+    zones = (*bases, *pois)
+    for idx, zone in enumerate(zones):
+        zone_patrols = patrol_by_zone.get(zone.poi_id, [])
+        if len(zone_patrols) >= 2:
+            start = zone_patrols[0]
+            end = zone_patrols[1]
+            routes.append(
+                RapidTrackingTrafficRoute(
+                    route_id=f"foot-local:{zone.poi_id}",
+                    route_kind="foot_handoff",
+                    carrier_kind="soldier",
+                    variant="target",
+                    start_anchor_id=str(start.anchor_id),
+                    end_anchor_id=str(end.anchor_id),
+                    base_duration_s=7.4,
+                    cover_mode="open",
+                )
+            )
+    for idx, zone in enumerate(zones):
+        nearest = None
+        nearest_distance = math.inf
+        for other in zones:
+            if other.poi_id == zone.poi_id:
+                continue
+            distance = _distance(float(zone.x), float(zone.y), float(other.x), float(other.y))
+            if distance < nearest_distance:
+                nearest = other
+                nearest_distance = distance
+        if nearest is None:
+            continue
+        start = patrol_by_zone.get(zone.poi_id, ())
+        end = patrol_by_zone.get(nearest.poi_id, ())
+        if not start or not end:
+            continue
+        cover_mode, focus_anchor_id = _cover_for_points(
+            points=((float(start[0].x), float(start[0].y)), (float(end[0].x), float(end[0].y))),
+            ridges=ridges,
+        )
+        routes.append(
+            RapidTrackingTrafficRoute(
+                route_id=f"foot-link:{zone.poi_id}:{nearest.poi_id}",
+                route_kind="foot_handoff",
+                carrier_kind="soldier",
+                variant="target",
+                start_anchor_id=str(start[0].anchor_id),
+                end_anchor_id=str(end[0].anchor_id),
+                base_duration_s=max(7.6, nearest_distance * 4.8),
+                cover_mode=cover_mode,
+                focus_anchor_id=focus_anchor_id,
+            )
+        )
+
+    armor_variant_for_index = ("tracked", "tracked", "tracked")
+    for segment in roads:
+        cover_mode, focus_anchor_id = _cover_for_points(points=segment.points, ridges=ridges)
+        points = segment.points
+        for idx in range(max(0, len(segment.anchor_ids) - 1)):
+            start_anchor_id = segment.anchor_ids[idx]
+            end_anchor_id = segment.anchor_ids[idx + 1]
+            start = points[idx]
+            end = points[idx + 1]
+            surface = str(segment.surface)
+            route_kind = "road_convoy" if surface == "paved" else "dirt_transfer"
+            leg_distance = _distance(float(start[0]), float(start[1]), float(end[0]), float(end[1]))
+            routes.append(
+                RapidTrackingTrafficRoute(
+                    route_id=f"{route_kind}:{segment.segment_id}:{idx}",
+                    route_kind=route_kind,
+                    carrier_kind="truck",
+                    variant="olive",
+                    start_anchor_id=start_anchor_id,
+                    end_anchor_id=end_anchor_id,
+                    base_duration_s=max(1.8, leg_distance * (4.6 if route_kind == "road_convoy" else 5.4)),
+                    cover_mode=cover_mode,
+                    focus_anchor_id=focus_anchor_id,
+                    surface=surface,
+                )
+            )
+
+    if len(zones) >= 2:
+        offroad_pairs = (
+            (zones[0], zones[-1]),
+            (zones[1], zones[-2]),
+            (zones[2], zones[-3]),
+        )
+        for idx, (start_zone, end_zone) in enumerate(offroad_pairs):
+            start_patrols = patrol_by_zone.get(start_zone.poi_id, ())
+            end_patrols = patrol_by_zone.get(end_zone.poi_id, ())
+            if not start_patrols or not end_patrols:
+                continue
+            start_anchor_id = str(start_patrols[0].anchor_id)
+            end_anchor_id = str(end_patrols[-1].anchor_id)
+            path = (
+                (float(start_patrols[0].x), float(start_patrols[0].y)),
+                (float(end_patrols[-1].x), float(end_patrols[-1].y)),
+            )
+            cover_mode, focus_anchor_id = _cover_for_points(points=path, ridges=ridges)
+            routes.append(
+                RapidTrackingTrafficRoute(
+                    route_id=f"armor-leg:{idx}",
+                    route_kind="offroad_armor_leg",
+                    carrier_kind="truck",
+                    variant=armor_variant_for_index[idx % len(armor_variant_for_index)],
+                    start_anchor_id=start_anchor_id,
+                    end_anchor_id=end_anchor_id,
+                    base_duration_s=2.6 + (idx * 0.32),
+                    cover_mode=cover_mode,
+                    focus_anchor_id=focus_anchor_id,
+                    surface="offroad",
+                )
+            )
+
+    helo_pairs = tuple(zip(helos, helos[1:], strict=False))
+    for idx, (start, end) in enumerate(helo_pairs):
+        cover_mode, focus_anchor_id = _cover_for_points(
+            points=((float(start.x), float(start.y)), (float(end.x), float(end.y))),
+            ridges=ridges,
+        )
+        routes.append(
+            RapidTrackingTrafficRoute(
+                route_id=f"helo:{idx}",
+                route_kind="helo_insert",
+                carrier_kind="helicopter",
+                variant="green",
+                start_anchor_id=str(start.anchor_id),
+                end_anchor_id=str(end.anchor_id),
+                base_duration_s=3.2 + (idx * 0.12),
+                cover_mode=cover_mode,
+                focus_anchor_id=focus_anchor_id,
+            )
+        )
+
+    for idx in range(0, max(0, len(jets) - 1), 2):
+        start = jets[idx]
+        end = jets[idx + 1]
+        routes.append(
+            RapidTrackingTrafficRoute(
+                route_id=f"jet:{idx // 2}",
+                route_kind="jet_pass",
+                carrier_kind="jet",
+                variant=str(start.variant or "yellow"),
+                start_anchor_id=str(start.anchor_id),
+                end_anchor_id=str(end.anchor_id),
+                base_duration_s=2.0 + (idx * 0.08),
+                cover_mode="open",
+            )
+        )
+
+    return tuple(routes)
+
+
+def _build_seeded_rapid_tracking_layout(*, seed: int) -> RapidTrackingCompoundLayout:
+    rng = _rapid_tracking_rng(seed=seed, salt="layout:v2")
+    orbit_direction = -1 if rng.random() < 0.5 else 1
+    orbit_phase_offset = rng.uniform(0.0, math.tau)
+    orbit_radius_scale = rng.uniform(0.94, 1.16)
+    altitude_bias = rng.uniform(-0.8, 1.6)
+    ridge_phase = rng.uniform(-math.pi, math.pi)
+    ridge_amp_scale = rng.uniform(0.90, 1.20)
+    path_lateral_bias = rng.uniform(-0.18, 0.18)
+
+    bases = _build_seeded_bases(seed=seed, rng=rng)
+    pois = _build_seeded_pois(seed=seed, rng=rng, bases=bases)
+    zones = (*bases, *pois)
+    obstacles = _build_seeded_obstacles(seed=seed, rng=rng, pois=zones)
+    buildings = _build_seeded_building_anchors(seed=seed, bases=bases, pois=pois)
+    patrols = _build_seeded_patrol_anchors(seed=seed, pois=zones)
+    handoff_zones = tuple(
+        RapidTrackingHandoffZone(
+            zone_id=f"handoff-{zone.poi_id}",
+            anchor_id=f"patrol-{zone.poi_id}-0",
+            x=float(zone.x),
+            y=float(zone.y),
+            carrier_kinds=("soldier", "truck") if zone.kind == "base" else ("soldier",),
+        )
+        for zone in zones
+    )
+    ridges = _build_ridge_anchors(obstacles)
+    road_segments, road_anchors = _build_seeded_road_network(
+        seed=seed,
+        bases=bases,
+        pois=pois,
+        obstacles=obstacles,
+    )
+    helos, jets = _build_air_anchors(bases=bases, pois=pois)
+    scenic_clusters = _build_scenic_clusters(
+        seed=seed,
+        rng=rng,
+        pois=zones,
+        obstacles=obstacles,
+        road_anchors=road_anchors,
+    )
+    shrub_clusters = tuple(cluster for cluster in scenic_clusters if cluster.asset_id == "shrubs_low_cluster")
+    tree_clusters = tuple(cluster for cluster in scenic_clusters if cluster.asset_id == "trees_field_cluster")
+    forest_clusters = tuple(cluster for cluster in scenic_clusters if cluster.asset_id == "forest_canopy_patch")
+    traffic_routes = _build_seeded_traffic_routes(
+        seed=seed,
+        bases=bases,
+        pois=pois,
+        buildings=buildings,
+        patrols=patrols,
+        roads=road_segments,
+        road_anchors=road_anchors,
+        helos=helos,
+        jets=jets,
+        ridges=ridges,
+    )
+    compound_center_x = sum(float(base.x) for base in bases) / max(1, len(bases))
+    compound_center_y = sum(float(base.y) for base in bases) / max(1, len(bases))
+    return RapidTrackingCompoundLayout(
+        seed=int(seed),
+        orbit_direction=int(orbit_direction),
+        orbit_phase_offset=float(orbit_phase_offset),
+        orbit_radius_scale=float(orbit_radius_scale),
+        altitude_bias=float(altitude_bias),
+        ridge_phase=float(ridge_phase),
+        ridge_amp_scale=float(ridge_amp_scale),
+        path_lateral_bias=float(path_lateral_bias),
+        compound_center_x=float(compound_center_x),
+        compound_center_y=float(compound_center_y),
+        bases=tuple(bases),
+        pois=tuple(pois),
+        obstacles=tuple(obstacles),
+        road_segments=tuple(road_segments),
+        handoff_zones=tuple(handoff_zones),
+        traffic_routes=tuple(traffic_routes),
+        scenic_clusters=tuple(scenic_clusters),
+        building_anchors=tuple(buildings),
+        patrol_anchors=tuple(patrols),
+        road_anchors=tuple(road_anchors),
+        helicopter_anchors=tuple(helos),
+        jet_anchors=tuple(jets),
+        ridge_anchors=tuple(ridges),
+        shrub_clusters=tuple(shrub_clusters),
+        tree_clusters=tuple(tree_clusters),
+        forest_clusters=tuple(forest_clusters),
+    )
+
+
+def _pick_route_candidate(
+    *,
+    rng: SeededRng,
+    anchors: dict[str, RapidTrackingAnchor],
+    previous_end: str,
+    routes: Sequence[RapidTrackingTrafficRoute],
+    recent_route_ids: Sequence[str],
+    recent_buildings: Sequence[str],
+) -> RapidTrackingTrafficRoute | None:
+    if not routes:
+        return None
+    previous = anchors.get(str(previous_end))
+
+    def score(route: RapidTrackingTrafficRoute) -> tuple[float, float, float]:
+        start = anchors.get(str(route.start_anchor_id))
+        distance = 0.0
+        if previous is not None and start is not None:
+            distance = _distance(float(previous.x), float(previous.y), float(start.x), float(start.y))
+        route_penalty = 2.2 if route.route_id in recent_route_ids else 0.0
+        building_penalty = 1.5 if route.route_kind == "building_hold" and route.start_anchor_id in recent_buildings else 0.0
+        return (distance + route_penalty + building_penalty, route_penalty, building_penalty)
+
+    ranked = sorted(routes, key=score)
+    shortlist = tuple(ranked[: min(4, len(ranked))])
+    return rng.choice(shortlist)
+
+
+def _build_seeded_rapid_tracking_schedule(
+    *,
+    seed: int,
+    layout: RapidTrackingCompoundLayout,
+    phase_key: str,
+    allowed_target_kinds: Sequence[str] | None = None,
+    allowed_cover_modes: Sequence[str] | None = None,
+    allowed_handoff_modes: Sequence[str] | None = None,
+) -> tuple[RapidTrackingSceneSegment, ...]:
+    phase = _phase_token(phase_key)
+    rng = _rapid_tracking_rng(seed=seed, salt=f"schedule:{phase_key}")
+    anchors = _anchor_lookup(layout)
+    target_kinds = {
+        str(kind).strip().lower()
+        for kind in (
+            tuple(allowed_target_kinds)
+            if allowed_target_kinds is not None
+            else RAPID_TRACKING_TARGET_KIND_ORDER
+        )
+    }
+    cover_modes = {
+        str(mode).strip().lower()
+        for mode in (
+            tuple(allowed_cover_modes)
+            if allowed_cover_modes is not None
+            else ("open", "building", "terrain")
+        )
+    }
+    handoff_modes = {
+        str(mode).strip().lower()
+        for mode in (
+            tuple(allowed_handoff_modes)
+            if allowed_handoff_modes is not None
+            else ("smooth", "jump")
+        )
+    }
+    filtered_routes = tuple(
+        route
+        for route in layout.traffic_routes
+        if str(route.carrier_kind).strip().lower() in target_kinds
+        and str(route.cover_mode).strip().lower() in cover_modes
+    )
+    if not filtered_routes:
+        return ()
+
+    weights = dict(_RAPID_TRACKING_PHASE_ROUTE_WEIGHTS.get(phase, _RAPID_TRACKING_PHASE_ROUTE_WEIGHTS["scored"]))
+    available_by_kind: dict[str, list[RapidTrackingTrafficRoute]] = {}
+    for route in filtered_routes:
+        available_by_kind.setdefault(str(route.route_kind), []).append(route)
+    weighted_families = [
+        (route_kind, weight)
+        for route_kind, weight in weights.items()
+        if route_kind in available_by_kind and available_by_kind[route_kind]
+    ]
+    if not weighted_families:
+        weighted_families = [(next(iter(available_by_kind)), 1.0)]
+
+    jump_rate = float(_RAPID_TRACKING_PHASE_JUMP_RATE.get(phase, 0.24))
+    if handoff_modes == {"smooth"}:
+        jump_rate = 0.0
+    elif handoff_modes == {"jump"}:
+        jump_rate = 1.0
+
+    previous_end = layout.handoff_zones[0].anchor_id if layout.handoff_zones else filtered_routes[0].start_anchor_id
+    recent_route_ids: list[str] = []
+    recent_buildings: list[str] = []
+    segments: list[RapidTrackingSceneSegment] = []
+    segment_count = int(_RAPID_TRACKING_PHASE_SEGMENT_COUNTS.get(phase, 16))
+    seeded_route_pool = tuple(
+        route for route in filtered_routes if any(route.route_kind == family for family, _weight in weighted_families)
+    )
+
+    def append_route(route: RapidTrackingTrafficRoute, *, idx: int) -> None:
+        nonlocal previous_end
+        if route.route_kind == "building_hold":
+            recent_buildings.append(str(route.start_anchor_id))
+        recent_route_ids.append(str(route.route_id))
+        handoff = "smooth"
+        if idx > 0 and "jump" in handoff_modes and (rng.random() < jump_rate):
+            handoff = "jump"
+        if handoff == "smooth" and "smooth" not in handoff_modes and "jump" in handoff_modes:
+            handoff = "jump"
+        arc_x, arc_y = _route_arc(route.route_kind, rng=rng)
+        duration = float(route.base_duration_s) * (0.92 + rng.uniform(0.0, 0.18))
+        speed_profile = str(route.carrier_kind)
+        if route.route_kind == "offroad_armor_leg":
+            speed_profile = "truck"
+        segments.append(
+            RapidTrackingSceneSegment(
+                kind=str(route.carrier_kind),
+                variant=str(route.variant),
+                route_kind=str(route.route_kind),
+                start_anchor_id=str(route.start_anchor_id),
+                end_anchor_id=str(route.end_anchor_id),
+                duration_s=float(duration),
+                handoff=handoff,
+                cover_mode=str(route.cover_mode),
+                focus_anchor_id=str(route.focus_anchor_id),
+                speed_profile=speed_profile,
+                arc_x=float(arc_x),
+                arc_y=float(arc_y),
+            )
+        )
+        previous_end = str(route.end_anchor_id)
+
+    seeded_routes: list[RapidTrackingTrafficRoute] = []
+    kind_priority = ("soldier", "building", "truck", "helicopter", "jet")
+    for carrier_kind in kind_priority:
+        candidate = _pick_route_candidate(
+            rng=rng,
+            anchors=anchors,
+            previous_end=previous_end,
+            routes=tuple(route for route in seeded_route_pool if route.carrier_kind == carrier_kind),
+            recent_route_ids=tuple(recent_route_ids[-4:]),
+            recent_buildings=tuple(recent_buildings[-2:]),
+        )
+        if candidate is not None:
+            seeded_routes.append(candidate)
+            previous_end = str(candidate.end_anchor_id)
+    if phase == "scored":
+        smooth_truck = _pick_route_candidate(
+            rng=rng,
+            anchors=anchors,
+            previous_end=previous_end,
+            routes=tuple(
+                route
+                for route in seeded_route_pool
+                if route.carrier_kind == "truck" and route.cover_mode == "open"
+            ),
+            recent_route_ids=tuple(recent_route_ids[-4:]),
+            recent_buildings=tuple(recent_buildings[-2:]),
+        )
+        if smooth_truck is not None:
+            seeded_routes.append(smooth_truck)
+            previous_end = str(smooth_truck.end_anchor_id)
+        terrain_truck = _pick_route_candidate(
+            rng=rng,
+            anchors=anchors,
+            previous_end=previous_end,
+            routes=tuple(
+                route
+                for route in seeded_route_pool
+                if route.carrier_kind == "truck" and route.cover_mode == "terrain"
+            ),
+            recent_route_ids=tuple(recent_route_ids[-4:]),
+            recent_buildings=tuple(recent_buildings[-2:]),
+        )
+        if terrain_truck is not None:
+            seeded_routes.append(terrain_truck)
+            previous_end = str(terrain_truck.end_anchor_id)
+    previous_end = layout.handoff_zones[0].anchor_id if layout.handoff_zones else filtered_routes[0].start_anchor_id
+    for idx, route in enumerate(seeded_routes[:segment_count]):
+        append_route(route, idx=idx)
+
+    for idx in range(len(segments), segment_count):
+        route_kind = _weighted_choice(rng, weighted_families)
+        route = _pick_route_candidate(
+            rng=rng,
+            anchors=anchors,
+            previous_end=previous_end,
+            routes=available_by_kind.get(route_kind, ()),
+            recent_route_ids=tuple(recent_route_ids[-4:]),
+            recent_buildings=tuple(recent_buildings[-2:]),
+        )
+        if route is None:
+            break
+        append_route(route, idx=idx)
+
+    return tuple(segments)
 
 def build_rapid_tracking_compound_layout(*, seed: int) -> RapidTrackingCompoundLayout:
     return RapidTrackingScenarioGenerator(seed=seed).build().layout
@@ -1926,9 +3186,11 @@ class RapidTrackingEngine:
 
         one_minus = 1.0 - u
         kind = self._target_kind
-        dominant_ground_axis_x = abs(self._segment_end_x - self._segment_start_x) >= abs(
-            self._segment_end_y - self._segment_start_y
-        )
+        route_dx = self._segment_end_x - self._segment_start_x
+        route_dy = self._segment_end_y - self._segment_start_y
+        route_length = max(1e-6, math.hypot(route_dx, route_dy))
+        route_dir_x = route_dx / route_length
+        route_dir_y = route_dy / route_length
 
         if kind == "building":
             self._target_x = float(self._segment_end_x)
@@ -1939,16 +3201,10 @@ class RapidTrackingEngine:
             return
 
         if kind == "truck":
-            if dominant_ground_axis_x:
-                x = self._segment_start_x + ((self._segment_end_x - self._segment_start_x) * u)
-                y = self._segment_start_y
-                dx_du = self._segment_end_x - self._segment_start_x
-                dy_du = 0.0
-            else:
-                x = self._segment_start_x
-                y = self._segment_start_y + ((self._segment_end_y - self._segment_start_y) * u)
-                dx_du = 0.0
-                dy_du = self._segment_end_y - self._segment_start_y
+            x = self._segment_start_x + (route_dx * u)
+            y = self._segment_start_y + (route_dy * u)
+            dx_du = route_dx
+            dy_du = route_dy
         else:
             x = (
                 (one_minus * one_minus * self._segment_start_x)
@@ -1990,21 +3246,19 @@ class RapidTrackingEngine:
             extra_vx = math.cos(phase * weave_freq) * weave_amp * weave_freq
             extra_vy = math.cos((phase * stride_freq) + 0.45) * stride_amp * stride_freq
         elif kind == "truck":
-            surge_amp = 0.012 + (0.005 * self._difficulty)
-            surge_freq = 1.9 + (0.5 * self._difficulty)
+            surge_amp = 0.010 + (0.006 * self._difficulty)
+            surge_freq = 1.7 + (0.6 * self._difficulty)
             surge = math.sin((phase * surge_freq) + 0.8) * surge_amp
             surge_v = math.cos((phase * surge_freq) + 0.8) * surge_amp * surge_freq
-            if dominant_ground_axis_x:
-                extra_x = surge
-                extra_vx = surge_v
-            else:
-                extra_y = surge
-                extra_vy = surge_v
+            extra_x = surge * route_dir_x
+            extra_y = surge * route_dir_y
+            extra_vx = surge_v * route_dir_x
+            extra_vy = surge_v * route_dir_y
         elif kind == "helicopter":
-            hover_amp = 0.024 + (0.012 * self._difficulty)
-            bob_amp = 0.016 + (0.010 * self._difficulty)
-            hover_freq = 1.3 + (0.4 * self._difficulty)
-            bob_freq = 2.3 + (0.6 * self._difficulty)
+            hover_amp = 0.010 + (0.024 * self._difficulty)
+            bob_amp = 0.008 + (0.020 * self._difficulty)
+            hover_freq = 0.9 + (0.8 * self._difficulty)
+            bob_freq = 1.4 + (1.0 * self._difficulty)
             extra_x = math.sin(phase * hover_freq) * hover_amp
             extra_y = math.sin((phase * bob_freq) + 0.65) * bob_amp
             extra_vx = math.cos(phase * hover_freq) * hover_amp * hover_freq
@@ -2074,13 +3328,6 @@ class RapidTrackingEngine:
                 start_x = (self._target_x * (1.0 - lane_blend)) + (start_anchor.x * lane_blend)
                 start_y = (self._target_y * (1.0 - lane_blend)) + (start_anchor.y * lane_blend)
 
-        if next_kind == "truck":
-            horizontal_route = abs(end_anchor.x - start_anchor.x) >= abs(end_anchor.y - start_anchor.y)
-            if horizontal_route:
-                start_y = float(start_anchor.y)
-            else:
-                start_x = float(start_anchor.x)
-
         scene_progress = self._scene_progress()
         pressure = clamp01((self._difficulty * 0.44) + (scene_progress * 0.60))
         if next_kind == "soldier":
@@ -2092,8 +3339,10 @@ class RapidTrackingEngine:
             duration = max(1.0, min(2.2, float(segment.duration_s) * duration_scale))
             arc_scale = 0.0
         elif next_kind == "truck":
-            duration_scale = 0.92 - (0.18 * pressure)
-            duration = max(3.4, float(segment.duration_s) * duration_scale)
+            duration_scale = 0.94 - (0.22 * pressure)
+            if str(segment.route_kind) == "offroad_armor_leg":
+                duration_scale += 0.10
+            duration = max(2.2, float(segment.duration_s) * duration_scale)
             arc_scale = 0.98 + (0.14 * pressure)
         elif next_kind == "helicopter":
             duration_scale = 0.84 - (0.20 * pressure)

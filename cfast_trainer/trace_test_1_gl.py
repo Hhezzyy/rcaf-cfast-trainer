@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from .aircraft_art import screen_heading_deg_from_world_tangent
 from .trace_test_1 import (
     TraceTest1Command,
     TraceTest1Payload,
@@ -59,7 +60,6 @@ def aircraft_screen_pose_for_frame(
     anchor: tuple[float, float, float] | None = None,
     size: tuple[int, int],
 ) -> tuple[float, float, float]:
-    _ = frame
     return (
         float(
             screen_heading_deg(
@@ -72,8 +72,8 @@ def aircraft_screen_pose_for_frame(
                 size=size,
             )
         ),
-        0.0,
-        0.0,
+        float(frame.attitude.pitch_deg),
+        float(frame.attitude.roll_deg),
     )
 
 
@@ -160,7 +160,10 @@ def screen_heading_deg(
     anchor: tuple[float, float, float] | None = None,
     size: tuple[int, int],
 ) -> float:
-    _ = (frame, anchor, future_frame, size)
+    _ = (anchor, future_frame, size, command, observe_progress, answer_open_progress)
+    heading = screen_heading_deg_from_world_tangent(frame.world_tangent)
+    if heading is not None:
+        return float(heading)
     return _visible_screen_heading(
         command=command,
         observe_progress=observe_progress,

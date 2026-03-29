@@ -676,9 +676,9 @@ class SensoryMotorApparatusEngine:
         if block is None:
             return "Use joystick tracking controls to keep the dot centered."
         if block.control_mode == "joystick_only":
-            base = "Use joystick X for left/right and joystick axis 1 for up/down (WASD/arrow fallback)."
+            base = "Use joystick X for left/right and joystick axis 1 for up/down."
         else:
-            base = "Use rudder for left/right and joystick axis 1 for up/down (WASD/arrow fallback)."
+            base = "Use rudder for left/right and joystick axis 1 for up/down."
         if block.axis_focus == "horizontal":
             return f"{base} Vertical input is ignored during this segment."
         if block.axis_focus == "vertical":

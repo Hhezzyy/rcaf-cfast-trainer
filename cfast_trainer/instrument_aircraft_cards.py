@@ -11,23 +11,24 @@ import pygame
 
 from .aircraft_art import (
     apply_fixed_wing_view_rotation,
-    build_panda_palette,
-    build_panda3d_fixed_wing_model,
-    draw_fixed_wing_pygame,
     instrument_card_pygame_palette,
     project_fixed_wing_faces,
     project_fixed_wing_point,
     rotate_fixed_wing_point,
 )
 from .instrument_comprehension import InstrumentAircraftViewPreset, InstrumentState
-from .panda3d_assets import Panda3DAssetCatalog
+from .modern_gl_renderer import ModernInstrumentCardRenderer, _ColorVertex
+from .render_assets import RenderAssetCatalog
 
 _CANONICAL_CARD_SIZE = (448, 280)
 _CARD_SPRITE_VERSION = "v20"
 
 
 def panda3d_card_rendering_available() -> bool:
-    return importlib.util.find_spec("direct.showbase.ShowBase") is not None
+    return (
+        importlib.util.find_spec("moderngl") is not None
+        and importlib.util.find_spec("glcontext") is not None
+    )
 
 
 def _default_cache_dir() -> Path:
@@ -390,15 +391,15 @@ class InstrumentAircraftCardSpriteBank:
         self,
         *,
         cache_dir: Path | None = None,
-        asset_catalog: Panda3DAssetCatalog | None = None,
+        asset_catalog: RenderAssetCatalog | None = None,
         allow_generation: bool = True,
     ) -> None:
         self._cache_dir = (cache_dir or _default_cache_dir()).resolve()
-        self._asset_catalog = asset_catalog or Panda3DAssetCatalog()
+        self._asset_catalog = asset_catalog or RenderAssetCatalog()
         self._allow_generation = bool(allow_generation)
         self._surface_cache: dict[InstrumentAircraftCardKey, pygame.Surface] = {}
         self._scaled_cache: dict[tuple[InstrumentAircraftCardKey, int, int], pygame.Surface] = {}
-        self._renderer: _Panda3DInstrumentCardRenderer | None = None
+        self._renderer: ModernInstrumentCardRenderer | None = None
         self._generation_failed = False
 
     def get_scaled_surface(
@@ -439,26 +440,28 @@ class InstrumentAircraftCardSpriteBank:
             return loaded
 
         if not self._allow_generation or self._generation_failed:
-            return None
+            fallback = self._render_software_surface(key)
+            self._surface_cache[key] = fallback
+            return fallback
 
         try:
             self._cache_dir.mkdir(parents=True, exist_ok=True)
-            loaded: pygame.Surface | None = None
-            if panda3d_card_rendering_available():
-                try:
-                    renderer = self._get_renderer()
-                    renderer.render_card(key=key, destination=cache_path)
-                    loaded = self._normalize_surface(self._load_surface(cache_path))
-                except Exception:
-                    loaded = None
-            if loaded is None:
-                loaded = self._normalize_surface(self._render_pygame_fallback_card(key))
-                pygame.image.save(loaded, str(cache_path))
+            self._asset_catalog.require("plane_red")
+            renderer = self._get_renderer()
+            renderer.render_card(
+                key=key,
+                destination=cache_path,
+                draw_callback=self._render_modern_gl_card,
+                size=_CANONICAL_CARD_SIZE,
+            )
+            loaded = self._normalize_surface(self._load_surface(cache_path))
             self._surface_cache[key] = loaded
             return loaded
         except Exception:
             self._generation_failed = True
-            return None
+            fallback = self._render_software_surface(key)
+            self._surface_cache[key] = fallback
+            return fallback
 
     def cache_path_for(
         self,
@@ -471,10 +474,45 @@ class InstrumentAircraftCardSpriteBank:
             view_preset=view_preset,
         ).filename()
 
-    def _get_renderer(self) -> _Panda3DInstrumentCardRenderer:
+    def _get_renderer(self) -> ModernInstrumentCardRenderer:
         if self._renderer is None:
-            self._renderer = _Panda3DInstrumentCardRenderer(asset_catalog=self._asset_catalog)
+            self._renderer = ModernInstrumentCardRenderer()
         return self._renderer
+
+    def _render_software_surface(
+        self,
+        key: InstrumentAircraftCardKey,
+    ) -> pygame.Surface:
+        surface = pygame.Surface(_CANONICAL_CARD_SIZE, pygame.SRCALPHA)
+        self._paint_card_background(surface)
+        projection = instrument_aircraft_card_view_projection(key.view_preset)
+        palette = instrument_card_pygame_palette()
+        scale = max(10.5, float(min(surface.get_width(), surface.get_height())) * (projection.scale / 100.0))
+        faces = project_fixed_wing_faces(
+            heading_deg=float(key.heading_deg),
+            pitch_deg=float(key.pitch_deg),
+            bank_deg=float(key.bank_deg),
+            cx=surface.get_rect().centerx + int(round(projection.offset_x)),
+            cy=surface.get_rect().centery + int(round(projection.offset_y)),
+            scale=scale,
+            view_yaw_deg=projection.view_yaw_deg,
+            view_pitch_deg=projection.view_pitch_deg,
+            view_roll_deg=projection.view_roll_deg,
+            forward_x_mix=projection.forward_x_mix,
+            forward_y_mix=projection.forward_y_mix,
+        )
+        role_colors = {
+            "body": palette.body,
+            "accent": palette.accent,
+            "canopy": palette.canopy,
+            "engine": palette.engine,
+        }
+        for face in faces:
+            base = role_colors.get(face.role, palette.body)
+            fill = tuple(max(0, min(255, int(round(channel * face.shade)))) for channel in base)
+            pygame.draw.polygon(surface, fill, face.points)
+        pygame.draw.rect(surface, (170, 184, 212), surface.get_rect(), 1)
+        return self._normalize_surface(surface)
 
     @staticmethod
     def _load_surface(path: Path) -> pygame.Surface:
@@ -579,268 +617,158 @@ class InstrumentAircraftCardSpriteBank:
             x = rect.centerx + int(round((lane - 2.5) * (rect.w / 7.5)))
             pygame.draw.line(surface, (132, 136, 144), (x, floor_y), (rect.centerx, rect.bottom), 1)
 
-    @classmethod
-    def _render_pygame_fallback_card(cls, key: InstrumentAircraftCardKey) -> pygame.Surface:
-        surface = pygame.Surface(_CANONICAL_CARD_SIZE, pygame.SRCALPHA)
-        rect = surface.get_rect()
-        cls._paint_card_background(surface)
+    @staticmethod
+    def _append_triangle(
+        batch,
+        a: tuple[float, float],
+        b: tuple[float, float],
+        c: tuple[float, float],
+        color: tuple[int, int, int, int],
+    ) -> None:
+        rgba = tuple(float(channel) / 255.0 for channel in color)
+        batch.triangles.extend(
+            [
+                _ColorVertex(float(a[0]), float(a[1]), *rgba),
+                _ColorVertex(float(b[0]), float(b[1]), *rgba),
+                _ColorVertex(float(c[0]), float(c[1]), *rgba),
+            ]
+        )
 
+    @classmethod
+    def _append_quad(
+        cls,
+        batch,
+        a: tuple[float, float],
+        b: tuple[float, float],
+        c: tuple[float, float],
+        d: tuple[float, float],
+        color: tuple[int, int, int, int],
+    ) -> None:
+        cls._append_triangle(batch, a, b, c, color)
+        cls._append_triangle(batch, a, c, d, color)
+
+    @classmethod
+    def _append_polygon(
+        cls,
+        batch,
+        points: list[tuple[int, int]] | tuple[tuple[int, int], ...],
+        color: tuple[int, int, int, int],
+    ) -> None:
+        if len(points) < 3:
+            return
+        origin = (float(points[0][0]), float(points[0][1]))
+        for idx in range(1, len(points) - 1):
+            cls._append_triangle(
+                batch,
+                origin,
+                (float(points[idx][0]), float(points[idx][1])),
+                (float(points[idx + 1][0]), float(points[idx + 1][1])),
+                color,
+            )
+
+    @classmethod
+    def _render_modern_gl_card(
+        cls,
+        batch,
+        key: InstrumentAircraftCardKey,
+        width: int,
+        height: int,
+    ) -> None:
+        rect = pygame.Rect(0, 0, int(width), int(height))
         projection = instrument_aircraft_card_view_projection(key.view_preset)
-        draw_fixed_wing_pygame(
-            surface,
+        palette = instrument_card_pygame_palette()
+
+        step_h = max(1, rect.height // 48)
+        for y in range(0, rect.height, step_h):
+            t = y / max(1, rect.height - 1)
+            shade = int(round(232 - (t * 46)))
+            y0 = float(y)
+            y1 = float(min(rect.height, y + step_h))
+            cls._append_quad(
+                batch,
+                (0.0, y0),
+                (float(rect.width), y0),
+                (float(rect.width), y1),
+                (0.0, y1),
+                (shade, shade, shade, 255),
+            )
+
+        floor_y = rect.bottom - max(10, rect.height // 9)
+        cls._append_quad(
+            batch,
+            (0.0, float(floor_y - 1)),
+            (float(rect.width), float(floor_y - 1)),
+            (float(rect.width), float(floor_y + 1)),
+            (0.0, float(floor_y + 1)),
+            (84, 88, 96, 255),
+        )
+        for step in (0.2, 0.4, 0.6, 0.8):
+            y = int(round(floor_y + ((rect.bottom - floor_y) * step)))
+            shade = 124 - int(round(step * 24))
+            cls._append_quad(
+                batch,
+                (0.0, float(y)),
+                (float(rect.width), float(y)),
+                (float(rect.width), float(y + 1)),
+                (0.0, float(y + 1)),
+                (shade, shade, shade, 255),
+            )
+
+        scale = max(10.5, float(min(rect.w, rect.h)) * (projection.scale / 100.0))
+        faces = project_fixed_wing_faces(
             heading_deg=float(key.heading_deg),
             pitch_deg=float(key.pitch_deg),
             bank_deg=float(key.bank_deg),
             cx=rect.centerx + int(round(projection.offset_x)),
             cy=rect.centery + int(round(projection.offset_y)),
-            scale=max(10.5, float(min(rect.w, rect.h)) * (projection.scale / 100.0)),
-            palette=instrument_card_pygame_palette(),
+            scale=scale,
             view_yaw_deg=projection.view_yaw_deg,
             view_pitch_deg=projection.view_pitch_deg,
             view_roll_deg=projection.view_roll_deg,
             forward_x_mix=projection.forward_x_mix,
             forward_y_mix=projection.forward_y_mix,
         )
-        pygame.draw.rect(surface, (170, 184, 212), rect, 1)
-        return surface
+        role_colors = {
+            "body": palette.body,
+            "accent": palette.accent,
+            "canopy": palette.canopy,
+            "engine": palette.engine,
+        }
+        for face in faces:
+            base = role_colors.get(face.role, palette.body)
+            fill = tuple(max(0, min(255, int(round(channel * face.shade)))) for channel in base)
+            cls._append_polygon(batch, face.points, (*fill, 255))
 
-
-class _Panda3DInstrumentCardRenderer:
-    def __init__(self, *, asset_catalog: Panda3DAssetCatalog) -> None:
-        self._asset_catalog = asset_catalog
-
-        from panda3d.core import AmbientLight, DirectionalLight, Vec4, loadPrcFileData
-
-        loadPrcFileData("", "window-type offscreen")
-        loadPrcFileData("", "audio-library-name null")
-        loadPrcFileData("", f"win-size {_CANONICAL_CARD_SIZE[0]} {_CANONICAL_CARD_SIZE[1]}")
-        loadPrcFileData("", "sync-video false")
-
-        from direct.showbase.ShowBase import ShowBase
-
-        self._base = ShowBase()
-        self._base.disableMouse()
-        self._base.setBackgroundColor(0.83, 0.85, 0.89, 1.0)
-        default_camera = _camera_spec_for_preset(InstrumentAircraftViewPreset.FRONT_LEFT)
-        self._base.camLens.setFov(default_camera.fov_deg)
-        self._base.cam.setPos(*default_camera.camera_pos)
-        self._base.cam.lookAt(*default_camera.look_at)
-
-        ambient = AmbientLight("ambient")
-        ambient.setColor(Vec4(0.34, 0.36, 0.39, 1.0))
-        ambient_np = self._base.render.attachNewNode(ambient)
-        self._base.render.setLight(ambient_np)
-
-        key_light = DirectionalLight("key-light")
-        key_light.setColor(Vec4(1.10, 1.02, 0.96, 1.0))
-        key_light_np = self._base.render.attachNewNode(key_light)
-        key_light_np.setHpr(22.0, -34.0, 0.0)
-        self._base.render.setLight(key_light_np)
-
-        fill_light = DirectionalLight("fill-light")
-        fill_light.setColor(Vec4(0.38, 0.46, 0.58, 1.0))
-        fill_light_np = self._base.render.attachNewNode(fill_light)
-        fill_light_np.setHpr(-118.0, -16.0, 0.0)
-        self._base.render.setLight(fill_light_np)
-
-        rim_light = DirectionalLight("rim-light")
-        rim_light.setColor(Vec4(0.56, 0.54, 0.60, 1.0))
-        rim_light_np = self._base.render.attachNewNode(rim_light)
-        rim_light_np.setHpr(164.0, -8.0, 0.0)
-        self._base.render.setLight(rim_light_np)
-
-        floor_z = self._build_room()
-        self._view_root = self._base.render.attachNewNode("instrument-plane-view-root")
-        self._plane_root = self._view_root.attachNewNode("instrument-plane-root")
-        self._add_plane_shadow(floor_z=floor_z)
-        plane = self._load_plane_asset()
-        plane.reparentTo(self._plane_root)
-        plane.setScale(0.52)
-        plane.setPos(-0.78, 1.60, 0.34)
-
-    def render_card(self, *, key: InstrumentAircraftCardKey, destination: Path) -> None:
-        from panda3d.core import PNMImage
-
-        projection = instrument_aircraft_card_view_projection(key.view_preset)
-        camera = _camera_spec_for_preset(key.view_preset)
-        self._base.camLens.setFov(camera.fov_deg)
-        self._base.cam.setPos(*camera.camera_pos)
-        self._base.cam.lookAt(*camera.look_at)
-        self._view_root.setPos(*_view_root_offset_for_preset(key.view_preset))
-        self._view_root.setHpr(
-            float(projection.view_yaw_deg),
-            float(projection.view_pitch_deg),
-            float(projection.view_roll_deg),
+        border = (170, 184, 212, 255)
+        cls._append_quad(
+            batch,
+            (0.0, 0.0),
+            (float(rect.width), 0.0),
+            (float(rect.width), 1.0),
+            (0.0, 1.0),
+            border,
         )
-        self._plane_root.setHpr(-float(key.heading_deg), float(key.pitch_deg), -float(key.bank_deg))
-
-        for _ in range(3):
-            self._base.graphicsEngine.renderFrame()
-
-        image = PNMImage()
-        ok = self._base.win.getScreenshot(image)
-        if not ok:
-            raise RuntimeError("Failed to capture Instrument Comprehension card sprite.")
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        image.write(str(destination))
-
-    def _build_room(self) -> float:
-        room, floor_z = self._make_open_room()
-        room.reparentTo(self._base.render)
-        room.setPos(0.0, 1.75, 0.0)
-        return float(floor_z)
-
-    def _load_plane_asset(self):
-        asset_path = self._asset_catalog.resolve_path("plane_red")
-        if asset_path is not None:
-            suffix = asset_path.suffix.lower()
-            if suffix in {".glb", ".gltf"}:
-                import gltf
-
-                node = gltf.load_model(asset_path)
-            else:
-                node = self._base.loader.loadModel(str(asset_path))
-            if not node.isEmpty():
-                return node
-        return self._build_fallback_plane()
-
-    def _add_plane_shadow(self, *, floor_z: float) -> None:
-        from panda3d.core import CardMaker, TransparencyAttrib
-
-        shadow = CardMaker("instrument-plane-shadow")
-        shadow.setFrame(-1.85, 1.85, -0.84, 0.84)
-        shadow_np = self._plane_root.attachNewNode(shadow.generate())
-        shadow_np.setPos(0.0, 1.60, float(floor_z) + 0.02)
-        shadow_np.setHpr(0.0, -90.0, 0.0)
-        shadow_np.setColor(0.05, 0.05, 0.06, 0.24)
-        shadow_np.setTransparency(TransparencyAttrib.MAlpha)
-        shadow_np.setScale(1.0, 1.0, 0.62)
-        shadow_np.setTwoSided(True)
-
-    def _make_open_room(self):
-        from panda3d.core import CardMaker, NodePath
-
-        root = NodePath("room")
-
-        def add_panel(
-            name: str,
-            *,
-            frame: tuple[float, float, float, float],
-            pos: tuple[float, float, float],
-            hpr: tuple[float, float, float],
-            color: tuple[float, float, float, float],
-        ) -> None:
-            maker = CardMaker(name)
-            maker.setFrame(*frame)
-            node = root.attachNewNode(maker.generate())
-            node.setPos(*pos)
-            node.setHpr(*hpr)
-            node.setColor(*color)
-            node.setTwoSided(True)
-
-        depth = 11.0
-        width = 26.0
-        height = 6.4
-        add_panel(
-            "back",
-            frame=(-width / 2.0, width / 2.0, -height / 2.0, height / 2.0),
-            pos=(0.0, depth, 0.0),
-            hpr=(180.0, 0.0, 0.0),
-            color=(0.84, 0.85, 0.87, 1.0),
+        cls._append_quad(
+            batch,
+            (0.0, float(rect.height - 1)),
+            (float(rect.width), float(rect.height - 1)),
+            (float(rect.width), float(rect.height)),
+            (0.0, float(rect.height)),
+            border,
         )
-        floor_z = -height / 2.0
-        add_panel(
-            "floor",
-            frame=(-width / 2.0, width / 2.0, -depth / 2.0, depth / 2.0),
-            pos=(0.0, depth / 2.0, floor_z),
-            hpr=(0.0, 90.0, 0.0),
-            color=(0.66, 0.68, 0.71, 1.0),
+        cls._append_quad(
+            batch,
+            (0.0, 0.0),
+            (1.0, 0.0),
+            (1.0, float(rect.height)),
+            (0.0, float(rect.height)),
+            border,
         )
-
-        self._add_floor_guides(root=root, width=width, depth=depth, floor_z=floor_z + 0.002)
-        return root, floor_z
-
-    def _add_floor_guides(self, *, root, width: float, depth: float, floor_z: float) -> None:
-        from panda3d.core import LineSegs
-
-        guides = LineSegs("floor-guides")
-        guides.setThickness(1.0)
-        guides.setColor(0.52, 0.52, 0.54, 1.0)
-        for lane in range(-3, 4):
-            x = lane * (width / 8.0)
-            guides.moveTo(x, 0.0, floor_z)
-            guides.drawTo(x * 0.38, depth, floor_z)
-        for row in range(1, 5):
-            y = row * (depth / 5.0)
-            scale = 1.0 - (row * 0.12)
-            guides.moveTo(-(width / 2.0) * scale, y, floor_z)
-            guides.drawTo((width / 2.0) * scale, y, floor_z)
-        root.attachNewNode(guides.create())
-
-    def _build_fallback_plane(self):
-        palette = build_panda_palette(
-            body_color=(0.84, 0.18, 0.16, 1.0),
-            accent_color=(0.50, 0.05, 0.06, 1.0),
-            canopy_color=(0.74, 0.88, 0.95, 0.92),
-            engine_color=(0.44, 0.04, 0.05, 1.0),
+        cls._append_quad(
+            batch,
+            (float(rect.width - 1), 0.0),
+            (float(rect.width), 0.0),
+            (float(rect.width), float(rect.height)),
+            (float(rect.width - 1), float(rect.height)),
+            border,
         )
-        return build_panda3d_fixed_wing_model(palette=palette, name="instrument-plane")
-
-    @staticmethod
-    def _make_box(*, size: tuple[float, float, float], color: tuple[float, float, float, float]):
-        from panda3d.core import CardMaker, NodePath
-
-        sx, sy, sz = size
-        root = NodePath("box")
-
-        def add_face(
-            name: str,
-            frame: tuple[float, float, float, float],
-            pos: tuple[float, float, float],
-            hpr: tuple[float, float, float],
-        ) -> None:
-            maker = CardMaker(name)
-            maker.setFrame(*frame)
-            node = root.attachNewNode(maker.generate())
-            node.setPos(*pos)
-            node.setHpr(*hpr)
-            node.setColor(*color)
-            node.setTwoSided(True)
-
-        add_face(
-            "top",
-            (-sx / 2.0, sx / 2.0, -sy / 2.0, sy / 2.0),
-            (0.0, 0.0, sz / 2.0),
-            (0.0, -90.0, 0.0),
-        )
-        add_face(
-            "bottom",
-            (-sx / 2.0, sx / 2.0, -sy / 2.0, sy / 2.0),
-            (0.0, 0.0, -sz / 2.0),
-            (0.0, 90.0, 0.0),
-        )
-        add_face(
-            "front",
-            (-sx / 2.0, sx / 2.0, -sz / 2.0, sz / 2.0),
-            (0.0, sy / 2.0, 0.0),
-            (0.0, 0.0, 0.0),
-        )
-        add_face(
-            "back",
-            (-sx / 2.0, sx / 2.0, -sz / 2.0, sz / 2.0),
-            (0.0, -sy / 2.0, 0.0),
-            (180.0, 0.0, 0.0),
-        )
-        add_face(
-            "left",
-            (-sy / 2.0, sy / 2.0, -sz / 2.0, sz / 2.0),
-            (-sx / 2.0, 0.0, 0.0),
-            (90.0, 0.0, 0.0),
-        )
-        add_face(
-            "right",
-            (-sy / 2.0, sy / 2.0, -sz / 2.0, sz / 2.0),
-            (sx / 2.0, 0.0, 0.0),
-            (-90.0, 0.0, 0.0),
-        )
-        return root

@@ -1722,7 +1722,7 @@ TEST_GUIDE_BRIEFS: dict[str, TestGuideBriefing] = {
         ),
         timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
         prep="Guide preparation: center the stick smoothly instead of over-correcting.",
-        controls="Joystick X controls horizontal tracking; vertical input is ignored for this block. Keyboard fallback still works.",
+        controls="Joystick X controls horizontal tracking; vertical input is ignored for this block.",
         app_flow="This drill reuses the live Sensory Motor Apparatus screen with a horizontal guide band and per-window scoring.",
     ),
     "sma_joystick_vertical_anchor": TestGuideBriefing(
@@ -1734,7 +1734,7 @@ TEST_GUIDE_BRIEFS: dict[str, TestGuideBriefing] = {
         ),
         timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
         prep="Guide preparation: avoid chasing tiny reversals; settle and hold.",
-        controls="Joystick axis 1 controls vertical tracking; horizontal input is ignored for this block. Keyboard fallback still works.",
+        controls="Joystick axis 1 controls vertical tracking; horizontal input is ignored for this block.",
         app_flow="This drill reuses the live Sensory Motor Apparatus screen with a vertical guide band and per-window scoring.",
     ),
     "sma_joystick_hold_run": TestGuideBriefing(
@@ -1746,7 +1746,7 @@ TEST_GUIDE_BRIEFS: dict[str, TestGuideBriefing] = {
         ),
         timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
         prep="Guide preparation: keep the stick movements small and deliberate.",
-        controls="Joystick X controls horizontal and joystick axis 1 controls vertical. Keyboard fallback still works.",
+        controls="Joystick X controls horizontal and joystick axis 1 controls vertical.",
         app_flow="This drill reuses the live Sensory Motor Apparatus screen and scores each one-second tracking window.",
     ),
     "sma_split_horizontal_prime": TestGuideBriefing(
@@ -1758,7 +1758,7 @@ TEST_GUIDE_BRIEFS: dict[str, TestGuideBriefing] = {
         ),
         timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
         prep="Guide preparation: keep pedal corrections short and centered.",
-        controls="Rudder controls horizontal tracking; vertical input is ignored for this block. Keyboard fallback still works.",
+        controls="Rudder controls horizontal tracking; vertical input is ignored for this block.",
         app_flow="This drill reuses the live Sensory Motor Apparatus screen with a horizontal guide band and per-window scoring.",
     ),
     "sma_split_coordination_run": TestGuideBriefing(
@@ -1770,7 +1770,7 @@ TEST_GUIDE_BRIEFS: dict[str, TestGuideBriefing] = {
         ),
         timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
         prep="Guide preparation: keep horizontal and vertical corrections independent.",
-        controls="Rudder controls horizontal and joystick axis 1 controls vertical. Keyboard fallback still works.",
+        controls="Rudder controls horizontal and joystick axis 1 controls vertical.",
         app_flow="This drill reuses the live Sensory Motor Apparatus screen and scores each one-second tracking window.",
     ),
     "sma_mode_switch_run": TestGuideBriefing(
@@ -1794,7 +1794,7 @@ TEST_GUIDE_BRIEFS: dict[str, TestGuideBriefing] = {
         ),
         timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
         prep="Guide preparation: stay loose enough to reset when the profile changes.",
-        controls="Joystick-only and split segments alternate automatically; keyboard fallback still works.",
+        controls="Joystick-only and split segments alternate automatically.",
         app_flow="This drill reuses the live Sensory Motor Apparatus screen and shows the active segment label plus countdown in the header.",
     ),
     "sma_pressure_run": TestGuideBriefing(
@@ -1806,7 +1806,7 @@ TEST_GUIDE_BRIEFS: dict[str, TestGuideBriefing] = {
         ),
         timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
         prep="Guide preparation: arrive warmed up; this block assumes both control modes are already active.",
-        controls="Joystick-only and split segments alternate automatically; keyboard fallback still works.",
+        controls="Joystick-only and split segments alternate automatically.",
         app_flow="This drill reuses the live Sensory Motor Apparatus screen and scores every one-second tracking window under pressure.",
     ),
     "sensory_motor_apparatus_workout": TestGuideBriefing(
@@ -1818,7 +1818,7 @@ TEST_GUIDE_BRIEFS: dict[str, TestGuideBriefing] = {
         ),
         timing="Workout drill time: 90 minutes, plus opening and closing reflection outside the timed blocks.",
         prep="Guide preparation: know the joystick-only and split-control mappings before starting.",
-        controls="Use Left and Right to set workout or block difficulty, type reflections, then use live joystick, rudder, or keyboard fallback controls during blocks.",
+        controls="Use Left and Right to set workout or block difficulty, type reflections, then use live joystick and rudder controls during blocks.",
         app_flow="Each block gets an untimed setup screen, and every timed block reuses the live Sensory Motor Apparatus screen with segment labels and guide bands where needed.",
     ),
     "auditory_capacity": TestGuideBriefing(
@@ -1830,7 +1830,7 @@ TEST_GUIDE_BRIEFS: dict[str, TestGuideBriefing] = {
         ),
         timing="Guide time including instructions: about 23 minutes.",
         prep="Guide preparation: none required.",
-        controls="WASD/arrows or configured HOTAS axes fly the ball; Q/W/E/R handle colours; keypad 0-9 sets the ball number; digits plus Enter handle delayed recall; the configured trigger binding or Space answers the beep.",
+        controls="Configured HOTAS axes fly the ball; Q/W/E/R handle colours; keypad 0-9 sets the ball number; digits plus Enter handle delayed recall; the configured trigger binding or Space answers the beep.",
         app_flow="Practice teaches the audio-control rhythm before the timed block loads.",
     ),
     "ac_gate_anchor": TestGuideBriefing(
@@ -1842,7 +1842,7 @@ TEST_GUIDE_BRIEFS: dict[str, TestGuideBriefing] = {
         ),
         timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
         prep="Guide preparation: stay loose and let the ball settle instead of over-correcting.",
-        controls="WASD/arrows or configured HOTAS axes fly the ball. The other auditory answer channels are inactive in this block.",
+        controls="Configured HOTAS axes fly the ball. The other auditory answer channels are inactive in this block.",
         app_flow="This drill reuses the live Auditory Capacity screen and keeps only gate flight active.",
     ),
     "ac_state_command_prime": TestGuideBriefing(
@@ -1854,7 +1854,7 @@ TEST_GUIDE_BRIEFS: dict[str, TestGuideBriefing] = {
         ),
         timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
         prep="Guide preparation: keep colour and number changes crisp enough that they do not interrupt flight.",
-        controls="Fly the ball with WASD/arrows or configured HOTAS axes; Q/W/E/R change colour; keypad 0-9 changes the number.",
+        controls="Fly the ball with configured HOTAS axes; Q/W/E/R change colour; keypad 0-9 changes the number.",
         app_flow="This drill reuses the live Auditory Capacity screen with gates plus state commands only.",
     ),
     "ac_gate_directive_run": TestGuideBriefing(
@@ -2190,7 +2190,7 @@ TEST_GUIDE_BRIEFS: dict[str, TestGuideBriefing] = {
         ),
         timing="Guide time including instructions: about 16 minutes.",
         prep="Guide preparation: none required.",
-        controls="Configured HOTAS movement axes, arrows, or A/D pan the camera; the configured capture binding, Space, or left-click captures.",
+        controls="Configured HOTAS movement axes pan the camera; the configured capture binding captures.",
         app_flow="Practice is for free-look camera feel and capture timing before the timed run.",
     ),
     "rt_lock_anchor": TestGuideBriefing(
@@ -2202,7 +2202,7 @@ TEST_GUIDE_BRIEFS: dict[str, TestGuideBriefing] = {
         ),
         timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
         prep="Guide preparation: arrive with the basic free-look control feel already comfortable.",
-        controls="Use the normal Rapid Tracking controls: HOTAS or keyboard to pan, configured capture binding, Space, or left-click to capture.",
+        controls="Use the normal Rapid Tracking controls: configured HOTAS movement axes to pan and the configured capture binding to capture.",
         app_flow="This drill reuses the live Rapid Tracking scene and narrows the script to open soldier and truck targets.",
     ),
     "rt_building_handoff_prime": TestGuideBriefing(
@@ -2238,7 +2238,7 @@ TEST_GUIDE_BRIEFS: dict[str, TestGuideBriefing] = {
         ),
         timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
         prep="Guide preparation: know the live camera-box timing and your configured capture binding before starting.",
-        controls="Use the normal Rapid Tracking pan controls and capture with the configured binding, Space, or left-click.",
+        controls="Use the normal Rapid Tracking pan controls and capture with the configured binding.",
         app_flow="This drill reuses the live Rapid Tracking scene and biases the runtime toward slower capture-friendly windows.",
     ),
     "rt_ground_tempo_run": TestGuideBriefing(

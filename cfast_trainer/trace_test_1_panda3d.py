@@ -8,10 +8,10 @@ import pygame
 from .aircraft_art import (
     build_panda_palette,
     build_panda3d_fixed_wing_model,
-    panda3d_fixed_wing_hpr_from_screen_heading,
+    panda3d_fixed_wing_hpr_from_world_hpr,
 )
 from .trace_test_1 import TraceTest1Command, TraceTest1Payload
-from .trace_test_1_gl import project_scene_position, screen_heading_deg
+from .trace_test_1_gl import project_scene_position
 
 
 def panda3d_trace_test_1_rendering_available() -> bool:
@@ -168,16 +168,11 @@ class TraceTest1Panda3DRenderer:
         answer_open_progress: float,
         size: tuple[int, int],
     ) -> tuple[float, float, float]:
-        return panda3d_fixed_wing_hpr_from_screen_heading(
-            screen_heading_deg=screen_heading_deg(
-                frame,
-                command=command,
-                observe_progress=observe_progress,
-                answer_open_progress=answer_open_progress,
-                size=size,
-            ),
-            pitch_deg=0.0,
-            roll_deg=0.0,
+        _ = (command, observe_progress, answer_open_progress, size)
+        return panda3d_fixed_wing_hpr_from_world_hpr(
+            heading_deg=float(frame.attitude.yaw_deg),
+            pitch_deg=float(frame.attitude.pitch_deg),
+            roll_deg=float(frame.attitude.roll_deg),
         )
 
     def _build_aircraft_model(

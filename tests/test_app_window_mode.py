@@ -1,6 +1,13 @@
 from __future__ import annotations
 
-from cfast_trainer.app import _resolve_use_opengl, _resolve_window_mode
+import pygame
+
+from cfast_trainer.app import (
+    DisplayLifecycleState,
+    _resolve_display_rebootstrap,
+    _resolve_use_opengl,
+    _resolve_window_mode,
+)
 
 
 def test_window_mode_defaults_to_windowed_even_on_macos(monkeypatch) -> None:
@@ -46,10 +53,51 @@ def test_window_mode_ignores_stored_fullscreen_default_when_env_is_absent(monkey
     )
 
 
-def test_use_opengl_prefers_env_then_stored_default(monkeypatch) -> None:
+def test_use_opengl_is_always_enabled_for_interactive_runtime(monkeypatch) -> None:
     monkeypatch.setenv("CFAST_USE_OPENGL", "0")
-    assert _resolve_use_opengl(stored_default=True) is False
-
-    monkeypatch.delenv("CFAST_USE_OPENGL", raising=False)
     assert _resolve_use_opengl(stored_default=True) is True
-    assert _resolve_use_opengl(stored_default=False) is False
+    assert _resolve_use_opengl(stored_default=False) is True
+
+
+def test_display_rebootstrap_detects_stale_native_fullscreen_transition() -> None:
+    state = DisplayLifecycleState(
+        window_size=(1440, 900),
+        surface_size=(960, 540),
+        desktop_size=(1440, 900),
+        active_window_flags=pygame.RESIZABLE | pygame.OPENGL | pygame.DOUBLEBUF,
+        window_mode="windowed",
+    )
+
+    decision = _resolve_display_rebootstrap(state)
+
+    assert decision is not None
+    assert decision.window_mode == "fullscreen"
+    assert decision.window_size == (1440, 900)
+
+
+def test_display_rebootstrap_detects_restore_from_controlled_fullscreen() -> None:
+    state = DisplayLifecycleState(
+        window_size=(1440, 872),
+        surface_size=(1440, 900),
+        desktop_size=(1440, 900),
+        active_window_flags=pygame.FULLSCREEN | pygame.OPENGL | pygame.DOUBLEBUF,
+        window_mode="fullscreen",
+    )
+
+    decision = _resolve_display_rebootstrap(state)
+
+    assert decision is not None
+    assert decision.window_mode == "windowed"
+    assert decision.window_size == (1440, 872)
+
+
+def test_display_rebootstrap_ignores_healthy_large_window_surface_pairing() -> None:
+    state = DisplayLifecycleState(
+        window_size=(1440, 872),
+        surface_size=(1440, 900),
+        desktop_size=(1440, 900),
+        active_window_flags=pygame.RESIZABLE | pygame.OPENGL | pygame.DOUBLEBUF,
+        window_mode="windowed",
+    )
+
+    assert _resolve_display_rebootstrap(state) is None

@@ -83,6 +83,20 @@ _SCENES = (
     ),
 )
 
+_GL_SCENE_TYPE_BY_NAME = {
+    "auditory": "AuditoryGlScene",
+    "rapid_tracking": "RapidTrackingGlScene",
+    "spatial_integration": "SpatialIntegrationGlScene",
+    "trace_test_1": "TraceTest1GlScene",
+    "trace_test_2": "TraceTest2GlScene",
+}
+
+_PANDA_WHEN_GL_DISABLED = {
+    "spatial_integration",
+    "trace_test_1",
+    "trace_test_2",
+}
+
 
 @pytest.fixture
 def pygame_headless(monkeypatch):
@@ -196,15 +210,18 @@ def _mark_auditory_panda_ready(screen: CognitiveTestScreen) -> None:
     screen._auditory_panda_failed = False
 
 
+def _queued_gl_scene_type(app: App) -> str | None:
+    scene = app.consume_gl_scene()
+    return None if scene is None else type(scene).__name__
+
+
 @pytest.mark.parametrize("spec", _SCENES, ids=lambda spec: spec.name)
-@pytest.mark.parametrize("opengl_enabled", [False, True], ids=["gl-off", "gl-on"])
-def test_complex_scene_prefers_panda_renderer_when_available(
+def test_complex_scene_queues_gl_scene_when_opengl_enabled(
     pygame_headless,
     monkeypatch,
     spec: _SceneSpec,
-    opengl_enabled: bool,
 ) -> None:
-    app, screen = _build_screen(spec=spec, opengl_enabled=opengl_enabled)
+    app, screen = _build_screen(spec=spec, opengl_enabled=True)
     fake_renderer = _FakePandaRenderer(size=(320, 200))
     if spec.name == "auditory":
         _mark_auditory_panda_ready(screen)
@@ -218,33 +235,39 @@ def test_complex_scene_prefers_panda_renderer_when_available(
 
     app.render()
 
-    assert fake_renderer.render_calls == 1
-    assert app.consume_gl_scene() is None
+    assert fake_renderer.render_calls == 0
+    assert _queued_gl_scene_type(app) == _GL_SCENE_TYPE_BY_NAME[spec.name]
 
 
 @pytest.mark.parametrize("spec", _SCENES, ids=lambda spec: spec.name)
-def test_complex_scene_blocks_when_panda_unavailable_instead_of_falling_back_to_gl(
+def test_complex_scene_uses_non_gl_fallbacks_when_opengl_disabled(
     pygame_headless,
     monkeypatch,
     spec: _SceneSpec,
 ) -> None:
-    app, screen = _build_screen(spec=spec, opengl_enabled=True)
+    app, screen = _build_screen(spec=spec, opengl_enabled=False)
+    fake_renderer = _FakePandaRenderer(size=(320, 200))
     if spec.name == "auditory":
         _mark_auditory_panda_ready(screen)
         monkeypatch.setattr(screen, "_sync_auditory_audio", lambda **_: None)
-    monkeypatch.setattr(screen, spec.getter_name, lambda **_: None)
+
+    def fake_getter(*, size: tuple[int, int]):
+        fake_renderer.size = tuple(size)
+        return fake_renderer
+
+    monkeypatch.setattr(screen, spec.getter_name, fake_getter)
 
     app.render()
 
-    assert app.consume_gl_scene() is None
-    requirement = getattr(screen, f"_{spec.name}_panda_requirement")
-    assert requirement.checked is True
-    assert requirement.ready is False
-    assert requirement.failure_category == "renderer_unavailable"
+    assert _queued_gl_scene_type(app) is None
+    if spec.name in _PANDA_WHEN_GL_DISABLED:
+        assert fake_renderer.render_calls == 1
+    else:
+        assert fake_renderer.render_calls == 0
 
 
 @pytest.mark.parametrize("spec", _SCENES, ids=lambda spec: spec.name)
-def test_non_panda_renderer_preference_does_not_block_panda_required_scene(
+def test_renderer_env_preference_does_not_override_opengl_standard_path(
     pygame_headless,
     monkeypatch,
     spec: _SceneSpec,
@@ -265,5 +288,5 @@ def test_non_panda_renderer_preference_does_not_block_panda_required_scene(
 
     app.render()
 
-    assert app.consume_gl_scene() is None
-    assert fake_renderer.render_calls == 1
+    assert fake_renderer.render_calls == 0
+    assert _queued_gl_scene_type(app) == _GL_SCENE_TYPE_BY_NAME[spec.name]

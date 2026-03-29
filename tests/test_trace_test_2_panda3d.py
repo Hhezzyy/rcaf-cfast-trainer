@@ -1,14 +1,9 @@
 from __future__ import annotations
 
-import json
-import os
-import subprocess
-import sys
-from pathlib import Path
-
 import pygame
 import pytest
 
+from cfast_trainer.app import App, CognitiveTestScreen, MenuItem, MenuScreen
 from cfast_trainer.aircraft_art import fixed_wing_heading_from_screen_heading
 from cfast_trainer.trace_test_2 import (
     TraceTest2AircraftTrack,
@@ -16,6 +11,7 @@ from cfast_trainer.trace_test_2 import (
     TraceTest2MotionKind,
     TraceTest2Payload,
     TraceTest2Point3,
+    build_trace_test_2_test,
     trace_test_2_track_tangent,
 )
 from cfast_trainer.trace_test_2_gl import project_point, screen_heading_deg
@@ -25,7 +21,15 @@ from cfast_trainer.trace_test_2_panda3d import (
 )
 
 
-_HELPER = Path(__file__).with_name("_panda3d_runtime_probe.py")
+class _FakeClock:
+    def __init__(self) -> None:
+        self.t = 0.0
+
+    def now(self) -> float:
+        return self.t
+
+    def advance(self, dt: float) -> None:
+        self.t += dt
 
 
 def _angle_delta_deg(current: float, reference: float) -> float:
@@ -50,24 +54,45 @@ def _turn_track(*, motion_kind: TraceTest2MotionKind) -> TraceTest2AircraftTrack
     )
 
 
-def _run_probe(scene_name: str) -> dict[str, object]:
-    env = dict(os.environ)
-    env.pop("SDL_VIDEODRIVER", None)
-    env.setdefault("SDL_AUDIODRIVER", "dummy")
-    env.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
-    result = subprocess.run(
-        [sys.executable, str(_HELPER), scene_name],
-        capture_output=True,
-        text=True,
-        env=env,
-        cwd=Path(__file__).resolve().parents[1],
-    )
-    if result.returncode == 77:
-        pytest.skip(result.stdout.strip() or result.stderr.strip() or "Panda3D unavailable")
-    assert result.returncode == 0, result.stdout + result.stderr
-    lines = [line for line in result.stdout.splitlines() if line.strip()]
-    assert lines, "subprocess produced no output"
-    return json.loads(lines[-1])
+def _run_probe() -> dict[str, object]:
+    pygame.init()
+    screen: CognitiveTestScreen | None = None
+    try:
+        surface = pygame.display.set_mode((960, 540))
+        font = pygame.font.Font(None, 36)
+        app = App(surface=surface, font=font, opengl_enabled=True)
+        app.push(MenuScreen(app, "Main Menu", [MenuItem("Quit", app.quit)], is_root=True))
+        clock = _FakeClock()
+        screen = CognitiveTestScreen(
+            app,
+            engine_factory=lambda: build_trace_test_2_test(
+                clock=clock,
+                seed=71,
+                difficulty=0.58,
+            ),
+            test_code="trace_test_2",
+        )
+        app.push(screen)
+        screen._engine.start_practice()
+        clock.advance(0.1)
+        screen._engine.update()
+        app.render()
+        scene = app.consume_gl_scene()
+        assert scene is not None
+        payload = scene.payload
+        return {
+            "scene_type": type(scene).__name__,
+            "correct_code": int(payload.correct_code),
+            "aircraft_count": len(payload.aircraft),
+            "variant_id": str(payload.variant_id),
+            "content_family": str(payload.content_family),
+        }
+    finally:
+        if screen is not None:
+            close = getattr(screen, "close", None)
+            if callable(close):
+                close()
+        pygame.quit()
 
 
 def _project_world_point(
@@ -226,7 +251,7 @@ def test_trace_test_2_panda_pitch_sign_changes_for_climb_vs_descent() -> None:
     assert descent_hpr[1] > 0.0
 
 
-def test_trace_test_2_panda_multi_aircraft_orientation_matches_motion_kind() -> None:
+def test_trace_test_2_panda_multi_aircraft_orientation_matches_lattice_motion_kind() -> None:
     payload = TraceTest2Generator(seed=71).next_problem(difficulty=0.58).payload
 
     assert isinstance(payload, TraceTest2Payload)
@@ -243,15 +268,17 @@ def test_trace_test_2_panda_multi_aircraft_orientation_matches_motion_kind() -> 
         assert hpr == pytest.approx(
             TraceTest2Panda3DRenderer._aircraft_hpr_from_tangent(tangent=tangent)
         )
+        assert hpr[2] == pytest.approx(0.0, abs=0.01)
         if track.motion_kind is TraceTest2MotionKind.LEFT:
-            assert hpr[2] < 0.0
+            assert hpr[0] == pytest.approx(270.0)
         elif track.motion_kind is TraceTest2MotionKind.RIGHT:
-            assert hpr[2] > 0.0
+            assert hpr[0] == pytest.approx(90.0)
         elif track.motion_kind is TraceTest2MotionKind.CLIMB:
             assert hpr[1] < 0.0
+        elif track.motion_kind is TraceTest2MotionKind.DESCEND:
+            assert hpr[1] > 0.0
         else:
             assert abs(hpr[1]) <= 0.01
-            assert abs(hpr[2]) <= 0.01
 
 
 def test_trace_test_2_panda_hpr_sampling_is_deterministic_for_same_track() -> None:
@@ -353,14 +380,11 @@ def test_trace_test_2_camera_matches_gl_centering_and_ordering_contract() -> Non
         pygame.quit()
 
 
-def test_trace_test_2_screen_prefers_panda3d_runtime() -> None:
-    probe = _run_probe("trace_test_2")
+def test_trace_test_2_screen_queues_modern_gl_runtime() -> None:
+    probe = _run_probe()
 
-    assert probe["kind"] == "trace_test_2"
-    assert probe["renderer_type"] == "TraceTest2Panda3DRenderer"
-    assert probe["gl_scene_type"] is None
-    assert probe["renderer_size"][0] > 0
-    assert probe["renderer_size"][1] > 0
-    assert probe["aircraft_count"] > 0
-    assert probe["orientation_count"] == 0
-    assert sum(probe["avg_color"]) > 60
+    assert probe["scene_type"] == "TraceTest2GlScene"
+    assert probe["correct_code"] == 4
+    assert probe["aircraft_count"] >= 2
+    assert probe["variant_id"]
+    assert probe["content_family"] == "motion_memory"

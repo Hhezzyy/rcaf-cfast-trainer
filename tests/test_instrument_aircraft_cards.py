@@ -12,7 +12,6 @@ from cfast_trainer.instrument_aircraft_cards import (
     aircraft_card_semantic_drift_tags,
     aircraft_card_wing_tilt_px,
     InstrumentAircraftCardSpriteBank,
-    panda3d_card_rendering_available,
 )
 from cfast_trainer.instrument_comprehension import InstrumentAircraftViewPreset, InstrumentState
 
@@ -191,11 +190,29 @@ def _red_bounds(surface: pygame.Surface) -> tuple[int, int, int, int] | None:
     return (min_x, min_y, max_x, max_y)
 
 
-@pytest.mark.skipif(not panda3d_card_rendering_available(), reason="Panda3D card renderer unavailable")
-def test_generated_card_presets_keep_aircraft_inside_safe_inset(tmp_path) -> None:
+def test_generated_card_presets_keep_aircraft_inside_safe_inset(tmp_path, monkeypatch) -> None:
     cache_dir = tmp_path / "generated-cards"
     state = _state(heading_deg=82, pitch_deg=7, bank_deg=-14)
     bank = InstrumentAircraftCardSpriteBank(cache_dir=cache_dir, allow_generation=True)
+
+    class _FakeRenderer:
+        def render_card(self, *, key, destination, draw_callback, size) -> None:
+            _ = (key, draw_callback)
+            surface = pygame.Surface(size, pygame.SRCALPHA)
+            surface.fill((232, 232, 232, 255))
+            pygame.draw.polygon(
+                surface,
+                (210, 40, 60, 255),
+                [
+                    (size[0] // 2, 36),
+                    (size[0] // 2 + 58, size[1] // 2),
+                    (size[0] // 2, size[1] - 36),
+                    (size[0] // 2 - 58, size[1] // 2),
+                ],
+            )
+            pygame.image.save(surface, str(destination))
+
+    monkeypatch.setattr(bank, "_get_renderer", lambda: _FakeRenderer())
 
     for preset in InstrumentAircraftViewPreset:
         surface = bank.get_surface(state=state, view_preset=preset)
@@ -215,3 +232,23 @@ def test_generated_card_presets_keep_aircraft_inside_safe_inset(tmp_path) -> Non
             (surface.get_width() - 3, surface.get_height() - 3),
         ):
             assert surface.get_at(sample).a > 0, preset
+
+
+def test_generated_card_uses_software_fallback_when_renderer_generation_fails(tmp_path, monkeypatch) -> None:
+    bank = InstrumentAircraftCardSpriteBank(cache_dir=tmp_path / "generated-cards", allow_generation=True)
+
+    class _FailingRenderer:
+        def render_card(self, *, key, destination, draw_callback, size) -> None:
+            _ = (key, destination, draw_callback, size)
+            raise RuntimeError("renderer boom")
+
+    monkeypatch.setattr(bank, "_get_renderer", lambda: _FailingRenderer())
+
+    pygame.init()
+    try:
+        surface = bank.get_surface(state=_state(heading_deg=90, pitch_deg=0, bank_deg=0))
+        assert surface is not None
+        assert bank._generation_failed is True
+        assert _red_bounds(surface) is not None
+    finally:
+        pygame.quit()

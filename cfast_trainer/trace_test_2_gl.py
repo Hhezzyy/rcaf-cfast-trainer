@@ -12,12 +12,9 @@ from .trace_test_2 import (
 
 
 def aircraft_hpr_from_tangent(tangent: tuple[float, float, float]) -> tuple[float, float, float]:
-    dx, dy, _dz = tangent
-    horiz = max(1e-6, math.sqrt((dx * dx) + (dy * dy)))
-    bank_deg = max(-34.0, min(34.0, (dx / horiz) * 28.0))
     return panda3d_fixed_wing_hpr_from_world_tangent(
         tangent=tangent,
-        roll_deg=bank_deg,
+        roll_deg=0.0,
     )
 
 

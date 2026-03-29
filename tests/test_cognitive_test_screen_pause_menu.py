@@ -870,189 +870,6 @@ def test_auditory_testing_menu_toggles_for_prefixed_title() -> None:
         pygame.quit()
 
 
-def test_auditory_panda_failure_overlay_blocks_enter_until_retry_succeeds(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _app, screen, engines = _build_app_and_screen(
-        phase=Phase.INSTRUCTIONS,
-        title="Auditory Capacity",
-    )
-    try:
-        surface = pygame.display.get_surface()
-        assert surface is not None
-        engine = engines[-1]
-
-        attempts = iter(
-            [
-                (False, "preflight_timeout", "Timed out waiting for Panda3D."),
-                (True, "ready", "Panda3D ready."),
-            ]
-        )
-        monkeypatch.setattr(screen, "_run_auditory_panda_preflight", lambda: next(attempts))
-        monkeypatch.setattr(
-            screen,
-            "_get_auditory_panda_renderer",
-            lambda *, size: _FakePandaRenderer(size=size),
-        )
-
-        tiny_font = _SpyFont()
-        small_font = _SpyFont()
-        app_font = _SpyFont()
-        screen._tiny_font = tiny_font
-        screen._small_font = small_font
-        screen._app._font = app_font
-
-        screen.render(surface)
-        rendered_text = "\n".join(app_font.rendered + small_font.rendered + tiny_font.rendered)
-
-        assert screen._auditory_panda_requirement.checked is True
-        assert screen._auditory_panda_requirement.ready is False
-        assert "Panda3D Required" in rendered_text
-        assert "Timed out waiting for Panda3D." in rendered_text
-        assert screen._intro_loading_complete(Phase.INSTRUCTIONS) is False
-
-        screen.handle_event(
-            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "mod": 0, "unicode": ""})
-        )
-        assert engine.snapshot().phase is Phase.INSTRUCTIONS
-
-        screen.handle_event(
-            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_r, "mod": 0, "unicode": "r"})
-        )
-        assert screen._auditory_panda_requirement.checked is False
-
-        for _ in range(8):
-            screen.render(surface)
-
-        assert screen._auditory_panda_requirement.ready is True
-        assert screen._intro_loading_complete(Phase.INSTRUCTIONS) is True
-
-        screen.handle_event(
-            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "mod": 0, "unicode": ""})
-        )
-        assert engine.snapshot().phase is Phase.PRACTICE
-    finally:
-        pygame.quit()
-
-
-def test_auditory_panda_failure_escape_backs_out_instead_of_opening_pause_menu() -> None:
-    app, screen, _engines = _build_app_and_screen(
-        phase=Phase.PRACTICE,
-        title="Auditory Capacity",
-    )
-    try:
-        screen._fail_auditory_panda_requirement(
-            category="renderer_render_failed",
-            summary="Renderer crashed.",
-        )
-
-        screen.handle_event(
-            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_ESCAPE, "mod": 0, "unicode": ""})
-        )
-
-        assert screen._pause_menu_active is False
-        assert len(app._screens) == 1
-        assert screen._activity_close_reason == "back_abort"
-    finally:
-        pygame.quit()
-
-
-def test_trace_test_1_panda_failure_overlay_blocks_enter_until_retry_succeeds(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _app, screen, engines = _build_app_and_screen(
-        phase=Phase.INSTRUCTIONS,
-        title="Trace Test 1",
-        test_code="trace_test_1",
-    )
-    try:
-        surface = pygame.display.get_surface()
-        assert surface is not None
-        engine = engines[-1]
-
-        screen._fail_scene_panda_requirement(
-            "trace_test_1",
-            scene_label="Trace Test 1",
-            category="renderer_unavailable",
-            summary="Panda3D renderer unavailable.",
-        )
-        def fake_trace_test_1_getter(*, size: tuple[int, int]) -> _FakePandaRenderer:
-            if screen._trace_test_1_panda_requirement.checked:
-                return None  # type: ignore[return-value]
-            _mark_scene_panda_ready(screen, "trace_test_1")
-            return _FakePandaRenderer(size=size)
-
-        monkeypatch.setattr(
-            screen,
-            "_get_trace_test_1_panda_renderer",
-            fake_trace_test_1_getter,
-        )
-
-        tiny_font = _SpyFont()
-        small_font = _SpyFont()
-        app_font = _SpyFont()
-        screen._tiny_font = tiny_font
-        screen._small_font = small_font
-        screen._app._font = app_font
-
-        screen.render(surface)
-        rendered_text = "\n".join(app_font.rendered + small_font.rendered + tiny_font.rendered)
-
-        assert screen._trace_test_1_panda_requirement.checked is True
-        assert screen._trace_test_1_panda_requirement.ready is False
-        assert "Panda3D Required" in rendered_text
-        assert "Trace Test 1" in rendered_text
-        assert "Press R to retry Panda3D." in rendered_text
-
-        screen.handle_event(
-            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "mod": 0, "unicode": ""})
-        )
-        assert engine.snapshot().phase is Phase.INSTRUCTIONS
-
-        screen.handle_event(
-            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_r, "mod": 0, "unicode": "r"})
-        )
-        assert screen._trace_test_1_panda_requirement.checked is False
-
-        for _ in range(8):
-            screen.render(surface)
-
-        assert screen._trace_test_1_panda_requirement.ready is True
-        assert screen._intro_loading_complete(Phase.INSTRUCTIONS) is True
-
-        screen.handle_event(
-            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "mod": 0, "unicode": ""})
-        )
-        assert engine.snapshot().phase is Phase.PRACTICE
-    finally:
-        pygame.quit()
-
-
-def test_rapid_tracking_panda_failure_escape_backs_out_instead_of_opening_pause_menu() -> None:
-    app, screen, _engines = _build_app_and_screen(
-        phase=Phase.PRACTICE,
-        title="Rapid Tracking",
-        test_code="rapid_tracking",
-    )
-    try:
-        screen._fail_scene_panda_requirement(
-            "rapid_tracking",
-            scene_label="Rapid Tracking",
-            category="renderer_render_failed",
-            summary="Renderer crashed.",
-        )
-
-        screen.handle_event(
-            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_ESCAPE, "mod": 0, "unicode": ""})
-        )
-
-        assert screen._pause_menu_active is False
-        assert len(app._screens) == 1
-        assert screen._activity_close_reason == "back_abort"
-    finally:
-        pygame.quit()
-
-
 def test_rapid_tracking_instructions_show_session_seed() -> None:
     pygame.init()
     try:
@@ -1516,14 +1333,15 @@ def test_sensory_motor_practice_done_enter_advances_to_next_internal_block() -> 
 
 
 def test_auditory_intro_loading_reuses_frozen_world_frame() -> None:
-    _app, screen, engines = _build_app_and_screen(
+    app, screen, engines = _build_app_and_screen(
         phase=Phase.INSTRUCTIONS,
         title="Auditory Capacity",
+        test_code="auditory_capacity",
     )
     try:
+        app.set_opengl_enabled(True)
         surface = pygame.display.get_surface()
         assert surface is not None
-        _mark_auditory_panda_ready(screen)
         engines[-1]._assigned_callsigns = ("RAVEN", "EAGLE", "VIPER")
         draw_calls = 0
 
@@ -1547,14 +1365,15 @@ def test_auditory_intro_loading_reuses_frozen_world_frame() -> None:
 
 
 def test_auditory_pause_reuses_last_live_world_frame_without_advancing() -> None:
-    _app, screen, engines = _build_app_and_screen(
+    app, screen, engines = _build_app_and_screen(
         phase=Phase.PRACTICE,
         title="Auditory Capacity",
+        test_code="auditory_capacity",
     )
     try:
+        app.set_opengl_enabled(True)
         surface = pygame.display.get_surface()
         assert surface is not None
-        _mark_auditory_panda_ready(screen)
         draw_calls = 0
 
         def _fake_world_renderer(**kwargs) -> None:

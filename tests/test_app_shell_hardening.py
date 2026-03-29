@@ -13,6 +13,7 @@ from cfast_trainer.app import (
     App,
     CognitiveTestScreen,
     DisplayBootstrapResult,
+    DisplayLifecycleState,
     MenuItem,
     MenuScreen,
     OpenGLFailureInfo,
@@ -99,6 +100,18 @@ class _FailingRunScreen:
 
     def shell_activity_label(self) -> str:
         return "Failing Run"
+
+
+class _RecordingGlRenderer:
+    def __init__(self, bucket: dict[str, list[tuple[int, int]]]) -> None:
+        self._bucket = bucket
+
+    def resize(self, *, window_size: tuple[int, int]) -> None:
+        self._bucket.setdefault("resize", []).append(tuple(window_size))
+
+    def render_frame(self, *, ui_surface: pygame.Surface, scene) -> None:
+        _ = scene
+        self._bucket.setdefault("ui", []).append(ui_surface.get_size())
 
 
 def _build_app_and_screen() -> tuple[App, CognitiveTestScreen]:
@@ -214,11 +227,7 @@ def test_present_renderer_failure_aborts_active_run_and_pushes_failure_screen() 
         pygame.quit()
 
 
-def test_run_startup_gl_failure_can_disable_and_continue(tmp_path, monkeypatch) -> None:
-    runtime_defaults_path = tmp_path / "runtime-defaults.json"
-    runtime_defaults = RuntimeDefaultsStore(runtime_defaults_path)
-    runtime_defaults.set_use_opengl(True)
-    monkeypatch.setenv("CFAST_RUNTIME_DEFAULTS_PATH", str(runtime_defaults_path))
+def test_run_startup_renderer_failure_shows_fatal_screen_and_quits(monkeypatch) -> None:
     monkeypatch.setenv("SDL_VIDEODRIVER", "dummy")
     monkeypatch.setenv("SDL_AUDIODRIVER", "dummy")
 
@@ -234,8 +243,8 @@ def test_run_startup_gl_failure_can_disable_and_continue(tmp_path, monkeypatch) 
             gl_attempted=True,
             gl_failure=OpenGLFailureInfo(
                 stage="renderer_init",
-                summary="OpenGL renderer failed.",
-                detail="The app could not continue while initializing the OpenGL scene renderer.",
+                summary="Renderer failed.",
+                detail="The app could not continue while initializing the ModernGL renderer.",
                 requested=True,
                 attempted=True,
             ),
@@ -245,16 +254,81 @@ def test_run_startup_gl_failure_can_disable_and_continue(tmp_path, monkeypatch) 
 
     def inject(frame: int) -> None:
         if frame == 0:
-            pygame.event.post(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_DOWN, "unicode": ""}))
-        elif frame == 1:
             pygame.event.post(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""}))
-        elif frame == 5:
-            pygame.event.post(pygame.event.Event(pygame.QUIT))
 
-    assert run(max_frames=12, event_injector=inject) == 0
+    assert run(max_frames=4, event_injector=inject) == 1
 
-    reloaded = RuntimeDefaultsStore(runtime_defaults_path)
-    assert reloaded.stored_use_opengl() is False
+
+def test_run_rebootstraps_stale_fullscreen_drawable_and_keeps_ui_surface_synced(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("SDL_VIDEODRIVER", "dummy")
+    monkeypatch.setenv("SDL_AUDIODRIVER", "dummy")
+
+    render_log: dict[str, list[tuple[int, int]]] = {}
+    lifecycle_calls = {"count": 0}
+    decisions: list[tuple[str, tuple[int, int]]] = []
+
+    def fake_initialize_display_surfaces(*, window_size, window_flags, video_driver, want_gl):
+        _ = (window_flags, video_driver, want_gl)
+        display_surface = pygame.display.set_mode(window_size)
+        return DisplayBootstrapResult(
+            display_surface=display_surface,
+            app_surface=pygame.Surface(display_surface.get_size(), pygame.SRCALPHA),
+            gl_renderer=_RecordingGlRenderer(render_log),
+            active_window_flags=pygame.RESIZABLE | pygame.OPENGL | pygame.DOUBLEBUF,
+            gl_requested=True,
+            gl_attempted=True,
+        )
+
+    def fake_read_display_lifecycle_state(*, display_surface, active_window_flags, window_mode):
+        lifecycle_calls["count"] += 1
+        if lifecycle_calls["count"] == 1:
+            return DisplayLifecycleState(
+                window_size=(1440, 900),
+                surface_size=display_surface.get_size(),
+                desktop_size=(1440, 900),
+                active_window_flags=active_window_flags,
+                window_mode=window_mode,
+            )
+        return DisplayLifecycleState(
+            window_size=(1440, 900),
+            surface_size=(1440, 900),
+            desktop_size=(1440, 900),
+            active_window_flags=active_window_flags,
+            window_mode=window_mode,
+        )
+
+    def fake_rebootstrap_display_for_transition(*, decision, video_driver, want_gl):
+        _ = (video_driver, want_gl)
+        decisions.append((decision.window_mode, decision.window_size))
+        display_surface = pygame.display.set_mode(decision.window_size)
+        return DisplayBootstrapResult(
+            display_surface=display_surface,
+            app_surface=pygame.Surface(display_surface.get_size(), pygame.SRCALPHA),
+            gl_renderer=_RecordingGlRenderer(render_log),
+            active_window_flags=pygame.FULLSCREEN | pygame.OPENGL | pygame.DOUBLEBUF,
+            gl_requested=True,
+            gl_attempted=True,
+        )
+
+    monkeypatch.setattr("cfast_trainer.app._initialize_display_surfaces", fake_initialize_display_surfaces)
+    monkeypatch.setattr(
+        "cfast_trainer.app._read_display_lifecycle_state",
+        fake_read_display_lifecycle_state,
+    )
+    monkeypatch.setattr(
+        "cfast_trainer.app._rebootstrap_display_for_transition",
+        fake_rebootstrap_display_for_transition,
+    )
+
+    summary: dict[str, object] = {}
+    assert run(max_frames=1, summary_sink=summary) == 0
+
+    assert decisions == [("fullscreen", (1440, 900))]
+    assert render_log["resize"][-1] == (1440, 900)
+    assert render_log["ui"][-1] == (1440, 900)
+    assert summary["display_mode"] == "FULLSCREEN"
 
 
 def test_run_headless_sim_drill_pause_cycle_returns_menu_summary() -> None:

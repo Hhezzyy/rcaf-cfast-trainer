@@ -605,6 +605,18 @@ class RapidTrackingPanda3DRenderer:
                 parent=self._target_root,
             ),
         ]
+        self._tracked_pool = [
+            self._build_fallback_model(
+                kind="tank",
+                color=(0.44, 0.48, 0.28, 1.0),
+            ),
+            self._build_fallback_model(
+                kind="tank",
+                color=(0.34, 0.38, 0.22, 1.0),
+            ),
+        ]
+        for node in self._tracked_pool:
+            node.reparentTo(self._target_root)
         self._soldier_pool = [
             self._build_soldier_squad(
                 leader_color=(0.74, 0.28, 0.24, 1.0),
@@ -622,6 +634,7 @@ class RapidTrackingPanda3DRenderer:
             *self._jet_pool,
             *self._helicopter_pool,
             *self._truck_pool,
+            *self._tracked_pool,
             *self._soldier_pool,
         )
         for node in self._dynamic_target_nodes:
@@ -724,6 +737,7 @@ class RapidTrackingPanda3DRenderer:
         self._selected_target_kind = ""
         self._selected_target_variant = ""
         self._build_seeded_roads(layout=layout)
+        self._build_seeded_obstacles(layout=layout)
         self._build_seeded_compound(layout=layout)
         self._build_seeded_foliage(layout=layout)
         self._build_seeded_ring(layout=layout)
@@ -786,52 +800,59 @@ class RapidTrackingPanda3DRenderer:
 
     @staticmethod
     def _seeded_road_segment_ids() -> tuple[tuple[str, str], ...]:
-        return (
-            ("road-west-a", "road-mid-a"),
-            ("road-mid-a", "road-east-a"),
-            ("road-east-a", "road-east-b"),
-            ("road-west-v0", "road-west-v1"),
-            ("road-east-v0", "road-east-v1"),
-        )
+        return ()
 
     def _build_seeded_roads(self, *, layout: RapidTrackingCompoundLayout) -> None:
-        for start_id, end_id in self._seeded_road_segment_ids():
-            self._build_road_segment(
-                start_anchor=layout.anchor(start_id),
-                end_anchor=layout.anchor(end_id),
+        for road_segment in layout.road_segments:
+            self._build_road_segment_points(
+                points=tuple((float(x), float(y)) for x, y in road_segment.points),
+                surface=str(road_segment.surface),
                 seed=layout.seed,
             )
 
-        for anchor in layout.road_anchors:
-            self._build_road_intersection(anchor=anchor, seed=layout.seed)
+        road_anchor_lookup = {anchor.anchor_id: anchor for anchor in layout.road_anchors}
+        seen_intersections: set[str] = set()
+        for road_segment in layout.road_segments:
+            for anchor_id in (road_segment.start_anchor_id, road_segment.end_anchor_id):
+                if anchor_id in seen_intersections:
+                    continue
+                anchor = road_anchor_lookup.get(anchor_id)
+                if anchor is None:
+                    continue
+                seen_intersections.add(anchor_id)
+                self._build_road_intersection(anchor=anchor, seed=layout.seed)
 
     def _build_road_segment(self, *, start_anchor, end_anchor, seed: int) -> None:
+        self._build_road_segment_points(
+            points=((float(start_anchor.x), float(start_anchor.y)), (float(end_anchor.x), float(end_anchor.y))),
+            surface="paved",
+            seed=seed,
+        )
+
+    def _build_road_segment_points(
+        self,
+        *,
+        points: tuple[tuple[float, float], ...],
+        surface: str,
+        seed: int,
+    ) -> None:
         from panda3d.core import NodePath
 
-        start_x, start_y, start_z = self._world_pos_from_anchor(start_anchor)
-        end_x, end_y, end_z = self._world_pos_from_anchor(end_anchor)
-        dx = float(end_x) - float(start_x)
-        dy = float(end_y) - float(start_y)
-        segment_length = max(1.0, math.hypot(dx, dy))
-        wear = rapid_tracking_seed_unit(
-            seed=int(seed),
-            salt=f"road:{start_anchor.anchor_id}:{end_anchor.anchor_id}:wear",
-        )
-        road_width = _lerp(8.1, 9.6, wear)
-        shoulder_width = road_width + _lerp(2.6, 3.4, wear)
-        stripe_width = _lerp(0.26, 0.38, wear)
-        piece_count = max(4, int(math.ceil(segment_length / 8.0)))
-        piece_overlap = 1.2
+        if len(points) < 2:
+            return
 
-        root = NodePath(f"rapid-road-segment-{start_anchor.anchor_id}-{end_anchor.anchor_id}")
+        wear = rapid_tracking_seed_unit(seed=int(seed), salt=f"road:{surface}:{len(points)}:wear")
+        paved = str(surface).strip().lower() == "paved"
+        road_width = _lerp(8.1, 9.6, wear) if paved else _lerp(5.4, 6.8, wear)
+        shoulder_width = road_width + _lerp(2.6, 3.4, wear)
+        stripe_width = _lerp(0.26, 0.38, wear) if paved else 0.0
+        piece_overlap = 1.2 if paved else 0.8
+
+        root = NodePath(f"rapid-road-segment-{surface}-{len(self._road_segment_nodes)}")
         root.reparentTo(self._road_root)
-        for idx in range(piece_count):
-            t0 = idx / piece_count
-            t1 = (idx + 1) / piece_count
-            seg_start_x = _lerp(float(start_x), float(end_x), t0)
-            seg_start_y = _lerp(float(start_y), float(end_y), t0)
-            seg_end_x = _lerp(float(start_x), float(end_x), t1)
-            seg_end_y = _lerp(float(start_y), float(end_y), t1)
+        for idx, (start_xy, end_xy) in enumerate(zip(points, points[1:], strict=False)):
+            seg_start_x, seg_start_y = self._scene_track_world_xy(track_x=float(start_xy[0]), track_y=float(start_xy[1]))
+            seg_end_x, seg_end_y = self._scene_track_world_xy(track_x=float(end_xy[0]), track_y=float(end_xy[1]))
             seg_start_z = self._terrain_height(seg_start_x, seg_start_y)
             seg_end_z = self._terrain_height(seg_end_x, seg_end_y)
             seg_dx = seg_end_x - seg_start_x
@@ -853,18 +874,20 @@ class RapidTrackingPanda3DRenderer:
 
             shoulder = self._make_box(
                 size=(shoulder_width, seg_length + piece_overlap + 1.2, 0.06),
-                color=(0.36, 0.30, 0.22, 1.0),
+                color=(0.36, 0.30, 0.22, 1.0) if paved else (0.34, 0.28, 0.20, 1.0),
             )
             shoulder.setZ(-0.012)
             shoulder.reparentTo(piece_root)
 
             asphalt = self._make_box(
                 size=(road_width, seg_length + piece_overlap, 0.05),
-                color=(0.13 + asphalt_tint, 0.14 + asphalt_tint, 0.15 + asphalt_tint, 1.0),
+                color=(0.13 + asphalt_tint, 0.14 + asphalt_tint, 0.15 + asphalt_tint, 1.0)
+                if paved
+                else (0.30, 0.24, 0.18, 1.0),
             )
             asphalt.reparentTo(piece_root)
 
-            if idx % 2 == 0:
+            if paved and idx % 2 == 0:
                 stripe = self._make_box(
                     size=(stripe_width, max(2.8, seg_length * 0.62), 0.014),
                     color=(0.84, 0.78, 0.54, 0.96),
@@ -873,6 +896,33 @@ class RapidTrackingPanda3DRenderer:
                 stripe.reparentTo(piece_root)
 
         self._road_segment_nodes.append(root)
+
+    def _build_seeded_obstacles(self, *, layout: RapidTrackingCompoundLayout) -> None:
+        for obstacle in layout.obstacles:
+            world_x, world_y = self._scene_track_world_xy(track_x=float(obstacle.x), track_y=float(obstacle.y))
+            terrain_z = self._terrain_height(world_x, world_y)
+            if obstacle.kind == "lake":
+                node = self._make_box(
+                    size=(float(obstacle.radius_x) * 34.0 * 2.0, float(obstacle.radius_y) * 56.0 * 2.0, 0.08),
+                    color=(0.18, 0.34, 0.52, 0.92),
+                )
+                node.reparentTo(self._scenery_root)
+                node.setPos(world_x, world_y, terrain_z - 0.08)
+                node.setHpr(float(obstacle.rotation_deg), 0.0, 0.0)
+            elif obstacle.kind == "hill":
+                node = self._make_box(
+                    size=(float(obstacle.radius_x) * 34.0 * 1.7, float(obstacle.radius_y) * 56.0 * 1.5, float(obstacle.height) * 5.5),
+                    color=(0.30, 0.42, 0.24, 1.0),
+                )
+                node.reparentTo(self._scenery_root)
+                node.setPos(world_x, world_y, terrain_z + (float(obstacle.height) * 1.2))
+                node.setHpr(float(obstacle.rotation_deg), 0.0, 0.0)
+            else:
+                node = self._build_fallback_model(kind="tank", color=(0.42, 0.40, 0.38, 1.0))
+                node.reparentTo(self._scenery_root)
+                node.setScale(max(0.8, float(obstacle.radius_x) * 2.0))
+                node.setPos(world_x, world_y, terrain_z + 0.24)
+                node.setHpr(float(obstacle.rotation_deg), 0.0, 0.0)
 
     def _build_road_intersection(self, *, anchor, seed: int) -> None:
         from panda3d.core import NodePath
@@ -1570,10 +1620,11 @@ class RapidTrackingPanda3DRenderer:
             return
         if kind == "truck":
             x, y, z = self._ground_target_world_pos(world_x=track_x, world_y=track_y, clearance=0.34)
+            tracked_variant = variant in {"tracked", "armor", "armored"}
             node = self._select_target_node_from_candidates(
                 kind="truck",
-                variant="olive",
-                candidates=self._truck_pool,
+                variant="tracked" if tracked_variant else "olive",
+                candidates=self._tracked_pool if tracked_variant else self._truck_pool,
                 desired_pos=(x, y, z),
             )
             if node is None:

@@ -1,11 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import replace
-import json
-import os
-import subprocess
-import sys
-from pathlib import Path
 
 import pygame
 import pytest
@@ -30,10 +25,7 @@ from cfast_trainer.auditory_capacity_panda3d import (
     _tube_frame,
     panda3d_auditory_rendering_available,
 )
-from cfast_trainer.panda3d_protocol import Panda3DResult, Panda3DScene
-
-
-_HELPER = Path(__file__).with_name("_panda3d_runtime_probe.py")
+from cfast_trainer.cognitive_core import Phase
 
 
 class _FakeClock:
@@ -58,26 +50,6 @@ class _ExplodingRenderer:
         return None
 
 
-def _run_probe(scene_name: str) -> dict[str, object]:
-    env = dict(os.environ)
-    env.pop("SDL_VIDEODRIVER", None)
-    env.setdefault("SDL_AUDIODRIVER", "dummy")
-    env.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
-    result = subprocess.run(
-        [sys.executable, str(_HELPER), scene_name],
-        capture_output=True,
-        text=True,
-        env=env,
-        cwd=Path(__file__).resolve().parents[1],
-    )
-    if result.returncode == 77:
-        pytest.skip(result.stdout.strip() or result.stderr.strip() or "Panda3D unavailable")
-    assert result.returncode == 0, result.stdout + result.stderr
-    lines = [line for line in result.stdout.splitlines() if line.strip()]
-    assert lines, "subprocess produced no output"
-    return json.loads(lines[-1])
-
-
 @pytest.fixture
 def pygame_headless(monkeypatch):
     monkeypatch.setenv("SDL_VIDEODRIVER", "dummy")
@@ -91,7 +63,8 @@ def pygame_headless(monkeypatch):
 def _build_screen() -> tuple[App, CognitiveTestScreen]:
     display = pygame.display.set_mode((960, 540))
     font = pygame.font.Font(None, 36)
-    app = App(surface=display, font=font)
+    app = App(surface=display, font=font, opengl_enabled=True)
+    app.set_surface(pygame.Surface(display.get_size(), pygame.SRCALPHA))
     app.push(MenuScreen(app, "Main Menu", [MenuItem("Quit", app.quit)], is_root=True))
 
     clock = _FakeClock()
@@ -162,70 +135,37 @@ def test_panda3d_auditory_rendering_ignores_non_panda_preference(monkeypatch) ->
     assert panda3d_auditory_rendering_available() is True
 
 
-def test_auditory_panda_preflight_reports_timeout(
-    pygame_headless,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _app, screen = _build_screen()
-
-    def _raise_timeout(*_args, **_kwargs):
-        raise subprocess.TimeoutExpired(cmd="auditory_preflight", timeout=5.0)
-
-    monkeypatch.setattr("cfast_trainer.app.launch_runtime", _raise_timeout)
-
-    ok, category, summary = screen._run_auditory_panda_preflight()
-
-    assert ok is False
-    assert category == "preflight_timeout"
-    assert "timed out" in summary.lower()
-
-
-def test_auditory_panda_preflight_ignores_non_panda_renderer_preference(
-    pygame_headless,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _app, screen = _build_screen()
-    monkeypatch.setenv("CFAST_AUDITORY_RENDERER", "pygame")
-    monkeypatch.setattr(
-        "cfast_trainer.app.launch_runtime",
-        lambda *_args, **_kwargs: Panda3DResult(
-            ok=True,
-            scene=Panda3DScene.AUDITORY_CAPACITY,
-            summary="ready",
-        ),
-    )
-
-    ok, category, summary = screen._run_auditory_panda_preflight()
-
-    assert ok is True
-    assert category == "ready"
-    assert summary == "ready"
-
-
-def test_auditory_screen_prefers_panda3d_runtime() -> None:
-    probe = _run_probe("auditory")
-
-    assert probe["kind"] == "auditory"
-    assert probe["renderer_type"] == "AuditoryCapacityPanda3DRenderer"
-    assert probe["gl_scene_type"] is None
-    assert probe["renderer_size"][0] > 0
-    assert probe["renderer_size"][1] > 0
-    assert probe["has_payload"] is True
-    assert set(probe["loaded_asset_ids"]) >= {
-        "auditory_ball",
-        "auditory_tunnel_rib",
-        "auditory_tunnel_segment",
-    }
-    assert "auditory_ball" not in set(probe["fallback_asset_ids"])
-    assert sum(probe["avg_color"]) > 60
-
-
-def test_auditory_renderer_failure_enters_blocking_requirement_state(
+def test_auditory_screen_queues_gl_runtime_when_opengl_enabled(
     pygame_headless,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app, screen = _build_screen()
     _mark_auditory_panda_ready(screen)
+    monkeypatch.setattr(screen, "_sync_auditory_audio", lambda **_: None)
+
+    app.render()
+
+    gl_scene = app.consume_gl_scene()
+    assert gl_scene is not None
+    assert type(gl_scene).__name__ == "AuditoryGlScene"
+    assert gl_scene.payload is not None
+    assert gl_scene.payload.session_seed == 17
+    assert gl_scene.payload.segment_label == "Practice"
+    assert gl_scene.world.x > 0
+    assert gl_scene.world.y > 0
+    probe = (gl_scene.world.centerx, gl_scene.world.bottom - 40)
+    assert app.surface.get_at(probe).a == 0
+    assert app.surface.get_at((gl_scene.world.x, gl_scene.world.y)).a > 0
+    assert screen._auditory_panda_renderer is None
+
+
+def test_auditory_screen_bypasses_legacy_panda_renderer_when_gl_standard(
+    pygame_headless,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, screen = _build_screen()
+    _mark_auditory_panda_ready(screen)
+    monkeypatch.setattr(screen, "_sync_auditory_audio", lambda **_: None)
     monkeypatch.setattr(
         screen,
         "_get_auditory_panda_renderer",
@@ -234,11 +174,45 @@ def test_auditory_renderer_failure_enters_blocking_requirement_state(
 
     app.render()
 
-    assert app.consume_gl_scene() is None
+    gl_scene = app.consume_gl_scene()
+    assert gl_scene is not None
+    assert type(gl_scene).__name__ == "AuditoryGlScene"
     assert screen._auditory_panda_requirement.checked is True
-    assert screen._auditory_panda_requirement.ready is False
-    assert screen._auditory_panda_requirement.failure_category == "renderer_render_failed"
-    assert "failed while drawing" in screen._auditory_panda_requirement.failure_summary.lower()
+    assert screen._auditory_panda_requirement.ready is True
+
+
+def test_auditory_world_frame_keeps_gl_viewport_transparent_in_freeze_mode(
+    pygame_headless,
+) -> None:
+    app, screen = _build_screen()
+    _mark_auditory_panda_ready(screen)
+    payload = screen._engine.snapshot().payload
+    assert payload is not None
+
+    live_frame = screen._render_auditory_capacity_world_frame(
+        size=(320, 180),
+        phase=Phase.PRACTICE,
+        payload=payload,
+        time_remaining_s=24.0,
+        time_fill_ratio=0.5,
+        freeze_mode=None,
+        gl_scene_world=pygame.Rect(24, 36, 320, 180),
+    )
+    frozen_frame = screen._render_auditory_capacity_world_frame(
+        size=(320, 180),
+        phase=Phase.PRACTICE,
+        payload=payload,
+        time_remaining_s=24.0,
+        time_fill_ratio=0.5,
+        freeze_mode="pause",
+        gl_scene_world=pygame.Rect(24, 36, 320, 180),
+    )
+
+    probe = (live_frame.get_width() // 2, live_frame.get_height() - 40)
+    assert live_frame.get_at(probe).a == 0
+    assert frozen_frame.get_at(probe).a == 0
+    assert live_frame.get_at((0, 0)).a > 0
+    assert frozen_frame.get_at((0, 0)).a > 0
 
 
 def test_gate_ahead_distance_mapping_matches_arrival_expectations() -> None:

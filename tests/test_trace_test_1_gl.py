@@ -1,19 +1,20 @@
 from __future__ import annotations
 
 import math
-from dataclasses import replace
 
+import pygame
 import pytest
 
+from cfast_trainer.trace_lattice import TraceLatticeAction, trace_lattice_state
 from cfast_trainer.trace_test_1 import (
     TraceTest1AircraftPlan,
-    TraceTest1AircraftState,
-    TraceTest1Attitude,
     TraceTest1Command,
     TraceTest1Generator,
     TraceTest1Payload,
     TraceTest1PromptPlan,
     TraceTest1TrialStage,
+    _tt1_action_for_command,
+    _tt1_aircraft_state_from_lattice_state,
     trace_test_1_scene_frames,
 )
 from cfast_trainer.trace_test_1_gl import (
@@ -32,22 +33,39 @@ def _sample_prompt(*, difficulty: float = 0.82) -> TraceTest1PromptPlan:
     return payload
 
 
+def _prompt_start_state(command: TraceTest1Command):
+    starts = {
+        TraceTest1Command.LEFT: trace_lattice_state(col=4, row=1, level=2, forward=(0, 1, 0), up=(0, 0, 1)),
+        TraceTest1Command.RIGHT: trace_lattice_state(col=2, row=1, level=2, forward=(0, 1, 0), up=(0, 0, 1)),
+        TraceTest1Command.PUSH: trace_lattice_state(col=3, row=1, level=3, forward=(0, 1, 0), up=(0, 0, 1)),
+        TraceTest1Command.PULL: trace_lattice_state(col=3, row=1, level=1, forward=(0, 1, 0), up=(0, 0, 1)),
+    }
+    return starts[command]
+
+
+def _manual_plan(command: TraceTest1Command) -> TraceTest1AircraftPlan:
+    state = _prompt_start_state(command)
+    return TraceTest1AircraftPlan(
+        start_state=_tt1_aircraft_state_from_lattice_state(state),
+        command=command,
+        lead_distance=5.0,
+        maneuver_distance=4.0,
+        altitude_delta=2.0 if command is TraceTest1Command.PULL else -2.0,
+        lattice_start=state,
+        lattice_actions=(
+            TraceLatticeAction.STRAIGHT,
+            _tt1_action_for_command(command),
+            TraceLatticeAction.STRAIGHT,
+        ),
+    )
+
+
 def _manual_prompt(command: TraceTest1Command) -> TraceTest1PromptPlan:
-    altitude_delta = {
-        TraceTest1Command.PUSH: -8.0,
-        TraceTest1Command.PULL: 8.0,
-    }.get(command, 0.0)
     return TraceTest1PromptPlan(
         prompt_index=0,
-        answer_open_progress=0.42,
-        speed_multiplier=1.0,
-        red_plan=TraceTest1AircraftPlan(
-            start_state=TraceTest1AircraftState(position=(0.0, 8.0, 12.0), heading_deg=0.0),
-            command=command,
-            lead_distance=18.0,
-            maneuver_distance=18.0,
-            altitude_delta=altitude_delta,
-        ),
+        answer_open_progress=0.36,
+        speed_multiplier=1.15,
+        red_plan=_manual_plan(command),
         blue_plans=(),
     )
 
@@ -105,64 +123,21 @@ def test_trace_test_1_projection_keeps_red_on_screen_and_projects_blues() -> Non
         assert blue_scale > 0.0
 
 
-def test_trace_test_1_screen_heading_returns_finite_anchor_value() -> None:
-    prompt = _sample_prompt()
-    scene = build_scene_frames(prompt=prompt, progress=0.62)
-
-    heading = screen_heading_deg(
-        scene.red_frame,
-        command=prompt.red_plan.command,
-        observe_progress=0.62,
-        answer_open_progress=prompt.answer_open_progress,
-        size=(960, 540),
-    )
-
-    assert math.isfinite(heading)
-    assert abs(heading) > 1.0
-
-
-def test_trace_test_1_screen_heading_stays_neutral_during_lead_in() -> None:
-    lead_in_progress = 0.30
-
-    assert _screen_heading_for_prompt(_manual_prompt(TraceTest1Command.LEFT), progress=lead_in_progress) == pytest.approx(-90.0)
-    assert _screen_heading_for_prompt(_manual_prompt(TraceTest1Command.RIGHT), progress=lead_in_progress) == pytest.approx(-90.0)
-    assert _screen_heading_for_prompt(_manual_prompt(TraceTest1Command.PUSH), progress=lead_in_progress) == pytest.approx(-90.0)
-    assert _screen_heading_for_prompt(_manual_prompt(TraceTest1Command.PULL), progress=lead_in_progress) == pytest.approx(-90.0)
-
-
-def test_trace_test_1_screen_heading_uses_exact_command_anchors_after_maneuver_start() -> None:
-    assert _screen_heading_for_prompt(_manual_prompt(TraceTest1Command.LEFT), progress=0.70) == pytest.approx(-160.0)
-    assert _screen_heading_for_prompt(_manual_prompt(TraceTest1Command.RIGHT), progress=0.70) == pytest.approx(0.0)
-    assert _screen_heading_for_prompt(_manual_prompt(TraceTest1Command.PUSH), progress=0.82) == pytest.approx(90.0)
-    assert _screen_heading_for_prompt(_manual_prompt(TraceTest1Command.PULL), progress=0.82) == pytest.approx(-90.0)
-
-
-def test_trace_test_1_screen_headings_stay_on_exact_command_anchors_across_samples() -> None:
-    left_prompt = _manual_prompt(TraceTest1Command.LEFT)
-    right_prompt = _manual_prompt(TraceTest1Command.RIGHT)
-    left_headings = [
-        _screen_heading_for_prompt(left_prompt, progress=progress)
-        for progress in (0.52, 0.60, 0.68, 0.76)
-    ]
-    right_headings = [
-        _screen_heading_for_prompt(right_prompt, progress=progress)
-        for progress in (0.52, 0.60, 0.68, 0.76)
+def test_trace_test_1_lattice_lead_in_screen_heading_is_shared_across_commands() -> None:
+    headings = [
+        _screen_heading_for_prompt(_manual_prompt(command), progress=0.18)
+        for command in TraceTest1Command
     ]
 
-    assert all(heading == pytest.approx(-160.0) for heading in left_headings)
-    assert all(heading == pytest.approx(0.0) for heading in right_headings)
+    assert all(math.isfinite(heading) for heading in headings)
+    assert max(headings) - min(headings) <= 0.01
 
 
-def test_trace_test_1_screen_pose_uses_exact_heading_anchors_and_no_tilt() -> None:
-    left_pose = _screen_pose_for_prompt(_manual_prompt(TraceTest1Command.LEFT), progress=0.70)
-    push_pose = _screen_pose_for_prompt(_manual_prompt(TraceTest1Command.PUSH), progress=0.82)
-    pull_pose = _screen_pose_for_prompt(_manual_prompt(TraceTest1Command.PULL), progress=0.82)
-
-    assert left_pose == pytest.approx((-160.0, 0.0, 0.0))
-    assert push_pose == pytest.approx((90.0, 0.0, 0.0))
-    assert pull_pose == pytest.approx((-90.0, 0.0, 0.0))
-    assert push_pose[2] == pytest.approx(0.0)
-    assert pull_pose[2] == pytest.approx(0.0)
+def test_trace_test_1_screen_pose_matches_lattice_command_orientations() -> None:
+    assert _screen_pose_for_prompt(_manual_prompt(TraceTest1Command.LEFT), progress=0.68) == pytest.approx((-180.0, 0.0, 0.0))
+    assert _screen_pose_for_prompt(_manual_prompt(TraceTest1Command.RIGHT), progress=0.68) == pytest.approx((0.0, 0.0, 0.0))
+    assert _screen_pose_for_prompt(_manual_prompt(TraceTest1Command.PUSH), progress=0.68) == pytest.approx((90.0, -90.0, 0.0))
+    assert _screen_pose_for_prompt(_manual_prompt(TraceTest1Command.PULL), progress=0.68) == pytest.approx((-90.0, 90.0, 0.0))
 
 
 def test_trace_test_1_screen_pose_sampling_is_deterministic_for_same_seed() -> None:
@@ -206,57 +181,18 @@ def test_trace_test_1_screen_pose_sampling_is_deterministic_for_same_seed() -> N
     assert poses_a == poses_b
 
 
-def test_trace_test_1_screen_pose_stays_on_command_pose_when_frame_attitude_decays() -> None:
-    prompt = _manual_prompt(TraceTest1Command.LEFT)
-    progress = 0.70
-    frame = trace_test_1_scene_frames(prompt=prompt, progress=progress).red_frame
-    decayed_frame = replace(
-        frame,
-        attitude=TraceTest1Attitude(roll_deg=0.0, pitch_deg=0.0, yaw_deg=0.0),
-        world_tangent=(0.0, 0.0, 0.0),
-    )
-
-    pose = aircraft_screen_pose_for_frame(
-        decayed_frame,
-        command=prompt.red_plan.command,
-        observe_progress=progress,
-        answer_open_progress=prompt.answer_open_progress,
-        size=(960, 540),
-    )
-
-    assert pose == pytest.approx((-160.0, 0.0, 0.0))
-
-
 def test_trace_test_1_payload_blue_commands_drive_blue_screen_poses() -> None:
     prompt = TraceTest1PromptPlan(
         prompt_index=0,
-        answer_open_progress=0.42,
-        speed_multiplier=1.0,
-        red_plan=TraceTest1AircraftPlan(
-            start_state=TraceTest1AircraftState(position=(0.0, 8.0, 12.0), heading_deg=0.0),
-            command=TraceTest1Command.LEFT,
-            lead_distance=18.0,
-            maneuver_distance=18.0,
-            altitude_delta=0.0,
-        ),
+        answer_open_progress=0.36,
+        speed_multiplier=1.15,
+        red_plan=_manual_plan(TraceTest1Command.LEFT),
         blue_plans=(
-            TraceTest1AircraftPlan(
-                start_state=TraceTest1AircraftState(position=(-6.0, 8.0, 12.0), heading_deg=0.0),
-                command=TraceTest1Command.RIGHT,
-                lead_distance=18.0,
-                maneuver_distance=18.0,
-                altitude_delta=0.0,
-            ),
-            TraceTest1AircraftPlan(
-                start_state=TraceTest1AircraftState(position=(6.0, 8.0, 12.0), heading_deg=0.0),
-                command=TraceTest1Command.PUSH,
-                lead_distance=18.0,
-                maneuver_distance=18.0,
-                altitude_delta=-8.0,
-            ),
+            _manual_plan(TraceTest1Command.RIGHT),
+            _manual_plan(TraceTest1Command.PUSH),
         ),
     )
-    progress = 0.70
+    progress = 0.68
     scene = trace_test_1_scene_frames(prompt=prompt, progress=progress)
     payload = TraceTest1Payload(
         trial_stage=TraceTest1TrialStage.ANSWER_OPEN,
@@ -277,14 +213,14 @@ def test_trace_test_1_payload_blue_commands_drive_blue_screen_poses() -> None:
     red_pose, blue_poses = aircraft_screen_poses_for_payload(payload, size=(960, 540))
 
     assert payload.blue_commands == (TraceTest1Command.RIGHT, TraceTest1Command.PUSH)
-    assert red_pose == pytest.approx((-160.0, 0.0, 0.0))
+    assert red_pose == pytest.approx((-180.0, 0.0, 0.0))
     assert len(blue_poses) == 2
     assert blue_poses[0] == pytest.approx((0.0, 0.0, 0.0))
-    assert blue_poses[1] == pytest.approx((90.0, 0.0, 0.0))
+    assert blue_poses[1] == pytest.approx((90.0, -90.0, 0.0))
 
 
 def test_trace_test_1_forward_depth_changes_scale_and_vertical_position() -> None:
-    near_center, near_scale = project_scene_position((0.0, 8.0, 12.0), size=(960, 540))
+    near_center, near_scale = project_scene_position((0.0, 26.0, 12.0), size=(960, 540))
     far_center, far_scale = project_scene_position((0.0, 40.0, 12.0), size=(960, 540))
 
     assert near_center[0] == pytest.approx(far_center[0], abs=0.01)
@@ -293,15 +229,15 @@ def test_trace_test_1_forward_depth_changes_scale_and_vertical_position() -> Non
 
 
 def test_trace_test_1_altitude_changes_vertical_position_without_depth_scale_shift() -> None:
-    low_center, low_scale = project_scene_position((0.0, 20.0, 8.0), size=(960, 540))
-    high_center, high_scale = project_scene_position((0.0, 20.0, 18.0), size=(960, 540))
+    low_center, low_scale = project_scene_position((0.0, 40.0, 6.0), size=(960, 540))
+    high_center, high_scale = project_scene_position((0.0, 40.0, 18.0), size=(960, 540))
 
     assert low_center[0] == pytest.approx(high_center[0], abs=0.01)
     assert low_center[1] > high_center[1]
     assert low_scale == pytest.approx(high_scale, abs=0.01)
 
 
-def test_trace_test_1_left_and_right_projected_motion_include_forward_depth_drift() -> None:
+def test_trace_test_1_lateral_turns_translate_horizontally_after_rotation_phase() -> None:
     left_prompt = _manual_prompt(TraceTest1Command.LEFT)
     right_prompt = _manual_prompt(TraceTest1Command.RIGHT)
 
@@ -310,17 +246,20 @@ def test_trace_test_1_left_and_right_projected_motion_include_forward_depth_drif
             trace_test_1_scene_frames(prompt=left_prompt, progress=progress).red_frame.position,
             size=(960, 540),
         )[0]
-        for progress in (0.44, 0.56, 0.72, 0.88)
+        for progress in (0.36, 0.40, 0.68, 1.0)
     ]
     right_centers = [
         project_scene_position(
             trace_test_1_scene_frames(prompt=right_prompt, progress=progress).red_frame.position,
             size=(960, 540),
         )[0]
-        for progress in (0.44, 0.56, 0.72, 0.88)
+        for progress in (0.36, 0.40, 0.68, 1.0)
     ]
 
-    assert all(later[0] < earlier[0] for earlier, later in zip(left_centers, left_centers[1:]))
-    assert all(later[1] < earlier[1] for earlier, later in zip(left_centers, left_centers[1:]))
-    assert all(later[0] > earlier[0] for earlier, later in zip(right_centers, right_centers[1:]))
-    assert all(later[1] < earlier[1] for earlier, later in zip(right_centers, right_centers[1:]))
+    assert left_centers[0] == pytest.approx(left_centers[1], abs=0.01)
+    assert left_centers[2][0] < left_centers[1][0]
+    assert left_centers[3][0] < left_centers[2][0]
+
+    assert right_centers[0] == pytest.approx(right_centers[1], abs=0.01)
+    assert right_centers[2][0] > right_centers[1][0]
+    assert right_centers[3][0] > right_centers[2][0]

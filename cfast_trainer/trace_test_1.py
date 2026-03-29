@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 
 from .clock import Clock
@@ -15,6 +15,19 @@ from .cognitive_core import (
     TestSnapshot,
     clamp01,
 )
+from .trace_lattice import (
+    DEFAULT_TRACE_LATTICE_SPEC,
+    TraceLatticeAction,
+    TraceLatticePath,
+    TraceLatticeSpec,
+    TraceLatticeState,
+    trace_lattice_build_path,
+    trace_lattice_center_state,
+    trace_lattice_node_point,
+    trace_lattice_right,
+    trace_lattice_sample_path,
+    trace_lattice_state,
+)
 
 _STAGE_EPSILON_S = 1e-6
 _VIEWPOINT_BEARING_DEG = 180
@@ -25,8 +38,8 @@ _WORLD_X_NORMALIZER = 48.0
 _WORLD_Z_SCREEN_CENTER = 12.0
 _WORLD_Z_SCREEN_NORMALIZER = 36.0
 _RED_ALTITUDE_BAND = (6.0, 22.0)
-_RED_DEPTH_BAND = (4.0, 48.0)
-_BLUE_DEPTH_BAND = (-18.0, 70.0)
+_RED_DEPTH_BAND = (12.0, 108.0)
+_BLUE_DEPTH_BAND = (0.0, 116.0)
 _RED_RECOVERY_DISTANCE = 3.5
 _TURN_HOLD_FRACTION = 0.14
 _BLUE_OUTLINE_COLORS: tuple[tuple[int, int, int], ...] = (
@@ -35,6 +48,11 @@ _BLUE_OUTLINE_COLORS: tuple[tuple[int, int, int], ...] = (
     (188, 214, 244),
     (176, 206, 242),
 )
+_TT1_LATTICE_COL_SPACING = 12.0
+_TT1_LATTICE_ROW_SPACING = 14.0
+_TT1_LATTICE_LEVEL_SPACING = 6.0
+_TT1_LATTICE_BASE_DEPTH = 12.0
+_TT1_TURN_PHASE_RATIO = 0.35
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,6 +97,8 @@ class TraceTest1SceneFrame:
     attitude: TraceTest1Attitude
     travel_heading_deg: float
     world_tangent: tuple[float, float, float]
+    world_forward: tuple[float, float, float] = (0.0, 1.0, 0.0)
+    world_up: tuple[float, float, float] = (0.0, 0.0, 1.0)
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,6 +127,9 @@ class TraceTest1AircraftPlan:
     lead_distance: float
     maneuver_distance: float
     altitude_delta: float
+    lattice_start: TraceLatticeState | None = None
+    lattice_actions: tuple[TraceLatticeAction, ...] = ()
+    lattice_spec: TraceLatticeSpec = field(default_factory=lambda: DEFAULT_TRACE_LATTICE_SPEC)
 
 
 @dataclass(frozen=True, slots=True)
@@ -169,6 +192,102 @@ def _angle_delta_deg(a: float, b: float) -> float:
 def _heading_vector_xy(heading_deg: float) -> tuple[float, float]:
     radians = math.radians(float(heading_deg))
     return (math.sin(radians), math.cos(radians))
+
+
+def _tt1_action_for_command(command: TraceTest1Command) -> TraceLatticeAction:
+    return {
+        TraceTest1Command.LEFT: TraceLatticeAction.LEFT,
+        TraceTest1Command.RIGHT: TraceLatticeAction.RIGHT,
+        TraceTest1Command.PUSH: TraceLatticeAction.PUSH,
+        TraceTest1Command.PULL: TraceLatticeAction.PULL,
+    }[command]
+
+
+def _tt1_world_position_from_lattice(
+    point: tuple[float, float, float],
+) -> tuple[float, float, float]:
+    return (
+        float(point[0] * _TT1_LATTICE_COL_SPACING),
+        float(_TT1_LATTICE_BASE_DEPTH + (point[1] * _TT1_LATTICE_ROW_SPACING)),
+        float(12.0 + (point[2] * _TT1_LATTICE_LEVEL_SPACING)),
+    )
+
+
+def _tt1_build_lattice_path(plan: TraceTest1AircraftPlan) -> TraceLatticePath | None:
+    if plan.lattice_start is None or not plan.lattice_actions:
+        return None
+    return trace_lattice_build_path(
+        start_state=plan.lattice_start,
+        actions=tuple(plan.lattice_actions),
+        spec=plan.lattice_spec,
+    )
+
+
+def _tt1_heading_pitch_from_forward(
+    forward: tuple[float, float, float],
+) -> tuple[float, float]:
+    dx, dy, dz = (float(forward[0]), float(forward[1]), float(forward[2]))
+    horiz = max(1e-6, math.hypot(dx, dy))
+    return (
+        _wrap_heading(math.degrees(math.atan2(dx, dy))),
+        float(math.degrees(math.atan2(dz, horiz))),
+    )
+
+
+def _tt1_scene_frame_from_lattice_plan(
+    *,
+    plan: TraceTest1AircraftPlan,
+    progress: float,
+) -> TraceTest1SceneFrame | None:
+    path = _tt1_build_lattice_path(plan)
+    if path is None:
+        return None
+    pose = trace_lattice_sample_path(
+        path,
+        progress=progress,
+        turn_phase_ratio=_TT1_TURN_PHASE_RATIO,
+    )
+    world_position = _tt1_world_position_from_lattice(pose.position)
+    world_forward = (
+        float(pose.forward[0] * _TT1_LATTICE_COL_SPACING),
+        float(pose.forward[1] * _TT1_LATTICE_ROW_SPACING),
+        float(pose.forward[2] * _TT1_LATTICE_LEVEL_SPACING),
+    )
+    heading_deg, pitch_deg = _tt1_heading_pitch_from_forward(world_forward)
+    return TraceTest1SceneFrame(
+        position=world_position,
+        attitude=TraceTest1Attitude(
+            roll_deg=0.0,
+            pitch_deg=float(pitch_deg),
+            yaw_deg=float(heading_deg),
+        ),
+        travel_heading_deg=float(heading_deg),
+        world_tangent=world_forward,
+        world_forward=world_forward,
+        world_up=(
+            float(pose.up[0]),
+            float(pose.up[1]),
+            float(pose.up[2]),
+        ),
+    )
+
+
+def _tt1_aircraft_state_from_lattice_state(
+    state: TraceLatticeState,
+) -> TraceTest1AircraftState:
+    world_position = _tt1_world_position_from_lattice(
+        trace_lattice_node_point(state.node, spec=DEFAULT_TRACE_LATTICE_SPEC)
+    )
+    world_forward = (
+        float(state.orientation.forward[0] * _TT1_LATTICE_COL_SPACING),
+        float(state.orientation.forward[1] * _TT1_LATTICE_ROW_SPACING),
+        float(state.orientation.forward[2] * _TT1_LATTICE_LEVEL_SPACING),
+    )
+    heading_deg, _pitch_deg = _tt1_heading_pitch_from_forward(world_forward)
+    return TraceTest1AircraftState(
+        position=world_position,
+        heading_deg=float(heading_deg),
+    )
 
 
 def _cardinal_heading(heading_deg: float) -> float:
@@ -410,6 +529,12 @@ def _scene_frame_for_plan(
     answer_open_progress: float,
     progress: float,
 ) -> TraceTest1SceneFrame:
+    lattice_frame = _tt1_scene_frame_from_lattice_plan(
+        plan=plan,
+        progress=progress,
+    )
+    if lattice_frame is not None:
+        return lattice_frame
     position = _scene_position_for_plan(
         plan=plan,
         answer_open_progress=answer_open_progress,
@@ -431,6 +556,8 @@ def _scene_frame_for_plan(
         attitude=attitude,
         travel_heading_deg=float(travel_heading),
         world_tangent=tangent,
+        world_forward=tangent,
+        world_up=(0.0, 0.0, 1.0),
     )
 
 
@@ -506,6 +633,30 @@ def _offscreen_blue(
     )
 
 
+def _tt1_red_start_templates(
+    command: TraceTest1Command,
+) -> tuple[TraceLatticeState, ...]:
+    templates = {
+        TraceTest1Command.LEFT: (
+            trace_lattice_state(col=4, row=1, level=2, forward=(0, 1, 0), up=(0, 0, 1)),
+            trace_lattice_state(col=4, row=2, level=2, forward=(0, 1, 0), up=(0, 0, 1)),
+        ),
+        TraceTest1Command.RIGHT: (
+            trace_lattice_state(col=2, row=1, level=2, forward=(0, 1, 0), up=(0, 0, 1)),
+            trace_lattice_state(col=2, row=2, level=2, forward=(0, 1, 0), up=(0, 0, 1)),
+        ),
+        TraceTest1Command.PUSH: (
+            trace_lattice_state(col=3, row=1, level=3, forward=(0, 1, 0), up=(0, 0, 1)),
+            trace_lattice_state(col=4, row=1, level=3, forward=(0, 1, 0), up=(0, 0, 1)),
+        ),
+        TraceTest1Command.PULL: (
+            trace_lattice_state(col=3, row=1, level=1, forward=(0, 1, 0), up=(0, 0, 1)),
+            trace_lattice_state(col=2, row=1, level=1, forward=(0, 1, 0), up=(0, 0, 1)),
+        ),
+    }
+    return templates[command]
+
+
 class TraceTest1Generator:
     """Deterministic continuous TT1 world stream."""
 
@@ -527,7 +678,9 @@ class TraceTest1Generator:
         self._prompt_index = 0
         self._last_red_command: TraceTest1Command | None = None
         self._tier: TraceTest1DifficultyTier | None = None
-        self._red_state = TraceTest1AircraftState(position=(0.0, 8.0, 12.0), heading_deg=0.0)
+        self._red_lattice_state = trace_lattice_center_state(spec=DEFAULT_TRACE_LATTICE_SPEC)
+        self._blue_lattice_states: tuple[TraceLatticeState, ...] = ()
+        self._red_state = _tt1_aircraft_state_from_lattice_state(self._red_lattice_state)
         self._blue_states: tuple[TraceTest1AircraftState, ...] = ()
         self._pending_prompt: TraceTest1PromptPlan | None = None
 
@@ -538,7 +691,9 @@ class TraceTest1Generator:
             self.commit_prompt(prompt=self._pending_prompt, progress=1.0)
 
         red_plan = self._build_red_plan(tier=tier)
-        blue_plans = tuple(self._build_blue_plan(state=state, tier=tier) for state in self._blue_states)
+        blue_plans = tuple(
+            self._build_blue_plan(state=state, tier=tier) for state in self._blue_lattice_states
+        )
         prompt = TraceTest1PromptPlan(
             prompt_index=int(self._prompt_index),
             answer_open_progress=float(tier.answer_open_progress),
@@ -561,53 +716,64 @@ class TraceTest1Generator:
         prompt: TraceTest1PromptPlan,
         progress: float,
     ) -> None:
-        scene = trace_test_1_scene_frames(prompt=prompt, progress=progress)
-        self._red_state = _aircraft_state_from_frame(scene.red_frame)
-        self._blue_states = tuple(
-            self._advance_blue_state(frame=frame, tier=self._tier)
-            for frame in scene.blue_frames
-        )
+        red_path = _tt1_build_lattice_path(prompt.red_plan)
+        if red_path is not None:
+            self._red_lattice_state = red_path.end_state
+            self._red_state = _tt1_aircraft_state_from_lattice_state(self._red_lattice_state)
+        else:
+            scene = trace_test_1_scene_frames(prompt=prompt, progress=progress)
+            self._red_state = _aircraft_state_from_frame(scene.red_frame)
+        next_blue_lattice_states: list[TraceLatticeState] = []
+        next_blue_states: list[TraceTest1AircraftState] = []
+        for blue_plan in prompt.blue_plans:
+            path = _tt1_build_lattice_path(blue_plan)
+            if path is not None:
+                next_blue_lattice_states.append(path.end_state)
+                next_blue_states.append(_tt1_aircraft_state_from_lattice_state(path.end_state))
+            else:
+                frame = trace_test_1_scene_frames(
+                    prompt=TraceTest1PromptPlan(
+                        prompt_index=prompt.prompt_index,
+                        answer_open_progress=prompt.answer_open_progress,
+                        speed_multiplier=prompt.speed_multiplier,
+                        red_plan=blue_plan,
+                        blue_plans=(),
+                    ),
+                    progress=progress,
+                ).red_frame
+                next_blue_states.append(_aircraft_state_from_frame(frame))
+        self._blue_lattice_states = tuple(next_blue_lattice_states)
+        self._blue_states = tuple(next_blue_states)
         self._pending_prompt = None
 
     def _ensure_tier_initialized(self, *, tier: TraceTest1DifficultyTier) -> None:
-        if self._tier == tier and len(self._blue_states) == tier.blue_count:
+        if self._tier == tier and len(self._blue_lattice_states) == tier.blue_count:
             return
         self._tier = tier
-        if not self._blue_states:
-            self._blue_states = tuple(self._spawn_initial_blue(index=idx) for idx in range(tier.blue_count))
+        if not self._blue_lattice_states:
+            self._blue_lattice_states = tuple(
+                self._spawn_initial_blue(index=idx) for idx in range(tier.blue_count)
+            )
+            self._blue_states = tuple(
+                _tt1_aircraft_state_from_lattice_state(state) for state in self._blue_lattice_states
+            )
             return
-        current = list(self._blue_states[: tier.blue_count])
+        current = list(self._blue_lattice_states[: tier.blue_count])
         while len(current) < tier.blue_count:
             current.append(self._spawn_initial_blue(index=len(current)))
-        self._blue_states = tuple(current)
+        self._blue_lattice_states = tuple(current)
+        self._blue_states = tuple(
+            _tt1_aircraft_state_from_lattice_state(state) for state in self._blue_lattice_states
+        )
 
-    def _spawn_initial_blue(self, *, index: int) -> TraceTest1AircraftState:
-        heading = (0.0, 90.0, 270.0, 180.0)[index % 4]
-        if heading == 0.0:
-            position = (
-                float(-18.0 + self._rng.uniform(-4.0, 4.0) + (index * 7.0)),
-                float(-10.0 + self._rng.uniform(-6.0, 4.0)),
-                float(9.0 + self._rng.uniform(-2.0, 4.0)),
-            )
-        elif heading == 90.0:
-            position = (
-                float(-34.0 + self._rng.uniform(-4.0, 0.0)),
-                float(16.0 + self._rng.uniform(0.0, 28.0)),
-                float(10.0 + self._rng.uniform(-2.0, 5.0)),
-            )
-        elif heading == 270.0:
-            position = (
-                float(34.0 + self._rng.uniform(0.0, 4.0)),
-                float(14.0 + self._rng.uniform(0.0, 28.0)),
-                float(10.0 + self._rng.uniform(-2.0, 5.0)),
-            )
-        else:
-            position = (
-                float(-16.0 + self._rng.uniform(-8.0, 8.0)),
-                float(58.0 + self._rng.uniform(-6.0, 10.0)),
-                float(10.0 + self._rng.uniform(-2.0, 5.0)),
-            )
-        return TraceTest1AircraftState(position=position, heading_deg=heading)
+    def _spawn_initial_blue(self, *, index: int) -> TraceLatticeState:
+        presets = (
+            trace_lattice_state(col=1, row=1, level=1, forward=(0, 1, 0), up=(0, 0, 1)),
+            trace_lattice_state(col=5, row=1, level=3, forward=(0, 1, 0), up=(0, 0, 1)),
+            trace_lattice_state(col=1, row=3, level=2, forward=(1, 0, 0), up=(0, 0, 1)),
+            trace_lattice_state(col=5, row=4, level=2, forward=(-1, 0, 0), up=(0, 0, 1)),
+        )
+        return presets[index % len(presets)]
 
     def _prompt_distances(self, *, tier: TraceTest1DifficultyTier) -> tuple[float, float, float]:
         speed = float(tier.speed_multiplier)
@@ -615,46 +781,58 @@ class TraceTest1Generator:
 
     def _build_red_plan(self, *, tier: TraceTest1DifficultyTier) -> TraceTest1AircraftPlan:
         lead_distance, maneuver_distance, altitude_delta = self._prompt_distances(tier=tier)
-        for _ in range(5):
-            candidates = [
-                command for command in self._allowed_commands if command is not self._last_red_command
-            ]
-            if not candidates:
-                candidates = list(self._allowed_commands)
-            for command in self._rng.sample(candidates, k=len(candidates)):
+        candidates = [
+            command for command in self._allowed_commands if command is not self._last_red_command
+        ]
+        if not candidates:
+            candidates = list(self._allowed_commands)
+        for command in self._rng.sample(candidates, k=len(candidates)):
+            templates = list(_tt1_red_start_templates(command))
+            for start_state in self._rng.sample(templates, k=len(templates)):
                 plan = TraceTest1AircraftPlan(
-                    start_state=self._red_state,
+                    start_state=_tt1_aircraft_state_from_lattice_state(start_state),
                     command=command,
                     lead_distance=lead_distance,
                     maneuver_distance=maneuver_distance,
                     altitude_delta=altitude_delta if command is TraceTest1Command.PULL else -altitude_delta,
+                    lattice_start=start_state,
+                    lattice_actions=(
+                        TraceLatticeAction.STRAIGHT,
+                        _tt1_action_for_command(command),
+                        TraceLatticeAction.STRAIGHT,
+                    ),
                 )
                 if self._red_plan_is_safe(plan=plan, tier=tier):
                     self._last_red_command = command
+                    self._red_lattice_state = start_state
+                    self._red_state = _tt1_aircraft_state_from_lattice_state(start_state)
                     return plan
-            self._red_state = self._advance_red_recovery()
 
-        fallback_command = next(
-            (
-                command
-                for command in self._allowed_commands
-                if command is not self._last_red_command
-            ),
-            self._allowed_commands[0],
-        )
+        fallback_command = candidates[0]
+        fallback_state = _tt1_red_start_templates(fallback_command)[0]
         fallback = TraceTest1AircraftPlan(
-            start_state=self._red_state,
+            start_state=_tt1_aircraft_state_from_lattice_state(fallback_state),
             command=fallback_command,
             lead_distance=lead_distance,
             maneuver_distance=maneuver_distance,
             altitude_delta=altitude_delta if fallback_command is TraceTest1Command.PULL else -altitude_delta,
+            lattice_start=fallback_state,
+            lattice_actions=(
+                TraceLatticeAction.STRAIGHT,
+                _tt1_action_for_command(fallback_command),
+                TraceLatticeAction.STRAIGHT,
+            ),
         )
         self._last_red_command = fallback.command
+        self._red_lattice_state = fallback_state
+        self._red_state = _tt1_aircraft_state_from_lattice_state(fallback_state)
         return fallback
 
     def _red_plan_is_safe(self, *, plan: TraceTest1AircraftPlan, tier: TraceTest1DifficultyTier) -> bool:
-        end_heading = _prompt_end_heading(plan)
-        if int(round(end_heading)) % 360 == 180:
+        path = _tt1_build_lattice_path(plan)
+        if path is None or len(path.steps) < 2:
+            return False
+        if path.steps[1].effective_action is not _tt1_action_for_command(plan.command):
             return False
         split = float(tier.answer_open_progress)
         checkpoints = (
@@ -679,88 +857,35 @@ class TraceTest1Generator:
         ]
         return all(_projected_safe(position) for position in scene_points)
 
-    def _advance_red_recovery(self) -> TraceTest1AircraftState:
-        x, y, z = self._red_state.position
-        if y > (_RED_DEPTH_BAND[1] - 3.0):
-            if x > 0.5:
-                heading = 270.0
-            elif x < -0.5:
-                heading = 90.0
-            else:
-                heading = self._rng.choice((90.0, 270.0))
-        elif x > 8.0:
-            heading = 270.0
-        elif x < -8.0:
-            heading = 90.0
-        else:
-            heading = 0.0
-        position = _move_point(
-            (x, y, z),
-            heading_deg=heading,
-            distance=_RED_RECOVERY_DISTANCE,
-            climb=_clamp(12.0 - z, -1.4, 1.4),
+    def _advance_red_recovery(self) -> TraceLatticeState:
+        path = trace_lattice_build_path(
+            start_state=self._red_lattice_state,
+            actions=(TraceLatticeAction.STRAIGHT,),
+            spec=DEFAULT_TRACE_LATTICE_SPEC,
         )
-        return TraceTest1AircraftState(
-            position=(
-                float(_clamp(position[0], -20.0, 20.0)),
-                float(_clamp(position[1], _RED_DEPTH_BAND[0], _RED_DEPTH_BAND[1])),
-                float(_clamp(position[2], _RED_ALTITUDE_BAND[0], _RED_ALTITUDE_BAND[1])),
-            ),
-            heading_deg=heading,
-        )
+        return path.end_state
 
     def _build_blue_plan(
         self,
         *,
-        state: TraceTest1AircraftState,
+        state: TraceLatticeState,
         tier: TraceTest1DifficultyTier,
     ) -> TraceTest1AircraftPlan:
         lead_distance, maneuver_distance, altitude_delta = self._prompt_distances(tier=tier)
         command = self._rng.choice(tuple(TraceTest1Command))
         return TraceTest1AircraftPlan(
-            start_state=state,
+            start_state=_tt1_aircraft_state_from_lattice_state(state),
             command=command,
             lead_distance=lead_distance,
             maneuver_distance=maneuver_distance,
             altitude_delta=altitude_delta if command is TraceTest1Command.PULL else -altitude_delta,
+            lattice_start=state,
+            lattice_actions=(
+                TraceLatticeAction.STRAIGHT,
+                _tt1_action_for_command(command),
+                TraceLatticeAction.STRAIGHT,
+            ),
         )
-
-    def _advance_blue_state(
-        self,
-        *,
-        frame: TraceTest1SceneFrame,
-        tier: TraceTest1DifficultyTier | None,
-    ) -> TraceTest1AircraftState:
-        state = _aircraft_state_from_frame(frame)
-        if not _offscreen_blue(frame.position):
-            return state
-        heading = _wrap_heading(state.heading_deg)
-        altitude = float(_clamp(frame.position[2], 7.0, 24.0))
-        if heading == 0.0:
-            position = (
-                float(self._rng.uniform(-22.0, 22.0)),
-                float(-14.0 + self._rng.uniform(-4.0, 3.0)),
-                altitude,
-            )
-        elif heading == 180.0:
-            position = (
-                float(self._rng.uniform(-22.0, 22.0)),
-                float(66.0 + self._rng.uniform(0.0, 8.0)),
-                altitude,
-            )
-        elif heading == 90.0:
-            position = (
-                float(-34.0 + self._rng.uniform(-5.0, -1.0)),
-                float(self._rng.uniform(6.0, 54.0)),
-                altitude,
-            )
-        else:
-            position = (
-                float(34.0 + self._rng.uniform(1.0, 5.0)),
-                float(self._rng.uniform(6.0, 54.0)),
-                altitude,
-            )
-        return TraceTest1AircraftState(position=position, heading_deg=heading)
 
 
 def build_trace_test_1_test(

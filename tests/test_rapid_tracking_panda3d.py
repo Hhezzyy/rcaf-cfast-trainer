@@ -1,16 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import replace
-import json
 import math
-import os
-import subprocess
-import sys
-from pathlib import Path
 
 import pygame
 import pytest
 
+from cfast_trainer.app import App, CognitiveTestScreen, MenuItem, MenuScreen
 from cfast_trainer.rapid_tracking import build_rapid_tracking_test
 from cfast_trainer.rapid_tracking_panda3d import (
     _RapidTrackingDecoy,
@@ -20,31 +16,64 @@ from cfast_trainer.rapid_tracking_panda3d import (
 from cfast_trainer.rapid_tracking_view import RapidTrackingCameraRigState, camera_pose_compat
 
 
-_HELPER = Path(__file__).with_name("_panda3d_runtime_probe.py")
-
-
 def _angle_delta_deg(a: float, b: float) -> float:
     return ((float(a) - float(b) + 180.0) % 360.0) - 180.0
 
 
-def _run_probe(scene_name: str, *, seed: int = 551) -> dict[str, object]:
-    env = dict(os.environ)
-    env.pop("SDL_VIDEODRIVER", None)
-    env.setdefault("SDL_AUDIODRIVER", "dummy")
-    env.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
-    result = subprocess.run(
-        [sys.executable, str(_HELPER), scene_name, str(int(seed))],
-        capture_output=True,
-        text=True,
-        env=env,
-        cwd=Path(__file__).resolve().parents[1],
-    )
-    if result.returncode == 77:
-        pytest.skip(result.stdout.strip() or result.stderr.strip() or "Panda3D unavailable")
-    assert result.returncode == 0, result.stdout + result.stderr
-    lines = [line for line in result.stdout.splitlines() if line.strip()]
-    assert lines, "subprocess produced no output"
-    return json.loads(lines[-1])
+class _FakeClock:
+    def __init__(self) -> None:
+        self.t = 0.0
+
+    def now(self) -> float:
+        return self.t
+
+    def advance(self, dt: float) -> None:
+        self.t += dt
+
+
+def _run_probe(*, seed: int = 551) -> dict[str, object]:
+    pygame.init()
+    screen: CognitiveTestScreen | None = None
+    try:
+        surface = pygame.display.set_mode((960, 540))
+        font = pygame.font.Font(None, 36)
+        app = App(surface=surface, font=font, opengl_enabled=True)
+        app.push(MenuScreen(app, "Main Menu", [MenuItem("Quit", app.quit)], is_root=True))
+        clock = _FakeClock()
+        screen = CognitiveTestScreen(
+            app,
+            engine_factory=lambda: build_rapid_tracking_test(
+                clock=clock,
+                seed=int(seed),
+                difficulty=0.63,
+            ),
+            test_code="rapid_tracking",
+        )
+        app.push(screen)
+        screen._engine.start_scored()
+        clock.advance(0.6)
+        screen._engine.update()
+        app.render()
+        scene = app.consume_gl_scene()
+        assert scene is not None
+        payload = scene.payload
+        return {
+            "scene_type": type(scene).__name__,
+            "session_seed": int(payload.session_seed),
+            "target_kind": str(payload.target_kind),
+            "target_variant": str(payload.target_variant),
+            "target_world": (
+                round(float(payload.target_world_x), 6),
+                round(float(payload.target_world_y), 6),
+            ),
+            "target_cover_state": str(payload.target_cover_state),
+        }
+    finally:
+        if screen is not None:
+            close = getattr(screen, "close", None)
+            if callable(close):
+                close()
+        pygame.quit()
 
 
 def _camera_rig(
@@ -509,13 +538,7 @@ def test_world_span_is_expanded_for_large_scene() -> None:
 
 
 def test_seeded_road_segment_ids_cover_vehicle_network() -> None:
-    assert RapidTrackingPanda3DRenderer._seeded_road_segment_ids() == (
-        ("road-west-a", "road-mid-a"),
-        ("road-mid-a", "road-east-a"),
-        ("road-east-a", "road-east-b"),
-        ("road-west-v0", "road-west-v1"),
-        ("road-east-v0", "road-east-v1"),
-    )
+    assert RapidTrackingPanda3DRenderer._seeded_road_segment_ids() == ()
 
 
 def test_seeded_road_segments_are_built_from_multiple_pieces() -> None:
@@ -527,51 +550,37 @@ def test_seeded_road_segments_are_built_from_multiple_pieces() -> None:
     try:
         renderer._ensure_seeded_layout(seed=551)
         assert renderer._road_segment_nodes
-        assert all(node.getNumChildren() >= 4 for node in renderer._road_segment_nodes)
+        assert len(renderer._road_segment_nodes) >= 8
+        assert all(node.getNumChildren() >= 1 for node in renderer._road_segment_nodes)
+        assert any(node.getNumChildren() >= 4 for node in renderer._road_segment_nodes)
     finally:
         renderer.close()
         pygame.quit()
 
 
-def test_rapid_tracking_screen_prefers_panda3d_runtime() -> None:
-    probe = _run_probe("rapid_tracking", seed=551)
+def test_rapid_tracking_screen_queues_modern_gl_runtime() -> None:
+    probe = _run_probe(seed=551)
 
-    assert probe["kind"] == "rapid_tracking"
-    assert probe["renderer_type"] == "RapidTrackingPanda3DRenderer"
-    assert probe["gl_scene_type"] is None
-    assert probe["renderer_size"][0] > 0
-    assert probe["renderer_size"][1] > 0
+    assert probe["scene_type"] == "RapidTrackingGlScene"
     assert probe["session_seed"] == 551
     assert probe["target_kind"] in {"soldier", "building", "truck", "helicopter", "jet"}
     assert probe["target_cover_state"] in {"open", "building", "terrain"}
-    assert probe["camera_heading_deg"] is not None
-    assert probe["camera_pitch_deg"] is not None
-    assert probe["road_segment_count"] >= 5
-    assert probe["road_intersection_count"] >= 8
-    assert probe["layout_signature"]
-    assert sum(probe["avg_color"]) > 60
 
 
-def test_same_seed_reproduces_seeded_panda_layout_and_target_state() -> None:
-    first = _run_probe("rapid_tracking", seed=808)
-    second = _run_probe("rapid_tracking", seed=808)
+def test_same_seed_reproduces_seeded_gl_payload() -> None:
+    first = _run_probe(seed=808)
+    second = _run_probe(seed=808)
 
-    assert first["session_seed"] == 808
-    assert second["session_seed"] == 808
-    assert first["layout_signature"] == second["layout_signature"]
-    assert first["road_segment_count"] == second["road_segment_count"]
-    assert first["road_intersection_count"] == second["road_intersection_count"]
-    assert first["target_kind"] == second["target_kind"]
-    assert first["target_cover_state"] == second["target_cover_state"]
+    assert first == second
 
 
-def test_different_seed_changes_seeded_panda_layout() -> None:
-    first = _run_probe("rapid_tracking", seed=808)
-    second = _run_probe("rapid_tracking", seed=909)
+def test_different_seed_changes_seeded_gl_payload() -> None:
+    first = _run_probe(seed=808)
+    second = _run_probe(seed=909)
 
-    assert first["session_seed"] == 808
-    assert second["session_seed"] == 909
-    assert first["layout_signature"] != second["layout_signature"]
+    assert first["scene_type"] == second["scene_type"] == "RapidTrackingGlScene"
+    assert first["session_seed"] != second["session_seed"]
+    assert first["target_world"] != second["target_world"]
 
 
 def test_target_world_position_does_not_follow_camera_pan() -> None:

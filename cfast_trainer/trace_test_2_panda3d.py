@@ -150,12 +150,9 @@ class TraceTest2Panda3DRenderer:
         *,
         tangent: tuple[float, float, float],
     ) -> tuple[float, float, float]:
-        dx, dy, _dz = tangent
-        horiz = max(1e-6, math.sqrt((dx * dx) + (dy * dy)))
-        bank_deg = _clamp((dx / horiz) * 28.0, -34.0, 34.0)
         return panda3d_fixed_wing_hpr_from_world_tangent(
             tangent=tangent,
-            roll_deg=bank_deg,
+            roll_deg=0.0,
         )
 
     @classmethod

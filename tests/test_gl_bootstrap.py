@@ -33,7 +33,7 @@ def test_initialize_display_surfaces_enables_gl_when_renderer_starts(
             self.window_size = tuple(window_size)
 
     monkeypatch.setattr("pygame.display.set_mode", fake_set_mode)
-    monkeypatch.setattr("cfast_trainer.app._OpenGLSceneRenderer", _FakeRenderer)
+    monkeypatch.setattr("cfast_trainer.app.ModernSceneRenderer", _FakeRenderer)
 
     result = _initialize_display_surfaces(
         window_size=(320, 240),
@@ -51,7 +51,7 @@ def test_initialize_display_surfaces_enables_gl_when_renderer_starts(
     assert calls == [pygame.RESIZABLE | pygame.OPENGL | pygame.DOUBLEBUF]
 
 
-def test_initialize_display_surfaces_falls_back_when_gl_renderer_init_fails(
+def test_initialize_display_surfaces_records_failure_when_renderer_init_fails(
     pygame_headless,
     monkeypatch,
 ) -> None:
@@ -69,7 +69,7 @@ def test_initialize_display_surfaces_falls_back_when_gl_renderer_init_fails(
             raise RuntimeError("gl unavailable")
 
     monkeypatch.setattr("pygame.display.set_mode", fake_set_mode)
-    monkeypatch.setattr("cfast_trainer.app._OpenGLSceneRenderer", _BoomRenderer)
+    monkeypatch.setattr("cfast_trainer.app.ModernSceneRenderer", _BoomRenderer)
 
     result = _initialize_display_surfaces(
         window_size=(320, 240),
@@ -86,8 +86,9 @@ def test_initialize_display_surfaces_falls_back_when_gl_renderer_init_fails(
     assert result.gl_failure.stage == "renderer_init"
     assert result.gl_failure.requested is True
     assert result.gl_failure.attempted is True
-    assert "OpenGL renderer failed." == result.gl_failure.summary
+    assert result.gl_failure.summary == "Renderer failed."
     assert "gl unavailable" in result.gl_failure.detail
+    assert "ModernGL" in result.gl_failure.detail
     assert calls == [
         pygame.RESIZABLE | pygame.OPENGL | pygame.DOUBLEBUF,
         pygame.RESIZABLE,

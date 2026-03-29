@@ -1,3 +1,5 @@
 pygame-ce==2.5.6
 numpy>=2.2,<3
-PyOpenGL==3.1.7
+moderngl>=5.12,<6
+glcontext>=3.0,<4
+trimesh>=4.8,<5

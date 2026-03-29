@@ -118,7 +118,7 @@ def test_trace_test_2_right_turn_screen_heading_changes_in_correct_direction() -
     assert all(min(abs((heading % 90.0)), abs((heading % 90.0) - 90.0)) > 2.0 for heading in headings)
 
 
-def test_trace_test_2_multi_aircraft_screen_pose_matches_motion_kind() -> None:
+def test_trace_test_2_multi_aircraft_screen_pose_matches_lattice_motion_kind() -> None:
     payload = TraceTest2Generator(seed=71).next_problem(difficulty=0.58).payload
 
     assert isinstance(payload, TraceTest2Payload)
@@ -130,16 +130,18 @@ def test_trace_test_2_multi_aircraft_screen_pose_matches_motion_kind() -> None:
         assert math.isfinite(pose[0])
         assert pose[2] == pytest.approx(aircraft_hpr_from_tangent(tangent)[2])
         assert pose[1] == pytest.approx(aircraft_hpr_from_tangent(tangent)[1])
+        assert pose[2] == pytest.approx(0.0, abs=0.01)
 
         if track.motion_kind is TraceTest2MotionKind.LEFT:
-            assert pose[2] < 0.0
+            assert pose[0] == pytest.approx(-180.0)
         elif track.motion_kind is TraceTest2MotionKind.RIGHT:
-            assert pose[2] > 0.0
+            assert pose[0] == pytest.approx(0.0)
         elif track.motion_kind is TraceTest2MotionKind.CLIMB:
             assert pose[1] < 0.0
+        elif track.motion_kind is TraceTest2MotionKind.DESCEND:
+            assert pose[1] > 0.0
         else:
             assert abs(pose[1]) <= 0.01
-            assert abs(pose[2]) <= 0.01
 
 
 def test_trace_test_2_screen_pose_sampling_is_deterministic_for_same_seed() -> None:

@@ -15,8 +15,24 @@ from .cognitive_core import (
     TestSnapshot,
     clamp01,
 )
+from .trace_lattice import (
+    DEFAULT_TRACE_LATTICE_SPEC,
+    TraceLatticeAction,
+    TraceLatticePath,
+    TraceLatticeState,
+    trace_lattice_build_path,
+    trace_lattice_node_point,
+    trace_lattice_sample_path,
+    trace_lattice_state,
+)
 
 _STAGE_EPSILON_S = 1e-6
+_TT2_TURN_PHASE_RATIO = 0.35
+_TT2_WORLD_COL_SPACING = 16.0
+_TT2_WORLD_ROW_SPACING = 18.0
+_TT2_WORLD_LEVEL_SPACING = 6.0
+_TT2_WORLD_BASE_DEPTH = 38.0
+_TT2_WORLD_BASE_ALTITUDE = 9.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +65,7 @@ class TraceTest2MotionKind(StrEnum):
     LEFT = "left"
     RIGHT = "right"
     CLIMB = "climb"
+    DESCEND = "descend"
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,6 +85,9 @@ class TraceTest2AircraftTrack:
     direction_changed: bool
     ended_screen_x: float
     ended_altitude_z: float
+    lattice_path: TraceLatticePath | None = None
+    lateral_scale: float = 1.0
+    vertical_scale: float = 1.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,6 +166,36 @@ def _screen_metric(point: TraceTest2Point3) -> tuple[float, float]:
     return screen_x, screen_y
 
 
+def _tt2_world_point_from_lattice(
+    point: tuple[float, float, float],
+    *,
+    lateral_scale: float,
+    vertical_scale: float,
+) -> TraceTest2Point3:
+    return TraceTest2Point3(
+        x=float(point[0] * _TT2_WORLD_COL_SPACING * float(lateral_scale)),
+        y=float(_TT2_WORLD_BASE_DEPTH + (point[1] * _TT2_WORLD_ROW_SPACING)),
+        z=float(_TT2_WORLD_BASE_ALTITUDE + (point[2] * _TT2_WORLD_LEVEL_SPACING * float(vertical_scale))),
+    )
+
+
+def _tt2_direction_changed_for_path(path: TraceLatticePath) -> bool:
+    return any(step.effective_action is not TraceLatticeAction.STRAIGHT for step in path.steps)
+
+
+def _tt2_motion_kind_for_path(path: TraceLatticePath) -> TraceTest2MotionKind:
+    for step in path.steps:
+        if step.effective_action is TraceLatticeAction.LEFT:
+            return TraceTest2MotionKind.LEFT
+        if step.effective_action is TraceLatticeAction.RIGHT:
+            return TraceTest2MotionKind.RIGHT
+        if step.effective_action is TraceLatticeAction.PULL:
+            return TraceTest2MotionKind.CLIMB
+        if step.effective_action is TraceLatticeAction.PUSH:
+            return TraceTest2MotionKind.DESCEND
+    return TraceTest2MotionKind.STRAIGHT
+
+
 def _normalize_allowed_question_kinds(
     question_kinds: tuple[TraceTest2QuestionKind, ...] | None,
 ) -> tuple[TraceTest2QuestionKind, ...]:
@@ -176,6 +226,17 @@ def trace_test_2_track_position(
     track: TraceTest2AircraftTrack,
     progress: float,
 ) -> TraceTest2Point3:
+    if track.lattice_path is not None:
+        pose = trace_lattice_sample_path(
+            track.lattice_path,
+            progress=progress,
+            turn_phase_ratio=_TT2_TURN_PHASE_RATIO,
+        )
+        return _tt2_world_point_from_lattice(
+            pose.position,
+            lateral_scale=float(track.lateral_scale),
+            vertical_scale=float(track.vertical_scale),
+        )
     if len(track.waypoints) == 1:
         return track.waypoints[0]
     if len(track.waypoints) == 2:
@@ -210,6 +271,17 @@ def trace_test_2_track_tangent(
     track: TraceTest2AircraftTrack,
     progress: float,
 ) -> tuple[float, float, float]:
+    if track.lattice_path is not None:
+        pose = trace_lattice_sample_path(
+            track.lattice_path,
+            progress=progress,
+            turn_phase_ratio=_TT2_TURN_PHASE_RATIO,
+        )
+        return (
+            float(pose.forward[0] * _TT2_WORLD_COL_SPACING * float(track.lateral_scale)),
+            float(pose.forward[1] * _TT2_WORLD_ROW_SPACING),
+            float(pose.forward[2] * _TT2_WORLD_LEVEL_SPACING * float(track.vertical_scale)),
+        )
     if len(track.waypoints) == 1:
         return (0.0, 0.0, 0.0)
     if len(track.waypoints) == 2:
@@ -322,52 +394,68 @@ class TraceTest2Generator:
         d = clamp01(difficulty)
         lateral_scale = 1.0 - (0.18 * d)
         altitude_scale = 1.0 - (0.12 * d)
-        shift_x = self._rng.uniform(-2.0, 2.0)
-        shift_y = self._rng.uniform(-3.0, 3.0)
-        shift_z = self._rng.uniform(-0.8, 0.8)
-        templates: dict[str, tuple[TraceTest2MotionKind, tuple[TraceTest2Point3, ...]]] = {
+        templates: dict[str, tuple[TraceTest2MotionKind, TraceLatticeState, tuple[TraceLatticeAction, ...]]] = {
             "steady": (
                 TraceTest2MotionKind.STRAIGHT,
+                trace_lattice_state(col=1, row=1, level=2, forward=(0, 1, 0), up=(0, 0, 1)),
                 (
-                    TraceTest2Point3(-14.0, 66.0, 11.0),
-                    TraceTest2Point3(-14.0, 92.0, 11.0),
-                    TraceTest2Point3(-14.0, 118.0, 11.0),
+                    TraceLatticeAction.STRAIGHT,
+                    TraceLatticeAction.STRAIGHT,
+                    TraceLatticeAction.STRAIGHT,
+                    TraceLatticeAction.STRAIGHT,
                 ),
             ),
             "left": (
                 TraceTest2MotionKind.LEFT,
+                trace_lattice_state(col=5, row=1, level=3, forward=(0, 1, 0), up=(0, 0, 1)),
                 (
-                    TraceTest2Point3(24.0, 68.0, 14.0),
-                    TraceTest2Point3(24.0, 94.0, 14.0),
-                    TraceTest2Point3(-36.0, 94.0, 14.0),
+                    TraceLatticeAction.STRAIGHT,
+                    TraceLatticeAction.LEFT,
+                    TraceLatticeAction.STRAIGHT,
+                    TraceLatticeAction.STRAIGHT,
                 ),
             ),
             "right": (
                 TraceTest2MotionKind.RIGHT,
+                trace_lattice_state(col=1, row=2, level=1, forward=(0, 1, 0), up=(0, 0, 1)),
                 (
-                    TraceTest2Point3(-24.0, 62.0, 7.0),
-                    TraceTest2Point3(-24.0, 88.0, 7.0),
-                    TraceTest2Point3(30.0, 88.0, 7.0),
+                    TraceLatticeAction.STRAIGHT,
+                    TraceLatticeAction.RIGHT,
+                    TraceLatticeAction.STRAIGHT,
+                    TraceLatticeAction.STRAIGHT,
                 ),
             ),
             "climb": (
                 TraceTest2MotionKind.CLIMB,
+                trace_lattice_state(col=4, row=1, level=1, forward=(0, 1, 0), up=(0, 0, 1)),
                 (
-                    TraceTest2Point3(12.0, 70.0, 4.0),
-                    TraceTest2Point3(12.0, 96.0, 4.0),
-                    TraceTest2Point3(12.0, 96.0, 24.0),
+                    TraceLatticeAction.STRAIGHT,
+                    TraceLatticeAction.PULL,
+                    TraceLatticeAction.STRAIGHT,
+                    TraceLatticeAction.STRAIGHT,
                 ),
             ),
         }
-        motion_kind, base_waypoints = templates[role_key]
-        waypoints = tuple(
-            TraceTest2Point3(
-                x=(point.x * lateral_scale) + shift_x,
-                y=point.y + shift_y,
-                z=(point.z * altitude_scale) + shift_z,
-            )
-            for point in base_waypoints
+        declared_motion_kind, start_state, actions = templates[role_key]
+        path = trace_lattice_build_path(
+            start_state=start_state,
+            actions=actions,
+            spec=DEFAULT_TRACE_LATTICE_SPEC,
         )
+        waypoints = tuple(
+            _tt2_world_point_from_lattice(
+                trace_lattice_node_point(node, spec=DEFAULT_TRACE_LATTICE_SPEC),
+                lateral_scale=lateral_scale,
+                vertical_scale=altitude_scale,
+            )
+            for node in (
+                path.start_state.node,
+                *(step.end_state.node for step in path.steps),
+            )
+        )
+        motion_kind = _tt2_motion_kind_for_path(path)
+        if declared_motion_kind in {TraceTest2MotionKind.LEFT, TraceTest2MotionKind.RIGHT}:
+            motion_kind = declared_motion_kind
         ended_screen_x, _ = _screen_metric(waypoints[-1])
         return TraceTest2AircraftTrack(
             code=code,
@@ -375,9 +463,12 @@ class TraceTest2Generator:
             color_rgb=color_rgb,
             waypoints=waypoints,
             motion_kind=motion_kind,
-            direction_changed=_direction_changed(waypoints),
+            direction_changed=_tt2_direction_changed_for_path(path),
             ended_screen_x=float(ended_screen_x),
             ended_altitude_z=float(waypoints[-1].z),
+            lattice_path=path,
+            lateral_scale=float(lateral_scale),
+            vertical_scale=float(altitude_scale),
         )
 
     @staticmethod
