@@ -937,6 +937,8 @@ class _AnswerReviewState:
     correct_answer_text: str
     correct_choice_code: int | None
     submitted_choice_code: int | None
+    blocks_runtime: bool = True
+    dismiss_at_s: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -9991,6 +9993,8 @@ class _AdaptiveRuntimeTracker:
 
 
 class CognitiveTestScreen(_SharedPauseMenuMixin):
+    _TRACE_TEST_1_REVIEW_OVERLAY_S = 0.9
+
     def __init__(
         self,
         app: App,
@@ -10552,7 +10556,9 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
 
     def _runtime_frozen(self) -> bool:
         return bool(
-            self._pause_menu_active or self._external_pause_active or self._review_state_active()
+            self._pause_menu_active
+            or self._external_pause_active
+            or self._review_state_blocks_runtime()
         )
 
     def _sync_pausable_clock_state(self) -> None:
@@ -10564,6 +10570,14 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             return
         if not should_pause and self._review_clock.is_paused():
             self._review_clock.resume()
+
+    def _review_now_s(self) -> float:
+        if self._review_clock is not None:
+            try:
+                return float(self._review_clock.now())
+            except Exception:
+                pass
+        return pygame.time.get_ticks() / 1000.0
 
     def _set_pause_menu_state(self, active: bool) -> None:
         self._pause_menu_active = bool(active)
@@ -10660,6 +10674,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
 
     def handle_event(self, event: pygame.event.Event) -> None:
         self._update_camera_keyboard_state(event)
+        self._expire_review_state_if_needed()
         snap = self._engine.snapshot()
         self._sync_intro_loading_state(snap.phase)
         p = snap.payload
@@ -10775,9 +10790,13 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             return
 
         if self._review_state_active():
+            blocking_review = self._review_state_blocks_runtime()
             if event.type == pygame.KEYDOWN and event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
                 self._clear_review_state()
-            return
+                if blocking_review:
+                    return
+            if blocking_review:
+                return
 
         if self._handle_intro_difficulty_event(event, phase=snap.phase):
             return
@@ -12664,6 +12683,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 self._engine._pending_done_action = None
 
     def render(self, surface: pygame.Surface) -> None:
+        self._expire_review_state_if_needed()
         live_snap = self._engine.snapshot()
         if self._runtime_frozen():
             snap = self._review_state.snapshot if self._review_state_active() else live_snap
@@ -12724,7 +12744,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 else:
                     snap = self._review_state.snapshot
 
-        if self._review_state_active():
+        if self._review_state_blocks_runtime():
             snap = self._review_state.snapshot
 
         self._sync_intro_loading_state(snap.phase)
@@ -12737,11 +12757,11 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         ):
             self._set_pause_menu_state(False)
 
-        if not self._review_state_active():
+        if not self._review_state_blocks_runtime():
             self._persist_results_if_needed(live_snap)
 
         prompt_key: tuple[str, ...] | None = None
-        if not self._review_state_active() and snap.phase in (Phase.PRACTICE, Phase.SCORED):
+        if not self._review_state_blocks_runtime() and snap.phase in (Phase.PRACTICE, Phase.SCORED):
             if str(snap.title).startswith("Dual-Task Bridge"):
                 prompt_key = (snap.phase.value, str(snap.prompt), str(snap.input_hint))
             elif (
@@ -13397,6 +13417,18 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
     def _review_state_active(self) -> bool:
         return self._review_state is not None
 
+    def _review_state_blocks_runtime(self) -> bool:
+        state = self._review_state
+        return bool(state is not None and state.blocks_runtime)
+
+    def _expire_review_state_if_needed(self) -> None:
+        state = self._review_state
+        if state is None or state.dismiss_at_s is None:
+            return
+        if self._review_now_s() < float(state.dismiss_at_s):
+            return
+        self._clear_review_state()
+
     def _supports_review_mode_for_snapshot(self, snap: TestSnapshot) -> bool:
         if not self._app.review_mode_enabled():
             return False
@@ -13514,6 +13546,11 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             if str(raw_submission).strip().isdigit():
                 submitted_choice_code = int(str(raw_submission).strip())
 
+        blocks_runtime = not isinstance(payload, TraceTest1Payload)
+        dismiss_at_s = None
+        if not blocks_runtime:
+            dismiss_at_s = self._review_now_s() + self._TRACE_TEST_1_REVIEW_OVERLAY_S
+
         self._review_state = _AnswerReviewState(
             snapshot=snap,
             submitted_raw=display_submission,
@@ -13525,6 +13562,8 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             ),
             correct_choice_code=correct_choice_code,
             submitted_choice_code=submitted_choice_code,
+            blocks_runtime=blocks_runtime,
+            dismiss_at_s=dismiss_at_s,
         )
         self._input = str(raw_submission)
 
@@ -13621,11 +13660,12 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
 
         submitted_surf = self._tiny_font.render(f"Submitted: {submitted}", True, (236, 244, 255))
         correct_surf = self._tiny_font.render(correct_text, True, (104, 236, 140))
-        continue_surf = self._tiny_font.render(
-            "Press Enter to continue.",
-            True,
-            (188, 204, 228),
+        continue_label = (
+            "Press Enter to continue."
+            if state.blocks_runtime
+            else "Continuing..."
         )
+        continue_surf = self._tiny_font.render(continue_label, True, (188, 204, 228))
         surface.blit(submitted_surf, (panel.x + 14, panel.y + 12))
         surface.blit(correct_surf, (panel.x + 14, panel.y + 34))
         surface.blit(

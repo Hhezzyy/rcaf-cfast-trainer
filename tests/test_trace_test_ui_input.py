@@ -115,6 +115,43 @@ def test_trace_test_1_arrow_input_opens_answer_checker_in_review_mode(tmp_path) 
     assert screen._review_state.correct_choice_code is None
     assert screen._review_state.submitted_choice_code is None
     assert screen._review_state.correct_answer_text == expected
+    assert screen._review_state.blocks_runtime is False
+    assert screen._review_clock is not None
+    assert screen._review_clock.is_paused() is False
+
+
+def test_trace_test_1_review_overlay_auto_clears_without_second_submit(tmp_path) -> None:
+    clock = FakeClock()
+    screen = _build_screen(
+        engine_factory=lambda: build_trace_test_1_test(
+            clock=clock,
+            seed=17,
+            difficulty=0.5,
+            config=TraceTest1Config(
+                practice_questions=1,
+                practice_observe_s=1.0,
+                scored_observe_s=1.0,
+            ),
+        ),
+        test_code="trace_test_1",
+        review_mode=True,
+        settings_path=tmp_path / "difficulty-settings.json",
+    )
+    screen._engine.start_practice()
+
+    clock.advance(0.50)
+    screen._engine.update()
+    screen.handle_event(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_LEFT, "unicode": ""}))
+
+    assert screen._review_state is not None
+
+    now = screen._review_clock.now() if screen._review_clock is not None else 0.0
+    clock.advance(1.0)
+    screen.render(pygame.Surface((960, 540)))
+
+    assert screen._review_state is None
+    if screen._review_clock is not None:
+        assert screen._review_clock.now() > now
 
 
 def test_trace_test_2_letter_choice_submits_only_after_observe_stage() -> None:
