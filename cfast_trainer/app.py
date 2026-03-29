@@ -427,6 +427,7 @@ from .trace_test_1 import (
     TraceTest1Payload,
     TraceTest1TrialStage,
     build_trace_test_1_test,
+    trace_test_1_answer_code,
 )
 from .trace_test_1_gl import (
     aircraft_screen_poses_for_payload as trace_test_1_aircraft_screen_poses_for_payload,
@@ -11813,8 +11814,8 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             }.get(key)
             if command is None:
                 return
-            accepted = self._engine.submit_answer(command)
-            if accepted:
+            accepted = self._submit_answer_with_review(command)
+            if accepted and not self._review_state_active():
                 self._input = ""
                 self._math_choice = 1
             return
@@ -13450,6 +13451,8 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         correct_answer: object | None,
         correct_choice_code: int | None,
     ) -> str:
+        if isinstance(payload, TraceTest1Payload):
+            return self._trace_test_1_answer_label(correct_answer)
         if isinstance(payload, SpatialIntegrationPayload):
             if payload.answer_mode is SpatialIntegrationAnswerMode.GRID_CLICK:
                 return str(payload.correct_answer_token)
@@ -13495,8 +13498,15 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         correct_choice_code: int | None = None
         submitted_choice_code: int | None = None
         correct_answer = getattr(current_problem, "answer", None)
+        display_submission = str(raw_submission)
 
-        if payload is not None and hasattr(payload, "options"):
+        if isinstance(payload, TraceTest1Payload):
+            display_submission = (
+                self._trace_test_1_answer_label(raw_submission)
+                or str(raw_submission).strip().upper()
+            )
+
+        if payload is not None and hasattr(payload, "options") and not isinstance(payload, TraceTest1Payload):
             try:
                 correct_choice_code = int(correct_answer) if correct_answer is not None else None
             except Exception:
@@ -13506,7 +13516,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
 
         self._review_state = _AnswerReviewState(
             snapshot=snap,
-            submitted_raw=str(raw_submission),
+            submitted_raw=display_submission,
             correct_answer_text=self._format_review_answer_text(
                 payload=payload,
                 current_problem=current_problem,
@@ -13643,6 +13653,16 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             pygame.K_KP5: 5,
         }
         return mapping.get(key)
+
+    @staticmethod
+    def _trace_test_1_answer_label(raw: object | None) -> str:
+        code = trace_test_1_answer_code("" if raw is None else raw)
+        return {
+            1: "LEFT",
+            2: "RIGHT",
+            3: "UP",
+            4: "DOWN",
+        }.get(code, "")
 
     def _submit_multiple_choice_code(self, choice: int) -> bool:
         self._math_choice = int(choice)

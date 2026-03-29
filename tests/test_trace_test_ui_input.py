@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 import pygame
 
-from cfast_trainer.app import App, CognitiveTestScreen, MenuItem, MenuScreen
+from cfast_trainer.app import App, CognitiveTestScreen, DifficultySettingsStore, MenuItem, MenuScreen
 from cfast_trainer.cognitive_core import Phase
 from cfast_trainer.trace_drills import build_tt1_lateral_anchor_drill, build_tt2_steady_anchor_drill
 from cfast_trainer.trace_test_1 import TraceTest1Config, build_trace_test_1_test
@@ -23,13 +23,28 @@ class FakeClock:
         self.t += float(dt)
 
 
-def _build_screen(*, engine_factory, test_code: str) -> CognitiveTestScreen:
+def _build_screen(
+    *,
+    engine_factory,
+    test_code: str,
+    review_mode: bool = False,
+    settings_path=None,
+) -> CognitiveTestScreen:
     os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
     os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
     pygame.init()
     surface = pygame.Surface((960, 540))
     font = pygame.font.Font(None, 36)
-    app = App(surface=surface, font=font, opengl_enabled=False)
+    difficulty_settings_store = None
+    if settings_path is not None:
+        difficulty_settings_store = DifficultySettingsStore(settings_path)
+        difficulty_settings_store.set_review_mode_enabled(review_mode)
+    app = App(
+        surface=surface,
+        font=font,
+        opengl_enabled=False,
+        difficulty_settings_store=difficulty_settings_store,
+    )
     app.push(MenuScreen(app, "Main Menu", [MenuItem("Quit", app.quit)], is_root=True))
     screen = CognitiveTestScreen(app, engine_factory=engine_factory, test_code=test_code)
     app.push(screen)
@@ -60,6 +75,46 @@ def test_trace_test_1_arrow_input_only_registers_after_answer_open() -> None:
     screen._engine.update()
     screen.handle_event(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_LEFT, "unicode": ""}))
     assert screen._engine.phase is Phase.PRACTICE_DONE
+
+
+def test_trace_test_1_arrow_input_opens_answer_checker_in_review_mode(tmp_path) -> None:
+    clock = FakeClock()
+    screen = _build_screen(
+        engine_factory=lambda: build_trace_test_1_test(
+            clock=clock,
+            seed=17,
+            difficulty=0.5,
+            config=TraceTest1Config(
+                practice_questions=1,
+                practice_observe_s=1.0,
+                scored_observe_s=1.0,
+            ),
+        ),
+        test_code="trace_test_1",
+        review_mode=True,
+        settings_path=tmp_path / "difficulty-settings.json",
+    )
+    screen._engine.start_practice()
+
+    clock.advance(0.50)
+    screen._engine.update()
+    payload = screen._engine.snapshot().payload
+    assert payload is not None
+
+    expected = {
+        1: "LEFT",
+        2: "RIGHT",
+        3: "UP",
+        4: "DOWN",
+    }[int(payload.correct_code)]
+
+    screen.handle_event(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_LEFT, "unicode": ""}))
+
+    assert screen._review_state is not None
+    assert screen._review_state.submitted_raw == "LEFT"
+    assert screen._review_state.correct_choice_code is None
+    assert screen._review_state.submitted_choice_code is None
+    assert screen._review_state.correct_answer_text == expected
 
 
 def test_trace_test_2_letter_choice_submits_only_after_observe_stage() -> None:
