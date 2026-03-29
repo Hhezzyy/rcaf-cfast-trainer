@@ -6,7 +6,7 @@ import math
 import pytest
 
 from cfast_trainer.cognitive_core import Phase
-from cfast_trainer.trace_lattice import DEFAULT_TRACE_LATTICE_SPEC
+from cfast_trainer.trace_lattice import DEFAULT_TRACE_LATTICE_SPEC, TraceLatticeAction
 from cfast_trainer.trace_test_2 import (
     TraceTest2AircraftTrack,
     TraceTest2Config,
@@ -144,6 +144,46 @@ def test_generated_scene_contains_unique_answer_facts() -> None:
     assert len(left) == 1
     assert len(right) == 1
     assert len({straight[0], left[0], right[0], leftmost, highest}) >= 4
+
+
+def test_easy_difficulty_non_straight_tracks_take_one_forward_step_before_turning() -> None:
+    payload = TraceTest2Generator(seed=34).next_problem(difficulty=0.10).payload
+    assert isinstance(payload, TraceTest2Payload)
+
+    for track in payload.aircraft:
+        assert track.lattice_path is not None
+        if track.motion_kind is TraceTest2MotionKind.STRAIGHT:
+            continue
+        assert track.lattice_path.steps[0].effective_action is TraceLatticeAction.STRAIGHT
+
+
+def test_hard_difficulty_non_straight_tracks_turn_earlier_and_cover_more_steps() -> None:
+    low = TraceTest2Generator(seed=35).next_problem(difficulty=0.10).payload
+    high = TraceTest2Generator(seed=35).next_problem(difficulty=0.95).payload
+
+    assert isinstance(low, TraceTest2Payload)
+    assert isinstance(high, TraceTest2Payload)
+
+    low_by_motion = {track.motion_kind: track for track in low.aircraft}
+    high_by_motion = {track.motion_kind: track for track in high.aircraft}
+    expected_first_actions = {
+        TraceTest2MotionKind.LEFT: TraceLatticeAction.LEFT,
+        TraceTest2MotionKind.RIGHT: TraceLatticeAction.RIGHT,
+        TraceTest2MotionKind.CLIMB: TraceLatticeAction.PULL,
+    }
+
+    for motion_kind, expected_action in expected_first_actions.items():
+        assert low_by_motion[motion_kind].lattice_path is not None
+        assert high_by_motion[motion_kind].lattice_path is not None
+        assert low_by_motion[motion_kind].lattice_path.steps[0].effective_action is TraceLatticeAction.STRAIGHT
+        assert high_by_motion[motion_kind].lattice_path.steps[0].effective_action is expected_action
+        assert len(high_by_motion[motion_kind].lattice_path.steps) > len(low_by_motion[motion_kind].lattice_path.steps)
+
+    assert low_by_motion[TraceTest2MotionKind.STRAIGHT].lattice_path is not None
+    assert high_by_motion[TraceTest2MotionKind.STRAIGHT].lattice_path is not None
+    assert len(high_by_motion[TraceTest2MotionKind.STRAIGHT].lattice_path.steps) > len(
+        low_by_motion[TraceTest2MotionKind.STRAIGHT].lattice_path.steps
+    )
 
 
 def test_generated_tracks_use_lattice_paths_that_stay_in_bounds() -> None:

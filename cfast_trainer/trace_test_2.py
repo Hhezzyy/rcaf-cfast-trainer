@@ -28,10 +28,10 @@ from .trace_lattice import (
 
 _STAGE_EPSILON_S = 1e-6
 _TT2_TURN_PHASE_RATIO = 0.35
-_TT2_WORLD_COL_SPACING = 16.0
-_TT2_WORLD_ROW_SPACING = 18.0
-_TT2_WORLD_LEVEL_SPACING = 6.0
-_TT2_WORLD_BASE_DEPTH = 38.0
+_TT2_WORLD_COL_SPACING = 22.0
+_TT2_WORLD_ROW_SPACING = 24.0
+_TT2_WORLD_LEVEL_SPACING = 8.0
+_TT2_WORLD_BASE_DEPTH = 42.0
 _TT2_WORLD_BASE_ALTITUDE = 9.0
 
 
@@ -194,6 +194,30 @@ def _tt2_motion_kind_for_path(path: TraceLatticePath) -> TraceTest2MotionKind:
         if step.effective_action is TraceLatticeAction.PUSH:
             return TraceTest2MotionKind.DESCEND
     return TraceTest2MotionKind.STRAIGHT
+
+
+def _tt2_is_high_difficulty(difficulty: float) -> bool:
+    return clamp01(difficulty) >= 0.72
+
+
+def _tt2_actions_for_role(
+    *,
+    role_key: str,
+    difficulty: float,
+) -> tuple[TraceLatticeAction, ...]:
+    high_difficulty = _tt2_is_high_difficulty(difficulty)
+    cruise_steps = 5 if high_difficulty else 4
+    if role_key == "steady":
+        return (TraceLatticeAction.STRAIGHT,) * cruise_steps
+
+    turn_action = {
+        "left": TraceLatticeAction.LEFT,
+        "right": TraceLatticeAction.RIGHT,
+        "climb": TraceLatticeAction.PULL,
+    }[role_key]
+    lead = () if high_difficulty else (TraceLatticeAction.STRAIGHT,)
+    settle_steps = max(1, cruise_steps - len(lead) - 1)
+    return lead + (turn_action,) + ((TraceLatticeAction.STRAIGHT,) * settle_steps)
 
 
 def _normalize_allowed_question_kinds(
@@ -392,51 +416,28 @@ class TraceTest2Generator:
         difficulty: float,
     ) -> TraceTest2AircraftTrack:
         d = clamp01(difficulty)
-        lateral_scale = 1.0 - (0.18 * d)
-        altitude_scale = 1.0 - (0.12 * d)
-        templates: dict[str, tuple[TraceTest2MotionKind, TraceLatticeState, tuple[TraceLatticeAction, ...]]] = {
+        lateral_scale = 1.02 + (0.10 * d)
+        altitude_scale = 1.00 + (0.08 * d)
+        templates: dict[str, tuple[TraceTest2MotionKind, TraceLatticeState]] = {
             "steady": (
                 TraceTest2MotionKind.STRAIGHT,
                 trace_lattice_state(col=1, row=1, level=2, forward=(0, 1, 0), up=(0, 0, 1)),
-                (
-                    TraceLatticeAction.STRAIGHT,
-                    TraceLatticeAction.STRAIGHT,
-                    TraceLatticeAction.STRAIGHT,
-                    TraceLatticeAction.STRAIGHT,
-                ),
             ),
             "left": (
                 TraceTest2MotionKind.LEFT,
                 trace_lattice_state(col=5, row=1, level=3, forward=(0, 1, 0), up=(0, 0, 1)),
-                (
-                    TraceLatticeAction.STRAIGHT,
-                    TraceLatticeAction.LEFT,
-                    TraceLatticeAction.STRAIGHT,
-                    TraceLatticeAction.STRAIGHT,
-                ),
             ),
             "right": (
                 TraceTest2MotionKind.RIGHT,
                 trace_lattice_state(col=1, row=2, level=1, forward=(0, 1, 0), up=(0, 0, 1)),
-                (
-                    TraceLatticeAction.STRAIGHT,
-                    TraceLatticeAction.RIGHT,
-                    TraceLatticeAction.STRAIGHT,
-                    TraceLatticeAction.STRAIGHT,
-                ),
             ),
             "climb": (
                 TraceTest2MotionKind.CLIMB,
                 trace_lattice_state(col=4, row=1, level=1, forward=(0, 1, 0), up=(0, 0, 1)),
-                (
-                    TraceLatticeAction.STRAIGHT,
-                    TraceLatticeAction.PULL,
-                    TraceLatticeAction.STRAIGHT,
-                    TraceLatticeAction.STRAIGHT,
-                ),
             ),
         }
-        declared_motion_kind, start_state, actions = templates[role_key]
+        declared_motion_kind, start_state = templates[role_key]
+        actions = _tt2_actions_for_role(role_key=role_key, difficulty=d)
         path = trace_lattice_build_path(
             start_state=start_state,
             actions=actions,

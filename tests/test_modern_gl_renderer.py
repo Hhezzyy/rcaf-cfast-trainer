@@ -496,6 +496,8 @@ def test_trace_test_1_scene_plan_uses_plane_mesh_instances_and_frame_hpr() -> No
     plan = _build_trace_test_1_scene_plan(scene)
 
     assert plan.camera is not None
+    assert plan.camera.position[1] <= -200.0
+    assert plan.camera.h_fov_deg >= 24.0
     assert plan.asset_ids == ("plane_blue", "plane_green", "plane_red", "plane_yellow")
     assert plan.overlay_primitives == ()
     assert plan.entity_count == 1 + len(payload.scene.blue_frames)
@@ -517,6 +519,8 @@ def test_trace_test_2_scene_plan_uses_plane_mesh_instances_and_tangent_hpr() -> 
     plan = _build_trace_test_2_scene_plan(scene)
 
     assert plan.camera is not None
+    assert plan.camera.position[1] <= -70.0
+    assert plan.camera.h_fov_deg <= 40.0
     assert plan.asset_ids == ("plane_blue", "plane_green", "plane_red", "plane_yellow")
     assert plan.overlay_primitives == ()
     assert plan.entity_count == len(payload.aircraft)

@@ -1592,11 +1592,11 @@ def _build_trace_test_1_scene_plan(scene: TraceTest1GlScene) -> _ScenePlan:
         )
 
     camera = _look_at_camera(
-        position=(0.0, -152.0, 20.0),
-        target=(0.0, 72.0, 12.0),
-        h_fov_deg=18.0,
-        v_fov_deg=18.0,
-        far_clip=520.0,
+        position=(0.0, -208.0, 30.0),
+        target=(0.0, 104.0, 15.0),
+        h_fov_deg=24.0,
+        v_fov_deg=22.0,
+        far_clip=720.0,
     )
     instances: list[_AssetInstance] = [
         _AssetInstance(
@@ -1670,11 +1670,11 @@ def _build_trace_test_2_scene_plan(scene: TraceTest2GlScene) -> _ScenePlan:
         )
 
     camera = _look_at_camera(
-        position=(0.0, -18.0, 14.0),
-        target=(0.0, 96.0, 9.0),
-        h_fov_deg=44.0,
-        v_fov_deg=34.0,
-        far_clip=640.0,
+        position=(0.0, -72.0, 28.0),
+        target=(0.0, 126.0, 12.0),
+        h_fov_deg=38.0,
+        v_fov_deg=30.0,
+        far_clip=820.0,
     )
     progress = float(payload.observe_progress)
     instances: list[_AssetInstance] = []

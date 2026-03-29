@@ -31,15 +31,15 @@ from .trace_lattice import (
 
 _STAGE_EPSILON_S = 1e-6
 _VIEWPOINT_BEARING_DEG = 180
-_RED_SAFE_BOX_MIN = 0.15
-_RED_SAFE_BOX_MAX = 0.85
+_RED_SAFE_BOX_MIN = 0.02
+_RED_SAFE_BOX_MAX = 0.98
 _BLUE_MARGIN = 0.20
-_WORLD_X_NORMALIZER = 48.0
-_WORLD_Z_SCREEN_CENTER = 12.0
-_WORLD_Z_SCREEN_NORMALIZER = 36.0
-_RED_ALTITUDE_BAND = (6.0, 22.0)
-_RED_DEPTH_BAND = (12.0, 108.0)
-_BLUE_DEPTH_BAND = (0.0, 116.0)
+_WORLD_X_NORMALIZER = 68.0
+_WORLD_Z_SCREEN_CENTER = 12.5
+_WORLD_Z_SCREEN_NORMALIZER = 44.0
+_RED_ALTITUDE_BAND = (4.0, 28.0)
+_RED_DEPTH_BAND = (14.0, 146.0)
+_BLUE_DEPTH_BAND = (0.0, 156.0)
 _RED_RECOVERY_DISTANCE = 3.5
 _TURN_HOLD_FRACTION = 0.14
 _BLUE_OUTLINE_COLORS: tuple[tuple[int, int, int], ...] = (
@@ -48,10 +48,10 @@ _BLUE_OUTLINE_COLORS: tuple[tuple[int, int, int], ...] = (
     (188, 214, 244),
     (176, 206, 242),
 )
-_TT1_LATTICE_COL_SPACING = 12.0
-_TT1_LATTICE_ROW_SPACING = 14.0
-_TT1_LATTICE_LEVEL_SPACING = 6.0
-_TT1_LATTICE_BASE_DEPTH = 12.0
+_TT1_LATTICE_COL_SPACING = 16.0
+_TT1_LATTICE_ROW_SPACING = 18.0
+_TT1_LATTICE_LEVEL_SPACING = 7.5
+_TT1_LATTICE_BASE_DEPTH = 16.0
 _TT1_TURN_PHASE_RATIO = 0.35
 
 
@@ -112,6 +112,7 @@ class TraceTest1DifficultyTier:
     blue_count: int
     speed_multiplier: float
     answer_open_progress: float
+    immediate_turn_chance: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -201,6 +202,28 @@ def _tt1_action_for_command(command: TraceTest1Command) -> TraceLatticeAction:
         TraceTest1Command.PUSH: TraceLatticeAction.PUSH,
         TraceTest1Command.PULL: TraceLatticeAction.PULL,
     }[command]
+
+
+def _tt1_command_step_index(plan: TraceTest1AircraftPlan) -> int:
+    command_action = _tt1_action_for_command(plan.command)
+    for idx, action in enumerate(plan.lattice_actions):
+        if action is command_action:
+            return idx
+    return 0
+
+
+def _tt1_lattice_actions_for_command(
+    command: TraceTest1Command,
+    *,
+    lead_steps: int,
+) -> tuple[TraceLatticeAction, ...]:
+    lead = max(0, int(lead_steps))
+    settle_steps = 1 if lead >= 1 else 2
+    return (
+        (TraceLatticeAction.STRAIGHT,) * lead
+        + (_tt1_action_for_command(command),)
+        + ((TraceLatticeAction.STRAIGHT,) * settle_steps)
+    )
 
 
 def _tt1_world_position_from_lattice(
@@ -505,12 +528,32 @@ def trace_test_1_answer_code(raw: object) -> int | None:
 def trace_test_1_difficulty_tier(*, difficulty: float) -> TraceTest1DifficultyTier:
     d = clamp01(difficulty)
     if d < 0.34:
-        return TraceTest1DifficultyTier(blue_count=1, speed_multiplier=1.00, answer_open_progress=0.42)
+        return TraceTest1DifficultyTier(
+            blue_count=1,
+            speed_multiplier=0.95,
+            answer_open_progress=0.44,
+            immediate_turn_chance=0.0,
+        )
     if d < 0.67:
-        return TraceTest1DifficultyTier(blue_count=2, speed_multiplier=1.15, answer_open_progress=0.36)
+        return TraceTest1DifficultyTier(
+            blue_count=2,
+            speed_multiplier=1.12,
+            answer_open_progress=0.37,
+            immediate_turn_chance=0.0,
+        )
     if d < 0.89:
-        return TraceTest1DifficultyTier(blue_count=3, speed_multiplier=1.30, answer_open_progress=0.31)
-    return TraceTest1DifficultyTier(blue_count=4, speed_multiplier=1.45, answer_open_progress=0.27)
+        return TraceTest1DifficultyTier(
+            blue_count=4,
+            speed_multiplier=1.38,
+            answer_open_progress=0.30,
+            immediate_turn_chance=0.78,
+        )
+    return TraceTest1DifficultyTier(
+        blue_count=5,
+        speed_multiplier=1.65,
+        answer_open_progress=0.24,
+        immediate_turn_chance=0.94,
+    )
 
 
 def trace_test_1_normalized_position(
@@ -646,6 +689,7 @@ def _tt1_red_start_templates(
             trace_lattice_state(col=2, row=2, level=2, forward=(0, 1, 0), up=(0, 0, 1)),
         ),
         TraceTest1Command.PUSH: (
+            trace_lattice_state(col=3, row=1, level=4, forward=(0, 1, 0), up=(0, 0, 1)),
             trace_lattice_state(col=3, row=1, level=3, forward=(0, 1, 0), up=(0, 0, 1)),
             trace_lattice_state(col=4, row=1, level=3, forward=(0, 1, 0), up=(0, 0, 1)),
         ),
@@ -772,6 +816,7 @@ class TraceTest1Generator:
             trace_lattice_state(col=5, row=1, level=3, forward=(0, 1, 0), up=(0, 0, 1)),
             trace_lattice_state(col=1, row=3, level=2, forward=(1, 0, 0), up=(0, 0, 1)),
             trace_lattice_state(col=5, row=4, level=2, forward=(-1, 0, 0), up=(0, 0, 1)),
+            trace_lattice_state(col=3, row=1, level=3, forward=(0, 1, 0), up=(0, 0, 1)),
         )
         return presets[index % len(presets)]
 
@@ -788,25 +833,28 @@ class TraceTest1Generator:
             candidates = list(self._allowed_commands)
         for command in self._rng.sample(candidates, k=len(candidates)):
             templates = list(_tt1_red_start_templates(command))
-            for start_state in self._rng.sample(templates, k=len(templates)):
-                plan = TraceTest1AircraftPlan(
-                    start_state=_tt1_aircraft_state_from_lattice_state(start_state),
-                    command=command,
-                    lead_distance=lead_distance,
-                    maneuver_distance=maneuver_distance,
-                    altitude_delta=altitude_delta if command is TraceTest1Command.PULL else -altitude_delta,
-                    lattice_start=start_state,
-                    lattice_actions=(
-                        TraceLatticeAction.STRAIGHT,
-                        _tt1_action_for_command(command),
-                        TraceLatticeAction.STRAIGHT,
-                    ),
-                )
-                if self._red_plan_is_safe(plan=plan, tier=tier):
-                    self._last_red_command = command
-                    self._red_lattice_state = start_state
-                    self._red_state = _tt1_aircraft_state_from_lattice_state(start_state)
-                    return plan
+            prefer_immediate = self._rng.random() < float(tier.immediate_turn_chance)
+            lead_step_order = (0, 1) if prefer_immediate else (1, 0)
+            for lead_steps in lead_step_order:
+                for start_state in self._rng.sample(templates, k=len(templates)):
+                    actions = _tt1_lattice_actions_for_command(
+                        command,
+                        lead_steps=lead_steps,
+                    )
+                    plan = TraceTest1AircraftPlan(
+                        start_state=_tt1_aircraft_state_from_lattice_state(start_state),
+                        command=command,
+                        lead_distance=lead_distance,
+                        maneuver_distance=maneuver_distance,
+                        altitude_delta=altitude_delta if command is TraceTest1Command.PULL else -altitude_delta,
+                        lattice_start=start_state,
+                        lattice_actions=actions,
+                    )
+                    if self._red_plan_is_safe(plan=plan, tier=tier):
+                        self._last_red_command = command
+                        self._red_lattice_state = start_state
+                        self._red_state = _tt1_aircraft_state_from_lattice_state(start_state)
+                        return plan
 
         fallback_command = candidates[0]
         fallback_state = _tt1_red_start_templates(fallback_command)[0]
@@ -817,10 +865,9 @@ class TraceTest1Generator:
             maneuver_distance=maneuver_distance,
             altitude_delta=altitude_delta if fallback_command is TraceTest1Command.PULL else -altitude_delta,
             lattice_start=fallback_state,
-            lattice_actions=(
-                TraceLatticeAction.STRAIGHT,
-                _tt1_action_for_command(fallback_command),
-                TraceLatticeAction.STRAIGHT,
+            lattice_actions=_tt1_lattice_actions_for_command(
+                fallback_command,
+                lead_steps=1,
             ),
         )
         self._last_red_command = fallback.command
@@ -830,9 +877,10 @@ class TraceTest1Generator:
 
     def _red_plan_is_safe(self, *, plan: TraceTest1AircraftPlan, tier: TraceTest1DifficultyTier) -> bool:
         path = _tt1_build_lattice_path(plan)
-        if path is None or len(path.steps) < 2:
+        command_step_index = _tt1_command_step_index(plan)
+        if path is None or len(path.steps) <= command_step_index:
             return False
-        if path.steps[1].effective_action is not _tt1_action_for_command(plan.command):
+        if path.steps[command_step_index].effective_action is not _tt1_action_for_command(plan.command):
             return False
         split = float(tier.answer_open_progress)
         checkpoints = (
@@ -873,6 +921,7 @@ class TraceTest1Generator:
     ) -> TraceTest1AircraftPlan:
         lead_distance, maneuver_distance, altitude_delta = self._prompt_distances(tier=tier)
         command = self._rng.choice(tuple(TraceTest1Command))
+        lead_steps = 0 if self._rng.random() < float(tier.immediate_turn_chance) else 1
         return TraceTest1AircraftPlan(
             start_state=_tt1_aircraft_state_from_lattice_state(state),
             command=command,
@@ -880,10 +929,9 @@ class TraceTest1Generator:
             maneuver_distance=maneuver_distance,
             altitude_delta=altitude_delta if command is TraceTest1Command.PULL else -altitude_delta,
             lattice_start=state,
-            lattice_actions=(
-                TraceLatticeAction.STRAIGHT,
-                _tt1_action_for_command(command),
-                TraceLatticeAction.STRAIGHT,
+            lattice_actions=_tt1_lattice_actions_for_command(
+                command,
+                lead_steps=lead_steps,
             ),
         )
 

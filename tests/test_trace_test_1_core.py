@@ -18,6 +18,7 @@ from cfast_trainer.trace_test_1 import (
     _tt1_action_for_command,
     _tt1_aircraft_state_from_lattice_state,
     _tt1_build_lattice_path,
+    _tt1_command_step_index,
     build_trace_test_1_test,
     trace_test_1_answer_code,
     trace_test_1_difficulty_tier,
@@ -101,20 +102,24 @@ def test_generator_determinism_same_seed_same_sequence() -> None:
 
 def test_difficulty_tiers_match_blue_counts_speed_and_answer_open_points() -> None:
     assert trace_test_1_difficulty_tier(difficulty=0.10).blue_count == 1
-    assert trace_test_1_difficulty_tier(difficulty=0.10).speed_multiplier == pytest.approx(1.00)
-    assert trace_test_1_difficulty_tier(difficulty=0.10).answer_open_progress == pytest.approx(0.42)
+    assert trace_test_1_difficulty_tier(difficulty=0.10).speed_multiplier == pytest.approx(0.95)
+    assert trace_test_1_difficulty_tier(difficulty=0.10).answer_open_progress == pytest.approx(0.44)
+    assert trace_test_1_difficulty_tier(difficulty=0.10).immediate_turn_chance == pytest.approx(0.0)
 
     assert trace_test_1_difficulty_tier(difficulty=0.50).blue_count == 2
-    assert trace_test_1_difficulty_tier(difficulty=0.50).speed_multiplier == pytest.approx(1.15)
-    assert trace_test_1_difficulty_tier(difficulty=0.50).answer_open_progress == pytest.approx(0.36)
+    assert trace_test_1_difficulty_tier(difficulty=0.50).speed_multiplier == pytest.approx(1.12)
+    assert trace_test_1_difficulty_tier(difficulty=0.50).answer_open_progress == pytest.approx(0.37)
+    assert trace_test_1_difficulty_tier(difficulty=0.50).immediate_turn_chance == pytest.approx(0.0)
 
-    assert trace_test_1_difficulty_tier(difficulty=0.80).blue_count == 3
-    assert trace_test_1_difficulty_tier(difficulty=0.80).speed_multiplier == pytest.approx(1.30)
-    assert trace_test_1_difficulty_tier(difficulty=0.80).answer_open_progress == pytest.approx(0.31)
+    assert trace_test_1_difficulty_tier(difficulty=0.80).blue_count == 4
+    assert trace_test_1_difficulty_tier(difficulty=0.80).speed_multiplier == pytest.approx(1.38)
+    assert trace_test_1_difficulty_tier(difficulty=0.80).answer_open_progress == pytest.approx(0.30)
+    assert trace_test_1_difficulty_tier(difficulty=0.80).immediate_turn_chance == pytest.approx(0.78)
 
-    assert trace_test_1_difficulty_tier(difficulty=0.95).blue_count == 4
-    assert trace_test_1_difficulty_tier(difficulty=0.95).speed_multiplier == pytest.approx(1.45)
-    assert trace_test_1_difficulty_tier(difficulty=0.95).answer_open_progress == pytest.approx(0.27)
+    assert trace_test_1_difficulty_tier(difficulty=0.95).blue_count == 5
+    assert trace_test_1_difficulty_tier(difficulty=0.95).speed_multiplier == pytest.approx(1.65)
+    assert trace_test_1_difficulty_tier(difficulty=0.95).answer_open_progress == pytest.approx(0.24)
+    assert trace_test_1_difficulty_tier(difficulty=0.95).immediate_turn_chance == pytest.approx(0.94)
 
 
 def test_generator_emits_all_commands_without_back_to_back_repeats() -> None:
@@ -189,7 +194,30 @@ def test_generator_uses_tier_blue_count_in_prompt_payload() -> None:
     assert isinstance(low, TraceTest1PromptPlan)
     assert isinstance(high, TraceTest1PromptPlan)
     assert len(low.blue_plans) == 1
-    assert len(high.blue_plans) == 4
+    assert len(high.blue_plans) == 5
+
+
+def test_easy_tier_red_prompt_always_moves_one_step_before_turning() -> None:
+    gen = TraceTest1Generator(seed=141)
+
+    for _ in range(20):
+        payload = gen.next_problem(difficulty=0.10).payload
+        assert isinstance(payload, TraceTest1PromptPlan)
+        assert payload.red_plan.lattice_actions[0] is TraceLatticeAction.STRAIGHT
+        assert payload.red_plan.lattice_actions[1] is _tt1_action_for_command(payload.red_plan.command)
+
+
+def test_hard_tier_red_prompt_usually_turns_immediately() -> None:
+    gen = TraceTest1Generator(seed=142)
+    immediate_turns = 0
+
+    for _ in range(24):
+        payload = gen.next_problem(difficulty=0.95).payload
+        assert isinstance(payload, TraceTest1PromptPlan)
+        if payload.red_plan.lattice_actions[0] is _tt1_action_for_command(payload.red_plan.command):
+            immediate_turns += 1
+
+    assert immediate_turns >= 18
 
 
 def test_timer_boundary_transitions_to_results_and_rejects_late_submit() -> None:
@@ -228,7 +256,7 @@ def test_trial_transitions_from_observe_to_answer_open() -> None:
     payload = engine.snapshot().payload
     assert isinstance(payload, TraceTest1Payload)
     assert payload.trial_stage is TraceTest1TrialStage.OBSERVE
-    assert payload.answer_open_progress == pytest.approx(0.36)
+    assert payload.answer_open_progress == pytest.approx(0.37)
 
     clock.advance(0.35)
     engine.update()
@@ -293,13 +321,13 @@ def test_left_and_right_lattice_paths_finish_in_expected_heading_family() -> Non
     right_end = trace_test_1_scene_frames(prompt=right_prompt, progress=1.0).red_frame
 
     assert left_mid.position[0] < 0.0
-    assert left_mid.position[1] == pytest.approx(40.0)
+    assert left_mid.position[1] >= left_prompt.red_plan.start_state.position[1]
     assert left_mid.attitude.roll_deg == pytest.approx(0.0)
     assert abs(_angle_delta_deg(left_mid.travel_heading_deg, 270.0)) <= 2.0
     assert abs(_angle_delta_deg(left_end.travel_heading_deg, 270.0)) <= 2.0
 
     assert right_mid.position[0] > 0.0
-    assert right_mid.position[1] == pytest.approx(40.0)
+    assert right_mid.position[1] >= right_prompt.red_plan.start_state.position[1]
     assert right_mid.attitude.roll_deg == pytest.approx(0.0)
     assert _angle_delta_deg(right_mid.travel_heading_deg, 0.0) > 0.0
     assert abs(_angle_delta_deg(right_end.travel_heading_deg, 90.0)) <= 2.0
@@ -461,13 +489,15 @@ def test_red_lattice_paths_stay_on_screen_across_tiers() -> None:
             assert isinstance(prompt, TraceTest1PromptPlan)
             path = _tt1_build_lattice_path(prompt.red_plan)
             assert path is not None
-            assert path.steps[1].effective_action is _tt1_action_for_command(prompt.red_plan.command)
+            assert path.steps[_tt1_command_step_index(prompt.red_plan)].effective_action is _tt1_action_for_command(
+                prompt.red_plan.command
+            )
             for progress in (0.0, prompt.answer_open_progress, 1.0):
                 red = trace_test_1_scene_frames(prompt=prompt, progress=progress).red_frame
                 center, _scale = project_scene_position(red.position, size=(960, 540))
                 assert 0.0 <= center[0] <= 960.0
                 assert 0.0 <= center[1] <= 540.0
-                assert 0.0 <= red.position[2] <= 24.0
+                assert 0.0 <= red.position[2] <= 28.0
             gen.commit_prompt(prompt=prompt, progress=1.0)
 
 

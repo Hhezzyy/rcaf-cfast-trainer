@@ -288,5 +288,6 @@ def test_trace_movement_recall_levels_l2_l5_l8_are_materially_different() -> Non
     mid_x_span, mid_alt_span = summarize(5)
     high_x_span, high_alt_span = summarize(8)
 
-    assert low_x_span > mid_x_span > high_x_span
-    assert low_alt_span > mid_alt_span > high_alt_span
+    assert low_x_span < mid_x_span < high_x_span
+    assert high_alt_span < low_alt_span < mid_alt_span
+    assert (max(low_alt_span, mid_alt_span, high_alt_span) - min(low_alt_span, mid_alt_span, high_alt_span)) >= 6.0
