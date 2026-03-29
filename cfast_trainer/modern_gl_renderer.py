@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from functools import lru_cache
 
 import moderngl
 import numpy
@@ -30,7 +31,7 @@ from .gl_scenes import (
     TraceTest2GlScene,
     gl_scene_name,
 )
-from .rapid_tracking import RapidTrackingPayload, build_rapid_tracking_compound_layout
+from .rapid_tracking import RapidTrackingCompoundLayout, RapidTrackingPayload, build_rapid_tracking_compound_layout
 from .rapid_tracking_gl import build_scene_target as build_rapid_tracking_scene_target
 from .rapid_tracking_gl import camera_rig_state as rapid_tracking_camera_rig_state
 from .rapid_tracking_view import (
@@ -136,6 +137,20 @@ class _ScenePlan:
     overlay_primitives: tuple[_ProjectedOverlayPrimitive, ...]
     asset_ids: tuple[str, ...]
     entity_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class _RapidTrackingStaticScene:
+    layout: RapidTrackingCompoundLayout
+    core_instances: tuple[_AssetInstance, ...]
+    ambient_instances: tuple[_AssetInstance, ...]
+    asset_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _TrackPointAnchor:
+    x: float
+    y: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -1140,52 +1155,8 @@ def _build_rapid_tracking_scene_plan(scene: RapidTrackingGlScene) -> _ScenePlan:
 
     target = build_rapid_tracking_scene_target(payload=payload, size=(rect.w, rect.h))
     target_asset_id = _rapid_tracking_target_asset_id(target.kind, target.variant)
-    layout = build_rapid_tracking_compound_layout(seed=int(payload.session_seed))
-
-    def layout_world_xy(track_x: float, track_y: float) -> tuple[float, float]:
-        return rapid_tracking_track_to_world_xy(
-            track_x=float(track_x),
-            track_y=float(track_y),
-            path_lateral_bias=float(layout.path_lateral_bias),
-        )
-
-    def anchored_world_pos(*, anchor, y_bias: float = 0.0, clearance: float = 0.0) -> tuple[float, float, float]:
-        wx, wy = layout_world_xy(float(anchor.x), float(anchor.y))
-        wy += float(y_bias)
-        wz = float(rapid_tracking_terrain_height(float(wx), float(wy))) + float(clearance)
-        return float(wx), float(wy), float(wz)
-
-    def road_piece_instance(
-        *,
-        asset_id: str,
-        start_xy: tuple[float, float],
-        end_xy: tuple[float, float],
-        width: float,
-    ) -> _AssetInstance:
-        start_wx, start_wy = layout_world_xy(float(start_xy[0]), float(start_xy[1]))
-        end_wx, end_wy = layout_world_xy(float(end_xy[0]), float(end_xy[1]))
-        center_x = (start_wx + end_wx) * 0.5
-        center_y = (start_wy + end_wy) * 0.5
-        start_z = float(rapid_tracking_terrain_height(float(start_wx), float(start_wy)))
-        end_z = float(rapid_tracking_terrain_height(float(end_wx), float(end_wy)))
-        length = max(1.0, math.hypot(float(end_wx - start_wx), float(end_wy - start_wy)))
-        heading = _wrap_heading_deg(float(end_wx - start_wx), float(end_wy - start_wy))
-        pitch = -math.degrees(math.atan2(end_z - start_z, max(1e-6, length)))
-        return _AssetInstance(
-            asset_id=asset_id,
-            position=(center_x, center_y, max(start_z, end_z) + 0.05),
-            hpr_deg=(heading, pitch, 0.0),
-            scale=(float(width), float(length) + 2.0, 1.0),
-        )
-
-    def layout_heading(token: str) -> float:
-        return float(
-            rapid_tracking_seed_unit(
-                seed=int(layout.seed),
-                salt=str(token),
-            )
-            * 360.0
-        )
+    static_scene = _rapid_tracking_static_scene(int(payload.session_seed))
+    layout = static_scene.layout
 
     target_world_z = estimated_target_world_z(
         kind=str(payload.target_kind),
@@ -1224,175 +1195,45 @@ def _build_rapid_tracking_scene_plan(scene: RapidTrackingGlScene) -> _ScenePlan:
         else 2.1
     )
 
-    instances = [
+    focus_x = float(payload.focus_world_x)
+    focus_y = float(payload.focus_world_y)
+    camera_x = float(camera.position[0])
+    camera_y = float(camera.position[1])
+    visible_ambient = sorted(
+        (
+            instance
+            for instance in static_scene.ambient_instances
+            if _rapid_tracking_static_instance_visible(
+                instance,
+                focus_x=focus_x,
+                focus_y=focus_y,
+                camera_x=camera_x,
+                camera_y=camera_y,
+            )
+        ),
+        key=lambda instance: _rapid_tracking_visibility_rank(
+            instance,
+            focus_x=focus_x,
+            focus_y=focus_y,
+            camera_x=camera_x,
+            camera_y=camera_y,
+        ),
+    )[:12]
+
+    instances = [*static_scene.core_instances, *visible_ambient]
+    instances.append(
         _AssetInstance(
             asset_id=target_asset_id,
             position=(float(payload.target_world_x), float(payload.target_world_y), float(target_world_z)),
             hpr_deg=(target_heading, 0.0, 0.0),
             scale=(scale_factor, scale_factor, scale_factor),
         )
-    ]
-
-    for obstacle in layout.obstacles:
-        wx, wy = layout_world_xy(float(obstacle.x), float(obstacle.y))
-        wz = float(rapid_tracking_terrain_height(float(wx), float(wy)))
-        scale_x = abs(layout_world_xy(float(obstacle.x + obstacle.radius_x), float(obstacle.y))[0] - wx)
-        scale_y = abs(layout_world_xy(float(obstacle.x), float(obstacle.y + obstacle.radius_y))[1] - wy)
-        if obstacle.kind == "lake":
-            instances.append(
-                _AssetInstance(
-                    asset_id="terrain_lake_patch",
-                    position=(float(wx), float(wy), float(wz) - 0.14),
-                    hpr_deg=(float(obstacle.rotation_deg), 0.0, 0.0),
-                    scale=(max(6.0, scale_x), max(6.0, scale_y), 1.0),
-                )
-            )
-        elif obstacle.kind == "hill":
-            instances.append(
-                _AssetInstance(
-                    asset_id="terrain_hill_mound",
-                    position=(float(wx), float(wy), float(wz) + (float(obstacle.height) * 0.24)),
-                    hpr_deg=(float(obstacle.rotation_deg), 0.0, 0.0),
-                    scale=(max(5.0, scale_x * 1.3), max(5.0, scale_y * 1.2), max(2.0, float(obstacle.height) * 4.2)),
-                )
-            )
-        else:
-            instances.append(
-                _AssetInstance(
-                    asset_id="terrain_rock_cluster",
-                    position=(float(wx), float(wy), float(wz) + 0.18),
-                    hpr_deg=(float(obstacle.rotation_deg), 0.0, 0.0),
-                    scale=(max(1.4, scale_x * 0.9), max(1.4, scale_y * 0.9), max(1.0, float(obstacle.height) * 2.2)),
-                )
-            )
-
-    for road_segment in layout.road_segments:
-        road_asset = "road_paved_segment" if str(road_segment.surface) == "paved" else "road_dirt_segment"
-        road_width = 7.8 if road_asset == "road_paved_segment" else 6.0
-        for start_xy, end_xy in zip(road_segment.points, road_segment.points[1:], strict=False):
-            instances.append(
-                road_piece_instance(
-                    asset_id=road_asset,
-                    start_xy=start_xy,
-                    end_xy=end_xy,
-                    width=road_width,
-                )
-            )
-
-    for anchor in layout.building_anchors:
-        asset_id = "building_tower" if str(anchor.variant) == "tower" else "building_hangar"
-        wx, wy, wz = anchored_world_pos(
-            anchor=anchor,
-            clearance=2.1 if asset_id == "building_tower" else 1.1,
-        )
-        scale = (
-            3.6 + (rapid_tracking_seed_unit(seed=int(layout.seed), salt=str(anchor.anchor_id)) * 0.8)
-            if asset_id == "building_tower"
-            else 6.4 + (rapid_tracking_seed_unit(seed=int(layout.seed), salt=str(anchor.anchor_id)) * 1.2)
-        )
-        instances.append(
-            _AssetInstance(
-                asset_id=asset_id,
-                position=(wx, wy, wz),
-                hpr_deg=(layout_heading(f"{anchor.anchor_id}:heading"), 0.0, 0.0),
-                scale=(scale, scale, scale),
-            )
-        )
-
-    for idx, anchor in enumerate(layout.patrol_anchors):
-        asset_id = "soldiers_patrol" if idx % 2 == 0 else "vehicle_tracked" if idx % 5 == 0 else "trees_field_cluster"
-        clearance = 0.82 if asset_id == "vehicle_tracked" else 0.0
-        scale = 1.8 + (0.12 * (idx % 3)) if asset_id == "soldiers_patrol" else 2.2 if asset_id == "vehicle_tracked" else 2.8 + (0.22 * (idx % 4))
-        wx, wy, wz = anchored_world_pos(anchor=anchor, y_bias=6.0, clearance=clearance)
-        instances.append(
-            _AssetInstance(
-                asset_id=asset_id,
-                position=(wx, wy, wz),
-                hpr_deg=(layout_heading(f"{anchor.anchor_id}:heading"), 0.0, 0.0),
-                scale=(scale, scale, scale),
-            )
-        )
-
-    for idx, anchor in enumerate(layout.road_anchors[:: max(1, len(layout.road_anchors) // 12 or 1)]):
-        asset_id = "truck_olive" if idx % 2 == 0 else "vehicle_tracked" if idx % 5 == 0 else "shrubs_low_cluster"
-        clearance = 0.82 if asset_id in {"truck_olive", "vehicle_tracked"} else 0.0
-        scale = 2.8 if asset_id == "truck_olive" else 2.4 if asset_id == "vehicle_tracked" else 3.6
-        wx, wy, wz = anchored_world_pos(anchor=anchor, y_bias=4.0, clearance=clearance)
-        instances.append(
-            _AssetInstance(
-                asset_id=asset_id,
-                position=(wx, wy, wz),
-                hpr_deg=(layout_heading(f"{anchor.anchor_id}:heading"), 0.0, 0.0),
-                scale=(scale, scale, scale),
-            )
-        )
-
-    for idx, anchor in enumerate(layout.helicopter_anchors):
-        wx, wy, terrain = anchored_world_pos(anchor=anchor)
-        altitude = 12.0 + float(layout.altitude_bias) + (idx % 3) * 1.6
-        instances.append(
-            _AssetInstance(
-                asset_id="helicopter_green",
-                position=(wx, wy, terrain + altitude),
-                hpr_deg=(layout_heading(f"{anchor.anchor_id}:air-heading"), 0.0, 0.0),
-                scale=(2.3, 2.3, 2.3),
-            )
-        )
-
-    jet_assets = ("plane_blue", "plane_green", "plane_yellow", "plane_red")
-    for idx, anchor in enumerate(layout.jet_anchors):
-        wx, wy, terrain = anchored_world_pos(anchor=anchor)
-        altitude = 18.0 + float(layout.altitude_bias) + (idx % 4) * 1.8
-        asset_id = jet_assets[idx % len(jet_assets)]
-        instances.append(
-            _AssetInstance(
-                asset_id=asset_id,
-                position=(wx, wy, terrain + altitude),
-                hpr_deg=(layout_heading(f"{anchor.anchor_id}:air-heading"), 0.0, 0.0),
-                scale=(1.9, 1.9, 1.9),
-            )
-        )
-
-    for idx, cluster in enumerate(layout.scenic_clusters):
-        wx, wy = layout_world_xy(float(cluster.x), float(cluster.y))
-        wz = float(rapid_tracking_terrain_height(float(wx), float(wy)))
-        asset_id = str(cluster.asset_id)
-        if asset_id == "trees_field_cluster" and idx % 2 == 1:
-            asset_id = "trees_pine_cluster"
-        scale = (
-            3.0 if cluster.asset_id == "forest_canopy_patch" else 2.6 if "tree" in cluster.asset_id else 3.2
-        ) * float(cluster.scale) * (1.0 + (0.04 * max(0, int(cluster.count) - 1)))
-        instances.append(
-            _AssetInstance(
-                asset_id=asset_id,
-                position=(float(wx), float(wy), float(wz)),
-                hpr_deg=(layout_heading(f"{cluster.cluster_id}:heading"), 0.0, 0.0),
-                scale=(scale, scale, scale),
-            )
-        )
+    )
 
     unique_asset_ids = tuple(
         sorted(
             {
-                "building_hangar",
-                "building_tower",
-                "forest_canopy_patch",
-                "helicopter_green",
-                "plane_blue",
-                "plane_green",
-                "plane_red",
-                "plane_yellow",
-                "road_dirt_segment",
-                "road_paved_segment",
-                "shrubs_low_cluster",
-                "soldiers_patrol",
-                "terrain_hill_mound",
-                "terrain_lake_patch",
-                "terrain_rock_cluster",
-                "trees_field_cluster",
-                "trees_pine_cluster",
-                "truck_olive",
-                "vehicle_tracked",
+                *static_scene.asset_ids,
                 target_asset_id,
             }
         )
@@ -1405,6 +1246,322 @@ def _build_rapid_tracking_scene_plan(scene: RapidTrackingGlScene) -> _ScenePlan:
         overlay_primitives=(),
         asset_ids=unique_asset_ids,
         entity_count=len(instances),
+    )
+
+
+def _rapid_tracking_layout_world_xy(
+    layout: RapidTrackingCompoundLayout,
+    *,
+    track_x: float,
+    track_y: float,
+) -> tuple[float, float]:
+    return rapid_tracking_track_to_world_xy(
+        track_x=float(track_x),
+        track_y=float(track_y),
+        path_lateral_bias=float(layout.path_lateral_bias),
+    )
+
+
+def _rapid_tracking_anchor_world_pos(
+    layout: RapidTrackingCompoundLayout,
+    *,
+    anchor,
+    y_bias: float = 0.0,
+    clearance: float = 0.0,
+) -> tuple[float, float, float]:
+    wx, wy = _rapid_tracking_layout_world_xy(layout, track_x=float(anchor.x), track_y=float(anchor.y))
+    wy += float(y_bias)
+    wz = float(rapid_tracking_terrain_height(float(wx), float(wy))) + float(clearance)
+    return float(wx), float(wy), float(wz)
+
+
+def _rapid_tracking_road_piece_instance(
+    layout: RapidTrackingCompoundLayout,
+    *,
+    asset_id: str,
+    start_xy: tuple[float, float],
+    end_xy: tuple[float, float],
+    width: float,
+) -> _AssetInstance:
+    start_wx, start_wy = _rapid_tracking_layout_world_xy(layout, track_x=float(start_xy[0]), track_y=float(start_xy[1]))
+    end_wx, end_wy = _rapid_tracking_layout_world_xy(layout, track_x=float(end_xy[0]), track_y=float(end_xy[1]))
+    center_x = (start_wx + end_wx) * 0.5
+    center_y = (start_wy + end_wy) * 0.5
+    start_z = float(rapid_tracking_terrain_height(float(start_wx), float(start_wy)))
+    end_z = float(rapid_tracking_terrain_height(float(end_wx), float(end_wy)))
+    length = max(1.0, math.hypot(float(end_wx - start_wx), float(end_wy - start_wy)))
+    heading = _wrap_heading_deg(float(end_wx - start_wx), float(end_wy - start_wy))
+    pitch = -math.degrees(math.atan2(end_z - start_z, max(1e-6, length)))
+    return _AssetInstance(
+        asset_id=asset_id,
+        position=(center_x, center_y, max(start_z, end_z) + 0.05),
+        hpr_deg=(heading, pitch, 0.0),
+        scale=(float(width), float(length) + 2.0, 1.0),
+    )
+
+
+def _rapid_tracking_render_polyline(
+    points: tuple[tuple[float, float], ...],
+    *,
+    max_pieces: int = 4,
+) -> tuple[tuple[float, float], ...]:
+    if len(points) <= 2:
+        return tuple(points)
+    step = max(1, math.ceil((len(points) - 1) / max(1, int(max_pieces))))
+    sampled = [points[0]]
+    for idx in range(step, len(points) - 1, step):
+        sampled.append(points[idx])
+    if sampled[-1] != points[-1]:
+        sampled.append(points[-1])
+    return tuple(sampled)
+
+
+def _rapid_tracking_layout_heading(layout: RapidTrackingCompoundLayout, token: str) -> float:
+    return float(rapid_tracking_seed_unit(seed=int(layout.seed), salt=str(token)) * 360.0)
+
+
+def _rapid_tracking_cluster_instance(
+    layout: RapidTrackingCompoundLayout,
+    *,
+    cluster,
+    asset_id: str | None = None,
+) -> _AssetInstance:
+    wx, wy = _rapid_tracking_layout_world_xy(layout, track_x=float(cluster.x), track_y=float(cluster.y))
+    wz = float(rapid_tracking_terrain_height(float(wx), float(wy)))
+    resolved_asset_id = str(asset_id or cluster.asset_id)
+    scale = (
+        3.0
+        if resolved_asset_id == "forest_canopy_patch"
+        else 2.6
+        if "tree" in resolved_asset_id
+        else 3.2
+    ) * float(cluster.scale) * (1.0 + (0.04 * max(0, int(cluster.count) - 1)))
+    return _AssetInstance(
+        asset_id=resolved_asset_id,
+        position=(float(wx), float(wy), float(wz)),
+        hpr_deg=(_rapid_tracking_layout_heading(layout, f"{cluster.cluster_id}:heading"), 0.0, 0.0),
+        scale=(scale, scale, scale),
+    )
+
+
+def _rapid_tracking_visibility_rank(
+    instance: _AssetInstance,
+    *,
+    focus_x: float,
+    focus_y: float,
+    camera_x: float,
+    camera_y: float,
+) -> float:
+    px, py, _pz = instance.position
+    return min(
+        ((float(px) - float(focus_x)) ** 2) + ((float(py) - float(focus_y)) ** 2),
+        ((float(px) - float(camera_x)) ** 2) + ((float(py) - float(camera_y)) ** 2),
+    )
+
+
+def _rapid_tracking_static_instance_visible(
+    instance: _AssetInstance,
+    *,
+    focus_x: float,
+    focus_y: float,
+    camera_x: float,
+    camera_y: float,
+) -> bool:
+    limit = 420.0 if instance.asset_id in {"plane_blue", "helicopter_green"} else 290.0
+    return _rapid_tracking_visibility_rank(
+        instance,
+        focus_x=focus_x,
+        focus_y=focus_y,
+        camera_x=camera_x,
+        camera_y=camera_y,
+    ) <= (limit * limit)
+
+
+@lru_cache(maxsize=24)
+def _rapid_tracking_static_scene(seed: int) -> _RapidTrackingStaticScene:
+    layout = build_rapid_tracking_compound_layout(seed=int(seed))
+    core_instances: list[_AssetInstance] = []
+    ambient_instances: list[_AssetInstance] = []
+
+    for obstacle in layout.obstacles:
+        wx, wy = _rapid_tracking_layout_world_xy(layout, track_x=float(obstacle.x), track_y=float(obstacle.y))
+        wz = float(rapid_tracking_terrain_height(float(wx), float(wy)))
+        scale_x = abs(_rapid_tracking_layout_world_xy(layout, track_x=float(obstacle.x + obstacle.radius_x), track_y=float(obstacle.y))[0] - wx)
+        scale_y = abs(_rapid_tracking_layout_world_xy(layout, track_x=float(obstacle.x), track_y=float(obstacle.y + obstacle.radius_y))[1] - wy)
+        if obstacle.kind == "lake":
+            core_instances.append(
+                _AssetInstance(
+                    asset_id="terrain_lake_patch",
+                    position=(float(wx), float(wy), float(wz) - 0.14),
+                    hpr_deg=(float(obstacle.rotation_deg), 0.0, 0.0),
+                    scale=(max(7.0, scale_x), max(7.0, scale_y), 1.0),
+                )
+            )
+        elif obstacle.kind == "hill":
+            core_instances.append(
+                _AssetInstance(
+                    asset_id="terrain_hill_mound",
+                    position=(float(wx), float(wy), float(wz) + (float(obstacle.height) * 0.24)),
+                    hpr_deg=(float(obstacle.rotation_deg), 0.0, 0.0),
+                    scale=(max(5.5, scale_x * 1.28), max(5.5, scale_y * 1.18), max(2.0, float(obstacle.height) * 4.0)),
+                )
+            )
+        else:
+            core_instances.append(
+                _AssetInstance(
+                    asset_id="terrain_rock_cluster",
+                    position=(float(wx), float(wy), float(wz) + 0.18),
+                    hpr_deg=(float(obstacle.rotation_deg), 0.0, 0.0),
+                    scale=(max(1.6, scale_x * 0.88), max(1.6, scale_y * 0.88), max(1.0, float(obstacle.height) * 2.2)),
+                )
+            )
+
+    for road_segment in layout.road_segments:
+        road_asset = "road_paved_segment" if str(road_segment.surface) == "paved" else "road_dirt_segment"
+        road_width = 8.6 if road_asset == "road_paved_segment" else 6.6
+        render_points = _rapid_tracking_render_polyline(
+            road_segment.points,
+            max_pieces=4 if road_asset == "road_paved_segment" else 3,
+        )
+        for start_xy, end_xy in zip(render_points, render_points[1:], strict=False):
+            core_instances.append(
+                _rapid_tracking_road_piece_instance(
+                    layout,
+                    asset_id=road_asset,
+                    start_xy=start_xy,
+                    end_xy=end_xy,
+                    width=road_width,
+                )
+            )
+
+    for anchor in layout.building_anchors:
+        asset_id = "building_tower" if str(anchor.variant) == "tower" else "building_hangar"
+        wx, wy, wz = _rapid_tracking_anchor_world_pos(
+            layout,
+            anchor=anchor,
+            clearance=2.1 if asset_id == "building_tower" else 1.1,
+        )
+        scale = (
+            3.7 + (rapid_tracking_seed_unit(seed=int(layout.seed), salt=str(anchor.anchor_id)) * 0.8)
+            if asset_id == "building_tower"
+            else 6.5 + (rapid_tracking_seed_unit(seed=int(layout.seed), salt=str(anchor.anchor_id)) * 1.1)
+        )
+        core_instances.append(
+            _AssetInstance(
+                asset_id=asset_id,
+                position=(wx, wy, wz),
+                hpr_deg=(_rapid_tracking_layout_heading(layout, f"{anchor.anchor_id}:heading"), 0.0, 0.0),
+                scale=(scale, scale, scale),
+            )
+        )
+
+    for idx, base in enumerate(layout.bases):
+        parked_anchor = _TrackPointAnchor(
+            x=float(base.x + (0.26 if idx % 2 == 0 else -0.22)),
+            y=float(base.y - (0.22 if idx % 2 == 0 else 0.18)),
+        )
+        asset_id = "vehicle_tracked" if idx == 1 else "truck_olive"
+        wx, wy, wz = _rapid_tracking_anchor_world_pos(
+            layout,
+            anchor=parked_anchor,
+            clearance=0.82,
+        )
+        scale = 2.5 if asset_id == "vehicle_tracked" else 2.9
+        ambient_instances.append(
+            _AssetInstance(
+                asset_id=asset_id,
+                position=(wx, wy, wz),
+                hpr_deg=(_rapid_tracking_layout_heading(layout, f"base-vehicle:{idx}"), 0.0, 0.0),
+                scale=(scale, scale, scale),
+            )
+        )
+
+    road_sample = layout.road_anchors[:: max(1, len(layout.road_anchors) // 3 or 1)]
+    for idx, anchor in enumerate(road_sample[:2]):
+        wx, wy, wz = _rapid_tracking_anchor_world_pos(layout, anchor=anchor, y_bias=2.0, clearance=0.0)
+        ambient_instances.append(
+            _AssetInstance(
+                asset_id="soldiers_patrol",
+                position=(wx, wy, wz),
+                hpr_deg=(_rapid_tracking_layout_heading(layout, f"road-patrol:{idx}"), 0.0, 0.0),
+                scale=(1.9, 1.9, 1.9),
+            )
+        )
+
+    scenic_clusters = (
+        *layout.forest_clusters[:2],
+        *layout.tree_clusters[:2],
+        *layout.shrub_clusters[:2],
+    )
+    for idx, cluster in enumerate(scenic_clusters):
+        asset_id = "trees_pine_cluster" if "tree" in str(cluster.asset_id) and idx % 2 == 1 else None
+        ambient_instances.append(
+            _rapid_tracking_cluster_instance(
+                layout,
+                cluster=cluster,
+                asset_id=asset_id,
+            )
+        )
+
+    scenic_pines = [cluster for cluster in layout.scenic_clusters if cluster.asset_id in {"trees_pine_cluster", "trees_field_cluster"}]
+    for idx, cluster in enumerate(scenic_pines[:2]):
+        ambient_instances.append(
+            _rapid_tracking_cluster_instance(
+                layout,
+                cluster=cluster,
+                asset_id="trees_pine_cluster" if idx % 2 == 0 else "trees_field_cluster",
+            )
+        )
+
+    if layout.helicopter_anchors:
+        anchor = layout.helicopter_anchors[0]
+        wx, wy, terrain = _rapid_tracking_anchor_world_pos(layout, anchor=anchor)
+        ambient_instances.append(
+            _AssetInstance(
+                asset_id="helicopter_green",
+                position=(wx, wy, terrain + 12.5 + float(layout.altitude_bias)),
+                hpr_deg=(_rapid_tracking_layout_heading(layout, f"{anchor.anchor_id}:air-heading"), 0.0, 0.0),
+                scale=(2.2, 2.2, 2.2),
+            )
+        )
+    if layout.jet_anchors:
+        anchor = layout.jet_anchors[0]
+        wx, wy, terrain = _rapid_tracking_anchor_world_pos(layout, anchor=anchor)
+        ambient_instances.append(
+            _AssetInstance(
+                asset_id="plane_blue",
+                position=(wx, wy, terrain + 20.0 + float(layout.altitude_bias)),
+                hpr_deg=(_rapid_tracking_layout_heading(layout, f"{anchor.anchor_id}:air-heading"), 0.0, 0.0),
+                scale=(1.9, 1.9, 1.9),
+            )
+        )
+
+    return _RapidTrackingStaticScene(
+        layout=layout,
+        core_instances=tuple(core_instances),
+        ambient_instances=tuple(ambient_instances),
+        asset_ids=tuple(
+            sorted(
+                {
+                    "building_hangar",
+                    "building_tower",
+                    "forest_canopy_patch",
+                    "helicopter_green",
+                    "plane_blue",
+                    "road_dirt_segment",
+                    "road_paved_segment",
+                    "shrubs_low_cluster",
+                    "soldiers_patrol",
+                    "terrain_hill_mound",
+                    "terrain_lake_patch",
+                    "terrain_rock_cluster",
+                    "trees_field_cluster",
+                    "trees_pine_cluster",
+                    "truck_olive",
+                    "vehicle_tracked",
+                }
+            )
+        ),
     )
 
 

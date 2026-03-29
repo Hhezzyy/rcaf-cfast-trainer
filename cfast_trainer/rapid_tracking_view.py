@@ -9,6 +9,9 @@ WORLD_EXTENT_SCALE = 5.0
 TERRAIN_HALF_SPAN = 260.0 * WORLD_EXTENT_SCALE
 CAMERA_SWEEP_LIMIT_DEG = 66.0
 CAMERA_VERTICAL_SWEEP_LIMIT_DEG = 34.0
+RAPID_TRACKING_WORLD_X_SCALE = 38.0
+RAPID_TRACKING_WORLD_Y_SCALE = 72.0
+RAPID_TRACKING_PATH_BIAS_SCALE = 18.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,8 +93,8 @@ def _layered_oscillation(
 
 def _path_point(*, t: float) -> tuple[float, float]:
     u = _clamp(float(t), 0.0, 1.0)
-    x = -24.0 + (68.0 * u) + (math.sin(u * math.pi * 1.6) * 12.0)
-    y = -34.0 + (136.0 * u) + (math.sin((u * math.pi * 2.2) + 0.35) * 8.0)
+    x = -34.0 + (98.0 * u) + (math.sin(u * math.pi * 1.6) * 16.0)
+    y = -42.0 + (162.0 * u) + (math.sin((u * math.pi * 2.2) + 0.35) * 10.0)
     return float(x), float(y)
 
 
@@ -101,8 +104,8 @@ def track_to_world_xy(
     track_y: float,
     path_lateral_bias: float = 0.0,
 ) -> tuple[float, float]:
-    world_x = (float(track_x) * 34.0) + (float(path_lateral_bias) * 14.0)
-    world_y = 70.0 + ((float(track_y) + 0.18) * 56.0)
+    world_x = (float(track_x) * RAPID_TRACKING_WORLD_X_SCALE) + (float(path_lateral_bias) * RAPID_TRACKING_PATH_BIAS_SCALE)
+    world_y = 82.0 + ((float(track_y) + 0.18) * RAPID_TRACKING_WORLD_Y_SCALE)
     return float(world_x), float(world_y)
 
 
@@ -199,12 +202,12 @@ def camera_rig_state(
     phase_offset = rapid_tracking_seed_unit(seed=seed, salt="orbit-phase") * math.tau
     orbit_radius_scale = 0.92 + (rapid_tracking_seed_unit(seed=seed, salt="orbit-radius") * 0.20)
     altitude_bias = _lerp(-1.0, 1.4, rapid_tracking_seed_unit(seed=seed, salt="altitude-bias"))
-    path_bias = _lerp(-8.0, 8.0, rapid_tracking_seed_unit(seed=seed, salt="path-bias"))
+    path_bias = _lerp(-14.0, 14.0, rapid_tracking_seed_unit(seed=seed, salt="path-bias"))
     bob_phase_a = rapid_tracking_seed_unit(seed=seed, salt="bob-a") * math.tau
     bob_phase_b = rapid_tracking_seed_unit(seed=seed, salt="bob-b") * math.tau
 
     orbit_phase = phase_offset + (seed_dir * elapsed_s * 0.15) + (p * 0.24)
-    orbit_radius = _lerp(58.0, 42.0, _smoothstep(0.0, 0.52, p)) * orbit_radius_scale
+    orbit_radius = _lerp(74.0, 54.0, _smoothstep(0.0, 0.52, p)) * orbit_radius_scale
     orbit_local_x = math.cos(orbit_phase) * orbit_radius
     orbit_local_y = math.sin(orbit_phase) * (orbit_radius * 0.86)
     orbit_x = float(focus_world_x) + orbit_local_x
@@ -217,8 +220,8 @@ def camera_rig_state(
     next_x, next_y = _path_point(t=min(1.0, path_t + 0.015))
     path_x += path_bias + float(focus_world_x)
     next_x += path_bias + float(focus_world_x)
-    path_y += float(focus_world_y) - 70.0
-    next_y += float(focus_world_y) - 70.0
+    path_y += float(focus_world_y) - 82.0
+    next_y += float(focus_world_y) - 82.0
     path_dx = next_x - path_x
     path_dy = next_y - path_y
     if abs(path_dx) < 1e-6 and abs(path_dy) < 1e-6:
@@ -280,14 +283,14 @@ def camera_rig_state(
     base_y += (motion_right_y * lateral_shake) + (forward_vec_y * forward_shake)
     carrier_heading_deg = movement_heading
     carrier_heading_rad = math.radians(carrier_heading_deg)
-    right_mount = 1.35
+    right_mount = 1.65
     right_vec_x = math.cos(carrier_heading_rad)
     right_vec_y = -math.sin(carrier_heading_rad)
     cam_world_x = base_x + (right_vec_x * right_mount)
     cam_world_y = base_y + (right_vec_y * right_mount)
 
     ground_z = terrain_height(cam_world_x, cam_world_y)
-    altitude_agl = _lerp(24.0, 5.8, _smoothstep(0.0, 1.0, p)) + altitude_bias
+    altitude_agl = _lerp(27.5, 6.8, _smoothstep(0.0, 1.0, p)) + altitude_bias
     bob = (
         math.sin((elapsed_s * 2.1) + bob_phase_a) * _lerp(0.18, 0.08, path_transition) * turbulence
         + math.sin((elapsed_s * 4.6) + bob_phase_b) * _lerp(0.09, 0.04, path_transition) * turbulence

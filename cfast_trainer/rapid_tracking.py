@@ -1111,14 +1111,36 @@ class RapidTrackingScenarioGenerator:
         return min(buildings, key=score)
 
 
-_RAPID_TRACKING_WORLD_BOUNDS = (-4.2, 4.0, -1.10, 1.55)
-_RAPID_TRACKING_GRID_W = 57
-_RAPID_TRACKING_GRID_H = 29
+_RAPID_TRACKING_LAYOUT_SCALE_X = 1.90
+_RAPID_TRACKING_LAYOUT_SCALE_Y = 1.85
+_RAPID_TRACKING_ZONE_RADIUS_SCALE = 1.10
+_RAPID_TRACKING_OBSTACLE_RADIUS_SCALE = 1.18
+_RAPID_TRACKING_POI_CLEARANCE_PAD = 0.34
+_RAPID_TRACKING_WORLD_BOUNDS = (
+    -4.2 * _RAPID_TRACKING_LAYOUT_SCALE_X,
+    4.0 * _RAPID_TRACKING_LAYOUT_SCALE_X,
+    -1.10 * _RAPID_TRACKING_LAYOUT_SCALE_Y,
+    1.55 * _RAPID_TRACKING_LAYOUT_SCALE_Y,
+)
+_RAPID_TRACKING_GRID_W = 101
+_RAPID_TRACKING_GRID_H = 53
+
+
+def _scale_track_box(box: tuple[float, float, float, float]) -> tuple[float, float, float, float]:
+    x_lo, x_hi, y_lo, y_hi = box
+    return (
+        float(x_lo) * _RAPID_TRACKING_LAYOUT_SCALE_X,
+        float(x_hi) * _RAPID_TRACKING_LAYOUT_SCALE_X,
+        float(y_lo) * _RAPID_TRACKING_LAYOUT_SCALE_Y,
+        float(y_hi) * _RAPID_TRACKING_LAYOUT_SCALE_Y,
+    )
+
+
 _RAPID_TRACKING_BASE_ZONE_BOXES: tuple[tuple[float, float, float, float], ...] = (
-    (-3.70, -1.55, 0.72, 1.36),
-    (1.35, 3.45, 0.72, 1.36),
-    (-3.62, -1.42, -0.76, 0.14),
-    (1.30, 3.40, -0.74, 0.16),
+    _scale_track_box((-3.70, -1.55, 0.72, 1.36)),
+    _scale_track_box((1.35, 3.45, 0.72, 1.36)),
+    _scale_track_box((-3.62, -1.42, -0.76, 0.14)),
+    _scale_track_box((1.30, 3.40, -0.74, 0.16)),
 )
 _RAPID_TRACKING_PHASE_SEGMENT_COUNTS = {
     "ground": 14,
@@ -1290,6 +1312,45 @@ def _sample_point_in_box(rng: SeededRng, box: tuple[float, float, float, float])
     )
 
 
+def _best_clear_point_in_box(
+    *,
+    box: tuple[float, float, float, float],
+    radius: float,
+    pois: Sequence[RapidTrackingPoi],
+    obstacles: Sequence[RapidTrackingObstacle],
+    steps_x: int = 11,
+    steps_y: int = 9,
+) -> tuple[float, float] | None:
+    x_lo, x_hi, y_lo, y_hi = box
+    best_point: tuple[float, float] | None = None
+    best_score = -math.inf
+    for ix in range(max(2, int(steps_x))):
+        tx = (ix + 0.5) / float(max(2, int(steps_x)))
+        x = _lerp(float(x_lo), float(x_hi), tx)
+        for iy in range(max(2, int(steps_y))):
+            ty = (iy + 0.5) / float(max(2, int(steps_y)))
+            y = _lerp(float(y_lo), float(y_hi), ty)
+            if not _placement_clear(x=x, y=y, radius=radius, pois=pois, obstacles=obstacles):
+                continue
+            poi_clearance = min(
+                (_distance(float(x), float(y), float(poi.x), float(poi.y)) - float(poi.radius))
+                for poi in pois
+            ) if pois else radius
+            obstacle_clearance = min(
+                max(
+                    0.0,
+                    _distance(float(x), float(y), float(obstacle.x), float(obstacle.y))
+                    - max(float(obstacle.radius_x), float(obstacle.radius_y)),
+                )
+                for obstacle in obstacles
+            ) if obstacles else radius
+            score = min(poi_clearance, obstacle_clearance)
+            if score > best_score:
+                best_score = score
+                best_point = (float(x), float(y))
+    return best_point
+
+
 def _build_seeded_bases(*, seed: int, rng: SeededRng) -> tuple[RapidTrackingPoi, ...]:
     base_variants = ("airbase", "motorpool", "radar", "outpost")
     bases: list[RapidTrackingPoi] = []
@@ -1302,7 +1363,8 @@ def _build_seeded_bases(*, seed: int, rng: SeededRng) -> tuple[RapidTrackingPoi,
                 variant=base_variants[idx % len(base_variants)],
                 x=float(x),
                 y=float(y),
-                radius=0.36 + (rapid_tracking_seed_unit(seed=seed, salt=f"base-radius:{idx}") * 0.08),
+                radius=(0.36 + (rapid_tracking_seed_unit(seed=seed, salt=f"base-radius:{idx}") * 0.08))
+                * _RAPID_TRACKING_ZONE_RADIUS_SCALE,
             )
         )
     return tuple(bases)
@@ -1316,23 +1378,32 @@ def _build_seeded_pois(
 ) -> tuple[RapidTrackingPoi, ...]:
     poi_variants = ("relay", "depot", "checkpoint", "village", "fuel", "lookout")
     poi_boxes = (
-        (-3.10, -0.95, 0.22, 0.66),
-        (0.84, 3.00, 0.22, 0.68),
-        (-1.00, 0.88, 0.30, 0.84),
-        (-3.20, -0.96, -0.10, 0.34),
-        (1.00, 3.10, -0.12, 0.34),
-        (-0.88, 0.90, -0.60, 0.02),
+        _scale_track_box((-3.10, -0.95, 0.22, 0.66)),
+        _scale_track_box((0.84, 3.00, 0.22, 0.68)),
+        _scale_track_box((-1.00, 0.88, 0.30, 0.84)),
+        _scale_track_box((-3.20, -0.96, -0.10, 0.34)),
+        _scale_track_box((1.00, 3.10, -0.12, 0.34)),
+        _scale_track_box((-0.88, 0.90, -0.60, 0.02)),
     )
     pois: list[RapidTrackingPoi] = []
     used: list[RapidTrackingPoi] = list(bases)
     for idx, box in enumerate(poi_boxes):
-        radius = 0.20 + (rapid_tracking_seed_unit(seed=seed, salt=f"poi-radius:{idx}") * 0.08)
+        radius = (
+            0.20 + (rapid_tracking_seed_unit(seed=seed, salt=f"poi-radius:{idx}") * 0.08)
+        ) * _RAPID_TRACKING_ZONE_RADIUS_SCALE
         point = None
-        for _ in range(72):
+        for _ in range(128):
             x, y = _sample_point_in_box(rng, box)
-            if _placement_clear(x=x, y=y, radius=radius + 0.16, pois=used, obstacles=()):
+            if _placement_clear(x=x, y=y, radius=radius + _RAPID_TRACKING_POI_CLEARANCE_PAD, pois=used, obstacles=()):
                 point = (x, y)
                 break
+        if point is None:
+            point = _best_clear_point_in_box(
+                box=box,
+                radius=radius + _RAPID_TRACKING_POI_CLEARANCE_PAD,
+                pois=used,
+                obstacles=(),
+            )
         if point is None:
             point = _sample_point_in_box(rng, box)
         poi = RapidTrackingPoi(
@@ -1355,27 +1426,34 @@ def _build_seeded_obstacles(
     pois: Sequence[RapidTrackingPoi],
 ) -> tuple[RapidTrackingObstacle, ...]:
     specs = (
-        ("lake", (-2.15, -0.55, -0.78, -0.10), 0.46, 0.78, 0.20),
-        ("lake", (0.48, 2.30, 0.02, 0.58), 0.42, 0.70, 0.18),
-        ("hill", (-2.90, -1.20, 0.12, 0.88), 0.42, 0.56, 1.10),
-        ("hill", (-0.42, 1.20, 0.74, 1.34), 0.44, 0.62, 1.30),
-        ("hill", (1.10, 2.86, -0.72, -0.04), 0.40, 0.54, 0.96),
-        ("rock", (-3.38, -2.00, 0.18, 0.82), 0.20, 0.28, 0.32),
-        ("rock", (-0.52, 0.84, -0.80, -0.22), 0.18, 0.24, 0.28),
-        ("rock", (1.42, 2.62, 0.70, 1.28), 0.20, 0.30, 0.30),
-        ("rock", (2.30, 3.42, -0.24, 0.34), 0.18, 0.24, 0.26),
+        ("lake", _scale_track_box((-2.15, -0.55, -0.78, -0.10)), 0.46, 0.78, 0.20),
+        ("lake", _scale_track_box((0.48, 2.30, 0.02, 0.58)), 0.42, 0.70, 0.18),
+        ("hill", _scale_track_box((-2.90, -1.20, 0.12, 0.88)), 0.42, 0.56, 1.10),
+        ("hill", _scale_track_box((-0.42, 1.20, 0.74, 1.34)), 0.44, 0.62, 1.30),
+        ("hill", _scale_track_box((1.10, 2.86, -0.72, -0.04)), 0.40, 0.54, 0.96),
+        ("rock", _scale_track_box((-3.38, -2.00, 0.18, 0.82)), 0.20, 0.28, 0.32),
+        ("rock", _scale_track_box((-0.52, 0.84, -0.80, -0.22)), 0.18, 0.24, 0.28),
+        ("rock", _scale_track_box((1.42, 2.62, 0.70, 1.28)), 0.20, 0.30, 0.30),
+        ("rock", _scale_track_box((2.30, 3.42, -0.24, 0.34)), 0.18, 0.24, 0.26),
     )
     obstacles: list[RapidTrackingObstacle] = []
     for idx, (kind, box, base_rx, base_ry, base_height) in enumerate(specs):
         radius_scale = 0.90 + (rapid_tracking_seed_unit(seed=seed, salt=f"obstacle-scale:{idx}") * 0.24)
-        radius_x = base_rx * radius_scale
-        radius_y = base_ry * radius_scale
+        radius_x = base_rx * radius_scale * _RAPID_TRACKING_OBSTACLE_RADIUS_SCALE
+        radius_y = base_ry * radius_scale * _RAPID_TRACKING_OBSTACLE_RADIUS_SCALE
         point = None
-        for _ in range(96):
+        for _ in range(160):
             x, y = _sample_point_in_box(rng, box)
             if _placement_clear(x=x, y=y, radius=max(radius_x, radius_y) + 0.20, pois=pois, obstacles=obstacles):
                 point = (x, y)
                 break
+        if point is None:
+            point = _best_clear_point_in_box(
+                box=box,
+                radius=max(radius_x, radius_y) + 0.20,
+                pois=pois,
+                obstacles=obstacles,
+            )
         if point is None:
             x, y = _sample_point_in_box(rng, box)
             point = (x, y)
@@ -1709,17 +1787,18 @@ def _build_air_anchors(
                 anchor_id=f"helo-{idx}",
                 family="helicopter",
                 variant="air",
-                x=float(poi.x + (0.18 if idx % 2 == 0 else -0.20)),
-                y=float(poi.y - 0.26),
+                x=float(poi.x + ((0.28 if idx % 2 == 0 else -0.32) * _RAPID_TRACKING_ZONE_RADIUS_SCALE)),
+                y=float(poi.y - (0.34 * _RAPID_TRACKING_ZONE_RADIUS_SCALE)),
             )
         )
+    x_lo, x_hi, y_lo, y_hi = _RAPID_TRACKING_WORLD_BOUNDS
     jets = [
-        RapidTrackingAnchor(anchor_id="jet-left-low", family="jet", variant="red", x=-4.0, y=-0.72),
-        RapidTrackingAnchor(anchor_id="jet-right-low", family="jet", variant="yellow", x=3.85, y=-0.52),
-        RapidTrackingAnchor(anchor_id="jet-left-mid", family="jet", variant="blue", x=-3.95, y=0.12),
-        RapidTrackingAnchor(anchor_id="jet-right-mid", family="jet", variant="green", x=3.92, y=0.18),
-        RapidTrackingAnchor(anchor_id="jet-left-high", family="jet", variant="red", x=-4.05, y=0.88),
-        RapidTrackingAnchor(anchor_id="jet-right-high", family="jet", variant="yellow", x=3.88, y=0.98),
+        RapidTrackingAnchor(anchor_id="jet-left-low", family="jet", variant="red", x=x_lo + 0.34, y=-0.72 * _RAPID_TRACKING_LAYOUT_SCALE_Y),
+        RapidTrackingAnchor(anchor_id="jet-right-low", family="jet", variant="yellow", x=x_hi - 0.30, y=-0.52 * _RAPID_TRACKING_LAYOUT_SCALE_Y),
+        RapidTrackingAnchor(anchor_id="jet-left-mid", family="jet", variant="blue", x=x_lo + 0.48, y=0.12 * _RAPID_TRACKING_LAYOUT_SCALE_Y),
+        RapidTrackingAnchor(anchor_id="jet-right-mid", family="jet", variant="green", x=x_hi - 0.42, y=0.18 * _RAPID_TRACKING_LAYOUT_SCALE_Y),
+        RapidTrackingAnchor(anchor_id="jet-left-high", family="jet", variant="red", x=x_lo + 0.26, y=0.88 * _RAPID_TRACKING_LAYOUT_SCALE_Y),
+        RapidTrackingAnchor(anchor_id="jet-right-high", family="jet", variant="yellow", x=x_hi - 0.36, y=0.98 * _RAPID_TRACKING_LAYOUT_SCALE_Y),
     ]
     return tuple(helos), tuple(jets)
 
@@ -1801,7 +1880,7 @@ def _cover_for_points(
         return "open", ""
     mid_x, mid_y = _polyline_midpoint(points)
     nearest = min(ridges, key=lambda ridge: _distance(float(ridge.x), float(ridge.y), mid_x, mid_y))
-    if _distance(float(nearest.x), float(nearest.y), mid_x, mid_y) <= 0.95:
+    if _distance(float(nearest.x), float(nearest.y), mid_x, mid_y) <= 1.65:
         return "terrain", str(nearest.anchor_id)
     return "open", ""
 
@@ -1854,7 +1933,7 @@ def _build_seeded_traffic_routes(
                     variant="target",
                     start_anchor_id=str(start.anchor_id),
                     end_anchor_id=str(end.anchor_id),
-                    base_duration_s=7.4,
+                    base_duration_s=9.8,
                     cover_mode="open",
                 )
             )
@@ -1886,7 +1965,7 @@ def _build_seeded_traffic_routes(
                 variant="target",
                 start_anchor_id=str(start[0].anchor_id),
                 end_anchor_id=str(end[0].anchor_id),
-                base_duration_s=max(7.6, nearest_distance * 4.8),
+                base_duration_s=max(10.0, nearest_distance * 6.6),
                 cover_mode=cover_mode,
                 focus_anchor_id=focus_anchor_id,
             )
@@ -1912,7 +1991,7 @@ def _build_seeded_traffic_routes(
                     variant="olive",
                     start_anchor_id=start_anchor_id,
                     end_anchor_id=end_anchor_id,
-                    base_duration_s=max(1.8, leg_distance * (4.6 if route_kind == "road_convoy" else 5.4)),
+                    base_duration_s=max(1.0, leg_distance * (1.8 if route_kind == "road_convoy" else 2.2)),
                     cover_mode=cover_mode,
                     focus_anchor_id=focus_anchor_id,
                     surface=surface,
@@ -3325,6 +3404,15 @@ class RapidTrackingEngine:
                 start_y = float(start_anchor.y)
             else:
                 lane_blend = 0.18 if (next_kind == "building" or prev_kind == "building") else 0.24
+                if next_kind == "truck":
+                    distance_to_start = _distance(
+                        float(self._target_x),
+                        float(self._target_y),
+                        float(start_anchor.x),
+                        float(start_anchor.y),
+                    )
+                    if distance_to_start > 0.60:
+                        lane_blend = max(lane_blend, 0.92)
                 start_x = (self._target_x * (1.0 - lane_blend)) + (start_anchor.x * lane_blend)
                 start_y = (self._target_y * (1.0 - lane_blend)) + (start_anchor.y * lane_blend)
 

@@ -26,6 +26,7 @@ from cfast_trainer.modern_gl_renderer import (
     _SceneAssetLibrary,
     _build_auditory_scene_plan,
     _build_rapid_tracking_scene_plan,
+    _rapid_tracking_static_scene,
     _build_spatial_integration_scene_plan,
     _build_trace_test_1_scene_plan,
     _build_trace_test_2_scene_plan,
@@ -439,29 +440,52 @@ def test_rapid_tracking_scene_plan_includes_target_and_scenery_assets() -> None:
         "forest_canopy_patch",
         "helicopter_green",
         "plane_blue",
-        "plane_green",
-        "plane_yellow",
         "shrubs_low_cluster",
         "soldiers_patrol",
+        "terrain_hill_mound",
+        "terrain_lake_patch",
+        "terrain_rock_cluster",
         "trees_field_cluster",
         "trees_pine_cluster",
         "truck_olive",
+        "vehicle_tracked",
+        "road_dirt_segment",
+        "road_paved_segment",
     } <= asset_ids
     assert {
         "building_hangar",
         "building_tower",
-        "helicopter_green",
-        "plane_blue",
-        "plane_green",
-        "plane_yellow",
-        "shrubs_low_cluster",
-        "soldiers_patrol",
-        "trees_field_cluster",
-        "trees_pine_cluster",
-        "truck_olive",
+        "road_dirt_segment",
+        "road_paved_segment",
+        "terrain_hill_mound",
+        "terrain_lake_patch",
+        "terrain_rock_cluster",
     } <= instance_ids
-    assert len(plan.asset_instances) >= 40
+    assert any(asset_id in {"truck_olive", "vehicle_tracked", "soldiers_patrol"} for asset_id in instance_ids)
+    assert any(
+        asset_id in {"forest_canopy_patch", "shrubs_low_cluster", "trees_field_cluster", "trees_pine_cluster"}
+        for asset_id in instance_ids
+    )
+    assert len(plan.asset_instances) <= 95
     assert plan.entity_count == len(plan.asset_instances)
+
+
+def test_rapid_tracking_scene_plan_reuses_cached_static_world_budget() -> None:
+    static_a = _rapid_tracking_static_scene(551)
+    static_b = _rapid_tracking_static_scene(551)
+
+    assert static_a is static_b
+    assert len(static_a.core_instances) <= 80
+    assert len(static_a.ambient_instances) <= 20
+    assert {
+        "building_hangar",
+        "building_tower",
+        "road_dirt_segment",
+        "road_paved_segment",
+        "terrain_hill_mound",
+        "terrain_lake_patch",
+        "terrain_rock_cluster",
+    } <= set(static_a.asset_ids)
 
 
 def test_scene_asset_library_builds_hangar_builtin_mesh() -> None:

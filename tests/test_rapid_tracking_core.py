@@ -11,10 +11,12 @@ from cfast_trainer.rapid_tracking import (
     RapidTrackingPayload,
     RapidTrackingTrainingProfile,
     RapidTrackingTrainingSegment,
+    _ellipse_contains_point,
     build_rapid_tracking_compound_layout,
     build_rapid_tracking_test,
     score_window,
 )
+from cfast_trainer.rapid_tracking_view import track_to_world_xy as rapid_tracking_track_to_world_xy
 
 
 @dataclass
@@ -425,33 +427,49 @@ def test_scene_script_covers_requested_target_types_and_handoffs() -> None:
 
 
 def test_target_speed_order_matches_brief() -> None:
-    clock = FakeClock()
-    engine = build_rapid_tracking_test(
-        clock=clock,
-        seed=901,
-        difficulty=0.52,
-        config=RapidTrackingConfig(
-            practice_duration_s=0.0,
-            scored_duration_s=10.0,
-            tick_hz=120.0,
-        ),
+    seed = 901
+    difficulty = 0.52
+    config = RapidTrackingConfig(
+        practice_duration_s=0.0,
+        scored_duration_s=10.0,
+        tick_hz=120.0,
     )
-
+    engine = build_rapid_tracking_test(
+        clock=FakeClock(),
+        seed=seed,
+        difficulty=difficulty,
+        config=config,
+    )
     engine.start_scored()
+
+    scene_script = engine._difficulty_profile().scene_script
 
     def sampled_speed(kind: str) -> float:
         speeds: list[float] = []
-        for idx, segment in enumerate(engine._difficulty_profile().scene_script):
+        for idx, segment in enumerate(scene_script):
             if segment.kind != kind:
                 continue
+            sample_engine = build_rapid_tracking_test(
+                clock=FakeClock(),
+                seed=seed,
+                difficulty=difficulty,
+                config=config,
+            )
+            sample_engine.start_scored()
             if idx == 0:
-                engine._start_scene_segment(initial=True)
+                sample_engine._start_scene_segment(initial=True)
             else:
-                engine._script_index = idx - 1
-                engine._start_scene_segment(initial=False)
-            engine._sim_elapsed_s = engine._segment_started_s + (engine._segment_duration_s * 0.5)
-            engine._advance_target()
-            speeds.append(math.hypot(engine._target_vx, engine._target_vy))
+                start_anchor = sample_engine._anchor_lookup[segment.start_anchor_id]
+                sample_engine._target_x = float(start_anchor.x)
+                sample_engine._target_y = float(start_anchor.y)
+                sample_engine._script_index = idx - 1
+                sample_engine._start_scene_segment(initial=False)
+            sample_engine._sim_elapsed_s = (
+                sample_engine._segment_started_s
+                + (sample_engine._segment_duration_s * 0.5)
+            )
+            sample_engine._advance_target()
+            speeds.append(math.hypot(sample_engine._target_vx, sample_engine._target_vy))
         if not speeds:
             raise AssertionError(f"missing segment for {kind}")
         return sum(speeds) / len(speeds)
@@ -617,6 +635,86 @@ def test_different_seed_changes_compound_layout_and_schedule() -> None:
 
     assert a._compound_layout != b._compound_layout
     assert a._difficulty_profile().scene_script != b._difficulty_profile().scene_script
+
+
+def test_compound_layout_spreads_bases_and_pois_across_a_wider_world() -> None:
+    layout = build_rapid_tracking_compound_layout(seed=551)
+    zones = (*layout.bases, *layout.pois)
+
+    xs = [float(zone.x) for zone in zones]
+    ys = [float(zone.y) for zone in zones]
+    assert max(xs) - min(xs) >= 10.5
+    assert max(ys) - min(ys) >= 3.0
+
+    world_points = [
+        rapid_tracking_track_to_world_xy(
+            track_x=float(zone.x),
+            track_y=float(zone.y),
+            path_lateral_bias=float(layout.path_lateral_bias),
+        )
+        for zone in zones
+    ]
+    world_xs = [float(point[0]) for point in world_points]
+    world_ys = [float(point[1]) for point in world_points]
+    assert max(world_xs) - min(world_xs) >= 400.0
+    assert max(world_ys) - min(world_ys) >= 220.0
+
+
+def test_compound_layout_keeps_obstacles_clear_of_pois_and_each_other() -> None:
+    layout = build_rapid_tracking_compound_layout(seed=551)
+    zones = (*layout.bases, *layout.pois)
+
+    for zone in zones:
+        for obstacle in layout.obstacles:
+            assert not _ellipse_contains_point(
+                x=float(zone.x),
+                y=float(zone.y),
+                center_x=float(obstacle.x),
+                center_y=float(obstacle.y),
+                radius_x=float(obstacle.radius_x),
+                radius_y=float(obstacle.radius_y),
+                rotation_deg=float(obstacle.rotation_deg),
+                padding=float(zone.radius) + 0.08,
+            )
+
+    for idx, obstacle in enumerate(layout.obstacles):
+        for other in layout.obstacles[idx + 1 :]:
+            assert not _ellipse_contains_point(
+                x=float(obstacle.x),
+                y=float(obstacle.y),
+                center_x=float(other.x),
+                center_y=float(other.y),
+                radius_x=float(other.radius_x),
+                radius_y=float(other.radius_y),
+                rotation_deg=float(other.rotation_deg),
+                padding=0.06,
+            )
+            assert not _ellipse_contains_point(
+                x=float(other.x),
+                y=float(other.y),
+                center_x=float(obstacle.x),
+                center_y=float(obstacle.y),
+                radius_x=float(obstacle.radius_x),
+                radius_y=float(obstacle.radius_y),
+                rotation_deg=float(obstacle.rotation_deg),
+                padding=0.06,
+            )
+
+
+def test_compound_layout_keeps_base_loop_and_poi_spurs_connected() -> None:
+    layout = build_rapid_tracking_compound_layout(seed=551)
+    paved_segments = tuple(segment for segment in layout.road_segments if segment.surface == "paved")
+    dirt_segments = tuple(segment for segment in layout.road_segments if segment.surface == "dirt")
+
+    assert len(paved_segments) >= len(layout.bases)
+    assert len(dirt_segments) == len(layout.pois)
+
+    paved_segment_ids = " ".join(segment.segment_id for segment in paved_segments)
+    dirt_segment_ids = " ".join(segment.segment_id for segment in dirt_segments)
+    for base in layout.bases:
+        assert base.poi_id in paved_segment_ids
+    for poi in layout.pois:
+        assert poi.poi_id in dirt_segment_ids
 
 
 def test_compound_layout_includes_seeded_foliage_clusters() -> None:
