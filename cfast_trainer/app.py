@@ -133,6 +133,7 @@ from .auditory_capacity import (
     AuditoryCapacityTrainingSegment,
     build_auditory_capacity_test,
 )
+from .auditory_capacity_view import BALL_FORWARD_IDLE_NORM, GATE_DEPTH_SLOTS_NORM, TUNNEL_EXIT_NORM
 from .ac_workouts import ac_workout_menu_entries, build_ac_workout_plan
 from .adaptive_difficulty import (
     AdaptiveDifficultyController,
@@ -284,10 +285,12 @@ from .persistence import ResultsStore, TestSessionSummary
 from .rapid_tracking import (
     RapidTrackingEngine,
     RapidTrackingPayload,
+    RapidTrackingUiContext,
     build_rapid_tracking_test,
     rapid_tracking_target_cue,
     rapid_tracking_target_description,
     rapid_tracking_target_label,
+    render_rapid_tracking_screen,
 )
 from .rt_drills import (
     build_rt_air_speed_run_drill,
@@ -3076,15 +3079,11 @@ class _OpenGLSceneRenderer:
         z_far = 26.0
         ring_steps = 28
         ring_count = 24
-        ring_spacing = (z_far - z_near) / float(max(1, ring_count - 1))
-        flow_speed_units_per_s = 1.45
-        phase_elapsed_s = 0.0 if payload is None else float(payload.phase_elapsed_s)
-        flow_offset = (phase_elapsed_s * flow_speed_units_per_s) % max(0.001, ring_spacing)
 
         ring_centers: list[tuple[float, float, float, float]] = []
         for idx in range(ring_count):
             t = idx / float(max(1, ring_count - 1))
-            z = -(z_near + ((z_far - z_near) * t)) + flow_offset
+            z = self._auditory_depth_to_scene_z(t, z_near=z_near, z_far=z_far)
             off_x, off_y = self._tube_offset_at_depth(z=z, z_near=z_near, z_far=z_far)
             ring_centers.append((z, off_x, off_y, t))
             lum = 0.76 - (0.54 * t)
@@ -3153,12 +3152,13 @@ class _OpenGLSceneRenderer:
             x_half_span = max(0.08, float(payload.tube_half_width))
 
             gates: list[tuple[float, AuditoryCapacityGate, float, float, float, int]] = []
-            future_gates = [gate for gate in payload.gates if gate.x_norm >= -0.08]
-            future_gates.sort(key=lambda gate: float(gate.x_norm))
-            for visible_idx, gate in enumerate(future_gates[:6]):
-                rel = gate.x_norm
-                z = -(3.5 + (rel * 5.0))
-                if z < -72.0 or z > -0.8:
+            visible_gates = [gate for gate in payload.gates if gate.visual_slot_index is not None]
+            visible_gates.sort(key=lambda gate: int(gate.visual_slot_index), reverse=True)
+            for visible_idx, gate in enumerate(visible_gates[:6]):
+                assert gate.visual_slot_index is not None
+                depth_norm = float(GATE_DEPTH_SLOTS_NORM[int(gate.visual_slot_index)])
+                z = self._auditory_depth_to_scene_z(depth_norm, z_near=z_near, z_far=z_far)
+                if z > -0.8:
                     continue
                 gate_off_x, gate_off_y = self._tube_offset_at_depth(
                     z=z,
@@ -3166,12 +3166,9 @@ class _OpenGLSceneRenderer:
                     z_far=z_far,
                 )
                 gy = max(-1.0, min(1.0, gate.y_norm / y_half_span)) * (tube_ry * 0.92)
-                lane = _auditory_guide_lane(visible_idx)
-                gx = gate_off_x + (lane * (0.34 + (0.18 * min(1.0, max(0.0, rel / 2.4)))))
+                gx = gate_off_x
                 gy = gate_off_y + gy
                 radius = 0.11 + (max(0.06, min(0.36, gate.aperture_norm)) * 1.10)
-                if visible_idx < 2:
-                    radius *= 1.10
                 gates.append((z, gate, gx, gy, radius, visible_idx))
 
             for z, gate, gx, gy, radius, _visible_idx in sorted(gates, key=lambda g: g[0]):
@@ -3215,8 +3212,11 @@ class _OpenGLSceneRenderer:
 
             bx = max(-1.0, min(1.0, payload.ball_x / x_half_span)) * (tube_rx * 0.90)
             by = max(-1.0, min(1.0, payload.ball_y / y_half_span)) * (tube_ry * 0.90)
-            travel_t = float(payload.phase_elapsed_s) * flow_speed_units_per_s
-            ball_z = -2.60 + (0.10 * math.sin(travel_t * 1.2))
+            ball_depth_norm = max(
+                float(BALL_FORWARD_IDLE_NORM),
+                min(float(TUNNEL_EXIT_NORM), float(payload.ball_forward_norm)),
+            )
+            ball_z = self._auditory_depth_to_scene_z(ball_depth_norm, z_near=z_near, z_far=z_far)
             ball_r = 0.10
             ball_off_x, ball_off_y = self._tube_offset_at_depth(
                 z=ball_z,
@@ -3502,7 +3502,7 @@ class _OpenGLSceneRenderer:
         if payload is not None:
             rig = rapid_tracking_camera_rig_state(
                 elapsed_s=float(payload.phase_elapsed_s),
-                seed=int(payload.session_seed),
+                seed=int(payload.scene_seed),
                 progress=float(payload.scene_progress),
                 camera_yaw_deg=float(payload.camera_yaw_deg),
                 camera_pitch_deg=float(payload.camera_pitch_deg),
@@ -10019,6 +10019,14 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         self._activity_close_reason: str | None = None
         self._input_prompt_key: tuple[str, ...] | None = None
         self._review_state: _AnswerReviewState | None = None
+        tt1_events = getattr(self._engine, "events", None)
+        if callable(tt1_events):
+            try:
+                self._trace_test_1_review_event_count = len(tt1_events())
+            except Exception:
+                self._trace_test_1_review_event_count = 0
+        else:
+            self._trace_test_1_review_event_count = 0
 
         self._small_font = pygame.font.Font(None, 24)
         self._tiny_font = pygame.font.Font(None, 18)
@@ -10214,6 +10222,19 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         self._target_recognition_reset_light_subtask()
         self._target_recognition_reset_scan_subtask()
         self._target_recognition_reset_system_subtask()
+        bind_rt_context = getattr(self._engine, "bind_screen_context", None)
+        if callable(bind_rt_context):
+            bind_rt_context(
+                app=self._app,
+                small_font=self._small_font,
+                tiny_font=self._tiny_font,
+            )
+        set_dev_tools_enabled = getattr(self._engine, "set_dev_tools_enabled", None)
+        if callable(set_dev_tools_enabled):
+            set_dev_tools_enabled(bool(self._app.dev_tools_enabled()))
+        enter_engine = getattr(self._engine, "enter", None)
+        if callable(enter_engine):
+            enter_engine()
         self._sync_intro_loading_state(self._engine.snapshot().phase)
         if self._test_code is not None:
             self._app.start_activity_session(
@@ -10230,6 +10251,9 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         self._clear_review_state()
         self._stop_auditory_audio()
         self._stop_situational_awareness_audio()
+        exit_engine = getattr(self._engine, "exit", None)
+        if callable(exit_engine):
+            exit_engine()
 
     @staticmethod
     def _intro_loading_phase_token(phase: Phase) -> str | None:
@@ -10800,6 +10824,14 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
 
         if self._handle_intro_difficulty_event(event, phase=snap.phase):
             return
+
+        if rapid_tracking_payload is not None:
+            set_dev_tools_enabled = getattr(self._engine, "set_dev_tools_enabled", None)
+            if callable(set_dev_tools_enabled):
+                set_dev_tools_enabled(bool(self._app.dev_tools_enabled()))
+            rt_handle_event = getattr(self._engine, "handle_event", None)
+            if callable(rt_handle_event) and rt_handle_event(event):
+                return
 
         dr: DigitRecognitionPayload | None = None
         if p is not None and hasattr(p, "display_digits") and hasattr(p, "accepting_input"):
@@ -11823,8 +11855,6 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             return
 
         if trace_test_1_payload is not None:
-            if trace_test_1_payload.trial_stage is not TraceTest1TrialStage.ANSWER_OPEN:
-                return
             command = {
                 pygame.K_LEFT: "LEFT",
                 pygame.K_RIGHT: "RIGHT",
@@ -12716,6 +12746,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             if self._adaptive_tracker is not None:
                 self._adaptive_tracker.sync()
             live_snap = self._engine.snapshot()
+            self._maybe_begin_trace_test_1_timeout_review(live_snap=live_snap)
             snap = live_snap
 
             # If the timer expires mid-entry, auto-submit what was typed so far.
@@ -13457,11 +13488,6 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         ):
             return False
         if (
-            isinstance(payload, TraceTest1Payload)
-            and payload.trial_stage is not TraceTest1TrialStage.ANSWER_OPEN
-        ):
-            return False
-        if (
             isinstance(payload, TraceTest2Payload)
             and payload.trial_stage is not TraceTest2TrialStage.QUESTION
         ):
@@ -13590,6 +13616,45 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             )
             self._sync_pausable_clock_state()
         return True
+
+    def _maybe_begin_trace_test_1_timeout_review(self, *, live_snap: TestSnapshot) -> None:
+        if not self._is_trace_test_1_snapshot(live_snap):
+            return
+        getter = getattr(self._engine, "events", None)
+        if not callable(getter):
+            return
+        try:
+            events = getter()
+        except Exception:
+            return
+        if not isinstance(events, (list, tuple)):
+            return
+
+        start = max(0, min(int(self._trace_test_1_review_event_count), len(events)))
+        self._trace_test_1_review_event_count = len(events)
+        if self._review_state_active() or not self._app.review_mode_enabled():
+            return
+
+        for event in events[start:]:
+            if getattr(event, "phase", None) not in (Phase.PRACTICE, Phase.SCORED):
+                continue
+            if not bool(getattr(event, "is_timeout", False)):
+                continue
+            self._review_state = _AnswerReviewState(
+                snapshot=live_snap,
+                submitted_raw="NO INPUT",
+                correct_answer_text=self._trace_test_1_answer_label(
+                    getattr(event, "correct_answer", None)
+                ),
+                correct_choice_code=None,
+                submitted_choice_code=None,
+                blocks_runtime=False,
+                dismiss_at_s=self._review_now_s() + self._TRACE_TEST_1_REVIEW_OVERLAY_S,
+            )
+            self._input = ""
+            self._math_choice = 1
+            self._sync_pausable_clock_state()
+            break
 
     def _review_marker_for_option(
         self,
@@ -14267,6 +14332,9 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         self._dispose_spatial_integration_panda_renderer()
         self._dispose_trace_test_1_panda_renderer()
         self._dispose_trace_test_2_panda_renderer()
+        exit_engine = getattr(self._engine, "exit", None)
+        if callable(exit_engine):
+            exit_engine()
 
     def _sync_situational_awareness_audio(
         self,
@@ -14730,6 +14798,32 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         snap: TestSnapshot,
         payload: RapidTrackingPayload | None,
     ) -> None:
+        bind_rt_context = getattr(self._engine, "bind_screen_context", None)
+        if callable(bind_rt_context):
+            bind_rt_context(
+                app=self._app,
+                small_font=self._small_font,
+                tiny_font=self._tiny_font,
+            )
+        set_dev_tools_enabled = getattr(self._engine, "set_dev_tools_enabled", None)
+        if callable(set_dev_tools_enabled):
+            set_dev_tools_enabled(bool(self._app.dev_tools_enabled()))
+        resize_rt = getattr(self._engine, "resize", None)
+        if callable(resize_rt):
+            resize_rt(*surface.get_size())
+        render_rapid_tracking_screen(
+            surface=surface,
+            snap=snap,
+            payload=payload,
+            engine=self._engine,
+            context=RapidTrackingUiContext(
+                app=self._app,
+                small_font=self._small_font,
+                tiny_font=self._tiny_font,
+            ),
+        )
+        return
+
         is_dual_task_bridge = str(snap.title).startswith("Dual-Task Bridge")
         w, h = surface.get_size()
         bg = (6, 24, 20)
@@ -14838,7 +14932,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
 
         rig = rapid_tracking_camera_rig_state(
             elapsed_s=0.0 if payload is None else float(payload.phase_elapsed_s),
-            seed=0 if payload is None else int(payload.session_seed),
+            seed=0 if payload is None else int(payload.scene_seed),
             progress=scene_progress,
             camera_yaw_deg=None if payload is None else float(payload.camera_yaw_deg),
             camera_pitch_deg=None if payload is None else float(payload.camera_pitch_deg),
@@ -16506,7 +16600,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 time_fill_ratio=time_fill_ratio,
             )
             return
-        surface.fill((8, 16, 40), world)
+        self._draw_auditory_capacity_fixed_tunnel(surface, world=world, payload=payload)
 
     @staticmethod
     def _auditory_mix_rgb(
@@ -16542,6 +16636,43 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             flash_color,
             mix=float(payload.ball_visual_strength),
         )
+
+    @staticmethod
+    def _auditory_depth_to_scene_z(
+        depth_norm: float,
+        *,
+        z_near: float = 2.0,
+        z_far: float = 26.0,
+    ) -> float:
+        depth = max(0.0, min(1.0, float(depth_norm)))
+        return -(z_near + ((z_far - z_near) * depth))
+
+    @staticmethod
+    def _draw_auditory_gate_2d(
+        surface: pygame.Surface,
+        *,
+        shape: str,
+        center: tuple[int, int],
+        radius: int,
+        color: tuple[int, int, int],
+        line_width: int = 2,
+    ) -> None:
+        cx, cy = center
+        r = max(4, int(radius))
+        token = str(shape).upper()
+        if token == "CIRCLE":
+            pygame.draw.circle(surface, color, (cx, cy), r, line_width)
+            return
+        if token == "TRIANGLE":
+            points = [
+                (cx + int(round(px * r * 0.92)), cy - int(round(py * r * 0.92)))
+                for px, py in AUDITORY_TRIANGLE_GATE_POINTS
+            ]
+            pygame.draw.polygon(surface, color, points, line_width)
+            return
+        rect = pygame.Rect(0, 0, r * 2, r * 2)
+        rect.center = (cx, cy)
+        pygame.draw.rect(surface, color, rect, line_width)
 
     @staticmethod
     def _draw_auditory_glass_panel(
@@ -16655,6 +16786,113 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             max(1, r // 4),
         )
 
+    def _draw_auditory_capacity_fixed_tunnel(
+        self,
+        surface: pygame.Surface,
+        *,
+        world: pygame.Rect,
+        payload: AuditoryCapacityPayload | None,
+    ) -> None:
+        surface.fill((8, 16, 40), world)
+        if world.w <= 0 or world.h <= 0:
+            return
+
+        panel = pygame.Surface(world.size, pygame.SRCALPHA)
+        z_near = 2.0
+        z_far = 26.0
+        depth_samples = (0.02, 0.10, 0.18, 0.28, 0.40, 0.54, 0.68, 0.82, float(TUNNEL_EXIT_NORM))
+        ring_poses: list[tuple[float, tuple[int, int], tuple[int, int]]] = []
+        for depth_norm in depth_samples:
+            t = max(0.0, min(1.0, float(depth_norm)))
+            z = self._auditory_depth_to_scene_z(t, z_near=z_near, z_far=z_far)
+            off_x, off_y = self._tube_offset_at_depth(z=z, z_near=z_near, z_far=z_far)
+            cx = world.w // 2 + int(round(off_x * world.w * 0.18))
+            cy = world.h // 2 - int(round(off_y * world.h * 0.15))
+            rx = max(12, int(round(world.w * (0.41 - (0.34 * t)))))
+            ry = max(10, int(round(world.h * (0.33 - (0.27 * t)))))
+            ring_poses.append((t, (cx, cy), (rx, ry)))
+
+        for idx in range(len(ring_poses) - 1):
+            _t0, (cx0, cy0), (rx0, ry0) = ring_poses[idx]
+            _t1, (cx1, cy1), (rx1, ry1) = ring_poses[idx + 1]
+            alpha = max(18, 64 - (idx * 5))
+            pygame.draw.line(panel, (24, 54, 120, alpha), (cx0 - rx0, cy0), (cx1 - rx1, cy1), 2)
+            pygame.draw.line(panel, (24, 54, 120, alpha), (cx0 + rx0, cy0), (cx1 + rx1, cy1), 2)
+            pygame.draw.line(panel, (20, 42, 110, alpha), (cx0, cy0 - ry0), (cx1, cy1 - ry1), 1)
+            pygame.draw.line(panel, (20, 42, 110, alpha), (cx0, cy0 + ry0), (cx1, cy1 + ry1), 1)
+
+        for idx, (t, center, radii) in enumerate(ring_poses):
+            ring_rect = pygame.Rect(0, 0, radii[0] * 2, radii[1] * 2)
+            ring_rect.center = center
+            glow = max(18, int(round(80 * (1.0 - t))))
+            core = max(42, int(round(190 * (1.0 - t))))
+            pygame.draw.ellipse(panel, (18, 54, 132, glow), ring_rect, 3)
+            pygame.draw.ellipse(panel, (92, 138, 232, core), ring_rect, 1 if idx else 2)
+
+        exit_t, exit_center, exit_radii = ring_poses[-1]
+        exit_rect = pygame.Rect(0, 0, exit_radii[0] * 2, exit_radii[1] * 2)
+        exit_rect.center = exit_center
+        pygame.draw.ellipse(panel, (236, 244, 255, 84), exit_rect.inflate(12, 10), 2)
+        pygame.draw.ellipse(panel, (244, 250, 255, 164), exit_rect, 2)
+
+        if payload is not None:
+            y_half_span = max(0.08, float(payload.tube_half_height))
+            x_half_span = max(0.08, float(payload.tube_half_width))
+            for gate in sorted(
+                (gate for gate in payload.gates if gate.visual_slot_index is not None),
+                key=lambda gate: int(gate.visual_slot_index),
+                reverse=True,
+            ):
+                assert gate.visual_slot_index is not None
+                depth_norm = float(GATE_DEPTH_SLOTS_NORM[int(gate.visual_slot_index)])
+                z = self._auditory_depth_to_scene_z(depth_norm, z_near=z_near, z_far=z_far)
+                off_x, off_y = self._tube_offset_at_depth(z=z, z_near=z_near, z_far=z_far)
+                cx = world.w // 2 + int(round(off_x * world.w * 0.18))
+                cy = world.h // 2 - int(round(off_y * world.h * 0.15))
+                rx = max(12, int(round(world.w * (0.41 - (0.34 * depth_norm)))))
+                ry = max(10, int(round(world.h * (0.33 - (0.27 * depth_norm)))))
+                gy = int(round(max(-1.0, min(1.0, float(gate.y_norm) / y_half_span)) * (ry * 0.72)))
+                radius = max(8, int(round((float(gate.aperture_norm) / y_half_span) * (ry * 0.88))))
+                gate_rgbf = self._gate_color(gate.color)
+                gate_rgb = tuple(int(round(channel * 255.0)) for channel in gate_rgbf)
+                self._draw_auditory_gate_2d(
+                    panel,
+                    shape=gate.shape,
+                    center=(cx, cy - gy),
+                    radius=radius,
+                    color=gate_rgb,
+                    line_width=max(2, radius // 10),
+                )
+
+            ball_depth_norm = max(
+                float(BALL_FORWARD_IDLE_NORM),
+                min(float(TUNNEL_EXIT_NORM), float(payload.ball_forward_norm)),
+            )
+            z = self._auditory_depth_to_scene_z(ball_depth_norm, z_near=z_near, z_far=z_far)
+            off_x, off_y = self._tube_offset_at_depth(z=z, z_near=z_near, z_far=z_far)
+            cx = world.w // 2 + int(round(off_x * world.w * 0.18))
+            cy = world.h // 2 - int(round(off_y * world.h * 0.15))
+            rx = max(12, int(round(world.w * (0.41 - (0.34 * ball_depth_norm)))))
+            ry = max(10, int(round(world.h * (0.33 - (0.27 * ball_depth_norm)))))
+            local_x = max(-1.0, min(1.0, float(payload.ball_x) / x_half_span)) * (rx * 0.76)
+            local_y = max(-1.0, min(1.0, float(payload.ball_y) / y_half_span)) * (ry * 0.76)
+            ball_center = (int(round(cx + local_x)), int(round(cy - local_y)))
+            ball_radius = max(6, int(round(min(rx, ry) * 0.18)))
+            ball_rgb = self._auditory_ball_visual_rgb(
+                payload=payload,
+                danger=float(payload.ball_contact_ratio) >= 1.0,
+            )
+            self._draw_auditory_ball_3d(
+                panel,
+                center=ball_center,
+                radius=ball_radius,
+                color=ball_rgb,
+            )
+
+        surface.blit(panel, world.topleft)
+        pygame.draw.rect(surface, (20, 42, 140), world, 2)
+        pygame.draw.rect(surface, (78, 104, 178), world.inflate(-4, -4), 1)
+
     @staticmethod
     def _fmt_debug_seconds(value: float | None) -> str:
         if value is None:
@@ -16707,18 +16945,16 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             nearest_gate: AuditoryCapacityGate | None = None
             nearest_delta = 1_000_000.0
             for gate in payload.gates:
-                if gate.x_norm < payload.ball_x:
+                if gate.x_norm < 0.0:
                     continue
-                delta = float(gate.x_norm - payload.ball_x)
+                delta = float(gate.x_norm)
                 if delta < nearest_delta:
                     nearest_delta = delta
                     nearest_gate = gate
 
             if nearest_gate is None and payload.gates:
-                nearest_gate = min(
-                    payload.gates, key=lambda g: abs(float(g.x_norm - payload.ball_x))
-                )
-                nearest_delta = abs(float(nearest_gate.x_norm - payload.ball_x))
+                nearest_gate = min(payload.gates, key=lambda g: abs(float(g.x_norm)))
+                nearest_delta = abs(float(nearest_gate.x_norm))
 
             if nearest_gate is not None:
                 gate_color = str(nearest_gate.color).upper()
@@ -26649,6 +26885,7 @@ def _apply_opengl_display_attributes() -> None:
         pygame.GL_CONTEXT_PROFILE_MASK,
         pygame.GL_CONTEXT_PROFILE_CORE,
     )
+    pygame.display.gl_set_attribute(pygame.GL_DEPTH_SIZE, 24)
     pygame.display.gl_set_attribute(pygame.GL_DOUBLEBUFFER, 1)
 
 

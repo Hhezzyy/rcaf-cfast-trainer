@@ -207,7 +207,7 @@ def camera_rig_state(
     bob_phase_b = rapid_tracking_seed_unit(seed=seed, salt="bob-b") * math.tau
 
     orbit_phase = phase_offset + (seed_dir * elapsed_s * 0.15) + (p * 0.24)
-    orbit_radius = _lerp(74.0, 54.0, _smoothstep(0.0, 0.52, p)) * orbit_radius_scale
+    orbit_radius = _lerp(92.0, 58.0, _smoothstep(0.0, 0.52, p)) * orbit_radius_scale
     orbit_local_x = math.cos(orbit_phase) * orbit_radius
     orbit_local_y = math.sin(orbit_phase) * (orbit_radius * 0.86)
     orbit_x = float(focus_world_x) + orbit_local_x
@@ -290,7 +290,7 @@ def camera_rig_state(
     cam_world_y = base_y + (right_vec_y * right_mount)
 
     ground_z = terrain_height(cam_world_x, cam_world_y)
-    altitude_agl = _lerp(27.5, 6.8, _smoothstep(0.0, 1.0, p)) + altitude_bias
+    altitude_agl = _lerp(46.0, 9.5, _smoothstep(0.0, 1.0, p)) + altitude_bias
     bob = (
         math.sin((elapsed_s * 2.1) + bob_phase_a) * _lerp(0.18, 0.08, path_transition) * turbulence
         + math.sin((elapsed_s * 4.6) + bob_phase_b) * _lerp(0.09, 0.04, path_transition) * turbulence

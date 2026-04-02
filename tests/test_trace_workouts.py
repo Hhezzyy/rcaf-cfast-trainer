@@ -88,6 +88,7 @@ def _build_small_tt2_workout_plan() -> AntWorkoutPlan:
 
 
 def _run_current_block(session: AntWorkoutSession, clock: FakeClock) -> None:
+    last_tt1_prompt_index: int | None = None
     while session.stage is AntWorkoutStage.BLOCK:
         engine = session.current_engine()
         assert engine is not None
@@ -95,14 +96,22 @@ def _run_current_block(session: AntWorkoutSession, clock: FakeClock) -> None:
         payload = snap.payload
         if isinstance(payload, TraceTest1Payload):
             if payload.trial_stage is TraceTest1TrialStage.ANSWER_OPEN:
+                if payload.prompt_index == last_tt1_prompt_index:
+                    clock.advance(0.1)
+                    session.update()
+                    continue
                 assert session.submit_answer(str(payload.correct_code)) is True
+                last_tt1_prompt_index = payload.prompt_index
                 session.update()
                 continue
         elif isinstance(payload, TraceTest2Payload):
             if payload.trial_stage is TraceTest2TrialStage.QUESTION:
                 assert session.submit_answer(str(payload.correct_code)) is True
+                last_tt1_prompt_index = None
                 session.update()
                 continue
+        else:
+            last_tt1_prompt_index = None
         clock.advance(0.1)
         session.update()
 

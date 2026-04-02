@@ -240,7 +240,7 @@ class RapidTrackingPanda3DRenderer:
         else:
             self._last_render_ms = pygame.time.get_ticks()
             self._elapsed_s = max(0.0, float(payload.phase_elapsed_s))
-            self._ensure_seeded_layout(seed=int(payload.session_seed))
+            self._ensure_seeded_layout(seed=int(payload.scene_seed))
 
         self._update_camera(payload=payload)
         self._update_target(payload=payload)
@@ -421,7 +421,7 @@ class RapidTrackingPanda3DRenderer:
             )
         return self._camera_rig_state(
             elapsed_s=float(elapsed_s),
-            seed=int(payload.session_seed),
+            seed=int(payload.scene_seed),
             progress=float(payload.scene_progress),
             camera_yaw_deg=float(payload.camera_yaw_deg),
             camera_pitch_deg=float(payload.camera_pitch_deg),
@@ -1539,7 +1539,7 @@ class RapidTrackingPanda3DRenderer:
 
         rig = self._camera_rig_state(
             elapsed_s=self._elapsed_s,
-            seed=0 if payload is None else int(payload.session_seed),
+            seed=0 if payload is None else int(payload.scene_seed),
             progress=progress,
             camera_yaw_deg=None if payload is None else float(payload.camera_yaw_deg),
             camera_pitch_deg=None if payload is None else float(payload.camera_pitch_deg),

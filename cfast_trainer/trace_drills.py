@@ -96,6 +96,12 @@ def _max_timeout_streak(events: tuple[QuestionEvent, ...]) -> int:
 def _force_engine_result(engine: object) -> None:
     if not hasattr(engine, "_phase"):
         return
+    if (
+        hasattr(engine, "_current_prompt_answered")
+        and bool(getattr(engine, "_current_prompt_answered"))
+        and hasattr(engine, "_record_locked_answer")
+    ):
+        engine._record_locked_answer()
     engine._phase = Phase.RESULTS
     for attr in (
         "_current_problem",

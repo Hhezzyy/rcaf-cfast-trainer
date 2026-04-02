@@ -34,9 +34,12 @@ _VIEWPOINT_BEARING_DEG = 180
 _RED_SAFE_BOX_MIN = 0.02
 _RED_SAFE_BOX_MAX = 0.98
 _BLUE_MARGIN = 0.20
-_WORLD_X_NORMALIZER = 68.0
+_WORLD_X_NORMALIZER = 100.0
 _WORLD_Z_SCREEN_CENTER = 12.5
 _WORLD_Z_SCREEN_NORMALIZER = 44.0
+_WORLD_DEPTH_SCREEN_CENTER = 34.0
+_WORLD_DEPTH_X_MIX = 0.0
+_WORLD_DEPTH_Y_MIX = 0.24
 _RED_ALTITUDE_BAND = (4.0, 28.0)
 _RED_DEPTH_BAND = (14.0, 146.0)
 _BLUE_DEPTH_BAND = (0.0, 156.0)
@@ -53,6 +56,7 @@ _TT1_LATTICE_ROW_SPACING = 18.0
 _TT1_LATTICE_LEVEL_SPACING = 7.5
 _TT1_LATTICE_BASE_DEPTH = 16.0
 _TT1_TURN_PHASE_RATIO = 0.35
+_TT1_MAX_RED_RECOVERY_STEPS = 4
 
 
 @dataclass(frozen=True, slots=True)
@@ -218,11 +222,10 @@ def _tt1_lattice_actions_for_command(
     lead_steps: int,
 ) -> tuple[TraceLatticeAction, ...]:
     lead = max(0, int(lead_steps))
-    settle_steps = 1 if lead >= 1 else 2
     return (
         (TraceLatticeAction.STRAIGHT,) * lead
         + (_tt1_action_for_command(command),)
-        + ((TraceLatticeAction.STRAIGHT,) * settle_steps)
+        + (TraceLatticeAction.STRAIGHT,)
     )
 
 
@@ -559,10 +562,29 @@ def trace_test_1_difficulty_tier(*, difficulty: float) -> TraceTest1DifficultyTi
 def trace_test_1_normalized_position(
     position: tuple[float, float, float],
 ) -> tuple[float, float]:
-    world_x, _world_y, world_z = position
+    world_x, world_y, world_z = position
+    depth_offset = float(world_y) - _WORLD_DEPTH_SCREEN_CENTER
     return (
-        float(0.5 + (world_x / _WORLD_X_NORMALIZER)),
-        float(0.64 - ((world_z - _WORLD_Z_SCREEN_CENTER) / _WORLD_Z_SCREEN_NORMALIZER)),
+        float(
+            0.5
+            + (
+                (
+                    float(world_x)
+                    + (depth_offset * _WORLD_DEPTH_X_MIX)
+                )
+                / _WORLD_X_NORMALIZER
+            )
+        ),
+        float(
+            0.64
+            - (
+                (
+                    (float(world_z) - _WORLD_Z_SCREEN_CENTER)
+                    + (depth_offset * _WORLD_DEPTH_Y_MIX)
+                )
+                / _WORLD_Z_SCREEN_NORMALIZER
+            )
+        ),
     )
 
 
@@ -676,29 +698,23 @@ def _offscreen_blue(
     )
 
 
-def _tt1_red_start_templates(
+def _tt1_initial_red_state() -> TraceLatticeState:
+    return trace_lattice_center_state(spec=DEFAULT_TRACE_LATTICE_SPEC)
+
+
+def _tt1_red_lattice_actions(
     command: TraceTest1Command,
-) -> tuple[TraceLatticeState, ...]:
-    templates = {
-        TraceTest1Command.LEFT: (
-            trace_lattice_state(col=4, row=1, level=2, forward=(0, 1, 0), up=(0, 0, 1)),
-            trace_lattice_state(col=4, row=2, level=2, forward=(0, 1, 0), up=(0, 0, 1)),
-        ),
-        TraceTest1Command.RIGHT: (
-            trace_lattice_state(col=2, row=1, level=2, forward=(0, 1, 0), up=(0, 0, 1)),
-            trace_lattice_state(col=2, row=2, level=2, forward=(0, 1, 0), up=(0, 0, 1)),
-        ),
-        TraceTest1Command.PUSH: (
-            trace_lattice_state(col=3, row=1, level=4, forward=(0, 1, 0), up=(0, 0, 1)),
-            trace_lattice_state(col=3, row=1, level=3, forward=(0, 1, 0), up=(0, 0, 1)),
-            trace_lattice_state(col=4, row=1, level=3, forward=(0, 1, 0), up=(0, 0, 1)),
-        ),
-        TraceTest1Command.PULL: (
-            trace_lattice_state(col=3, row=1, level=1, forward=(0, 1, 0), up=(0, 0, 1)),
-            trace_lattice_state(col=2, row=1, level=1, forward=(0, 1, 0), up=(0, 0, 1)),
-        ),
-    }
-    return templates[command]
+    *,
+    lead_steps: int,
+    recovery_steps: int = 0,
+) -> tuple[TraceLatticeAction, ...]:
+    return (
+        (TraceLatticeAction.STRAIGHT,) * max(0, int(recovery_steps))
+        + _tt1_lattice_actions_for_command(
+            command,
+            lead_steps=lead_steps,
+        )
+    )
 
 
 class TraceTest1Generator:
@@ -722,7 +738,7 @@ class TraceTest1Generator:
         self._prompt_index = 0
         self._last_red_command: TraceTest1Command | None = None
         self._tier: TraceTest1DifficultyTier | None = None
-        self._red_lattice_state = trace_lattice_center_state(spec=DEFAULT_TRACE_LATTICE_SPEC)
+        self._red_lattice_state = _tt1_initial_red_state()
         self._blue_lattice_states: tuple[TraceLatticeState, ...] = ()
         self._red_state = _tt1_aircraft_state_from_lattice_state(self._red_lattice_state)
         self._blue_states: tuple[TraceTest1AircraftState, ...] = ()
@@ -831,16 +847,51 @@ class TraceTest1Generator:
         ]
         if not candidates:
             candidates = list(self._allowed_commands)
-        for command in self._rng.sample(candidates, k=len(candidates)):
-            templates = list(_tt1_red_start_templates(command))
-            prefer_immediate = self._rng.random() < float(tier.immediate_turn_chance)
-            lead_step_order = (0, 1) if prefer_immediate else (1, 0)
-            for lead_steps in lead_step_order:
-                for start_state in self._rng.sample(templates, k=len(templates)):
-                    actions = _tt1_lattice_actions_for_command(
-                        command,
-                        lead_steps=lead_steps,
-                    )
+        start_state = self._red_lattice_state
+        ordered_candidates = self._rng.sample(candidates, k=len(candidates))
+        prefer_immediate = self._rng.random() < float(tier.immediate_turn_chance)
+        lead_step_order = (0, 1) if prefer_immediate else (1, 0)
+        plan = self._find_red_plan(
+            tier=tier,
+            start_state=start_state,
+            ordered_candidates=ordered_candidates,
+            lead_step_order=lead_step_order,
+            lead_distance=lead_distance,
+            maneuver_distance=maneuver_distance,
+            altitude_delta=altitude_delta,
+            require_continuation=True,
+        )
+        if plan is None:
+            plan = self._find_red_plan(
+                tier=tier,
+                start_state=start_state,
+                ordered_candidates=ordered_candidates,
+                lead_step_order=lead_step_order,
+                lead_distance=lead_distance,
+                maneuver_distance=maneuver_distance,
+                altitude_delta=altitude_delta,
+                require_continuation=False,
+            )
+        if plan is None:
+            raise RuntimeError("Unable to build a safe Trace Test 1 red prompt from current state")
+        self._last_red_command = plan.command
+        return plan
+
+    def _find_red_plan(
+        self,
+        *,
+        tier: TraceTest1DifficultyTier,
+        start_state: TraceLatticeState,
+        ordered_candidates: list[TraceTest1Command],
+        lead_step_order: tuple[int, int],
+        lead_distance: float,
+        maneuver_distance: float,
+        altitude_delta: float,
+        require_continuation: bool,
+    ) -> TraceTest1AircraftPlan | None:
+        for lead_steps in lead_step_order:
+            for recovery_steps in range(_TT1_MAX_RED_RECOVERY_STEPS + 1):
+                for command in ordered_candidates:
                     plan = TraceTest1AircraftPlan(
                         start_state=_tt1_aircraft_state_from_lattice_state(start_state),
                         command=command,
@@ -848,34 +899,27 @@ class TraceTest1Generator:
                         maneuver_distance=maneuver_distance,
                         altitude_delta=altitude_delta if command is TraceTest1Command.PULL else -altitude_delta,
                         lattice_start=start_state,
-                        lattice_actions=actions,
+                        lattice_actions=_tt1_red_lattice_actions(
+                            command,
+                            lead_steps=lead_steps,
+                            recovery_steps=recovery_steps,
+                        ),
                     )
-                    if self._red_plan_is_safe(plan=plan, tier=tier):
-                        self._last_red_command = command
-                        self._red_lattice_state = start_state
-                        self._red_state = _tt1_aircraft_state_from_lattice_state(start_state)
+                    if self._red_plan_is_safe(
+                        plan=plan,
+                        tier=tier,
+                        require_continuation=require_continuation,
+                    ):
                         return plan
+        return None
 
-        fallback_command = candidates[0]
-        fallback_state = _tt1_red_start_templates(fallback_command)[0]
-        fallback = TraceTest1AircraftPlan(
-            start_state=_tt1_aircraft_state_from_lattice_state(fallback_state),
-            command=fallback_command,
-            lead_distance=lead_distance,
-            maneuver_distance=maneuver_distance,
-            altitude_delta=altitude_delta if fallback_command is TraceTest1Command.PULL else -altitude_delta,
-            lattice_start=fallback_state,
-            lattice_actions=_tt1_lattice_actions_for_command(
-                fallback_command,
-                lead_steps=1,
-            ),
-        )
-        self._last_red_command = fallback.command
-        self._red_lattice_state = fallback_state
-        self._red_state = _tt1_aircraft_state_from_lattice_state(fallback_state)
-        return fallback
-
-    def _red_plan_is_safe(self, *, plan: TraceTest1AircraftPlan, tier: TraceTest1DifficultyTier) -> bool:
+    def _red_plan_is_safe(
+        self,
+        *,
+        plan: TraceTest1AircraftPlan,
+        tier: TraceTest1DifficultyTier,
+        require_continuation: bool = True,
+    ) -> bool:
         path = _tt1_build_lattice_path(plan)
         command_step_index = _tt1_command_step_index(plan)
         if path is None or len(path.steps) <= command_step_index:
@@ -903,15 +947,41 @@ class TraceTest1Generator:
             ).red_frame.position
             for checkpoint in checkpoints
         ]
-        return all(_projected_safe(position) for position in scene_points)
-
-    def _advance_red_recovery(self) -> TraceLatticeState:
-        path = trace_lattice_build_path(
-            start_state=self._red_lattice_state,
-            actions=(TraceLatticeAction.STRAIGHT,),
-            spec=DEFAULT_TRACE_LATTICE_SPEC,
+        if not all(_projected_safe(position) for position in scene_points):
+            return False
+        if not require_continuation:
+            return True
+        return self._red_state_has_safe_continuation(
+            start_state=path.end_state,
+            tier=tier,
+            blocked_command=plan.command,
         )
-        return path.end_state
+
+    def _red_state_has_safe_continuation(
+        self,
+        *,
+        start_state: TraceLatticeState,
+        tier: TraceTest1DifficultyTier,
+        blocked_command: TraceTest1Command,
+    ) -> bool:
+        lead_distance, maneuver_distance, altitude_delta = self._prompt_distances(tier=tier)
+        candidates = [command for command in self._allowed_commands if command is not blocked_command]
+        if not candidates:
+            candidates = list(self._allowed_commands)
+        lead_step_order = (0, 1) if float(tier.immediate_turn_chance) >= 0.5 else (1, 0)
+        return (
+            self._find_red_plan(
+                tier=tier,
+                start_state=start_state,
+                ordered_candidates=candidates,
+                lead_step_order=lead_step_order,
+                lead_distance=lead_distance,
+                maneuver_distance=maneuver_distance,
+                altitude_delta=altitude_delta,
+                require_continuation=False,
+            )
+            is not None
+        )
 
     def _build_blue_plan(
         self,
@@ -979,6 +1049,10 @@ class TraceTest1Engine:
         self._current_problem: Problem | None = None
         self._current_prompt: TraceTest1PromptPlan | None = None
         self._trial_started_at_s: float | None = None
+        self._current_prompt_answered = False
+        self._locked_answer_raw = ""
+        self._locked_answer_code: int | None = None
+        self._locked_answered_at_s: float | None = None
         self._practice_answered = 0
         self._scored_started_at_s: float | None = None
         self._events: list[QuestionEvent] = []
@@ -1022,13 +1096,18 @@ class TraceTest1Engine:
         if self._phase not in (Phase.PRACTICE, Phase.SCORED):
             return
         if self._phase is Phase.SCORED and self.time_remaining_s() == 0.0:
+            if self._current_prompt_answered:
+                self._record_locked_answer()
             self._finish()
             return
         if self._current_prompt is None:
             return
         if self._elapsed_in_prompt_s() + _STAGE_EPSILON_S < self._prompt_duration_s():
             return
-        self._record_auto_miss()
+        if self._current_prompt_answered:
+            self._record_locked_answer()
+        else:
+            self._record_auto_miss()
         self._advance_to_next_prompt(progress=1.0)
 
     def time_remaining_s(self) -> float | None:
@@ -1041,8 +1120,9 @@ class TraceTest1Engine:
         if self._phase is Phase.INSTRUCTIONS:
             return (
                 "Watch the continuous red stream.\n\n"
-                "Answer with the arrow keys when the red aircraft changes:\n"
-                "Left, Right, Up for Push, and Down for Pull."
+                "Arrow keys lock an answer at any time during the clip:\n"
+                "Left, Right, Up for Push, and Down for Pull.\n"
+                "Early or wrong presses still get scored against that clip when it ends."
             )
         if self._phase is Phase.PRACTICE_DONE:
             return "Practice complete. Press Enter to start the timed test."
@@ -1060,44 +1140,15 @@ class TraceTest1Engine:
     def submit_answer(self, raw: object) -> bool:
         if self._phase not in (Phase.PRACTICE, Phase.SCORED):
             return False
-        payload = self._snapshot_payload()
-        if payload is None or payload.trial_stage is not TraceTest1TrialStage.ANSWER_OPEN:
+        if self._current_prompt_answered:
             return False
         user_answer = trace_test_1_answer_code(raw)
         if user_answer is None or self._current_problem is None or self._current_prompt is None:
             return False
-        answered_at_s = self._clock.now()
-        presented_at_s = self._trial_started_at_s + self._answer_open_at_s()  # type: ignore[operator]
-        response_time_s = max(0.0, answered_at_s - presented_at_s)
-        is_correct = int(user_answer) == int(self._current_problem.answer)
-        self._events.append(
-            QuestionEvent(
-                index=len(self._events),
-                phase=self._phase,
-                prompt=self._current_problem.prompt,
-                correct_answer=int(self._current_problem.answer),
-                user_answer=int(user_answer),
-                is_correct=bool(is_correct),
-                presented_at_s=float(presented_at_s),
-                answered_at_s=float(answered_at_s),
-                response_time_s=float(response_time_s),
-                raw=str(raw),
-                score=1.0 if is_correct else 0.0,
-                max_score=1.0,
-                content_metadata=content_metadata_from_payload(payload),
-            )
-        )
-
-        if self._phase is Phase.SCORED:
-            self._scored_attempted += 1
-            self._scored_max_score += 1.0
-            self._scored_total_score += 1.0 if is_correct else 0.0
-            if is_correct:
-                self._scored_correct += 1
-        else:
-            self._practice_answered += 1
-
-        self._advance_to_next_prompt(progress=self._current_progress())
+        self._locked_answer_raw = str(raw)
+        self._locked_answer_code = int(user_answer)
+        self._locked_answered_at_s = float(self._clock.now())
+        self._current_prompt_answered = True
         return True
 
     def scored_summary(self) -> AttemptSummary:
@@ -1131,7 +1182,7 @@ class TraceTest1Engine:
             title="Trace Test 1",
             phase=self._phase,
             prompt=self.current_prompt(),
-            input_hint="Arrow keys answer immediately once the red maneuver begins.",
+            input_hint="Arrow keys lock the clip at any time. Early or wrong presses are scored when that clip ends.",
             time_remaining_s=self.time_remaining_s(),
             attempted_scored=self._scored_attempted,
             correct_scored=self._scored_correct,
@@ -1195,6 +1246,10 @@ class TraceTest1Engine:
         assert isinstance(prompt, TraceTest1PromptPlan)
         self._current_prompt = prompt
         self._trial_started_at_s = self._clock.now()
+        self._current_prompt_answered = False
+        self._locked_answer_raw = ""
+        self._locked_answer_code = None
+        self._locked_answered_at_s = None
 
     def _advance_to_next_prompt(self, *, progress: float) -> None:
         if self._current_prompt is not None:
@@ -1211,6 +1266,9 @@ class TraceTest1Engine:
     def _record_auto_miss(self) -> None:
         if self._current_problem is None or self._current_prompt is None:
             return
+        self._locked_answer_raw = ""
+        self._locked_answer_code = None
+        self._locked_answered_at_s = None
         presented_at_s = self._trial_started_at_s + self._answer_open_at_s()  # type: ignore[operator]
         answered_at_s = self._trial_started_at_s + self._prompt_duration_s()  # type: ignore[operator]
         response_time_s = max(0.0, answered_at_s - presented_at_s)
@@ -1228,6 +1286,7 @@ class TraceTest1Engine:
                 raw="",
                 score=0.0,
                 max_score=1.0,
+                is_timeout=True,
                 content_metadata=content_metadata_from_payload(self._current_problem.payload),
             )
         )
@@ -1237,10 +1296,58 @@ class TraceTest1Engine:
         else:
             self._practice_answered += 1
 
+    def _record_locked_answer(self) -> None:
+        if (
+            self._current_problem is None
+            or self._current_prompt is None
+            or self._locked_answer_code is None
+            or self._locked_answered_at_s is None
+        ):
+            return
+        payload = self._snapshot_payload()
+        presented_at_s = self._trial_started_at_s + self._answer_open_at_s()  # type: ignore[operator]
+        answered_at_s = float(self._locked_answered_at_s)
+        response_time_s = max(0.0, answered_at_s - presented_at_s)
+        is_correct = int(self._locked_answer_code) == int(self._current_problem.answer)
+        self._events.append(
+            QuestionEvent(
+                index=len(self._events),
+                phase=self._phase,
+                prompt=self._current_problem.prompt,
+                correct_answer=int(self._current_problem.answer),
+                user_answer=int(self._locked_answer_code),
+                is_correct=bool(is_correct),
+                presented_at_s=float(presented_at_s),
+                answered_at_s=float(answered_at_s),
+                response_time_s=float(response_time_s),
+                raw=str(self._locked_answer_raw),
+                score=1.0 if is_correct else 0.0,
+                max_score=1.0,
+                content_metadata=content_metadata_from_payload(payload),
+            )
+        )
+
+        if self._phase is Phase.SCORED:
+            self._scored_attempted += 1
+            self._scored_max_score += 1.0
+            self._scored_total_score += 1.0 if is_correct else 0.0
+            if is_correct:
+                self._scored_correct += 1
+        else:
+            self._practice_answered += 1
+
+        self._locked_answer_raw = ""
+        self._locked_answer_code = None
+        self._locked_answered_at_s = None
+
     def _clear_current(self) -> None:
         self._current_problem = None
         self._current_prompt = None
         self._trial_started_at_s = None
+        self._current_prompt_answered = False
+        self._locked_answer_raw = ""
+        self._locked_answer_code = None
+        self._locked_answered_at_s = None
 
     def _finish(self) -> None:
         self._phase = Phase.RESULTS

@@ -11,10 +11,12 @@ from cfast_trainer.trace_test_1 import (
     TraceTest1AircraftPlan,
     TraceTest1Command,
     TraceTest1Config,
+    TraceTest1DifficultyTier,
     TraceTest1Generator,
     TraceTest1Payload,
     TraceTest1PromptPlan,
     TraceTest1TrialStage,
+    _TT1_MAX_RED_RECOVERY_STEPS,
     _tt1_action_for_command,
     _tt1_aircraft_state_from_lattice_state,
     _tt1_build_lattice_path,
@@ -199,12 +201,36 @@ def test_generator_uses_tier_blue_count_in_prompt_payload() -> None:
 
 def test_easy_tier_red_prompt_always_moves_one_step_before_turning() -> None:
     gen = TraceTest1Generator(seed=141)
+    tier = trace_test_1_difficulty_tier(difficulty=0.10)
 
     for _ in range(20):
         payload = gen.next_problem(difficulty=0.10).payload
         assert isinstance(payload, TraceTest1PromptPlan)
-        assert payload.red_plan.lattice_actions[0] is TraceLatticeAction.STRAIGHT
-        assert payload.red_plan.lattice_actions[1] is _tt1_action_for_command(payload.red_plan.command)
+        if payload.red_plan.lattice_actions[0] is not TraceLatticeAction.STRAIGHT:
+            assert payload.red_plan.lattice_start is not None
+            lead_pref_plan_found = False
+            for recovery_steps in range(_TT1_MAX_RED_RECOVERY_STEPS + 1):
+                candidate = TraceTest1AircraftPlan(
+                    start_state=_tt1_aircraft_state_from_lattice_state(payload.red_plan.lattice_start),
+                    command=payload.red_plan.command,
+                    lead_distance=payload.red_plan.lead_distance,
+                    maneuver_distance=payload.red_plan.maneuver_distance,
+                    altitude_delta=payload.red_plan.altitude_delta,
+                    lattice_start=payload.red_plan.lattice_start,
+                    lattice_actions=((TraceLatticeAction.STRAIGHT,) * (recovery_steps + 1))
+                    + (_tt1_action_for_command(payload.red_plan.command), TraceLatticeAction.STRAIGHT),
+                )
+                if gen._red_plan_is_safe(
+                    plan=candidate,
+                    tier=tier,
+                    require_continuation=True,
+                ):
+                    lead_pref_plan_found = True
+                    break
+            assert lead_pref_plan_found is False
+        assert payload.red_plan.lattice_actions[
+            _tt1_command_step_index(payload.red_plan)
+        ] is _tt1_action_for_command(payload.red_plan.command)
 
 
 def test_hard_tier_red_prompt_usually_turns_immediately() -> None:
@@ -272,7 +298,7 @@ def test_trial_transitions_from_observe_to_answer_open() -> None:
     assert payload.trial_stage is TraceTest1TrialStage.ANSWER_OPEN
 
 
-def test_submit_answer_blocked_until_answer_open() -> None:
+def test_submit_answer_registers_during_observe_stage_and_faults_wrong_input() -> None:
     clock = FakeClock()
     engine = build_trace_test_1_test(
         clock=clock,
@@ -289,15 +315,25 @@ def test_submit_answer_blocked_until_answer_open() -> None:
 
     payload = engine.snapshot().payload
     assert isinstance(payload, TraceTest1Payload)
-    assert engine.submit_answer(str(payload.correct_code)) is False
+    assert payload.trial_stage is TraceTest1TrialStage.OBSERVE
+    wrong_raw = {
+        1: "RIGHT",
+        2: "LEFT",
+        3: "DOWN",
+        4: "UP",
+    }[int(payload.correct_code)]
 
-    clock.advance(0.35)
-    engine.update()
+    assert engine.submit_answer(wrong_raw) is True
     assert engine.submit_answer(str(payload.correct_code)) is False
+    assert engine.events() == []
+    assert engine.phase is Phase.PRACTICE
 
-    clock.advance(0.02)
+    clock.advance(1.0)
     engine.update()
-    assert engine.submit_answer(str(payload.correct_code)) is True
+    event = engine.events()[-1]
+    assert event.raw == wrong_raw
+    assert event.user_answer == trace_test_1_answer_code(wrong_raw)
+    assert event.is_correct is False
     assert engine.phase is Phase.PRACTICE_DONE
 
 
@@ -381,7 +417,7 @@ def test_push_and_pull_pitch_in_place_before_vertical_translation() -> None:
     assert pull_mid.attitude.pitch_deg > 0.0
 
 
-def test_submit_answer_deals_next_lattice_prompt_without_repeating_command() -> None:
+def test_submit_answer_keeps_current_prompt_running_until_clip_end() -> None:
     clock = FakeClock()
     engine = build_trace_test_1_test(
         clock=clock,
@@ -401,19 +437,45 @@ def test_submit_answer_deals_next_lattice_prompt_without_repeating_command() -> 
     before = engine.snapshot().payload
     assert isinstance(before, TraceTest1Payload)
     correct_code = before.correct_code
+    current_prompt = engine._current_prompt
+    assert isinstance(current_prompt, TraceTest1PromptPlan)
+    expected_end_position = trace_test_1_scene_frames(
+        prompt=current_prompt,
+        progress=1.0,
+    ).red_frame.position
+    expected_end_path = _tt1_build_lattice_path(current_prompt.red_plan)
+    assert expected_end_path is not None
 
     assert engine.submit_answer(str(correct_code)) is True
     after = engine.snapshot().payload
     assert isinstance(after, TraceTest1Payload)
-    assert after.prompt_index == before.prompt_index + 1
+    assert after.prompt_index == before.prompt_index
+    assert after.active_command is before.active_command
+    assert engine.submit_answer(str(correct_code)) is False
+
+    clock.advance(0.20)
+    engine.update()
+    mid = engine.snapshot().payload
+    assert isinstance(mid, TraceTest1Payload)
+    assert mid.prompt_index == before.prompt_index
+    assert mid.observe_progress > before.observe_progress
+    assert mid.scene.red_frame.position != pytest.approx(before.scene.red_frame.position, abs=0.01)
+
+    clock.advance(0.40)
+    engine.update()
+    next_payload = engine.snapshot().payload
+    assert isinstance(next_payload, TraceTest1Payload)
+    assert next_payload.prompt_index == before.prompt_index + 1
     assert engine._current_prompt is not None
     assert engine._current_prompt.red_plan.lattice_start is not None
-    assert engine._current_prompt.red_plan.lattice_actions == (
-        TraceLatticeAction.STRAIGHT,
-        _tt1_action_for_command(engine._current_prompt.red_plan.command),
-        TraceLatticeAction.STRAIGHT,
+    assert engine._current_prompt.red_plan.lattice_start.node == expected_end_path.end_state.node
+    assert engine._current_prompt.red_plan.lattice_actions[
+        _tt1_command_step_index(engine._current_prompt.red_plan)
+    ] is _tt1_action_for_command(
+        engine._current_prompt.red_plan.command
     )
-    assert after.active_command is not before.active_command
+    assert next_payload.active_command is not before.active_command
+    assert next_payload.scene.red_frame.position == pytest.approx(expected_end_position, abs=0.01)
 
 
 def test_auto_miss_records_event_and_deals_next_lattice_prompt() -> None:
@@ -434,21 +496,27 @@ def test_auto_miss_records_event_and_deals_next_lattice_prompt() -> None:
     current_prompt = engine._current_prompt
     assert isinstance(current_prompt, TraceTest1PromptPlan)
     expected_end = trace_test_1_scene_frames(prompt=current_prompt, progress=1.0).red_frame.position
+    expected_end_path = _tt1_build_lattice_path(current_prompt.red_plan)
+    assert expected_end_path is not None
 
     clock.advance(0.5)
     engine.update()
 
     assert engine._events[-1].user_answer == 0
     assert engine._events[-1].raw == ""
+    assert engine._events[-1].is_timeout is True
     payload = engine.snapshot().payload
     assert isinstance(payload, TraceTest1Payload)
     assert payload.prompt_index == current_prompt.prompt_index + 1
     assert engine._current_prompt is not None
     assert engine._current_prompt.red_plan.lattice_start is not None
-    assert engine._current_prompt.red_plan.lattice_actions[1] is _tt1_action_for_command(
+    assert engine._current_prompt.red_plan.lattice_start.node == expected_end_path.end_state.node
+    assert engine._current_prompt.red_plan.lattice_actions[
+        _tt1_command_step_index(engine._current_prompt.red_plan)
+    ] is _tt1_action_for_command(
         engine._current_prompt.red_plan.command
     )
-    assert payload.scene.red_frame.position != pytest.approx(expected_end, abs=0.01)
+    assert payload.scene.red_frame.position == pytest.approx(expected_end, abs=0.01)
 
 
 def test_scored_start_deals_valid_lattice_prompt_after_practice() -> None:
@@ -471,6 +539,10 @@ def test_scored_start_deals_valid_lattice_prompt_after_practice() -> None:
     assert isinstance(payload, TraceTest1Payload)
 
     assert engine.submit_answer(str(payload.correct_code)) is True
+    assert engine.phase is Phase.PRACTICE
+
+    clock.advance(0.60)
+    engine.update()
     assert engine.phase is Phase.PRACTICE_DONE
 
     engine.start_scored()
@@ -479,6 +551,105 @@ def test_scored_start_deals_valid_lattice_prompt_after_practice() -> None:
     assert engine._current_prompt is not None
     assert engine._current_prompt.red_plan.lattice_start is not None
     assert scored_payload.correct_code in {1, 2, 3, 4}
+
+
+def test_scored_timeout_commits_locked_observe_stage_input() -> None:
+    clock = FakeClock()
+    engine = build_trace_test_1_test(
+        clock=clock,
+        seed=140,
+        difficulty=0.5,
+        config=TraceTest1Config(
+            scored_duration_s=0.35,
+            practice_questions=0,
+            scored_observe_s=1.0,
+        ),
+    )
+
+    engine.start_scored()
+    payload = engine.snapshot().payload
+    assert isinstance(payload, TraceTest1Payload)
+    wrong_raw = {
+        1: "RIGHT",
+        2: "LEFT",
+        3: "DOWN",
+        4: "UP",
+    }[int(payload.correct_code)]
+
+    assert engine.submit_answer(wrong_raw) is True
+    assert engine.events() == []
+
+    clock.advance(0.35)
+    engine.update()
+
+    assert engine.phase is Phase.RESULTS
+    event = engine.events()[-1]
+    assert event.raw == wrong_raw
+    assert event.user_answer == trace_test_1_answer_code(wrong_raw)
+    assert event.is_correct is False
+    summary = engine.scored_summary()
+    assert summary.attempted == 1
+    assert summary.correct == 0
+
+
+def test_red_generator_starts_each_prompt_from_previous_red_end_state() -> None:
+    gen = TraceTest1Generator(seed=1701)
+    previous_end = None
+    for _ in range(16):
+        payload = gen.next_problem(difficulty=0.82).payload
+        assert isinstance(payload, TraceTest1PromptPlan)
+        path = _tt1_build_lattice_path(payload.red_plan)
+        assert path is not None
+        if previous_end is not None:
+            assert payload.red_plan.lattice_start is not None
+            assert payload.red_plan.lattice_start.node == previous_end.node
+        gen.commit_prompt(prompt=payload, progress=1.0)
+        previous_end = path.end_state
+
+
+def test_red_generator_keeps_boundary_recovery_continuous_and_truthful() -> None:
+    gen = TraceTest1Generator(seed=1702, allowed_commands=(TraceTest1Command.PULL,))
+    boundary_state = trace_lattice_state(col=3, row=1, level=4, forward=(0, 1, 0), up=(0, 0, 1))
+    gen._red_lattice_state = boundary_state
+    gen._red_state = _tt1_aircraft_state_from_lattice_state(boundary_state)
+    tier = TraceTest1DifficultyTier(
+        blue_count=4,
+        speed_multiplier=1.38,
+        answer_open_progress=0.30,
+        immediate_turn_chance=1.0,
+    )
+
+    plan = gen._build_red_plan(tier=tier)
+    path = _tt1_build_lattice_path(plan)
+
+    assert plan.lattice_start is not None
+    assert plan.lattice_start.node == boundary_state.node
+    assert path is not None
+    assert plan.lattice_actions[0] is TraceLatticeAction.STRAIGHT
+    assert path.steps[0].overridden is True
+    assert path.steps[_tt1_command_step_index(plan)].effective_action is _tt1_action_for_command(plan.command)
+
+
+def test_red_generator_prefers_immediate_turn_when_current_state_is_safe() -> None:
+    gen = TraceTest1Generator(seed=1703, allowed_commands=(TraceTest1Command.LEFT,))
+    safe_state = trace_lattice_state(col=5, row=4, level=2, forward=(0, 1, 0), up=(0, 0, 1))
+    gen._red_lattice_state = safe_state
+    gen._red_state = _tt1_aircraft_state_from_lattice_state(safe_state)
+    tier = TraceTest1DifficultyTier(
+        blue_count=5,
+        speed_multiplier=1.65,
+        answer_open_progress=0.24,
+        immediate_turn_chance=1.0,
+    )
+
+    plan = gen._build_red_plan(tier=tier)
+    path = _tt1_build_lattice_path(plan)
+
+    assert plan.lattice_start is not None
+    assert plan.lattice_start.node == safe_state.node
+    assert plan.lattice_actions[0] is _tt1_action_for_command(plan.command)
+    assert path is not None
+    assert path.steps[_tt1_command_step_index(plan)].effective_action is _tt1_action_for_command(plan.command)
 
 
 def test_red_lattice_paths_stay_on_screen_across_tiers() -> None:

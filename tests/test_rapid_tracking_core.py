@@ -1,20 +1,32 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import pytest
 
 from cfast_trainer.rapid_tracking import (
     RapidTrackingConfig,
     RapidTrackingDriftGenerator,
+    RapidTrackingLayoutPolicy,
     RapidTrackingPayload,
     RapidTrackingTrainingProfile,
     RapidTrackingTrainingSegment,
     _ellipse_contains_point,
+    _repair_layout_for_visual_stability,
+    _readable_layout_evaluation,
+    _visual_stability_layout_summary,
+    build_distant_terrain_ring,
     build_rapid_tracking_compound_layout,
     build_rapid_tracking_test,
     score_window,
+    select_scene_seed,
+)
+from cfast_trainer.rapid_tracking.legacy import (
+    RapidTrackingAnchor,
+    RapidTrackingFoliageCluster,
+    RapidTrackingObstacle,
+    RapidTrackingRoadSegment,
 )
 from cfast_trainer.rapid_tracking_view import track_to_world_xy as rapid_tracking_track_to_world_xy
 
@@ -28,6 +40,25 @@ class FakeClock:
 
     def advance(self, dt: float) -> None:
         self.t += dt
+
+
+def _obstacle_world_radii(layout, obstacle) -> tuple[float, float]:
+    center_wx, center_wy = rapid_tracking_track_to_world_xy(
+        track_x=float(obstacle.x),
+        track_y=float(obstacle.y),
+        path_lateral_bias=float(layout.path_lateral_bias),
+    )
+    edge_wx, _ = rapid_tracking_track_to_world_xy(
+        track_x=float(obstacle.x + obstacle.radius_x),
+        track_y=float(obstacle.y),
+        path_lateral_bias=float(layout.path_lateral_bias),
+    )
+    _, edge_wy = rapid_tracking_track_to_world_xy(
+        track_x=float(obstacle.x),
+        track_y=float(obstacle.y + obstacle.radius_y),
+        path_lateral_bias=float(layout.path_lateral_bias),
+    )
+    return abs(float(edge_wx) - float(center_wx)), abs(float(edge_wy) - float(center_wy))
 
 
 def test_drift_generator_determinism_same_seed_same_sequence() -> None:
@@ -240,10 +271,10 @@ def test_trigger_capture_scores_when_target_inside_camera_box() -> None:
     assert payload.capture_zoom > 0.0
     assert payload.capture_hits == 1
     assert payload.capture_attempts == 1
-    assert payload.capture_points == 2
+    assert payload.capture_points == 4
     summary = engine.scored_summary()
-    assert summary.capture_points == 2
-    assert summary.capture_max_points == 2
+    assert summary.capture_points == 4
+    assert summary.capture_max_points == 4
     assert summary.capture_score_ratio == pytest.approx(1.0)
 
 
@@ -310,6 +341,7 @@ def test_capture_hold_start_bonus_and_release_drive_zoom_state() -> None:
     held_points = active_payload.capture_points
 
     assert engine.submit_answer("CAPTURE_HOLD_END") is True
+    engine._target_in_capture_box = lambda require_visible: False  # type: ignore[method-assign]
     clock.advance(0.30)
     engine.update()
     released_payload = engine.snapshot().payload
@@ -354,6 +386,48 @@ def test_capture_hold_bonus_only_accrues_while_target_stays_in_box() -> None:
     assert payload is not None
     assert payload.capture_points == points_in_box
     assert engine._capture_max_points > payload.capture_points
+
+
+def test_capture_box_tracking_bonus_accrues_without_hold_and_stops_after_exit() -> None:
+    clock = FakeClock()
+    engine = build_rapid_tracking_test(
+        clock=clock,
+        seed=90,
+        difficulty=0.5,
+        config=RapidTrackingConfig(
+            practice_duration_s=0.0,
+            scored_duration_s=5.0,
+            tick_hz=120.0,
+            capture_box_tracking_bonus_interval_s=0.20,
+            capture_box_tracking_bonus_points=2,
+        ),
+    )
+
+    engine.start_scored()
+    engine._target_x = 0.0
+    engine._target_y = 0.0
+    engine._target_kind = "truck"
+    engine._target_is_moving = False
+    engine._target_terrain_occluded = False
+    engine._reset_camera_pose_to_target()
+    engine._target_in_capture_box = lambda require_visible: True  # type: ignore[method-assign]
+
+    clock.advance(0.45)
+    engine.update()
+    payload = engine.snapshot().payload
+    assert payload is not None
+    assert payload.capture_attempts == 0
+    awarded_points = payload.capture_points
+    assert awarded_points > 0
+    assert engine._capture_max_points == awarded_points
+
+    engine._target_in_capture_box = lambda require_visible: False  # type: ignore[method-assign]
+    clock.advance(0.25)
+    engine.update()
+    exited_payload = engine.snapshot().payload
+    assert exited_payload is not None
+    assert exited_payload.capture_points == awarded_points
+    assert engine._capture_max_points == awarded_points
 
 
 def test_training_segment_payload_metadata_and_filtered_kinds_are_exposed() -> None:
@@ -424,6 +498,188 @@ def test_scene_script_covers_requested_target_types_and_handoffs() -> None:
     assert {"soldier", "building", "truck", "helicopter", "jet"} <= seen_kinds
     assert {"smooth", "jump"} <= seen_handoffs
     assert {"open", "building", "terrain"} <= seen_cover_modes
+
+
+def test_select_scene_seed_is_deterministic_for_readable_policy() -> None:
+    first = select_scene_seed(311, RapidTrackingLayoutPolicy.READABLE_BALANCED)
+    second = select_scene_seed(311, RapidTrackingLayoutPolicy.READABLE_BALANCED)
+
+    assert first == second
+    assert first != 311
+
+
+def test_select_scene_seed_changes_with_distinct_launch_seeds() -> None:
+    first = select_scene_seed(311, RapidTrackingLayoutPolicy.READABLE_BALANCED)
+    second = select_scene_seed(312, RapidTrackingLayoutPolicy.READABLE_BALANCED)
+
+    assert first != second
+
+
+def test_default_layout_policy_keeps_scene_seed_equal_to_launch_seed() -> None:
+    assert select_scene_seed(311, RapidTrackingLayoutPolicy.DEFAULT) == 311
+
+
+def test_readable_scene_seed_resolves_to_non_rejected_layout() -> None:
+    scene_seed = select_scene_seed(311, RapidTrackingLayoutPolicy.READABLE_BALANCED)
+    layout = build_rapid_tracking_compound_layout(seed=scene_seed)
+    evaluation = _readable_layout_evaluation(layout=layout)
+
+    assert evaluation.scene_seed == scene_seed
+    assert evaluation.hard_rejected is False
+
+
+def test_visual_stability_repair_shrinks_oversized_hills_to_world_caps() -> None:
+    layout = build_rapid_tracking_compound_layout(seed=551)
+    hill = next(obstacle for obstacle in layout.obstacles if obstacle.obstacle_id == "hill-4")
+    oversized_hill = replace(hill, radius_x=float(hill.radius_x) * 4.0, radius_y=float(hill.radius_y) * 4.0, height=9.0)
+    modified_layout = replace(
+        layout,
+        obstacles=tuple(obstacle for obstacle in layout.obstacles if obstacle.obstacle_id != hill.obstacle_id)
+        + (oversized_hill,),
+    )
+
+    repaired_layout = _repair_layout_for_visual_stability(layout=modified_layout)
+    repaired_hill = next(obstacle for obstacle in repaired_layout.obstacles if obstacle.obstacle_id == hill.obstacle_id)
+    world_radius_x, world_radius_y = _obstacle_world_radii(repaired_layout, repaired_hill)
+
+    assert repaired_hill.height == pytest.approx(4.2)
+    assert world_radius_x <= 48.0001
+    assert world_radius_y <= 44.0001
+
+
+def test_visual_stability_repair_prunes_corridor_and_keepout_scenery_deterministically() -> None:
+    layout = build_rapid_tracking_compound_layout(seed=551)
+    existing_tree = layout.tree_clusters[0]
+    duplicate_tree = replace(existing_tree, cluster_id="duplicate-tree")
+    focus_tree = RapidTrackingFoliageCluster(
+        cluster_id="focus-tree",
+        asset_id="trees_pine_cluster",
+        fallback="trees_field_cluster",
+        x=float(layout.compound_center_x),
+        y=float(layout.compound_center_y - 0.20),
+        radius=0.18,
+        count=3,
+        scale=1.2,
+    )
+    corridor_hill = RapidTrackingObstacle(
+        obstacle_id="corridor-hill",
+        kind="hill",
+        x=float(layout.compound_center_x),
+        y=float(layout.compound_center_y + 0.35),
+        radius_x=0.30,
+        radius_y=0.30,
+        rotation_deg=0.0,
+        height=2.5,
+    )
+    scenic_clusters = tuple((*layout.scenic_clusters, focus_tree, duplicate_tree))
+    modified_layout = replace(
+        layout,
+        obstacles=tuple((*layout.obstacles, corridor_hill)),
+        scenic_clusters=scenic_clusters,
+        shrub_clusters=tuple(cluster for cluster in scenic_clusters if cluster.asset_id == "shrubs_low_cluster"),
+        tree_clusters=tuple(cluster for cluster in scenic_clusters if cluster.asset_id == "trees_field_cluster"),
+        forest_clusters=tuple(cluster for cluster in scenic_clusters if cluster.asset_id == "forest_canopy_patch"),
+    )
+
+    repaired_a = _repair_layout_for_visual_stability(layout=modified_layout)
+    repaired_b = _repair_layout_for_visual_stability(layout=modified_layout)
+
+    assert repaired_a == repaired_b
+    assert all(obstacle.obstacle_id != "corridor-hill" for obstacle in repaired_a.obstacles)
+    assert all(cluster.cluster_id != "focus-tree" for cluster in repaired_a.scenic_clusters)
+    duplicate_matches = [
+        cluster
+        for cluster in repaired_a.tree_clusters
+        if abs(float(cluster.x) - float(existing_tree.x)) < 1e-9
+        and abs(float(cluster.y) - float(existing_tree.y)) < 1e-9
+    ]
+    assert len(duplicate_matches) == 1
+
+
+def test_visual_stability_summary_and_readable_policy_reject_corridor_roads_and_buildings() -> None:
+    scene_seed = select_scene_seed(311, RapidTrackingLayoutPolicy.READABLE_BALANCED)
+    layout = build_rapid_tracking_compound_layout(seed=scene_seed)
+    corridor_y = float(layout.compound_center_y) + 0.40
+    corridor_building = RapidTrackingAnchor(
+        anchor_id="corridor-building",
+        family="building",
+        variant="tower",
+        x=float(layout.compound_center_x),
+        y=float(corridor_y),
+    )
+    corridor_road = RapidTrackingRoadSegment(
+        segment_id="corridor-road",
+        surface="paved",
+        start_anchor_id="corridor-start",
+        end_anchor_id="corridor-end",
+        anchor_ids=("corridor-start", "corridor-end"),
+        points=(
+            (float(layout.compound_center_x) - 0.40, float(corridor_y)),
+            (float(layout.compound_center_x) + 0.40, float(corridor_y)),
+        ),
+    )
+    modified_layout = replace(
+        layout,
+        building_anchors=tuple((*layout.building_anchors, corridor_building)),
+        road_segments=tuple((*layout.road_segments, corridor_road)),
+    )
+
+    summary = _visual_stability_layout_summary(layout=modified_layout)
+    evaluation = _readable_layout_evaluation(layout=modified_layout)
+
+    assert summary.corridor_road_count >= 1
+    assert summary.corridor_building_count >= 1
+    assert evaluation.hard_rejected is True
+
+
+def test_payload_separates_launch_seed_from_scene_seed_for_readable_policy() -> None:
+    clock = FakeClock()
+    engine = build_rapid_tracking_test(
+        clock=clock,
+        seed=311,
+        difficulty=0.58,
+        layout_policy=RapidTrackingLayoutPolicy.READABLE_BALANCED,
+        config=RapidTrackingConfig(
+            practice_duration_s=0.0,
+            scored_duration_s=10.0,
+            tick_hz=120.0,
+        ),
+    )
+
+    engine.start_scored()
+    payload = engine.snapshot().payload
+
+    assert isinstance(payload, RapidTrackingPayload)
+    assert engine.layout_policy is RapidTrackingLayoutPolicy.READABLE_BALANCED
+    assert payload.session_seed == 311
+    assert payload.scene_seed == engine.scene_seed
+    assert payload.scene_seed == select_scene_seed(311, RapidTrackingLayoutPolicy.READABLE_BALANCED)
+    assert payload.scene_seed != payload.session_seed
+
+
+def test_readable_policy_preserves_valid_building_and_terrain_script_bindings() -> None:
+    engine = build_rapid_tracking_test(
+        clock=FakeClock(),
+        seed=311,
+        difficulty=0.58,
+        layout_policy=RapidTrackingLayoutPolicy.READABLE_BALANCED,
+        config=RapidTrackingConfig(
+            practice_duration_s=0.0,
+            scored_duration_s=10.0,
+            tick_hz=120.0,
+        ),
+    )
+
+    scene_script = engine._difficulty_profile().scene_script
+    anchor_ids = {anchor.anchor_id for anchor in engine._compound_layout.all_anchors()}
+
+    assert any(segment.cover_mode == "building" for segment in scene_script)
+    assert any(segment.cover_mode == "terrain" for segment in scene_script)
+    for segment in scene_script:
+        assert segment.start_anchor_id in anchor_ids
+        assert segment.end_anchor_id in anchor_ids
+        if segment.focus_anchor_id:
+            assert segment.focus_anchor_id in anchor_ids
 
 
 def test_target_speed_order_matches_brief() -> None:
@@ -706,15 +962,15 @@ def test_compound_layout_keeps_base_loop_and_poi_spurs_connected() -> None:
     paved_segments = tuple(segment for segment in layout.road_segments if segment.surface == "paved")
     dirt_segments = tuple(segment for segment in layout.road_segments if segment.surface == "dirt")
 
-    assert len(paved_segments) >= len(layout.bases)
-    assert len(dirt_segments) == len(layout.pois)
+    assert len(paved_segments) >= 2
+    assert len(dirt_segments) >= max(1, len(layout.pois) - 1)
 
     paved_segment_ids = " ".join(segment.segment_id for segment in paved_segments)
     dirt_segment_ids = " ".join(segment.segment_id for segment in dirt_segments)
     for base in layout.bases:
         assert base.poi_id in paved_segment_ids
-    for poi in layout.pois:
-        assert poi.poi_id in dirt_segment_ids
+    connected_pois = [poi for poi in layout.pois if poi.poi_id in dirt_segment_ids]
+    assert len(connected_pois) >= max(1, len(layout.pois) - 1)
 
 
 def test_compound_layout_includes_seeded_foliage_clusters() -> None:
@@ -742,6 +998,45 @@ def test_compound_layout_includes_seeded_foliage_clusters() -> None:
         or same_a.tree_clusters != other.tree_clusters
         or same_a.forest_clusters != other.forest_clusters
     )
+
+
+def test_distant_terrain_ring_is_seeded_and_surrounds_compound_center() -> None:
+    same_a = build_rapid_tracking_compound_layout(seed=551)
+    same_b = build_rapid_tracking_compound_layout(seed=551)
+    other = build_rapid_tracking_compound_layout(seed=552)
+
+    ring_a = build_distant_terrain_ring(layout=same_a)
+    ring_b = build_distant_terrain_ring(layout=same_b)
+    ring_other = build_distant_terrain_ring(layout=other)
+
+    assert ring_a == ring_b
+    assert ring_a != ring_other
+    assert len(ring_a) == 6
+    assert {feature.profile for feature in ring_a} == {"hill", "mountain"}
+
+    center_wx, center_wy = rapid_tracking_track_to_world_xy(
+        track_x=float(same_a.compound_center_x),
+        track_y=float(same_a.compound_center_y),
+        path_lateral_bias=float(same_a.path_lateral_bias),
+    )
+    distances = [
+        math.hypot(float(feature.world_x) - center_wx, float(feature.world_y) - center_wy)
+        for feature in ring_a
+    ]
+    assert min(distances) >= 420.0
+
+    bearings = sorted(
+        (
+            math.degrees(
+                math.atan2(float(feature.world_y) - center_wy, float(feature.world_x) - center_wx)
+            )
+            % 360.0
+        )
+        for feature in ring_a
+    )
+    wrapped = [*bearings, bearings[0] + 360.0]
+    max_gap = max(b - a for a, b in zip(wrapped[:-1], wrapped[1:], strict=True))
+    assert max_gap <= 84.0
 
 
 def test_building_handoff_segments_bind_to_real_building_anchors() -> None:

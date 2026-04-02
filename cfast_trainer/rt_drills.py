@@ -10,6 +10,7 @@ from .rapid_tracking import (
     RAPID_TRACKING_TARGET_KIND_ORDER,
     RapidTrackingConfig,
     RapidTrackingEngine,
+    RapidTrackingLayoutPolicy,
     RapidTrackingPayload,
     RapidTrackingTrainingProfile,
     RapidTrackingTrainingSegment,
@@ -307,6 +308,7 @@ def _build_rt_drill(
     title: str,
     instructions: tuple[str, ...],
     segments: tuple[RapidTrackingTrainingSegment, ...],
+    layout_policy: RapidTrackingLayoutPolicy | str = RapidTrackingLayoutPolicy.DEFAULT,
 ) -> RapidTrackingContinuousDrill:
     normalized_mode = _normalize_mode(mode)
     _resolved_cfg, scored_duration_s = _drill_config(normalized_mode, config)
@@ -320,6 +322,7 @@ def _build_rt_drill(
             scored_duration_s=scored_duration_s,
         ),
         scored_segments=segments,
+        layout_policy=layout_policy,
     )
     return RapidTrackingContinuousDrill(
         title=title,
@@ -813,6 +816,7 @@ def build_rt_mixed_tempo_drill(
         config=config,
         test_code="rt_mixed_tempo",
         title="Rapid Tracking: Mixed Tempo",
+        layout_policy=RapidTrackingLayoutPolicy.READABLE_BALANCED,
         instructions=(
             "Rapid Tracking: Mixed Tempo",
             "",
@@ -841,6 +845,7 @@ def build_rt_pressure_run_drill(
         config=config,
         test_code="rt_pressure_run",
         title="Rapid Tracking: Pressure Run",
+        layout_policy=RapidTrackingLayoutPolicy.READABLE_BALANCED,
         instructions=(
             "Rapid Tracking: Pressure Run",
             "",

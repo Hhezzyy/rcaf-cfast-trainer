@@ -19,6 +19,7 @@ from cfast_trainer.auditory_capacity import (
     score_sequence_answer,
     tube_contact_ratio,
 )
+from cfast_trainer.auditory_capacity_view import BALL_FORWARD_IDLE_NORM, GATE_DEPTH_SLOTS_NORM, TUNNEL_EXIT_NORM
 from cfast_trainer.cognitive_core import Phase
 
 
@@ -898,3 +899,106 @@ def test_gate_scoring_plane_does_not_move_with_ball_horizontal_offset() -> None:
     assert payload.gate_hits == 1
     assert payload.gate_misses == 0
     assert payload.gates == ()
+
+
+def test_spawned_gates_receive_persistent_visual_slots_in_payload() -> None:
+    _, engine = _build_engine()
+    engine._next_gate_at_s = 0.0
+    engine._update_gates(0.0)
+    engine._next_gate_at_s = 0.0
+    engine._update_gates(0.0)
+
+    payload = engine.snapshot().payload
+    assert payload is not None
+    assert tuple(gate.visual_slot_index for gate in payload.gates) == (
+        len(GATE_DEPTH_SLOTS_NORM) - 1,
+        len(GATE_DEPTH_SLOTS_NORM) - 2,
+    )
+
+
+def test_visual_slots_do_not_shift_when_earlier_gate_retires() -> None:
+    _, engine = _build_engine()
+    engine._gates = [
+        _LiveGate(
+            gate_id=1,
+            x_norm=-2.0,
+            y_norm=0.0,
+            color="GREEN",
+            shape="CIRCLE",
+            aperture_norm=0.20,
+            visual_slot_index=7,
+            scored=True,
+        ),
+        _LiveGate(
+            gate_id=2,
+            x_norm=0.80,
+            y_norm=0.0,
+            color="BLUE",
+            shape="SQUARE",
+            aperture_norm=0.22,
+            visual_slot_index=6,
+            scored=False,
+        ),
+        _LiveGate(
+            gate_id=3,
+            x_norm=0.50,
+            y_norm=0.0,
+            color="RED",
+            shape="TRIANGLE",
+            aperture_norm=0.18,
+            visual_slot_index=5,
+            scored=False,
+        ),
+    ]
+
+    engine._update_gates(0.0)
+
+    payload = engine.snapshot().payload
+    assert payload is not None
+    assert tuple(gate.gate_id for gate in payload.gates) == (2, 3)
+    assert tuple(gate.visual_slot_index for gate in payload.gates) == (6, 5)
+
+
+def test_ball_forward_norm_advances_toward_nearest_visible_gate_deterministically() -> None:
+    _, engine = _build_engine()
+    engine._gates = [
+        _LiveGate(
+            gate_id=11,
+            x_norm=1.20,
+            y_norm=0.0,
+            color="GREEN",
+            shape="CIRCLE",
+            aperture_norm=0.20,
+            visual_slot_index=7,
+            scored=False,
+        )
+    ]
+
+    initial_payload = engine.snapshot().payload
+    assert initial_payload is not None
+    initial_forward = float(initial_payload.ball_forward_norm)
+    assert BALL_FORWARD_IDLE_NORM <= initial_forward < TUNNEL_EXIT_NORM
+
+    engine._update_gates(0.50)
+    first_payload = engine.snapshot().payload
+    assert first_payload is not None
+    assert first_payload.ball_forward_norm > initial_forward
+    assert first_payload.ball_forward_norm < TUNNEL_EXIT_NORM
+
+    _, engine_b = _build_engine()
+    engine_b._gates = [
+        _LiveGate(
+            gate_id=11,
+            x_norm=1.20,
+            y_norm=0.0,
+            color="GREEN",
+            shape="CIRCLE",
+            aperture_norm=0.20,
+            visual_slot_index=7,
+            scored=False,
+        )
+    ]
+    engine_b._update_gates(0.50)
+    second_payload = engine_b.snapshot().payload
+    assert second_payload is not None
+    assert second_payload.ball_forward_norm == pytest.approx(first_payload.ball_forward_norm)

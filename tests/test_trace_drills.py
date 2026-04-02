@@ -44,6 +44,7 @@ def _wait_for_answer_ready(
     *,
     drill: object,
     clock: FakeClock,
+    skip_tt1_prompt_index: int | None = None,
     max_steps: int = 400,
     dt: float = 0.05,
 ) -> TraceTest1Payload | TraceTest2Payload | None:
@@ -53,7 +54,10 @@ def _wait_for_answer_ready(
             return None
         payload = snap.payload
         if isinstance(payload, TraceTest1Payload):
-            if payload.trial_stage is TraceTest1TrialStage.ANSWER_OPEN:
+            if (
+                payload.trial_stage is TraceTest1TrialStage.ANSWER_OPEN
+                and payload.prompt_index != skip_tt1_prompt_index
+            ):
                 return payload
         elif isinstance(payload, TraceTest2Payload):
             if payload.trial_stage is TraceTest2TrialStage.QUESTION:
@@ -167,13 +171,22 @@ def test_trace_mixed_drill_sequences_tt1_before_tt2_in_practice() -> None:
 
     drill.start_practice()
     seen_types: list[type] = []
+    last_tt1_prompt_index: int | None = None
     for _ in range(6):
-        payload = _wait_for_answer_ready(drill=drill, clock=clock)
+        payload = _wait_for_answer_ready(
+            drill=drill,
+            clock=clock,
+            skip_tt1_prompt_index=last_tt1_prompt_index,
+        )
         if payload is None:
             break
         if not seen_types or seen_types[-1] is not type(payload):
             seen_types.append(type(payload))
         assert drill.submit_answer(_answer_payload(payload)) is True
+        if isinstance(payload, TraceTest1Payload):
+            last_tt1_prompt_index = payload.prompt_index
+        else:
+            last_tt1_prompt_index = None
         drill.update()
 
     assert seen_types[:2] == [TraceTest1Payload, TraceTest2Payload]
@@ -208,10 +221,19 @@ def test_trace_mixed_drill_aggregates_events_and_summary_across_segments() -> No
     drill.start_practice()
     if drill.phase is Phase.PRACTICE_DONE:
         drill.start_scored()
+    last_tt1_prompt_index: int | None = None
     while drill.phase is Phase.PRACTICE:
-        payload = _wait_for_answer_ready(drill=drill, clock=clock)
+        payload = _wait_for_answer_ready(
+            drill=drill,
+            clock=clock,
+            skip_tt1_prompt_index=last_tt1_prompt_index,
+        )
         assert payload is not None
         assert drill.submit_answer(_answer_payload(payload)) is True
+        if isinstance(payload, TraceTest1Payload):
+            last_tt1_prompt_index = payload.prompt_index
+        else:
+            last_tt1_prompt_index = None
         drill.update()
     if drill.phase is Phase.PRACTICE_DONE:
         drill.start_scored()

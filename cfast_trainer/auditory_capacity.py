@@ -4,6 +4,14 @@ import math
 from dataclasses import dataclass
 from enum import StrEnum
 
+from .auditory_capacity_view import (
+    BALL_FORWARD_IDLE_NORM,
+    BALL_FORWARD_START_NORM,
+    GATE_DEPTH_SLOTS_NORM,
+    TUNNEL_EXIT_NORM,
+    lerp,
+    smoothstep01,
+)
 from .clock import Clock
 from .cognitive_core import AttemptSummary, Phase, SeededRng, TestSnapshot, clamp01
 
@@ -166,6 +174,7 @@ class AuditoryCapacityGate:
     color: str
     shape: str
     aperture_norm: float
+    visual_slot_index: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -193,6 +202,7 @@ class AuditoryCapacityPayload:
 
     ball_x: float
     ball_y: float
+    ball_forward_norm: float
     ball_contact_ratio: float
     control_x: float
     control_y: float
@@ -336,6 +346,7 @@ class _LiveGate:
     color: str
     shape: str
     aperture_norm: float
+    visual_slot_index: int | None = None
     scored: bool = False
 
 
@@ -822,6 +833,7 @@ class AuditoryCapacityEngine:
 
         self._ball_x = 0.0
         self._ball_y = 0.0
+        self._ball_forward_norm = float(BALL_FORWARD_IDLE_NORM)
         self._control_x = 0.0
         self._control_y = 0.0
         self._ball_contact_ratio = 0.0
@@ -2074,6 +2086,7 @@ class AuditoryCapacityEngine:
             self._gates.clear()
             self._active_gate_directive = None
             self._next_gate_at_s = math.inf
+            self._update_ball_forward_norm(dt)
             return
         if self._sim_elapsed_s >= self._next_gate_at_s:
             curve_bias = self._curve_gate_bias()
@@ -2086,6 +2099,7 @@ class AuditoryCapacityEngine:
                     color=plan.color,
                     shape=plan.shape,
                     aperture_norm=plan.aperture_norm,
+                    visual_slot_index=None,
                     scored=False,
                 )
             )
@@ -2140,7 +2154,58 @@ class AuditoryCapacityEngine:
             if (not gate.scored) and gate.x_norm >= AUDITORY_GATE_RETIRE_X_NORM:
                 active.append(gate)
         self._gates = active
+        self._assign_gate_visual_slots()
         self._bind_gate_directive_to_next_match()
+        self._update_ball_forward_norm(dt)
+
+    def _assign_gate_visual_slots(self) -> None:
+        available = {
+            slot_index
+            for slot_index in range(len(GATE_DEPTH_SLOTS_NORM))
+        }
+        for gate in self._gates:
+            if gate.visual_slot_index is not None:
+                available.discard(int(gate.visual_slot_index))
+
+        if not available:
+            return
+
+        unassigned = [gate for gate in self._gates if gate.visual_slot_index is None]
+        unassigned.sort(key=lambda gate: float(gate.x_norm), reverse=True)
+        for gate in unassigned:
+            if not available:
+                break
+            gate.visual_slot_index = max(available)
+            available.discard(int(gate.visual_slot_index))
+
+    def _update_ball_forward_norm(self, dt: float) -> None:
+        nearest_gate: _LiveGate | None = None
+        nearest_x = float("inf")
+        for gate in self._gates:
+            if gate.visual_slot_index is None:
+                continue
+            x_norm = float(gate.x_norm)
+            if x_norm < AUDITORY_GATE_PLAYER_X_NORM:
+                continue
+            if x_norm < nearest_x:
+                nearest_x = x_norm
+                nearest_gate = gate
+
+        target = float(BALL_FORWARD_IDLE_NORM)
+        if nearest_gate is not None and nearest_gate.visual_slot_index is not None:
+            approach_t = smoothstep01(
+                1.0 - (float(nearest_gate.x_norm) / float(AUDITORY_GATE_SPAWN_X_NORM))
+            )
+            slot_depth = float(GATE_DEPTH_SLOTS_NORM[int(nearest_gate.visual_slot_index)])
+            target = lerp(BALL_FORWARD_START_NORM, slot_depth, approach_t)
+
+        target = max(BALL_FORWARD_START_NORM, min(TUNNEL_EXIT_NORM - 0.02, float(target)))
+        alpha = clamp01(float(dt) * 4.0)
+        self._ball_forward_norm += (target - self._ball_forward_norm) * alpha
+        self._ball_forward_norm = max(
+            BALL_FORWARD_START_NORM,
+            min(TUNNEL_EXIT_NORM - 0.02, float(self._ball_forward_norm)),
+        )
 
     def _gate_action(self, gate: _LiveGate) -> tuple[bool, str]:
         gate_color = str(gate.color).strip().upper()
@@ -2411,6 +2476,9 @@ class AuditoryCapacityEngine:
                 color=g.color,
                 shape=g.shape,
                 aperture_norm=float(g.aperture_norm),
+                visual_slot_index=(
+                    None if g.visual_slot_index is None else int(g.visual_slot_index)
+                ),
             )
             for g in self._gates
         )
@@ -2492,6 +2560,7 @@ class AuditoryCapacityEngine:
             segment_time_remaining_s=self._segment_time_remaining_s(),
             ball_x=float(self._ball_x),
             ball_y=float(self._ball_y),
+            ball_forward_norm=float(self._ball_forward_norm),
             ball_contact_ratio=float(self._ball_contact_ratio),
             control_x=float(self._control_x),
             control_y=float(self._control_y),

@@ -1,15 +1,17 @@
 from __future__ import annotations
 
-import math
 import heapq
+import math
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from enum import StrEnum
+from functools import lru_cache
 
-from .adaptive_difficulty import difficulty_level_for_ratio, difficulty_profile_for_code
-from .clock import Clock
-from .content_variants import content_metadata_from_payload
-from .cognitive_core import Phase, QuestionEvent, SeededRng, TestSnapshot, clamp01, lerp_int
-from .rapid_tracking_view import (
+from ..adaptive_difficulty import difficulty_level_for_ratio, difficulty_profile_for_code
+from ..clock import Clock
+from ..content_variants import content_metadata_from_payload
+from ..cognitive_core import Phase, QuestionEvent, SeededRng, TestSnapshot, clamp01, lerp_int
+from ..rapid_tracking_view import (
     camera_pose_compat,
     camera_rig_state as rapid_tracking_camera_rig_state,
     estimated_target_world_z,
@@ -55,6 +57,9 @@ class RapidTrackingConfig:
     capture_zoom_strength: float = 0.85
     capture_hold_bonus_interval_s: float = 0.25
     capture_hold_blend_response_hz: float = 8.0
+    capture_box_hit_bonus: int = 2
+    capture_box_tracking_bonus_interval_s: float = 0.32
+    capture_box_tracking_bonus_points: int = 1
     default_h_fov_deg: float = 130.0
     hold_zoom_h_fov_deg: float = 39.0
 
@@ -271,6 +276,7 @@ class RapidTrackingPayload:
     difficulty: float
     difficulty_tier: str
     session_seed: int
+    scene_seed: int
     camera_assist_strength: float
     turbulence_strength: float
     target_time_to_switch_s: float
@@ -343,6 +349,54 @@ class RapidTrackingDifficultyProfile:
     turbulence_strength: float
     drift_duration_scale: float
     camera_assist_strength: float
+
+
+class RapidTrackingLayoutPolicy(StrEnum):
+    DEFAULT = "default"
+    READABLE_BALANCED = "readable_balanced"
+
+
+@dataclass(frozen=True, slots=True)
+class _ReadableSceneSeedEvaluation:
+    scene_seed: int
+    hard_rejected: bool
+    score: float
+    corridor_building_count: int
+    corridor_forest_count: int
+    scenic_anchor_clearance_failures: int
+    nearby_building_count: int
+    nearby_ridge_count: int
+    clutter_penalty: float
+    path_bias_penalty: float
+    altitude_bonus: float
+    building_spread_score: float
+
+
+@dataclass(frozen=True, slots=True)
+class _VisualStabilityLayoutSummary:
+    corridor_road_count: int
+    corridor_building_count: int
+    corridor_obstacle_count: int
+    corridor_large_foliage_count: int
+    camera_keepout_obstacle_count: int
+    camera_keepout_foliage_count: int
+
+
+_READABLE_SCENE_SEED_CANDIDATE_COUNT = 50
+_READABLE_TRACKING_CORRIDOR_HALF_WIDTH = 0.85
+_READABLE_TRACKING_CORRIDOR_Y_MIN = 0.10
+_READABLE_TRACKING_CORRIDOR_Y_MAX = 0.95
+_READABLE_TRACKING_CORRIDOR_PADDING = 0.12
+_READABLE_SCENIC_ANCHOR_CLEARANCE = 0.18
+_READABLE_NEARBY_ANCHOR_DISTANCE = 1.35
+_READABLE_CLUTTER_RADIUS = 0.42
+_READABLE_SCENE_SEED_FULL_VALIDATION_LIMIT = 3
+_VISUAL_STABILITY_LOCAL_HILL_MAX_WORLD_RADIUS_X = 48.0
+_VISUAL_STABILITY_LOCAL_HILL_MAX_WORLD_RADIUS_Y = 44.0
+_VISUAL_STABILITY_LOCAL_HILL_MAX_HEIGHT_SCALE = 4.2
+_VISUAL_STABILITY_CAMERA_KEEP_OUT_WORLD = 95.0
+_VISUAL_STABILITY_FOCUS_KEEP_OUT_WORLD = 70.0
+_VISUAL_STABILITY_CAMERA_SAMPLE_PROGRESS = (0.0, 0.20, 0.40, 0.60, 0.80, 1.00)
 
 
 @dataclass(frozen=True, slots=True)
@@ -460,6 +514,504 @@ def _distance_sq(ax: float, ay: float, bx: float, by: float) -> float:
 
 def _distance(ax: float, ay: float, bx: float, by: float) -> float:
     return math.sqrt(_distance_sq(ax, ay, bx, by))
+
+
+def _normalize_layout_policy(
+    value: RapidTrackingLayoutPolicy | str | None,
+) -> RapidTrackingLayoutPolicy:
+    if isinstance(value, RapidTrackingLayoutPolicy):
+        return value
+    token = str(value or RapidTrackingLayoutPolicy.DEFAULT).strip().lower()
+    try:
+        return RapidTrackingLayoutPolicy(token)
+    except ValueError as exc:
+        raise ValueError(f"unknown Rapid Tracking layout policy: {value}") from exc
+
+
+def _readable_scene_seed_hash(*, base_seed: int, salt: int) -> int:
+    value = ((int(base_seed) & 0xFFFFFFFF) ^ 0x9E3779B9 ^ (int(salt) * 0x85EBCA6B)) & 0xFFFFFFFF
+    value ^= (value >> 16)
+    value = (value * 0x7FEB352D) & 0xFFFFFFFF
+    value ^= (value >> 15)
+    value = (value * 0x846CA68B) & 0xFFFFFFFF
+    value ^= (value >> 16)
+    normalized = int(value & 0x7FFFFFFF)
+    if normalized <= 0:
+        normalized = max(1, int(salt))
+    if normalized == int(base_seed):
+        normalized = ((normalized ^ 0x45D9F3B) & 0x7FFFFFFF) or max(1, int(salt) + 1)
+    return int(normalized)
+
+
+def _readable_scene_seed_candidates(*, base_seed: int) -> tuple[int, ...]:
+    seen: set[int] = set()
+    seeds: list[int] = []
+    salt = 1
+    while len(seeds) < _READABLE_SCENE_SEED_CANDIDATE_COUNT:
+        candidate = _readable_scene_seed_hash(base_seed=int(base_seed), salt=salt)
+        salt += 1
+        if candidate == int(base_seed) or candidate in seen:
+            continue
+        seen.add(candidate)
+        seeds.append(candidate)
+    return tuple(seeds)
+
+
+def _rapid_tracking_readable_corridor(
+    layout: RapidTrackingCompoundLayout,
+) -> tuple[float, float, float, float]:
+    center_x = float(layout.compound_center_x)
+    center_y = float(layout.compound_center_y)
+    return (
+        center_x - _READABLE_TRACKING_CORRIDOR_HALF_WIDTH,
+        center_x + _READABLE_TRACKING_CORRIDOR_HALF_WIDTH,
+        center_y + _READABLE_TRACKING_CORRIDOR_Y_MIN,
+        center_y + _READABLE_TRACKING_CORRIDOR_Y_MAX,
+    )
+
+
+def _circle_intersects_rect(
+    *,
+    center_x: float,
+    center_y: float,
+    radius: float,
+    rect: tuple[float, float, float, float],
+) -> bool:
+    x_lo, x_hi, y_lo, y_hi = rect
+    nearest_x = _clamp(float(center_x), float(x_lo), float(x_hi))
+    nearest_y = _clamp(float(center_y), float(y_lo), float(y_hi))
+    return _distance_sq(float(center_x), float(center_y), nearest_x, nearest_y) <= float(radius) ** 2
+
+
+def _polyline_intersects_rect(
+    *,
+    points: Sequence[tuple[float, float]],
+    rect: tuple[float, float, float, float],
+    padding: float = 0.0,
+) -> bool:
+    x_lo, x_hi, y_lo, y_hi = rect
+    x_lo -= float(padding)
+    x_hi += float(padding)
+    y_lo -= float(padding)
+    y_hi += float(padding)
+    for x, y in points:
+        if x_lo <= float(x) <= x_hi and y_lo <= float(y) <= y_hi:
+            return True
+    return False
+
+
+def _layout_focus_world_xy(layout: RapidTrackingCompoundLayout) -> tuple[float, float]:
+    return track_to_world_xy(
+        track_x=float(layout.compound_center_x),
+        track_y=float(layout.compound_center_y),
+        path_lateral_bias=float(layout.path_lateral_bias),
+    )
+
+
+def _layout_camera_sample_world_positions(layout: RapidTrackingCompoundLayout) -> tuple[tuple[float, float], ...]:
+    focus_x, focus_y = _layout_focus_world_xy(layout)
+    samples: list[tuple[float, float]] = []
+    for progress in _VISUAL_STABILITY_CAMERA_SAMPLE_PROGRESS:
+        rig = rapid_tracking_camera_rig_state(
+            elapsed_s=float(progress) * 90.0,
+            seed=int(layout.seed),
+            progress=float(progress),
+            camera_yaw_deg=None,
+            camera_pitch_deg=None,
+            zoom=0.0,
+            target_kind="soldier",
+            target_world_x=float(focus_x),
+            target_world_y=float(focus_y),
+            focus_world_x=float(focus_x),
+            focus_world_y=float(focus_y),
+            turbulence_strength=0.6,
+        )
+        samples.append((float(rig.cam_world_x), float(rig.cam_world_y)))
+    return tuple(samples)
+
+
+def _obstacle_intersects_rect(
+    *,
+    obstacle: RapidTrackingObstacle,
+    rect: tuple[float, float, float, float],
+    padding: float = 0.0,
+) -> bool:
+    radius = max(float(obstacle.radius_x), float(obstacle.radius_y)) + float(padding)
+    return _circle_intersects_rect(
+        center_x=float(obstacle.x),
+        center_y=float(obstacle.y),
+        radius=radius,
+        rect=rect,
+    )
+
+
+def _world_distance_to_track_point(
+    *,
+    layout: RapidTrackingCompoundLayout,
+    track_x: float,
+    track_y: float,
+    world_x: float,
+    world_y: float,
+) -> float:
+    point_world_x, point_world_y = track_to_world_xy(
+        track_x=float(track_x),
+        track_y=float(track_y),
+        path_lateral_bias=float(layout.path_lateral_bias),
+    )
+    return _distance(float(point_world_x), float(point_world_y), float(world_x), float(world_y))
+
+
+def _repair_local_hill_obstacle(
+    *,
+    layout: RapidTrackingCompoundLayout,
+    obstacle: RapidTrackingObstacle,
+) -> RapidTrackingObstacle:
+    if str(obstacle.kind).strip().lower() != "hill":
+        return obstacle
+    center_world_x, center_world_y = track_to_world_xy(
+        track_x=float(obstacle.x),
+        track_y=float(obstacle.y),
+        path_lateral_bias=float(layout.path_lateral_bias),
+    )
+    edge_world_x, _ = track_to_world_xy(
+        track_x=float(obstacle.x + obstacle.radius_x),
+        track_y=float(obstacle.y),
+        path_lateral_bias=float(layout.path_lateral_bias),
+    )
+    _, edge_world_y = track_to_world_xy(
+        track_x=float(obstacle.x),
+        track_y=float(obstacle.y + obstacle.radius_y),
+        path_lateral_bias=float(layout.path_lateral_bias),
+    )
+    world_radius_x = abs(float(edge_world_x) - float(center_world_x))
+    world_radius_y = abs(float(edge_world_y) - float(center_world_y))
+    radius_x_scale = min(
+        1.0,
+        _VISUAL_STABILITY_LOCAL_HILL_MAX_WORLD_RADIUS_X / max(1e-6, float(world_radius_x)),
+    )
+    radius_y_scale = min(
+        1.0,
+        _VISUAL_STABILITY_LOCAL_HILL_MAX_WORLD_RADIUS_Y / max(1e-6, float(world_radius_y)),
+    )
+    return replace(
+        obstacle,
+        radius_x=float(obstacle.radius_x) * float(radius_x_scale),
+        radius_y=float(obstacle.radius_y) * float(radius_y_scale),
+        height=min(float(obstacle.height), _VISUAL_STABILITY_LOCAL_HILL_MAX_HEIGHT_SCALE),
+    )
+
+
+def _visual_stability_layout_summary(
+    *,
+    layout: RapidTrackingCompoundLayout,
+) -> _VisualStabilityLayoutSummary:
+    corridor = _rapid_tracking_readable_corridor(layout)
+    focus_world_x, focus_world_y = _layout_focus_world_xy(layout)
+    camera_samples = _layout_camera_sample_world_positions(layout)
+    corridor_road_count = sum(
+        1
+        for segment in layout.road_segments
+        if _polyline_intersects_rect(points=segment.points, rect=corridor, padding=_READABLE_TRACKING_CORRIDOR_PADDING)
+    )
+    corridor_building_count = sum(
+        1
+        for anchor in layout.building_anchors
+        if corridor[0] <= float(anchor.x) <= corridor[1] and corridor[2] <= float(anchor.y) <= corridor[3]
+    )
+    corridor_obstacle_count = sum(
+        1
+        for obstacle in layout.obstacles
+        if str(obstacle.kind).strip().lower() in {"hill", "lake"}
+        and _obstacle_intersects_rect(
+            obstacle=obstacle,
+            rect=corridor,
+            padding=_READABLE_TRACKING_CORRIDOR_PADDING,
+        )
+    )
+    corridor_large_foliage_count = sum(
+        1
+        for cluster in layout.scenic_clusters
+        if str(cluster.asset_id).strip().lower() != "shrubs_low_cluster"
+        and _circle_intersects_rect(
+            center_x=float(cluster.x),
+            center_y=float(cluster.y),
+            radius=float(cluster.radius),
+            rect=corridor,
+        )
+    )
+    camera_keepout_obstacle_count = 0
+    camera_keepout_foliage_count = 0
+    for obstacle in layout.obstacles:
+        world_distance = _world_distance_to_track_point(
+            layout=layout,
+            track_x=float(obstacle.x),
+            track_y=float(obstacle.y),
+            world_x=float(focus_world_x),
+            world_y=float(focus_world_y),
+        )
+        if world_distance < _VISUAL_STABILITY_FOCUS_KEEP_OUT_WORLD:
+            camera_keepout_obstacle_count += 1
+            continue
+        for sample_x, sample_y in camera_samples:
+            sample_distance = _world_distance_to_track_point(
+                layout=layout,
+                track_x=float(obstacle.x),
+                track_y=float(obstacle.y),
+                world_x=float(sample_x),
+                world_y=float(sample_y),
+            )
+            if sample_distance < _VISUAL_STABILITY_CAMERA_KEEP_OUT_WORLD:
+                camera_keepout_obstacle_count += 1
+                break
+    for cluster in layout.scenic_clusters:
+        if str(cluster.asset_id).strip().lower() == "shrubs_low_cluster":
+            continue
+        world_distance = _world_distance_to_track_point(
+            layout=layout,
+            track_x=float(cluster.x),
+            track_y=float(cluster.y),
+            world_x=float(focus_world_x),
+            world_y=float(focus_world_y),
+        )
+        if world_distance < _VISUAL_STABILITY_FOCUS_KEEP_OUT_WORLD:
+            camera_keepout_foliage_count += 1
+            continue
+        for sample_x, sample_y in camera_samples:
+            sample_distance = _world_distance_to_track_point(
+                layout=layout,
+                track_x=float(cluster.x),
+                track_y=float(cluster.y),
+                world_x=float(sample_x),
+                world_y=float(sample_y),
+            )
+            if sample_distance < _VISUAL_STABILITY_CAMERA_KEEP_OUT_WORLD:
+                camera_keepout_foliage_count += 1
+                break
+    return _VisualStabilityLayoutSummary(
+        corridor_road_count=int(corridor_road_count),
+        corridor_building_count=int(corridor_building_count),
+        corridor_obstacle_count=int(corridor_obstacle_count),
+        corridor_large_foliage_count=int(corridor_large_foliage_count),
+        camera_keepout_obstacle_count=int(camera_keepout_obstacle_count),
+        camera_keepout_foliage_count=int(camera_keepout_foliage_count),
+    )
+
+
+def _repair_layout_for_visual_stability(
+    *,
+    layout: RapidTrackingCompoundLayout,
+) -> RapidTrackingCompoundLayout:
+    corridor = _rapid_tracking_readable_corridor(layout)
+    focus_world_x, focus_world_y = _layout_focus_world_xy(layout)
+    camera_samples = _layout_camera_sample_world_positions(layout)
+    repaired_road_segments = tuple(
+        segment
+        for segment in layout.road_segments
+        if not _polyline_intersects_rect(
+            points=segment.points,
+            rect=corridor,
+            padding=_READABLE_TRACKING_CORRIDOR_PADDING,
+        )
+    )
+    repaired_obstacles: list[RapidTrackingObstacle] = []
+    for source_obstacle in layout.obstacles:
+        obstacle = _repair_local_hill_obstacle(layout=layout, obstacle=source_obstacle)
+        obstacle_kind = str(obstacle.kind).strip().lower()
+        if obstacle_kind in {"hill", "lake"} and _obstacle_intersects_rect(
+            obstacle=obstacle,
+            rect=corridor,
+            padding=_READABLE_TRACKING_CORRIDOR_PADDING,
+        ):
+            continue
+        too_close_to_focus = _world_distance_to_track_point(
+            layout=layout,
+            track_x=float(obstacle.x),
+            track_y=float(obstacle.y),
+            world_x=float(focus_world_x),
+            world_y=float(focus_world_y),
+        ) < _VISUAL_STABILITY_FOCUS_KEEP_OUT_WORLD
+        too_close_to_camera = any(
+            _world_distance_to_track_point(
+                layout=layout,
+                track_x=float(obstacle.x),
+                track_y=float(obstacle.y),
+                world_x=float(sample_x),
+                world_y=float(sample_y),
+            ) < _VISUAL_STABILITY_CAMERA_KEEP_OUT_WORLD
+            for sample_x, sample_y in camera_samples
+        )
+        if obstacle_kind in {"hill", "lake"} and (too_close_to_focus or too_close_to_camera):
+            continue
+        repaired_obstacles.append(obstacle)
+
+    seen_tree_positions: set[tuple[int, int]] = set()
+    repaired_clusters: list[RapidTrackingFoliageCluster] = []
+    for cluster in layout.scenic_clusters:
+        asset_id = str(cluster.asset_id).strip().lower()
+        if asset_id != "shrubs_low_cluster" and _circle_intersects_rect(
+            center_x=float(cluster.x),
+            center_y=float(cluster.y),
+            radius=float(cluster.radius),
+            rect=corridor,
+        ):
+            continue
+        too_close_to_focus = _world_distance_to_track_point(
+            layout=layout,
+            track_x=float(cluster.x),
+            track_y=float(cluster.y),
+            world_x=float(focus_world_x),
+            world_y=float(focus_world_y),
+        ) < _VISUAL_STABILITY_FOCUS_KEEP_OUT_WORLD
+        too_close_to_camera = any(
+            _world_distance_to_track_point(
+                layout=layout,
+                track_x=float(cluster.x),
+                track_y=float(cluster.y),
+                world_x=float(sample_x),
+                world_y=float(sample_y),
+            ) < _VISUAL_STABILITY_CAMERA_KEEP_OUT_WORLD
+            for sample_x, sample_y in camera_samples
+        )
+        if asset_id != "shrubs_low_cluster" and (too_close_to_focus or too_close_to_camera):
+            continue
+        if asset_id in {"trees_pine_cluster", "trees_field_cluster"}:
+            position_key = (
+                int(round(float(cluster.x) * 1000.0)),
+                int(round(float(cluster.y) * 1000.0)),
+            )
+            if position_key in seen_tree_positions:
+                continue
+            seen_tree_positions.add(position_key)
+        repaired_clusters.append(cluster)
+
+    shrub_clusters = tuple(cluster for cluster in repaired_clusters if cluster.asset_id == "shrubs_low_cluster")
+    tree_clusters = tuple(cluster for cluster in repaired_clusters if cluster.asset_id == "trees_field_cluster")
+    forest_clusters = tuple(cluster for cluster in repaired_clusters if cluster.asset_id == "forest_canopy_patch")
+    return replace(
+        layout,
+        road_segments=repaired_road_segments,
+        obstacles=tuple(repaired_obstacles),
+        scenic_clusters=tuple(repaired_clusters),
+        shrub_clusters=shrub_clusters,
+        tree_clusters=tree_clusters,
+        forest_clusters=forest_clusters,
+    )
+
+
+def _readable_layout_evaluation(*, layout: RapidTrackingCompoundLayout) -> _ReadableSceneSeedEvaluation:
+    corridor = _rapid_tracking_readable_corridor(layout)
+    corridor_building_count = sum(
+        1
+        for anchor in layout.building_anchors
+        if corridor[0] <= float(anchor.x) <= corridor[1] and corridor[2] <= float(anchor.y) <= corridor[3]
+    )
+    corridor_forest_count = sum(
+        1
+        for cluster in layout.forest_clusters
+        if _circle_intersects_rect(
+            center_x=float(cluster.x),
+            center_y=float(cluster.y),
+            radius=float(cluster.radius),
+            rect=corridor,
+        )
+    )
+    protected_obstacle_overlap = any(
+        _circle_intersects_rect(
+            center_x=float(obstacle.x),
+            center_y=float(obstacle.y),
+            radius=max(float(obstacle.radius_x), float(obstacle.radius_y)) + _READABLE_TRACKING_CORRIDOR_PADDING,
+            rect=corridor,
+        )
+        for obstacle in layout.obstacles
+        if str(obstacle.kind).strip().lower() in {"lake", "hill"}
+    )
+
+    anchor_positions = (
+        *[(float(anchor.x), float(anchor.y)) for anchor in layout.patrol_anchors],
+        *[(float(anchor.x), float(anchor.y)) for anchor in layout.road_anchors],
+    )
+    scenic_anchor_clearance_failures = 0
+    clutter_penalty = 0.0
+    for cluster in layout.scenic_clusters:
+        if str(cluster.asset_id).strip().lower() == "shrubs_low_cluster":
+            continue
+        if not anchor_positions:
+            continue
+        nearest = min(
+            _distance(float(cluster.x), float(cluster.y), anchor_x, anchor_y)
+            for anchor_x, anchor_y in anchor_positions
+        )
+        if nearest < _READABLE_SCENIC_ANCHOR_CLEARANCE:
+            scenic_anchor_clearance_failures += 1
+        clutter_penalty += max(0.0, _READABLE_CLUTTER_RADIUS - nearest)
+
+    center_x = float(layout.compound_center_x)
+    center_y = float(layout.compound_center_y)
+    nearby_building_count = sum(
+        1
+        for anchor in layout.building_anchors
+        if _distance(float(anchor.x), float(anchor.y), center_x, center_y) <= _READABLE_NEARBY_ANCHOR_DISTANCE
+    )
+    nearby_ridge_count = sum(
+        1
+        for anchor in layout.ridge_anchors
+        if _distance(float(anchor.x), float(anchor.y), center_x, center_y) <= _READABLE_NEARBY_ANCHOR_DISTANCE
+    )
+
+    building_xs = [float(anchor.x) for anchor in layout.building_anchors]
+    building_spread_score = 0.0
+    if building_xs:
+        mean_abs_offset = sum(abs(x - center_x) for x in building_xs) / len(building_xs)
+        building_spread_score = (max(building_xs) - min(building_xs)) + mean_abs_offset
+
+    stability = _visual_stability_layout_summary(layout=layout)
+    hard_rejected = bool(
+        protected_obstacle_overlap
+        or corridor_building_count > 0
+        or corridor_forest_count > 0
+        or stability.corridor_road_count > 0
+        or stability.corridor_building_count > 0
+        or stability.corridor_obstacle_count > 0
+        or stability.corridor_large_foliage_count > 0
+        or stability.camera_keepout_obstacle_count > 0
+    )
+    path_bias_penalty = abs(float(layout.path_lateral_bias))
+    altitude_bonus = float(layout.altitude_bias)
+    scenic_clearance_penalty = float(scenic_anchor_clearance_failures) * 18.0
+    nearby_building_penalty = 0.0 if nearby_building_count >= 1 else 14.0
+    nearby_ridge_penalty = 0.0 if nearby_ridge_count >= 1 else 14.0
+    score = (
+        (-7.0 * float(clutter_penalty))
+        + (-3.5 * float(path_bias_penalty))
+        + (1.8 * float(altitude_bonus))
+        + (1.25 * float(building_spread_score))
+        + (-1.2 * scenic_clearance_penalty)
+        + (-18.0 * float(stability.corridor_road_count))
+        + (-24.0 * float(stability.corridor_obstacle_count))
+        + (-18.0 * float(stability.corridor_large_foliage_count))
+        + (-14.0 * float(stability.camera_keepout_foliage_count))
+        + (-1.0 * nearby_building_penalty)
+        + (-1.0 * nearby_ridge_penalty)
+        + (1.6 * float(min(2, nearby_building_count)))
+        + (1.8 * float(min(2, nearby_ridge_count)))
+    )
+    if hard_rejected:
+        score -= 1000.0
+
+    return _ReadableSceneSeedEvaluation(
+        scene_seed=int(layout.seed),
+        hard_rejected=hard_rejected,
+        score=float(score),
+        corridor_building_count=int(corridor_building_count),
+        corridor_forest_count=int(corridor_forest_count),
+        scenic_anchor_clearance_failures=int(scenic_anchor_clearance_failures),
+        nearby_building_count=int(nearby_building_count),
+        nearby_ridge_count=int(nearby_ridge_count),
+        clutter_penalty=float(clutter_penalty),
+        path_bias_penalty=float(path_bias_penalty),
+        altitude_bonus=float(altitude_bonus),
+        building_spread_score=float(building_spread_score),
+    )
 
 
 def _ellipse_contains_point(
@@ -1439,8 +1991,9 @@ def _build_seeded_obstacles(
     obstacles: list[RapidTrackingObstacle] = []
     for idx, (kind, box, base_rx, base_ry, base_height) in enumerate(specs):
         radius_scale = 0.90 + (rapid_tracking_seed_unit(seed=seed, salt=f"obstacle-scale:{idx}") * 0.24)
-        radius_x = base_rx * radius_scale * _RAPID_TRACKING_OBSTACLE_RADIUS_SCALE
-        radius_y = base_ry * radius_scale * _RAPID_TRACKING_OBSTACLE_RADIUS_SCALE
+        radius_multiplier = 1.0 if str(kind) == "hill" else _RAPID_TRACKING_OBSTACLE_RADIUS_SCALE
+        radius_x = base_rx * radius_scale * radius_multiplier
+        radius_y = base_ry * radius_scale * radius_multiplier
         point = None
         for _ in range(160):
             x, y = _sample_point_in_box(rng, box)
@@ -2128,7 +2681,7 @@ def _build_seeded_rapid_tracking_layout(*, seed: int) -> RapidTrackingCompoundLa
     )
     compound_center_x = sum(float(base.x) for base in bases) / max(1, len(bases))
     compound_center_y = sum(float(base.y) for base in bases) / max(1, len(bases))
-    return RapidTrackingCompoundLayout(
+    layout = RapidTrackingCompoundLayout(
         seed=int(seed),
         orbit_direction=int(orbit_direction),
         orbit_phase_offset=float(orbit_phase_offset),
@@ -2156,6 +2709,7 @@ def _build_seeded_rapid_tracking_layout(*, seed: int) -> RapidTrackingCompoundLa
         tree_clusters=tuple(tree_clusters),
         forest_clusters=tuple(forest_clusters),
     )
+    return _repair_layout_for_visual_stability(layout=layout)
 
 
 def _pick_route_candidate(
@@ -2359,6 +2913,194 @@ def build_rapid_tracking_compound_layout(*, seed: int) -> RapidTrackingCompoundL
     return RapidTrackingScenarioGenerator(seed=seed).build().layout
 
 
+def _build_readable_candidate_road_anchors(
+    *,
+    bases: Sequence[RapidTrackingPoi],
+    pois: Sequence[RapidTrackingPoi],
+) -> tuple[RapidTrackingAnchor, ...]:
+    anchors: list[RapidTrackingAnchor] = []
+    base_edges = list(_minimum_spanning_edges(bases))
+    extra_pair: tuple[int, int] | None = None
+    best_extra = -1.0
+    for a_idx in range(len(bases)):
+        for b_idx in range(a_idx + 1, len(bases)):
+            if (a_idx, b_idx) in base_edges or (b_idx, a_idx) in base_edges:
+                continue
+            distance = _distance(float(bases[a_idx].x), float(bases[a_idx].y), float(bases[b_idx].x), float(bases[b_idx].y))
+            if distance > best_extra:
+                best_extra = distance
+                extra_pair = (a_idx, b_idx)
+    if extra_pair is not None:
+        base_edges.append(extra_pair)
+
+    def append_linear_segment(
+        *,
+        start_id: str,
+        start_x: float,
+        start_y: float,
+        end_id: str,
+        end_x: float,
+        end_y: float,
+        segment_idx: int,
+    ) -> None:
+        for point_idx, t in enumerate((0.0, 0.5, 1.0)):
+            anchors.append(
+                RapidTrackingAnchor(
+                    anchor_id=f"readable-road-{segment_idx}-{point_idx}:{start_id}:{end_id}",
+                    family="road",
+                    variant="preview",
+                    x=_lerp(float(start_x), float(end_x), float(t)),
+                    y=_lerp(float(start_y), float(end_y), float(t)),
+                )
+            )
+
+    segment_idx = 0
+    for a_idx, b_idx in base_edges:
+        start = bases[a_idx]
+        end = bases[b_idx]
+        append_linear_segment(
+            start_id=str(start.poi_id),
+            start_x=float(start.x),
+            start_y=float(start.y),
+            end_id=str(end.poi_id),
+            end_x=float(end.x),
+            end_y=float(end.y),
+            segment_idx=segment_idx,
+        )
+        segment_idx += 1
+
+    for poi in pois:
+        nearest = min(
+            bases,
+            key=lambda base: _distance(float(base.x), float(base.y), float(poi.x), float(poi.y)),
+        )
+        append_linear_segment(
+            start_id=str(poi.poi_id),
+            start_x=float(poi.x),
+            start_y=float(poi.y),
+            end_id=str(nearest.poi_id),
+            end_x=float(nearest.x),
+            end_y=float(nearest.y),
+            segment_idx=segment_idx,
+        )
+        segment_idx += 1
+    return tuple(anchors)
+
+
+def _build_readable_candidate_layout(*, seed: int) -> RapidTrackingCompoundLayout:
+    rng = _rapid_tracking_rng(seed=seed, salt="layout:v2")
+    orbit_direction = -1 if rng.random() < 0.5 else 1
+    orbit_phase_offset = rng.uniform(0.0, math.tau)
+    orbit_radius_scale = rng.uniform(0.94, 1.16)
+    altitude_bias = rng.uniform(-0.8, 1.6)
+    ridge_phase = rng.uniform(-math.pi, math.pi)
+    ridge_amp_scale = rng.uniform(0.90, 1.20)
+    path_lateral_bias = rng.uniform(-0.18, 0.18)
+
+    bases = _build_seeded_bases(seed=seed, rng=rng)
+    pois = _build_seeded_pois(seed=seed, rng=rng, bases=bases)
+    zones = (*bases, *pois)
+    obstacles = _build_seeded_obstacles(seed=seed, rng=rng, pois=zones)
+    buildings = _build_seeded_building_anchors(seed=seed, bases=bases, pois=pois)
+    patrols = _build_seeded_patrol_anchors(seed=seed, pois=zones)
+    handoff_zones = tuple(
+        RapidTrackingHandoffZone(
+            zone_id=f"handoff-{zone.poi_id}",
+            anchor_id=f"patrol-{zone.poi_id}-0",
+            x=float(zone.x),
+            y=float(zone.y),
+            carrier_kinds=("soldier", "truck") if zone.kind == "base" else ("soldier",),
+        )
+        for zone in zones
+    )
+    ridges = _build_ridge_anchors(obstacles)
+    road_anchors = _build_readable_candidate_road_anchors(bases=bases, pois=pois)
+    helos, jets = _build_air_anchors(bases=bases, pois=pois)
+    scenic_clusters = _build_scenic_clusters(
+        seed=seed,
+        rng=rng,
+        pois=zones,
+        obstacles=obstacles,
+        road_anchors=road_anchors,
+    )
+    shrub_clusters = tuple(cluster for cluster in scenic_clusters if cluster.asset_id == "shrubs_low_cluster")
+    tree_clusters = tuple(cluster for cluster in scenic_clusters if cluster.asset_id == "trees_field_cluster")
+    forest_clusters = tuple(cluster for cluster in scenic_clusters if cluster.asset_id == "forest_canopy_patch")
+    compound_center_x = sum(float(base.x) for base in bases) / max(1, len(bases))
+    compound_center_y = sum(float(base.y) for base in bases) / max(1, len(bases))
+    layout = RapidTrackingCompoundLayout(
+        seed=int(seed),
+        orbit_direction=int(orbit_direction),
+        orbit_phase_offset=float(orbit_phase_offset),
+        orbit_radius_scale=float(orbit_radius_scale),
+        altitude_bias=float(altitude_bias),
+        ridge_phase=float(ridge_phase),
+        ridge_amp_scale=float(ridge_amp_scale),
+        path_lateral_bias=float(path_lateral_bias),
+        compound_center_x=float(compound_center_x),
+        compound_center_y=float(compound_center_y),
+        bases=tuple(bases),
+        pois=tuple(pois),
+        obstacles=tuple(obstacles),
+        road_segments=(),
+        handoff_zones=tuple(handoff_zones),
+        traffic_routes=(),
+        scenic_clusters=tuple(scenic_clusters),
+        building_anchors=tuple(buildings),
+        patrol_anchors=tuple(patrols),
+        road_anchors=tuple(road_anchors),
+        helicopter_anchors=tuple(helos),
+        jet_anchors=tuple(jets),
+        ridge_anchors=tuple(ridges),
+        shrub_clusters=tuple(shrub_clusters),
+        tree_clusters=tuple(tree_clusters),
+        forest_clusters=tuple(forest_clusters),
+    )
+    return _repair_layout_for_visual_stability(layout=layout)
+
+
+@lru_cache(maxsize=256)
+def _select_scene_seed_cached(base_seed: int, policy_value: str) -> int:
+    resolved_policy = _normalize_layout_policy(policy_value)
+    approximate_evaluations: list[_ReadableSceneSeedEvaluation] = []
+    for candidate_seed in _readable_scene_seed_candidates(base_seed=int(base_seed)):
+        candidate_layout = _build_readable_candidate_layout(seed=int(candidate_seed))
+        approximate_evaluations.append(_readable_layout_evaluation(layout=candidate_layout))
+
+    ranked_candidates = sorted(
+        approximate_evaluations,
+        key=lambda evaluation: (evaluation.hard_rejected, -float(evaluation.score)),
+    )
+
+    best_viable: _ReadableSceneSeedEvaluation | None = None
+    best_fallback: _ReadableSceneSeedEvaluation | None = None
+    for approximate in ranked_candidates[:_READABLE_SCENE_SEED_FULL_VALIDATION_LIMIT]:
+        candidate_layout = build_rapid_tracking_compound_layout(seed=int(approximate.scene_seed))
+        evaluation = _readable_layout_evaluation(layout=candidate_layout)
+        if not evaluation.hard_rejected and (
+            best_viable is None or evaluation.score > best_viable.score
+        ):
+            best_viable = evaluation
+        if best_fallback is None or evaluation.score > best_fallback.score:
+            best_fallback = evaluation
+
+    if best_viable is None and best_fallback is None and ranked_candidates:
+        chosen = ranked_candidates[0]
+    else:
+        chosen = best_viable or best_fallback
+    return int(base_seed) if chosen is None else int(chosen.scene_seed)
+
+
+def select_scene_seed(
+    base_seed: int,
+    policy: RapidTrackingLayoutPolicy | str = RapidTrackingLayoutPolicy.DEFAULT,
+) -> int:
+    resolved_policy = _normalize_layout_policy(policy)
+    if resolved_policy is RapidTrackingLayoutPolicy.DEFAULT:
+        return int(base_seed)
+    return _select_scene_seed_cached(int(base_seed), resolved_policy.value)
+
+
 class RapidTrackingEngine:
     """Continuous eye-hand tracking in a seeded helicopter-over-compound surveillance scene."""
 
@@ -2374,6 +3116,7 @@ class RapidTrackingEngine:
         title: str = "Rapid Tracking",
         practice_segments: Sequence[RapidTrackingTrainingSegment] | None = None,
         scored_segments: Sequence[RapidTrackingTrainingSegment] | None = None,
+        layout_policy: RapidTrackingLayoutPolicy | str = RapidTrackingLayoutPolicy.DEFAULT,
     ) -> None:
         cfg = config or RapidTrackingConfig()
         if cfg.tick_hz <= 0.0:
@@ -2393,12 +3136,14 @@ class RapidTrackingEngine:
 
         self._clock = clock
         self._seed = int(seed)
+        self._layout_policy = _normalize_layout_policy(layout_policy)
+        self._scene_seed = select_scene_seed(self._seed, self._layout_policy)
         self._difficulty = clamp01(difficulty)
         self._cfg = cfg
         self._tick_dt = 1.0 / float(cfg.tick_hz)
         self._rng = SeededRng(self._seed)
         self._drift_gen = RapidTrackingDriftGenerator(seed=self._seed + 41)
-        self._scenario_generator = RapidTrackingScenarioGenerator(seed=self._seed)
+        self._scenario_generator = RapidTrackingScenarioGenerator(seed=self._scene_seed)
         self._scenario = self._scenario_generator.build()
         self._compound_layout = self._scenario.layout
         self._anchor_lookup = _anchor_lookup(self._compound_layout)
@@ -2474,6 +3219,7 @@ class RapidTrackingEngine:
         self._capture_last_at_s = -999.0
         self._capture_feedback_until_s = 0.0
         self._capture_feedback = ""
+        self._capture_box_bonus_due_at_s = 0.0
 
         self._practice_samples = 0
         self._practice_sum_error = 0.0
@@ -2593,6 +3339,14 @@ class RapidTrackingEngine:
     @property
     def seed(self) -> int:
         return self._seed
+
+    @property
+    def scene_seed(self) -> int:
+        return int(self._scene_seed)
+
+    @property
+    def layout_policy(self) -> RapidTrackingLayoutPolicy:
+        return self._layout_policy
 
     def events(self) -> list[QuestionEvent]:
         return list(self._events)
@@ -2887,6 +3641,7 @@ class RapidTrackingEngine:
             difficulty=float(self._difficulty),
             difficulty_tier=str(profile.tier),
             session_seed=int(self._seed),
+            scene_seed=int(self._scene_seed),
             camera_assist_strength=float(self._effective_camera_assist_strength(profile)),
             turbulence_strength=float(self._effective_turbulence_strength(profile)),
             target_time_to_switch_s=max(0.0, self._target_switch_at_s - self._sim_elapsed_s),
@@ -2946,8 +3701,8 @@ class RapidTrackingEngine:
                 "and jets are the fastest passes.\n"
                 "Targets may duck into buildings or disappear behind terrain; during building handoffs "
                 "you track the structure until the next target emerges.\n"
-                "Pan the camera freely, keep the target centered, and hold the configured capture binding or Space when the target "
-                "is inside the center camera box to zoom and capture.\n"
+                "Pan the camera freely, keep the target centered, and keep it inside the center camera box to bank box score. "
+                "Hold the configured capture binding or Space when the target is inside the center camera box to zoom and capture.\n"
                 "Press Enter to begin practice."
             )
         if self._phase is Phase.PRACTICE_DONE:
@@ -2969,7 +3724,7 @@ class RapidTrackingEngine:
                 f"{summary.capture_hits}/{summary.capture_attempts}  "
                 f"Points: {summary.capture_points}"
             )
-        return "Track the active target through handoffs, keep lock, and capture it inside the center box."
+        return "Track the active target through handoffs, keep it in the center box to bank box score, and capture it cleanly."
 
     def scored_summary(self) -> RapidTrackingSummary:
         attempted = int(self._scored_attempted)
@@ -3151,6 +3906,7 @@ class RapidTrackingEngine:
         self._capture_last_at_s = -999.0
         self._capture_feedback_until_s = 0.0
         self._capture_feedback = ""
+        self._capture_box_bonus_due_at_s = 0.0
         if reset_capture_totals:
             self._capture_points = 0
             self._capture_hits = 0
@@ -3532,6 +4288,9 @@ class RapidTrackingEngine:
     def _capture_points_for_kind(kind: str) -> int:
         return 2 if str(kind).strip().lower() in {"helicopter", "jet"} else 1
 
+    def _capture_box_bonus_points(self) -> int:
+        return max(0, int(self._cfg.capture_box_hit_bonus))
+
     def _capture_hold_start(self) -> bool:
         if self._phase not in (Phase.PRACTICE, Phase.SCORED):
             return False
@@ -3560,11 +4319,12 @@ class RapidTrackingEngine:
 
         self._capture_last_at_s = self._sim_elapsed_s
         self._capture_attempts += 1
-        self._capture_max_points += self._capture_points_for_kind(self._target_kind)
+        max_points = self._capture_points_for_kind(self._target_kind) + self._capture_box_bonus_points()
+        self._capture_max_points += max_points
 
         hit = self._target_in_capture_box(require_visible=True)
         if hit:
-            points = self._capture_points_for_kind(self._target_kind)
+            points = self._capture_points_for_kind(self._target_kind) + self._capture_box_bonus_points()
             self._capture_hits += 1
             self._capture_points += points
             self._capture_zoom_until_s = self._sim_elapsed_s + self._cfg.capture_zoom_s
@@ -3581,17 +4341,27 @@ class RapidTrackingEngine:
         alpha = min(1.0, dt * response_hz)
         target_blend = 1.0 if self._capture_hold_active else 0.0
         self._capture_hold_blend += (target_blend - self._capture_hold_blend) * alpha
-        if not self._capture_hold_active:
-            return
+        if self._capture_hold_active:
+            interval = max(0.05, float(self._cfg.capture_hold_bonus_interval_s))
+            if self._capture_hold_bonus_due_at_s <= 0.0:
+                self._capture_hold_bonus_due_at_s = self._sim_elapsed_s + interval
+            while self._sim_elapsed_s >= self._capture_hold_bonus_due_at_s:
+                self._capture_max_points += 1
+                if target_in_box:
+                    self._capture_points += 1
+                self._capture_hold_bonus_due_at_s += interval
 
-        interval = max(0.05, float(self._cfg.capture_hold_bonus_interval_s))
-        if self._capture_hold_bonus_due_at_s <= 0.0:
-            self._capture_hold_bonus_due_at_s = self._sim_elapsed_s + interval
-        while self._sim_elapsed_s >= self._capture_hold_bonus_due_at_s:
-            self._capture_max_points += 1
-            if target_in_box:
-                self._capture_points += 1
-            self._capture_hold_bonus_due_at_s += interval
+        interval = max(0.05, float(self._cfg.capture_box_tracking_bonus_interval_s))
+        if not target_in_box:
+            self._capture_box_bonus_due_at_s = 0.0
+            return
+        if self._capture_box_bonus_due_at_s <= 0.0:
+            self._capture_box_bonus_due_at_s = self._sim_elapsed_s + interval
+        bonus_points = max(0, int(self._cfg.capture_box_tracking_bonus_points))
+        while self._sim_elapsed_s >= self._capture_box_bonus_due_at_s:
+            self._capture_max_points += bonus_points
+            self._capture_points += bonus_points
+            self._capture_box_bonus_due_at_s += interval
 
     def _target_in_capture_box(self, *, require_visible: bool) -> bool:
         if require_visible and self._target_terrain_occluded:
@@ -3739,7 +4509,7 @@ class RapidTrackingEngine:
         target_world_x, target_world_y = self._target_world_xy()
         rig = rapid_tracking_camera_rig_state(
             elapsed_s=self._phase_elapsed_s(),
-            seed=int(self._seed),
+            seed=int(self._scene_seed),
             progress=self._scene_progress(),
             camera_yaw_deg=float(self._camera_yaw_deg),
             camera_pitch_deg=float(self._camera_pitch_deg),
@@ -3758,7 +4528,7 @@ class RapidTrackingEngine:
             target_world_y=float(target_world_y),
             elapsed_s=self._phase_elapsed_s(),
             scene_progress=self._scene_progress(),
-            seed=int(self._seed),
+            seed=int(self._scene_seed),
         )
         return (
             rig,
@@ -3774,7 +4544,7 @@ class RapidTrackingEngine:
         target_world_x, target_world_y = self._target_world_xy()
         rig = rapid_tracking_camera_rig_state(
             elapsed_s=self._phase_elapsed_s(),
-            seed=int(self._seed),
+            seed=int(self._scene_seed),
             progress=self._scene_progress(),
             camera_yaw_deg=None,
             camera_pitch_deg=None,
@@ -3792,7 +4562,7 @@ class RapidTrackingEngine:
             target_world_y=float(target_world_y),
             elapsed_s=self._phase_elapsed_s(),
             scene_progress=self._scene_progress(),
-            seed=int(self._seed),
+            seed=int(self._scene_seed),
         )
         self._camera_yaw_deg = math.degrees(
             math.atan2(
@@ -3829,6 +4599,7 @@ def build_rapid_tracking_test(
     title: str = "Rapid Tracking",
     practice_segments: Sequence[RapidTrackingTrainingSegment] | None = None,
     scored_segments: Sequence[RapidTrackingTrainingSegment] | None = None,
+    layout_policy: RapidTrackingLayoutPolicy | str = RapidTrackingLayoutPolicy.DEFAULT,
 ) -> RapidTrackingEngine:
     return RapidTrackingEngine(
         clock=clock,
@@ -3838,4 +4609,5 @@ def build_rapid_tracking_test(
         title=title,
         practice_segments=practice_segments,
         scored_segments=scored_segments,
+        layout_policy=layout_policy,
     )

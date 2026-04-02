@@ -13,56 +13,31 @@ from .auditory_capacity import (
     AUDITORY_TRIANGLE_GATE_POINTS,
     AuditoryCapacityPayload,
 )
-from .panda3d_assets import Panda3DAssetCatalog
-
-_GUIDE_LANES = (-0.16, 0.10, -0.24, 0.18, 0.0, 0.26)
-_TUBE_PATH_POINTS = (
-    (0.0, 0.00, 0.00),
-    (10.0, 0.00, 0.00),
-    (22.0, 0.20, 0.04),
-    (34.0, 2.10, 0.48),
-    (44.0, 4.40, 0.72),
-    (54.0, 4.80, 0.18),
-    (64.0, 4.65, -1.10),
-    (74.0, 2.40, -2.00),
-    (84.0, -0.60, -2.20),
-    (94.0, -3.45, -1.55),
-    (104.0, -4.85, -0.10),
-    (114.0, -4.70, 1.10),
-    (124.0, -2.10, 2.04),
-    (134.0, 1.10, 2.20),
-    (144.0, 3.70, 1.20),
-    (154.0, 4.60, -0.22),
-    (164.0, 4.15, -1.34),
-    (174.0, 2.30, -0.60),
-    (184.0, 0.55, -0.08),
-    (194.0, 0.00, 0.00),
+from .auditory_capacity_view import (
+    BALL_FORWARD_IDLE_NORM,
+    TUBE_PATH_POINTS as _TUBE_PATH_POINTS,
+    TUBE_PATH_SPAN,
+    TUNNEL_CAMERA_H_FOV_DEG,
+    TUNNEL_GEOMETRY_END_DISTANCE,
+    TUNNEL_GEOMETRY_START_DISTANCE,
+    fixed_camera_pose,
+    forward_norm_to_distance,
+    slot_distance,
+    tube_center_at_distance as _tube_center_at_distance,
+    tube_frame as _tube_frame,
+    vec_add as _vec_add,
+    vec_cross as _vec_cross,
+    vec_dot as _vec_dot,
+    vec_norm as _vec_norm,
+    vec_normalize as _vec_normalize,
+    vec_scale as _vec_scale,
 )
-
+from .panda3d_assets import Panda3DAssetCatalog
 
 def panda3d_auditory_rendering_available() -> bool:
     if os.environ.get("SDL_VIDEODRIVER", "").strip().lower() == "dummy":
         return False
     return importlib.util.find_spec("direct.showbase.ShowBase") is not None
-
-
-def _guide_lane(index: int) -> float:
-    return float(_GUIDE_LANES[int(index) % len(_GUIDE_LANES)])
-
-
-def _catmull_rom(a: float, b: float, c: float, d: float, t: float) -> float:
-    t2 = t * t
-    t3 = t2 * t
-    return 0.5 * (
-        (2.0 * b)
-        + ((-a + c) * t)
-        + (((2.0 * a) - (5.0 * b) + (4.0 * c) - d) * t2)
-        + (((-a) + (3.0 * b) - (3.0 * c) + d) * t3)
-    )
-
-
-def _lerp(a: float, b: float, t: float) -> float:
-    return a + ((b - a) * t)
 
 
 def _mix_rgb(
@@ -79,106 +54,12 @@ def _mix_rgb(
     )
 
 
-def _tube_center_at_distance(distance: float, *, span: float) -> tuple[float, float]:
-    path_span = float(span)
-    d = float(distance) % path_span
-    unique_count = max(1, len(_TUBE_PATH_POINTS) - 1)
-    segment_idx = len(_TUBE_PATH_POINTS) - 2
-    for idx in range(len(_TUBE_PATH_POINTS) - 1):
-        d1, x1, z1 = _TUBE_PATH_POINTS[idx]
-        d2, x2, z2 = _TUBE_PATH_POINTS[idx + 1]
-        if d <= d2:
-            segment_idx = idx
-            break
-    d1, x1, z1 = _TUBE_PATH_POINTS[segment_idx]
-    d2, x2, z2 = _TUBE_PATH_POINTS[segment_idx + 1]
-    p0 = _TUBE_PATH_POINTS[(segment_idx - 1) % unique_count]
-    p1 = (d1, x1, z1)
-    p2 = (d2, x2, z2)
-    p3 = _TUBE_PATH_POINTS[(segment_idx + 2) % unique_count]
-    t = 0.0 if d2 <= d1 else (d - d1) / (d2 - d1)
-    return (
-        _catmull_rom(p0[1], p1[1], p2[1], p3[1], t),
-        _catmull_rom(p0[2], p1[2], p2[2], p3[2], t),
-    )
-
-
-def _vec_add(
-    a: tuple[float, float, float],
-    b: tuple[float, float, float],
-) -> tuple[float, float, float]:
-    return (a[0] + b[0], a[1] + b[1], a[2] + b[2])
-
-
-def _vec_scale(v: tuple[float, float, float], scalar: float) -> tuple[float, float, float]:
-    return (v[0] * scalar, v[1] * scalar, v[2] * scalar)
-
-
-def _vec_dot(a: tuple[float, float, float], b: tuple[float, float, float]) -> float:
-    return (a[0] * b[0]) + (a[1] * b[1]) + (a[2] * b[2])
-
-
-def _vec_cross(
-    a: tuple[float, float, float],
-    b: tuple[float, float, float],
-) -> tuple[float, float, float]:
-    return (
-        (a[1] * b[2]) - (a[2] * b[1]),
-        (a[2] * b[0]) - (a[0] * b[2]),
-        (a[0] * b[1]) - (a[1] * b[0]),
-    )
-
-
-def _vec_norm(v: tuple[float, float, float]) -> float:
-    return math.sqrt(_vec_dot(v, v))
-
-
-def _vec_normalize(v: tuple[float, float, float]) -> tuple[float, float, float]:
-    n = _vec_norm(v)
-    if n <= 1e-6:
-        return (0.0, 0.0, 0.0)
-    return (v[0] / n, v[1] / n, v[2] / n)
-
-
-def _tube_frame(
-    distance: float,
-    *,
-    span: float,
-) -> tuple[
-    tuple[float, float, float],
-    tuple[float, float, float],
-    tuple[float, float, float],
-    tuple[float, float, float],
-]:
-    d = float(distance)
-    eps = 0.12
-    cx, cz = _tube_center_at_distance(d, span=span)
-    prev_x, prev_z = _tube_center_at_distance(d - eps, span=span)
-    next_x, next_z = _tube_center_at_distance(d + eps, span=span)
-    tangent = _vec_normalize((next_x - prev_x, 2.0 * eps, next_z - prev_z))
-    world_up = (0.0, 0.0, 1.0)
-    right = _vec_cross(tangent, world_up)
-    if _vec_norm(right) <= 1e-5:
-        right = (1.0, 0.0, 0.0)
-    right = _vec_normalize(right)
-    up = _vec_normalize(_vec_cross(right, tangent))
-    return ((cx, d, cz), tangent, right, up)
-
-
 class AuditoryCapacityPanda3DRenderer:
     _GATE_SPAWN_X_NORM = AUDITORY_GATE_SPAWN_X_NORM
     _GATE_PLAYER_X_NORM = AUDITORY_GATE_PLAYER_X_NORM
     _GATE_RETIRE_X_NORM = AUDITORY_GATE_RETIRE_X_NORM
-    _GATE_SPAWN_AHEAD_DISTANCE = 38.0
-    _GATE_PLAYER_AHEAD_DISTANCE = 0.8
-    _GATE_RETIRE_AHEAD_DISTANCE = -6.0
     _TUNNEL_SEGMENT_LENGTH = 4.0
     _TUNNEL_RIB_STEP = 4.0
-    _CAMERA_BACK_DISTANCE = 8.2
-    _CAMERA_LOOKAHEAD_DISTANCE = 13.0
-    _TUNNEL_BACKFILL_DISTANCE = 14.0
-    _TUNNEL_LOOKAHEAD_DISTANCE = 24.0
-    _TRAVEL_WRAP_MARGIN = 0.6
     _BALL_COLOR_MAP = {
         "RED": (0.94, 0.34, 0.38),
         "GREEN": (0.34, 0.88, 0.56),
@@ -201,20 +82,14 @@ class AuditoryCapacityPanda3DRenderer:
         width = max(320, int(size[0]))
         height = max(200, int(size[1]))
         self._size = (width, height)
-        self._span = float(_TUBE_PATH_POINTS[-1][0])
+        self._span = float(TUBE_PATH_SPAN)
         self._tube_rx = 2.24
         self._tube_rz = 1.64
         self._ring_count = 118
         self._ring_steps = 72
-        self._ball_anchor_distance = 9.5
         self._travel_offset = 0.0
-        self._tube_geometry_start_distance = -(
-            self._ball_anchor_distance + self._CAMERA_BACK_DISTANCE + self._TUNNEL_BACKFILL_DISTANCE
-        )
-        self._tube_geometry_end_distance = self._span + self._TUNNEL_LOOKAHEAD_DISTANCE
-        self._travel_wrap_threshold = (
-            self._span - self._ball_anchor_distance - self._TRAVEL_WRAP_MARGIN
-        )
+        self._tube_geometry_start_distance = float(TUNNEL_GEOMETRY_START_DISTANCE)
+        self._tube_geometry_end_distance = float(TUNNEL_GEOMETRY_END_DISTANCE)
         self._last_render_ms = pygame.time.get_ticks()
         self._gate_nodes: dict[int, object] = {}
         self._asset_catalog = Panda3DAssetCatalog()
@@ -237,9 +112,7 @@ class AuditoryCapacityPanda3DRenderer:
         self._texture.setKeepRamImage(True)
         self._base.win.addRenderTexture(self._texture, GraphicsOutput.RTMCopyRam)
 
-        self._base.camLens.setFov(50.0)
-        self._base.cam.setPos(0.0, -4.6, 0.0)
-        self._base.cam.lookAt(0.0, 9.8, 0.0)
+        self._base.camLens.setFov(float(TUNNEL_CAMERA_H_FOV_DEG))
 
         ambient = AmbientLight("auditory-ambient")
         ambient.setColor(Vec4(0.82, 0.84, 0.92, 1.0))
@@ -287,11 +160,8 @@ class AuditoryCapacityPanda3DRenderer:
         payload: AuditoryCapacityPayload | None,
         advance_animation: bool = True,
     ) -> pygame.Surface:
-        now_ms = pygame.time.get_ticks()
-        dt_s = max(0.0, min(0.05, (now_ms - self._last_render_ms) / 1000.0))
-        self._last_render_ms = now_ms
-        if advance_animation:
-            self._advance_travel_offset(dt_s)
+        _ = advance_animation
+        self._last_render_ms = pygame.time.get_ticks()
         self._update_ball(payload=payload)
         self._update_gates(payload=payload)
         self._base.graphicsEngine.renderFrame()
@@ -655,7 +525,10 @@ class AuditoryCapacityPanda3DRenderer:
         return root
 
     def _update_ball(self, *, payload: AuditoryCapacityPayload | None) -> None:
-        distance = self._ball_anchor_distance + self._travel_offset
+        forward_norm = (
+            float(payload.ball_forward_norm) if payload is not None else float(BALL_FORWARD_IDLE_NORM)
+        )
+        distance = forward_norm_to_distance(forward_norm)
         center, tangent, right, up = _tube_frame(distance, span=self._span)
         ball_pos = center
         danger = False
@@ -679,23 +552,9 @@ class AuditoryCapacityPanda3DRenderer:
             strength = 0.0 if payload is None else float(payload.ball_visual_strength)
             ball_rgb = _mix_rgb(self._BALL_COLOR_MAP["WHITE"], target_rgb, mix=strength)
         self._ball_root.setColor(ball_rgb[0], ball_rgb[1], ball_rgb[2], 1.0)
-        self._ball_root.setHpr((self._travel_offset * 125.0) % 360.0, 0.0, 0.0)
+        self._ball_root.setHpr((forward_norm * 540.0) % 360.0, 0.0, 0.0)
 
-        camera_distance = max(
-            self._tube_geometry_start_distance + 0.4,
-            distance - self._CAMERA_BACK_DISTANCE,
-        )
-        cam_center, _cam_tangent, _cam_right, cam_up = _tube_frame(camera_distance, span=self._span)
-        look_distance = distance + self._CAMERA_LOOKAHEAD_DISTANCE
-        look_center, _look_tangent, _look_right, _look_up = _tube_frame(
-            look_distance,
-            span=self._span,
-        )
-        cam_pos = _vec_add(cam_center, _vec_scale(cam_up, 0.08))
-        look_target = _vec_add(
-            look_center,
-            _vec_add(_vec_scale(tangent, 0.45), _vec_scale(up, 0.03)),
-        )
+        cam_pos, look_target = fixed_camera_pose()
         self._base.cam.setPos(*cam_pos)
         self._base.cam.lookAt(*look_target)
 
@@ -708,29 +567,18 @@ class AuditoryCapacityPanda3DRenderer:
             self._gate_nodes.clear()
             return
 
-        ball_distance = self._ball_anchor_distance + self._travel_offset
-        visible_gates = [gate for gate in payload.gates if gate.x_norm >= self._GATE_RETIRE_X_NORM]
-        visible_gates.sort(key=lambda gate: float(gate.x_norm), reverse=True)
+        visible_gates = [
+            gate for gate in payload.gates if gate.visual_slot_index is not None
+        ]
+        visible_gates.sort(key=lambda gate: int(gate.visual_slot_index), reverse=True)
         y_half_span = max(0.08, float(payload.tube_half_height))
         keep_ids: set[int] = set()
-        for _visible_idx, gate in enumerate(visible_gates[:14]):
-            ahead = self._gate_ahead_distance_for_x_norm(gate.x_norm)
-            distance = ball_distance + ahead
-            if distance < (ball_distance + self._GATE_RETIRE_AHEAD_DISTANCE - 1.0):
-                continue
+        for gate in visible_gates[:14]:
+            assert gate.visual_slot_index is not None
+            distance = slot_distance(int(gate.visual_slot_index))
             keep_ids.add(int(gate.gate_id))
             center, tangent, right, up = _tube_frame(distance, span=self._span)
-            depth_t = max(
-                0.0,
-                min(
-                    1.0,
-                    (ahead - self._GATE_PLAYER_AHEAD_DISTANCE)
-                    / (
-                        self._GATE_SPAWN_AHEAD_DISTANCE
-                        - self._GATE_PLAYER_AHEAD_DISTANCE
-                    ),
-                ),
-            )
+            depth_t = max(0.0, min(1.0, float(gate.visual_slot_index + 1) / 8.0))
             local_x = 0.0
             local_z = max(-1.0, min(1.0, gate.y_norm / y_half_span)) * (self._tube_rz * 0.62)
             radius = max(0.16, (float(gate.aperture_norm) / y_half_span) * (self._tube_rz * 0.82))
@@ -761,41 +609,8 @@ class AuditoryCapacityPanda3DRenderer:
             del self._gate_nodes[gate_id]
 
     def _advance_travel_offset(self, dt_s: float) -> None:
-        self._travel_offset += dt_s * 5.2
-        while self._travel_offset >= self._travel_wrap_threshold:
-            self._travel_offset -= self._span
-
-    @classmethod
-    def _gate_ahead_distance_for_x_norm(cls, x_norm: float) -> float:
-        rel = float(x_norm)
-        if rel >= cls._GATE_PLAYER_X_NORM:
-            t = max(
-                0.0,
-                min(
-                    1.0,
-                    (rel - cls._GATE_PLAYER_X_NORM)
-                    / (cls._GATE_SPAWN_X_NORM - cls._GATE_PLAYER_X_NORM),
-                ),
-            )
-            return _lerp(
-                cls._GATE_PLAYER_AHEAD_DISTANCE,
-                cls._GATE_SPAWN_AHEAD_DISTANCE,
-                t,
-            )
-
-        t = max(
-            0.0,
-            min(
-                1.0,
-                (cls._GATE_PLAYER_X_NORM - rel)
-                / (cls._GATE_PLAYER_X_NORM - cls._GATE_RETIRE_X_NORM),
-            ),
-        )
-        return _lerp(
-            cls._GATE_PLAYER_AHEAD_DISTANCE,
-            cls._GATE_RETIRE_AHEAD_DISTANCE,
-            t,
-        )
+        _ = dt_s
+        return None
 
     def _build_gate_shape_node(
         self,

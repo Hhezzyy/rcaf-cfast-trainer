@@ -24,6 +24,20 @@ assets/panda3d/
     helicopter_green.glb
   vehicles/
     truck_olive.glb
+  rapid_tracking/
+    plane_fixed_wing.obj
+    helicopter_green.obj
+    truck_olive.obj
+    vehicle_tracked.obj
+    building_hangar.obj
+    building_tower.obj
+    road_paved_segment.obj
+    road_dirt_segment.obj
+    terrain_hill_mound.obj
+    terrain_lake_patch.obj
+    terrain_rock_cluster.obj
+    trees_pine_cluster.obj
+    soldiers_patrol.obj
   auditory/
     auditory_ball.obj
     auditory_ball.mtl

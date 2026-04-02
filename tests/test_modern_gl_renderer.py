@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import math
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -13,6 +15,7 @@ from cfast_trainer.aircraft_art import (
     rotate_fixed_wing_point,
 )
 from cfast_trainer.auditory_capacity import AuditoryCapacityGate, build_auditory_capacity_test
+from cfast_trainer.auditory_capacity_view import BALL_FORWARD_IDLE_NORM, GATE_DEPTH_SLOTS_NORM, TUNNEL_GEOMETRY_END_DISTANCE
 from cfast_trainer.gl_scenes import (
     AuditoryGlScene,
     RapidTrackingGlScene,
@@ -22,11 +25,23 @@ from cfast_trainer.gl_scenes import (
 )
 from cfast_trainer.modern_gl_renderer import (
     ModernSceneRenderer,
+    _AssetInstance,
     _GeometryBatch,
+    _PreparedWorldTriangle,
+    _RapidTrackingStaticScene,
+    _RapidTrackingStaticGroup,
     _SceneAssetLibrary,
+    _SceneCamera,
     _build_auditory_scene_plan,
     _build_rapid_tracking_scene_plan,
     _rapid_tracking_static_scene,
+    _rapid_tracking_static_bundle,
+    _rapid_tracking_static_group_layer,
+    _rapid_tracking_static_group_visible,
+    _rapid_tracking_layout_world_xy,
+    _rapid_tracking_render_polyline,
+    _rapid_tracking_road_piece_instance,
+    _grounded_asset_world_z,
     _build_spatial_integration_scene_plan,
     _build_trace_test_1_scene_plan,
     _build_trace_test_2_scene_plan,
@@ -35,7 +50,7 @@ from cfast_trainer.modern_gl_renderer import (
     _world_hpr_from_tangent,
 )
 from cfast_trainer.render_assets import RenderAssetCatalog
-from cfast_trainer.rapid_tracking import build_rapid_tracking_test
+from cfast_trainer.rapid_tracking import build_rapid_tracking_compound_layout, build_rapid_tracking_test
 from cfast_trainer.spatial_integration import build_spatial_integration_test
 from cfast_trainer.trace_test_1 import (
     TraceTest1Generator,
@@ -208,6 +223,7 @@ def _auditory_scene_with_visible_gates() -> AuditoryGlScene:
                 color="GREEN",
                 shape="SQUARE",
                 aperture_norm=0.18,
+                visual_slot_index=len(GATE_DEPTH_SLOTS_NORM) - 1,
             ),
             AuditoryCapacityGate(
                 gate_id=702,
@@ -216,6 +232,7 @@ def _auditory_scene_with_visible_gates() -> AuditoryGlScene:
                 color="RED",
                 shape="TRIANGLE",
                 aperture_norm=0.22,
+                visual_slot_index=len(GATE_DEPTH_SLOTS_NORM) - 2,
             ),
             AuditoryCapacityGate(
                 gate_id=703,
@@ -224,6 +241,7 @@ def _auditory_scene_with_visible_gates() -> AuditoryGlScene:
                 color="BLUE",
                 shape="CIRCLE",
                 aperture_norm=0.20,
+                visual_slot_index=len(GATE_DEPTH_SLOTS_NORM) - 3,
             ),
         ),
     )
@@ -302,57 +320,94 @@ def test_auditory_scene_plan_includes_volumetric_gate_assets_when_visible() -> N
             assert instance.color[3] > 0.0
 
 
-def test_auditory_scene_plan_keeps_centered_ball_camera_baseline() -> None:
-    scene = _auditory_scene_with_ball_offset(ball_x=0.0, ball_y=0.0)
-
-    plan = _build_auditory_scene_plan(scene)
-
-    assert plan.camera is not None
-    assert plan.camera.position == pytest.approx(
-        (-0.04195182978272108, 2.3399754843693628, 0.08465317048332292)
+def test_auditory_scene_plan_camera_stays_fixed_across_time_and_ball_offsets() -> None:
+    baseline = _build_auditory_scene_plan(_auditory_scene_with_ball_offset(ball_x=0.0, ball_y=0.0))
+    shifted_payload = replace(
+        _auditory_payload(),
+        phase_elapsed_s=9.4,
+        ball_x=0.82,
+        ball_y=-0.60,
+        ball_forward_norm=0.74,
     )
-    assert plan.camera.heading_deg == pytest.approx(1.196667680590167)
-    assert plan.camera.pitch_deg == pytest.approx(0.09763773088790131)
+    shifted = _build_auditory_scene_plan(
+        AuditoryGlScene(
+            world=pygame.Rect(0, 0, 640, 360),
+            payload=shifted_payload,
+            time_remaining_s=14.0,
+            time_fill_ratio=0.42,
+        )
+    )
+
+    assert baseline.camera is not None
+    assert shifted.camera is not None
+    assert shifted.camera == baseline.camera
 
 
-def test_auditory_scene_plan_camera_follows_ball_left_and_right() -> None:
-    center_plan = _build_auditory_scene_plan(_auditory_scene_with_ball_offset(ball_x=0.0, ball_y=0.0))
-    left_plan = _build_auditory_scene_plan(_auditory_scene_with_ball_offset(ball_x=-0.82, ball_y=0.0))
-    right_plan = _build_auditory_scene_plan(_auditory_scene_with_ball_offset(ball_x=0.82, ball_y=0.0))
+def test_auditory_scene_plan_gate_positions_stay_fixed_for_same_slot_assignments() -> None:
+    base_scene = _auditory_scene_with_visible_gates()
+    advanced_scene = AuditoryGlScene(
+        world=pygame.Rect(0, 0, 640, 360),
+        payload=replace(
+            base_scene.payload,
+            phase_elapsed_s=7.1,
+            ball_forward_norm=0.72,
+        )
+        if base_scene.payload is not None
+        else None,
+        time_remaining_s=15.0,
+        time_fill_ratio=0.33,
+    )
 
-    assert center_plan.camera is not None
-    assert left_plan.camera is not None
-    assert right_plan.camera is not None
-    assert left_plan.camera.position[0] < right_plan.camera.position[0]
-    assert abs(right_plan.camera.position[0] - left_plan.camera.position[0]) >= 1.2
-    assert _angle_delta_deg(left_plan.camera.heading_deg, center_plan.camera.heading_deg) < 0.0
-    assert _angle_delta_deg(right_plan.camera.heading_deg, center_plan.camera.heading_deg) > 0.0
-    assert abs(_angle_delta_deg(right_plan.camera.heading_deg, left_plan.camera.heading_deg)) >= 2.0
+    first_plan = _build_auditory_scene_plan(base_scene)
+    second_plan = _build_auditory_scene_plan(advanced_scene)
+    first_gates = sorted(
+        instance.position
+        for instance in first_plan.asset_instances
+        if instance.asset_id.startswith("auditory_gate_")
+    )
+    second_gates = sorted(
+        instance.position
+        for instance in second_plan.asset_instances
+        if instance.asset_id.startswith("auditory_gate_")
+    )
+
+    assert second_gates == pytest.approx(first_gates)
 
 
-def test_auditory_scene_plan_camera_follows_ball_low_and_high() -> None:
-    center_plan = _build_auditory_scene_plan(_auditory_scene_with_ball_offset(ball_x=0.0, ball_y=0.0))
-    low_plan = _build_auditory_scene_plan(_auditory_scene_with_ball_offset(ball_x=0.0, ball_y=-0.60))
-    high_plan = _build_auditory_scene_plan(_auditory_scene_with_ball_offset(ball_x=0.0, ball_y=0.60))
+def test_auditory_scene_plan_ball_moves_forward_toward_fixed_gate_slots() -> None:
+    scene_near = AuditoryGlScene(
+        world=pygame.Rect(0, 0, 640, 360),
+        payload=replace(_auditory_payload(), ball_forward_norm=float(BALL_FORWARD_IDLE_NORM)),
+        time_remaining_s=18.0,
+        time_fill_ratio=0.44,
+    )
+    scene_far = AuditoryGlScene(
+        world=pygame.Rect(0, 0, 640, 360),
+        payload=replace(_auditory_payload(), ball_forward_norm=0.74),
+        time_remaining_s=18.0,
+        time_fill_ratio=0.44,
+    )
 
-    assert center_plan.camera is not None
-    assert low_plan.camera is not None
-    assert high_plan.camera is not None
-    assert low_plan.camera.position[2] < high_plan.camera.position[2]
-    assert abs(high_plan.camera.position[2] - low_plan.camera.position[2]) >= 0.7
-    assert low_plan.camera.pitch_deg < center_plan.camera.pitch_deg < high_plan.camera.pitch_deg
-    assert abs(high_plan.camera.pitch_deg - low_plan.camera.pitch_deg) >= 1.5
+    near_plan = _build_auditory_scene_plan(scene_near)
+    far_plan = _build_auditory_scene_plan(scene_far)
+    near_ball = next(instance for instance in near_plan.asset_instances if instance.asset_id == "auditory_ball")
+    far_ball = next(instance for instance in far_plan.asset_instances if instance.asset_id == "auditory_ball")
+
+    assert far_ball.position[1] > near_ball.position[1]
 
 
-def test_auditory_scene_plan_camera_is_repeatable_for_identical_payload() -> None:
-    scene = _auditory_scene_with_ball_offset(ball_x=0.45, ball_y=-0.25)
+def test_auditory_scene_plan_keeps_far_end_tunnel_ring_in_front_of_camera() -> None:
+    plan = _build_auditory_scene_plan(_auditory_scene_for_render_frame())
+    assert plan.camera is not None
 
-    first_plan = _build_auditory_scene_plan(scene)
-    second_plan = _build_auditory_scene_plan(scene)
+    farthest_rib = max(
+        (instance for instance in plan.asset_instances if instance.asset_id == "auditory_tunnel_rib"),
+        key=lambda instance: instance.position[1],
+    )
 
-    assert first_plan.camera is not None
-    assert second_plan.camera is not None
-    assert first_plan.camera == second_plan.camera
+    assert farthest_rib.position[1] == pytest.approx(TUNNEL_GEOMETRY_END_DISTANCE, abs=0.01)
+    assert farthest_rib.position[1] > plan.camera.position[1]
+    assert farthest_rib.position[1] < plan.camera.far_clip
 
 
 def test_render_frame_flushes_scene_textures_before_color_and_ui() -> None:
@@ -455,28 +510,31 @@ def test_rapid_tracking_scene_plan_includes_target_and_scenery_assets() -> None:
     assert {
         "building_hangar",
         "building_tower",
-        "road_dirt_segment",
-        "road_paved_segment",
-        "terrain_hill_mound",
-        "terrain_lake_patch",
-        "terrain_rock_cluster",
-    } <= instance_ids
+    } <= asset_ids
+    assert plan.static_groups
+    assert {group.layer for group in plan.static_groups} >= {"near", "far"}
     assert any(asset_id in {"truck_olive", "vehicle_tracked", "soldiers_patrol"} for asset_id in instance_ids)
     assert any(
         asset_id in {"forest_canopy_patch", "shrubs_low_cluster", "trees_field_cluster", "trees_pine_cluster"}
         for asset_id in instance_ids
     )
     assert len(plan.asset_instances) <= 95
-    assert plan.entity_count == len(plan.asset_instances)
+    assert plan.entity_count >= len(plan.asset_instances)
 
 
 def test_rapid_tracking_scene_plan_reuses_cached_static_world_budget() -> None:
     static_a = _rapid_tracking_static_scene(551)
     static_b = _rapid_tracking_static_scene(551)
+    bundle_a = _rapid_tracking_static_bundle(551)
+    bundle_b = _rapid_tracking_static_bundle(551)
 
     assert static_a is static_b
-    assert len(static_a.core_instances) <= 80
+    assert bundle_a is bundle_b
     assert len(static_a.ambient_instances) <= 20
+    assert bundle_a.instance_count == len(static_a.core_instances)
+    assert bundle_a.triangle_count > 0
+    assert {group.layer for group in bundle_a.groups} >= {"near", "far"}
+    assert max(group.radius for group in bundle_a.groups if group.layer != "far") <= 80.0
     assert {
         "building_hangar",
         "building_tower",
@@ -485,11 +543,298 @@ def test_rapid_tracking_scene_plan_reuses_cached_static_world_budget() -> None:
         "terrain_hill_mound",
         "terrain_lake_patch",
         "terrain_rock_cluster",
-    } <= set(static_a.asset_ids)
+    } <= set(bundle_a.asset_ids)
 
 
-def test_scene_asset_library_builds_hangar_builtin_mesh() -> None:
+def test_rapid_tracking_static_bundle_changes_with_scene_seed() -> None:
+    bundle_a = _rapid_tracking_static_bundle(551)
+    bundle_b = _rapid_tracking_static_bundle(552)
+
+    signature_a = tuple((group.group_id, round(group.center[0], 2), round(group.center[1], 2)) for group in bundle_a.groups)
+    signature_b = tuple((group.group_id, round(group.center[0], 2), round(group.center[1], 2)) for group in bundle_b.groups)
+
+    assert signature_a != signature_b
+
+
+def test_rapid_tracking_static_group_visibility_rejects_offscreen_clusters() -> None:
+    camera = _SceneCamera(
+        position=(0.0, 0.0, 12.0),
+        heading_deg=0.0,
+        pitch_deg=0.0,
+        h_fov_deg=60.0,
+        v_fov_deg=40.0,
+    )
+    triangles = (
+        _PreparedWorldTriangle(
+            points=((490.0, 10.0, 0.0), (500.0, 10.0, 0.0), (500.0, 12.0, 0.0)),
+            normal=(0.0, 0.0, 1.0),
+            base_rgb=(0.4, 0.5, 0.4),
+        ),
+    )
+    hidden_group = _RapidTrackingStaticGroup(
+        group_id="offscreen",
+        layer="near",
+        center=(500.0, 10.0, 0.0),
+        radius=12.0,
+        triangles=triangles,
+        instance_count=1,
+    )
+    visible_group = _RapidTrackingStaticGroup(
+        group_id="visible",
+        layer="near",
+        center=(0.0, 240.0, 0.0),
+        radius=18.0,
+        triangles=triangles,
+        instance_count=1,
+    )
+
+    assert _rapid_tracking_static_group_visible(camera=camera, group=hidden_group) is False
+    assert _rapid_tracking_static_group_visible(camera=camera, group=visible_group) is True
+
+
+def test_rapid_tracking_scene_plan_uses_scene_seed_for_camera_and_scenery(monkeypatch) -> None:
+    payload = replace(_rapid_tracking_payload(), scene_seed=987654)
+    scene = RapidTrackingGlScene(
+        world=pygame.Rect(0, 0, 640, 360),
+        payload=payload,
+        active_phase=True,
+    )
+    captured: dict[str, int] = {}
+    original_static_scene = _rapid_tracking_static_scene
+
+    def fake_camera_rig_state(**kwargs):
+        captured["camera_seed"] = int(kwargs["seed"])
+        return SimpleNamespace(
+            cam_world_x=0.0,
+            cam_world_y=0.0,
+            cam_world_z=12.0,
+            view_heading_deg=0.0,
+            view_pitch_deg=0.0,
+            fov_deg=60.0,
+        )
+
+    def fake_static_scene(seed: int):
+        captured["static_seed"] = int(seed)
+        return original_static_scene(int(seed))
+
+    def fake_estimated_target_world_z(**kwargs):
+        captured["target_world_z_seed"] = int(kwargs["seed"])
+        return 0.0
+
+    monkeypatch.setattr("cfast_trainer.modern_gl_renderer.rapid_tracking_camera_rig_state", fake_camera_rig_state)
+    monkeypatch.setattr("cfast_trainer.modern_gl_renderer._rapid_tracking_static_scene", fake_static_scene)
+    monkeypatch.setattr("cfast_trainer.modern_gl_renderer.estimated_target_world_z", fake_estimated_target_world_z)
+
+    _build_rapid_tracking_scene_plan(scene)
+
+    assert captured == {
+        "camera_seed": int(payload.scene_seed),
+        "static_seed": int(payload.scene_seed),
+        "target_world_z_seed": int(payload.scene_seed),
+    }
+
+
+def test_rapid_tracking_scene_plan_limits_readable_ambient_clutter(monkeypatch) -> None:
+    payload = _rapid_tracking_payload()
+    readable_payload = replace(payload, scene_seed=int(payload.session_seed) + 99)
+    scene = RapidTrackingGlScene(
+        world=pygame.Rect(0, 0, 640, 360),
+        payload=readable_payload,
+        active_phase=True,
+    )
+    layout = build_rapid_tracking_compound_layout(seed=int(readable_payload.scene_seed))
+    ambient_instances = tuple(
+        _AssetInstance(
+            asset_id=asset_id,
+            position=(float(idx), 0.0, 0.0),
+        )
+        for idx, asset_id in enumerate(
+            (
+                "forest_canopy_patch",
+                "trees_field_cluster",
+                "forest_canopy_patch",
+                "shrubs_low_cluster",
+                "trees_pine_cluster",
+                "forest_canopy_patch",
+                "shrubs_low_cluster",
+                "trees_field_cluster",
+                "trees_pine_cluster",
+                "shrubs_low_cluster",
+            )
+        )
+    )
+    static_scene = _RapidTrackingStaticScene(
+        layout=layout,
+        core_instances=(),
+        ambient_instances=ambient_instances,
+        asset_ids=tuple(sorted({instance.asset_id for instance in ambient_instances})),
+    )
+    rank_by_position = {
+        tuple(instance.position): idx
+        for idx, instance in enumerate(ambient_instances)
+    }
+
+    monkeypatch.setattr("cfast_trainer.modern_gl_renderer._rapid_tracking_static_scene", lambda _seed: static_scene)
+    monkeypatch.setattr("cfast_trainer.modern_gl_renderer._rapid_tracking_static_instance_visible", lambda *args, **kwargs: True)
+    monkeypatch.setattr(
+        "cfast_trainer.modern_gl_renderer._rapid_tracking_visibility_rank",
+        lambda instance, **kwargs: rank_by_position[tuple(instance.position)],
+    )
+
+    readable_plan = _build_rapid_tracking_scene_plan(scene)
+    default_plan = _build_rapid_tracking_scene_plan(
+        RapidTrackingGlScene(
+            world=pygame.Rect(0, 0, 640, 360),
+            payload=replace(readable_payload, scene_seed=int(readable_payload.session_seed)),
+            active_phase=True,
+        )
+    )
+
+    readable_ambient = readable_plan.asset_instances[:-1]
+    default_ambient = default_plan.asset_instances[:-1]
+
+    assert len(default_ambient) == 6
+    assert sum(1 for instance in default_ambient if instance.asset_id == "forest_canopy_patch") == 1
+    assert len(readable_ambient) == 4
+    assert sum(1 for instance in readable_ambient if instance.asset_id == "forest_canopy_patch") <= 1
+
+
+def test_rapid_tracking_local_hills_never_enter_backdrop_layer() -> None:
+    static_scene = _rapid_tracking_static_scene(551)
+    local_hills = [
+        instance
+        for instance in static_scene.core_instances
+        if instance.asset_id == "terrain_hill_mound" and instance.bucket != "backdrop"
+    ]
+
+    assert local_hills
+    assert all(
+        _rapid_tracking_static_group_layer(instance, center_x=0.0, center_y=0.0) == "near"
+        for instance in local_hills
+    )
+
+
+def test_rapid_tracking_playfield_groups_stay_within_radius_cap_for_seed_551() -> None:
+    bundle = _rapid_tracking_static_bundle(551)
+    playfield_groups = [group for group in bundle.groups if group.layer != "far"]
+
+    assert playfield_groups
+    assert max(group.radius for group in playfield_groups) <= 80.0
+
+
+def test_grounded_asset_world_z_uses_mesh_base_height(monkeypatch) -> None:
+    class _FakeLibrary:
+        @staticmethod
+        def mesh(_asset_id: str):
+            return SimpleNamespace(base_z=1.5)
+
+    monkeypatch.setattr("cfast_trainer.modern_gl_renderer._rapid_tracking_static_asset_library", lambda: _FakeLibrary())
+
+    assert _grounded_asset_world_z(asset_id="road_paved_segment", terrain_z=10.0, scale=(1.0, 1.0, 2.0)) == pytest.approx(
+        7.01
+    )
+
+
+def test_rapid_tracking_render_polyline_subdivides_long_world_segments() -> None:
+    layout = build_rapid_tracking_compound_layout(seed=551)
+    sampled = _rapid_tracking_render_polyline(
+        layout,
+        (
+            (float(layout.compound_center_x) - 2.8, float(layout.compound_center_y) - 0.1),
+            (float(layout.compound_center_x) + 2.8, float(layout.compound_center_y) - 0.1),
+        ),
+    )
+
+    assert len(sampled) > 2
+    for start_xy, end_xy in zip(sampled, sampled[1:], strict=False):
+        start_wx, start_wy = _rapid_tracking_layout_world_xy(
+            layout,
+            track_x=float(start_xy[0]),
+            track_y=float(start_xy[1]),
+        )
+        end_wx, end_wy = _rapid_tracking_layout_world_xy(
+            layout,
+            track_x=float(end_xy[0]),
+            track_y=float(end_xy[1]),
+        )
+        assert math.hypot(float(end_wx - start_wx), float(end_wy - start_wy)) <= 24.0001
+
+
+def test_rapid_tracking_road_piece_uses_average_sampled_height(monkeypatch) -> None:
+    layout = build_rapid_tracking_compound_layout(seed=551)
+    start_xy = (-0.5, 0.2)
+    end_xy = (0.7, 0.2)
+    start_wx, start_wy = _rapid_tracking_layout_world_xy(layout, track_x=float(start_xy[0]), track_y=float(start_xy[1]))
+    end_wx, end_wy = _rapid_tracking_layout_world_xy(layout, track_x=float(end_xy[0]), track_y=float(end_xy[1]))
+    mid_wx = (start_wx + end_wx) * 0.5
+    mid_wy = (start_wy + end_wy) * 0.5
+
+    def fake_terrain_height(wx: float, wy: float) -> float:
+        if abs(float(wx) - float(start_wx)) < 1e-6 and abs(float(wy) - float(start_wy)) < 1e-6:
+            return 5.0
+        if abs(float(wx) - float(mid_wx)) < 1e-6 and abs(float(wy) - float(mid_wy)) < 1e-6:
+            return 11.0
+        if abs(float(wx) - float(end_wx)) < 1e-6 and abs(float(wy) - float(end_wy)) < 1e-6:
+            return 17.0
+        raise AssertionError(f"unexpected sample: {(wx, wy)}")
+
+    monkeypatch.setattr("cfast_trainer.modern_gl_renderer.rapid_tracking_terrain_height", fake_terrain_height)
+
+    instance = _rapid_tracking_road_piece_instance(
+        layout,
+        asset_id="road_paved_segment",
+        start_xy=start_xy,
+        end_xy=end_xy,
+        width=8.0,
+    )
+
+    assert instance.position[2] == pytest.approx(11.01)
+
+
+def test_rapid_tracking_static_scene_dedupes_duplicate_tree_cluster_positions() -> None:
+    static_scene = _rapid_tracking_static_scene(551)
+    tree_positions = [
+        (round(float(instance.position[0]), 3), round(float(instance.position[1]), 3))
+        for instance in static_scene.ambient_instances
+        if instance.asset_id in {"trees_field_cluster", "trees_pine_cluster"}
+    ]
+
+    assert tree_positions
+    assert len(tree_positions) == len(set(tree_positions))
+
+
+def test_scene_asset_library_uses_file_backed_rt_meshes_when_available() -> None:
     library = _SceneAssetLibrary(RenderAssetCatalog())
+    catalog = RenderAssetCatalog()
+
+    mesh = library.mesh("building_hangar")
+
+    assert catalog.resolve("building_hangar") is not None
+    assert catalog.resolve("building_hangar").path is not None
+    assert catalog.resolve("plane_red").path == catalog.resolve("plane_blue").path
+    assert mesh.asset_id == "building_hangar"
+    assert len(mesh.triangles) > 0
+
+
+def test_scene_asset_library_falls_back_to_builtin_when_candidate_is_missing(tmp_path) -> None:
+    manifest = {
+        "assets": {
+            "building_hangar": {
+                "category": "scenery",
+                "builtin_kind": "hangar",
+                "scale": 1.0,
+                "candidates": ["missing/building_hangar.obj"],
+            }
+        }
+    }
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    library = _SceneAssetLibrary(
+        RenderAssetCatalog(
+            asset_root=tmp_path,
+            manifest_path=manifest_path,
+        )
+    )
 
     mesh = library.mesh("building_hangar")
 

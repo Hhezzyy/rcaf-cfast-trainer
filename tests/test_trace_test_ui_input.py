@@ -51,7 +51,7 @@ def _build_screen(
     return screen
 
 
-def test_trace_test_1_arrow_input_only_registers_after_answer_open() -> None:
+def test_trace_test_1_arrow_input_faults_wrong_choice_during_observe_stage() -> None:
     clock = FakeClock()
     screen = _build_screen(
         engine_factory=lambda: build_trace_test_1_test(
@@ -68,12 +68,23 @@ def test_trace_test_1_arrow_input_only_registers_after_answer_open() -> None:
     )
     screen._engine.start_practice()
 
-    screen.handle_event(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_LEFT, "unicode": ""}))
-    assert screen._engine.phase is Phase.PRACTICE
+    payload = screen._engine.snapshot().payload
+    assert payload is not None
+    wrong_key, wrong_raw = {
+        1: (pygame.K_RIGHT, "RIGHT"),
+        2: (pygame.K_LEFT, "LEFT"),
+        3: (pygame.K_DOWN, "DOWN"),
+        4: (pygame.K_UP, "UP"),
+    }[int(payload.correct_code)]
 
-    clock.advance(0.50)
+    screen.handle_event(pygame.event.Event(pygame.KEYDOWN, {"key": wrong_key, "unicode": ""}))
+    assert screen._engine.phase is Phase.PRACTICE
+    assert screen._engine.events() == []
+
+    clock.advance(1.05)
     screen._engine.update()
-    screen.handle_event(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_LEFT, "unicode": ""}))
+    assert screen._engine.events()[-1].raw == wrong_raw
+    assert screen._engine.events()[-1].is_correct is False
     assert screen._engine.phase is Phase.PRACTICE_DONE
 
 
@@ -96,10 +107,11 @@ def test_trace_test_1_arrow_input_opens_answer_checker_in_review_mode(tmp_path) 
     )
     screen._engine.start_practice()
 
-    clock.advance(0.50)
+    clock.advance(0.20)
     screen._engine.update()
     payload = screen._engine.snapshot().payload
     assert payload is not None
+    assert float(payload.observe_progress) < float(payload.answer_open_progress)
 
     expected = {
         1: "LEFT",
@@ -107,11 +119,17 @@ def test_trace_test_1_arrow_input_opens_answer_checker_in_review_mode(tmp_path) 
         3: "UP",
         4: "DOWN",
     }[int(payload.correct_code)]
+    wrong_key, wrong_raw = {
+        1: (pygame.K_RIGHT, "RIGHT"),
+        2: (pygame.K_LEFT, "LEFT"),
+        3: (pygame.K_DOWN, "DOWN"),
+        4: (pygame.K_UP, "UP"),
+    }[int(payload.correct_code)]
 
-    screen.handle_event(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_LEFT, "unicode": ""}))
+    screen.handle_event(pygame.event.Event(pygame.KEYDOWN, {"key": wrong_key, "unicode": ""}))
 
     assert screen._review_state is not None
-    assert screen._review_state.submitted_raw == "LEFT"
+    assert screen._review_state.submitted_raw == wrong_raw
     assert screen._review_state.correct_choice_code is None
     assert screen._review_state.submitted_choice_code is None
     assert screen._review_state.correct_answer_text == expected
@@ -139,7 +157,7 @@ def test_trace_test_1_review_overlay_auto_clears_without_second_submit(tmp_path)
     )
     screen._engine.start_practice()
 
-    clock.advance(0.50)
+    clock.advance(0.20)
     screen._engine.update()
     screen.handle_event(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_LEFT, "unicode": ""}))
 
@@ -152,6 +170,91 @@ def test_trace_test_1_review_overlay_auto_clears_without_second_submit(tmp_path)
     assert screen._review_state is None
     if screen._review_clock is not None:
         assert screen._review_clock.now() > now
+
+
+def test_trace_test_1_review_overlay_detects_no_input_timeout(tmp_path) -> None:
+    clock = FakeClock()
+    screen = _build_screen(
+        engine_factory=lambda: build_trace_test_1_test(
+            clock=clock,
+            seed=17,
+            difficulty=0.5,
+            config=TraceTest1Config(
+                practice_questions=1,
+                practice_observe_s=1.0,
+                scored_observe_s=1.0,
+            ),
+        ),
+        test_code="trace_test_1",
+        review_mode=True,
+        settings_path=tmp_path / "difficulty-settings.json",
+    )
+    screen._engine.start_practice()
+
+    payload = screen._engine.snapshot().payload
+    assert payload is not None
+    expected = {
+        1: "LEFT",
+        2: "RIGHT",
+        3: "UP",
+        4: "DOWN",
+    }[int(payload.correct_code)]
+
+    clock.advance(1.05)
+    screen.render(pygame.Surface((960, 540)))
+
+    assert screen._review_state is not None
+    assert screen._review_state.submitted_raw == "NO INPUT"
+    assert screen._review_state.correct_answer_text == expected
+    assert screen._review_state.blocks_runtime is False
+
+
+def test_trace_test_1_answer_input_does_not_swap_prompt_immediately(tmp_path) -> None:
+    clock = FakeClock()
+    screen = _build_screen(
+        engine_factory=lambda: build_trace_test_1_test(
+            clock=clock,
+            seed=17,
+            difficulty=0.5,
+            config=TraceTest1Config(
+                practice_questions=2,
+                practice_observe_s=1.0,
+                scored_observe_s=1.0,
+            ),
+        ),
+        test_code="trace_test_1",
+        review_mode=True,
+        settings_path=tmp_path / "difficulty-settings.json",
+    )
+    screen._engine.start_practice()
+
+    clock.advance(0.20)
+    screen._engine.update()
+    before = screen._engine.snapshot().payload
+    assert before is not None
+
+    screen.handle_event(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_LEFT, "unicode": ""}))
+    after = screen._engine.snapshot().payload
+    assert after is not None
+    assert after.prompt_index == before.prompt_index
+
+    clock.advance(0.20)
+    screen._engine.update()
+    mid = screen._engine.snapshot().payload
+    assert mid is not None
+    assert mid.prompt_index == before.prompt_index
+
+    clock.advance(0.40)
+    screen._engine.update()
+    next_payload = screen._engine.snapshot().payload
+    assert next_payload is not None
+    assert next_payload.prompt_index == before.prompt_index
+
+    clock.advance(0.20)
+    screen._engine.update()
+    final_payload = screen._engine.snapshot().payload
+    assert final_payload is not None
+    assert final_payload.prompt_index == before.prompt_index + 1
 
 
 def test_trace_test_2_letter_choice_submits_only_after_observe_stage() -> None:

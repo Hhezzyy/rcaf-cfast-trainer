@@ -13,7 +13,6 @@ from cfast_trainer.app import (
     _AuditoryPandaRequirementState,
 )
 from cfast_trainer.auditory_capacity import (
-    AUDITORY_GATE_RETIRE_X_NORM,
     AUDITORY_GATE_SPAWN_X_NORM,
     AuditoryCapacityGate,
     AuditoryCapacityPayload,
@@ -25,6 +24,7 @@ from cfast_trainer.auditory_capacity_panda3d import (
     _tube_frame,
     panda3d_auditory_rendering_available,
 )
+from cfast_trainer.auditory_capacity_view import BALL_FORWARD_IDLE_NORM, GATE_DEPTH_SLOTS_NORM, slot_distance
 from cfast_trainer.cognitive_core import Phase
 
 
@@ -92,7 +92,13 @@ def _mark_auditory_panda_ready(screen: CognitiveTestScreen) -> None:
     screen._auditory_panda_failed = False
 
 
-def _payload_with_gate(*, x_norm: float, gate_id: int = 401) -> AuditoryCapacityPayload:
+def _payload_with_gate(
+    *,
+    x_norm: float,
+    gate_id: int = 401,
+    slot_index: int | None = None,
+    ball_forward_norm: float = BALL_FORWARD_IDLE_NORM,
+) -> AuditoryCapacityPayload:
     clock = _FakeClock()
     engine = build_auditory_capacity_test(clock=clock, seed=17, difficulty=0.58)
     engine.start_practice()
@@ -104,6 +110,7 @@ def _payload_with_gate(*, x_norm: float, gate_id: int = 401) -> AuditoryCapacity
         payload,
         ball_x=0.0,
         ball_y=0.0,
+        ball_forward_norm=float(ball_forward_norm),
         gates=(
             AuditoryCapacityGate(
                 gate_id=gate_id,
@@ -112,6 +119,7 @@ def _payload_with_gate(*, x_norm: float, gate_id: int = 401) -> AuditoryCapacity
                 color="RED",
                 shape="CIRCLE",
                 aperture_norm=0.18,
+                visual_slot_index=slot_index,
             ),
         ),
     )
@@ -215,64 +223,54 @@ def test_auditory_world_frame_keeps_gl_viewport_transparent_in_freeze_mode(
     assert frozen_frame.get_at((0, 0)).a > 0
 
 
-def test_gate_ahead_distance_mapping_matches_arrival_expectations() -> None:
-    spawned = AuditoryCapacityPanda3DRenderer._gate_ahead_distance_for_x_norm(
-        AUDITORY_GATE_SPAWN_X_NORM
-    )
-    arrival = AuditoryCapacityPanda3DRenderer._gate_ahead_distance_for_x_norm(0.0)
-    slightly_past = AuditoryCapacityPanda3DRenderer._gate_ahead_distance_for_x_norm(-0.20)
-    retired = AuditoryCapacityPanda3DRenderer._gate_ahead_distance_for_x_norm(
-        AUDITORY_GATE_RETIRE_X_NORM
-    )
-
-    assert spawned == pytest.approx(38.0)
-    assert arrival == pytest.approx(0.8)
-    assert -0.8 <= slightly_past <= 0.3
-    assert slightly_past < arrival
-    assert retired == pytest.approx(-6.0)
-
-
-def test_newly_spawned_gate_stays_far_down_tunnel_and_fades_in() -> None:
+def test_gate_visual_slot_maps_to_fixed_tunnel_distance() -> None:
     if not panda3d_auditory_rendering_available():
         pytest.skip("Panda3D unavailable")
 
     renderer = AuditoryCapacityPanda3DRenderer(size=(640, 360))
     try:
-        payload = _payload_with_gate(x_norm=AUDITORY_GATE_SPAWN_X_NORM, gate_id=402)
-        renderer._travel_offset = 8.0
+        slot_index = len(GATE_DEPTH_SLOTS_NORM) - 1
+        payload = _payload_with_gate(
+            x_norm=AUDITORY_GATE_SPAWN_X_NORM,
+            gate_id=402,
+            slot_index=slot_index,
+        )
         renderer._update_ball(payload=payload)
         renderer._update_gates(payload=payload)
 
         assert 402 in renderer._gate_nodes
         gate_np = renderer._gate_nodes[402]
         gate_pos = gate_np.getPos()
-        ball_pos = renderer._ball_root.getPos()
-        alpha = float(gate_np.getColorScale()[3])
-
-        assert float(gate_pos[1] - ball_pos[1]) >= 24.0
-        assert alpha <= 0.35
+        assert float(gate_pos[1]) == pytest.approx(slot_distance(slot_index), abs=0.01)
     finally:
         renderer.close()
 
 
-def test_gate_near_arrival_stays_visible_in_front_of_camera() -> None:
+def test_ball_moves_forward_while_same_gate_stays_stationary() -> None:
     if not panda3d_auditory_rendering_available():
         pytest.skip("Panda3D unavailable")
 
     renderer = AuditoryCapacityPanda3DRenderer(size=(640, 360))
     try:
-        payload = _payload_with_gate(x_norm=0.0)
-        renderer._travel_offset = 12.0
-        renderer._update_ball(payload=payload)
-        renderer._update_gates(payload=payload)
+        payload_a = _payload_with_gate(
+            x_norm=0.90,
+            slot_index=len(GATE_DEPTH_SLOTS_NORM) - 2,
+            ball_forward_norm=0.20,
+        )
+        payload_b = replace(payload_a, ball_forward_norm=0.74)
 
-        assert 401 in renderer._gate_nodes
-        gate_pos = renderer._gate_nodes[401].getPos()
-        ball_pos = renderer._ball_root.getPos()
-        cam_pos = renderer._base.cam.getPos()
+        renderer._update_ball(payload=payload_a)
+        renderer._update_gates(payload=payload_a)
+        gate_pos_a = renderer._gate_nodes[401].getPos()
+        ball_pos_a = renderer._ball_root.getPos()
 
-        assert float(gate_pos[1]) >= float(cam_pos[1])
-        assert -1.5 <= float(gate_pos[1] - ball_pos[1]) <= 2.0
+        renderer._update_ball(payload=payload_b)
+        renderer._update_gates(payload=payload_b)
+        gate_pos_b = renderer._gate_nodes[401].getPos()
+        ball_pos_b = renderer._ball_root.getPos()
+
+        assert tuple(gate_pos_b) == pytest.approx(tuple(gate_pos_a))
+        assert float(ball_pos_b[1]) > float(ball_pos_a[1])
     finally:
         renderer.close()
 
@@ -297,38 +295,51 @@ def test_renderer_prefers_repo_auditory_assets_when_present() -> None:
         renderer.close()
 
 
-def test_tunnel_geometry_backfills_wrap_zone_and_extends_past_path_end() -> None:
+def test_camera_is_stable_across_ball_offsets() -> None:
     if not panda3d_auditory_rendering_available():
         pytest.skip("Panda3D unavailable")
 
     renderer = AuditoryCapacityPanda3DRenderer(size=(640, 360))
     try:
-        assert renderer._tube_geometry_start_distance <= -30.0
-        assert renderer._tube_geometry_end_distance >= (renderer._span + 20.0)
-        assert renderer._travel_wrap_threshold < (renderer._span - renderer._ball_anchor_distance)
+        centered = replace(_payload_with_gate(x_norm=0.85, slot_index=7), ball_x=0.0, ball_y=0.0)
+        offset = replace(centered, ball_x=0.82, ball_y=-0.60)
+
+        renderer._update_ball(payload=centered)
+        cam_pos_a = renderer._base.cam.getPos()
+        renderer._update_ball(payload=offset)
+        cam_pos_b = renderer._base.cam.getPos()
+
+        assert tuple(cam_pos_b) == pytest.approx(tuple(cam_pos_a))
     finally:
         renderer.close()
 
 
-def test_travel_wrap_preserves_modulo_position_before_visible_seam() -> None:
+def test_travel_offset_no_longer_changes_ball_or_gate_positions() -> None:
     if not panda3d_auditory_rendering_available():
         pytest.skip("Panda3D unavailable")
 
     renderer = AuditoryCapacityPanda3DRenderer(size=(640, 360))
     try:
-        renderer._travel_offset = renderer._travel_wrap_threshold - 0.05
-        expected_ball_distance = (
-            renderer._ball_anchor_distance + renderer._travel_offset + (0.05 * 5.2)
+        payload = _payload_with_gate(
+            x_norm=0.70,
+            slot_index=len(GATE_DEPTH_SLOTS_NORM) - 1,
+            ball_forward_norm=0.44,
         )
 
-        renderer._advance_travel_offset(0.05)
-        wrapped_ball_distance = renderer._ball_anchor_distance + renderer._travel_offset
+        renderer._travel_offset = 0.0
+        renderer._update_ball(payload=payload)
+        renderer._update_gates(payload=payload)
+        gate_pos_a = renderer._gate_nodes[401].getPos()
+        ball_pos_a = renderer._ball_root.getPos()
 
-        assert renderer._travel_offset < 0.0
-        assert wrapped_ball_distance < 0.0
-        assert (wrapped_ball_distance % renderer._span) == pytest.approx(
-            expected_ball_distance % renderer._span
-        )
+        renderer._travel_offset = 87.0
+        renderer._update_ball(payload=payload)
+        renderer._update_gates(payload=payload)
+        gate_pos_b = renderer._gate_nodes[401].getPos()
+        ball_pos_b = renderer._ball_root.getPos()
+
+        assert tuple(gate_pos_b) == pytest.approx(tuple(gate_pos_a))
+        assert tuple(ball_pos_b) == pytest.approx(tuple(ball_pos_a))
     finally:
         renderer.close()
 

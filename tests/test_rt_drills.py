@@ -19,6 +19,7 @@ from cfast_trainer.rt_drills import (
     build_rt_terrain_recovery_run_drill,
 )
 from cfast_trainer.rapid_tracking import RapidTrackingPayload
+from cfast_trainer.rapid_tracking import RapidTrackingLayoutPolicy
 
 
 @dataclass
@@ -208,6 +209,49 @@ def test_rt_pressure_run_keeps_all_targets_and_challenges_active() -> None:
         )
         clock.advance(0.5)
         drill.update()
+
+
+def test_rt_mixed_and_pressure_drills_use_readable_balanced_layout_policy() -> None:
+    clock = FakeClock()
+    mixed = build_rt_mixed_tempo_drill(
+        clock=clock,
+        seed=91,
+        difficulty=0.5,
+        mode=AntDrillMode.TEMPO,
+        config=RtDrillConfig(scored_duration_s=18.0),
+    )
+    pressure = build_rt_pressure_run_drill(
+        clock=clock,
+        seed=91,
+        difficulty=0.5,
+        mode=AntDrillMode.STRESS,
+        config=RtDrillConfig(scored_duration_s=18.0),
+    )
+    default_drill = build_rt_lock_anchor_drill(
+        clock=clock,
+        seed=91,
+        difficulty=0.5,
+        mode=AntDrillMode.BUILD,
+        config=RtDrillConfig(scored_duration_s=18.0),
+    )
+
+    mixed.start_practice()
+    pressure.start_practice()
+    default_drill.start_practice()
+
+    mixed_payload = mixed.snapshot().payload
+    pressure_payload = pressure.snapshot().payload
+    default_payload = default_drill.snapshot().payload
+
+    assert mixed.layout_policy is RapidTrackingLayoutPolicy.READABLE_BALANCED
+    assert pressure.layout_policy is RapidTrackingLayoutPolicy.READABLE_BALANCED
+    assert default_drill.layout_policy is RapidTrackingLayoutPolicy.DEFAULT
+    assert isinstance(mixed_payload, RapidTrackingPayload)
+    assert isinstance(pressure_payload, RapidTrackingPayload)
+    assert isinstance(default_payload, RapidTrackingPayload)
+    assert mixed_payload.scene_seed != mixed_payload.session_seed
+    assert pressure_payload.scene_seed != pressure_payload.session_seed
+    assert default_payload.scene_seed == default_payload.session_seed
 
 
 def test_rt_obscured_target_prediction_levels_l2_l5_l8_are_materially_different() -> None:
