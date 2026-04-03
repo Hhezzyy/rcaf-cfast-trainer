@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 from cfast_trainer.airborne_numerical import (
+    TEMPLATES_BY_NAME,
     AirborneNumericalGenerator,
     AirborneScenario,
+    _max_route_directness_ratio,
+    _route_directness_ratio,
+    _template_edge_geometry_lengths,
     build_airborne_numerical_test,
 )
 from cfast_trainer.clock import RealClock
@@ -220,3 +224,50 @@ def test_airborne_numerical_scored_generation_is_deterministic_and_difficulty_bo
         )
         for problem in high_seq
     )
+
+
+def test_airborne_numerical_routes_keep_unique_stops_and_support_direct_legs() -> None:
+    seen_leg_counts: set[int] = set()
+
+    for seed in range(1, 160):
+        gen = AirborneNumericalGenerator(SeededRng(seed))
+        for _ in range(3):
+            problem = gen.generate()
+            scenario = problem.payload
+            assert isinstance(scenario, AirborneScenario)
+
+            route = tuple(int(node) for node in scenario.route)
+            assert len(route) == len(set(route))
+            assert len(scenario.legs) == len(route) - 1
+            seen_leg_counts.add(len(scenario.legs))
+
+    assert 1 in seen_leg_counts
+    assert max(seen_leg_counts) >= 4
+
+
+def test_airborne_numerical_routes_stay_within_plausible_geometry_bounds() -> None:
+    for seed in range(1, 120):
+        gen = AirborneNumericalGenerator(SeededRng(seed))
+        for _ in range(3):
+            problem = gen.generate()
+            scenario = problem.payload
+            assert isinstance(scenario, AirborneScenario)
+
+            template = TEMPLATES_BY_NAME[scenario.template_name]
+            ratio = _route_directness_ratio(scenario.route, template)
+            assert ratio <= _max_route_directness_ratio(len(scenario.legs))
+
+
+def test_airborne_numerical_edge_distances_follow_map_geometry_order() -> None:
+    for seed in range(1, 120):
+        gen = AirborneNumericalGenerator(SeededRng(seed))
+        for _ in range(3):
+            problem = gen.generate()
+            scenario = problem.payload
+            assert isinstance(scenario, AirborneScenario)
+
+            template = TEMPLATES_BY_NAME[scenario.template_name]
+            geometry = _template_edge_geometry_lengths(template)
+            order = sorted(range(len(geometry)), key=lambda idx: (geometry[idx], idx))
+            ordered_distances = [scenario.edge_distances[idx] for idx in order]
+            assert ordered_distances == sorted(ordered_distances)

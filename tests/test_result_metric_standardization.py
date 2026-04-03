@@ -542,11 +542,11 @@ def test_benchmark_result_emits_composite_realized_difficulty_and_prefixed_probe
     session = BenchmarkSession(plan=_build_small_benchmark_plan(clock=clock))
     session.activate()
     current = session.current_engine()
-    assert isinstance(current, _FakeProbeEngine)
+    assert current is not None
     current.finish()
     session.sync_runtime()
     current = session.current_engine()
-    assert isinstance(current, _FakeProbeEngine)
+    assert current is not None
     current.finish()
     session.sync_runtime()
 

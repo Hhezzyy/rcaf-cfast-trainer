@@ -37,7 +37,10 @@ from .panda3d_assets import Panda3DAssetCatalog
 def panda3d_auditory_rendering_available() -> bool:
     if os.environ.get("SDL_VIDEODRIVER", "").strip().lower() == "dummy":
         return False
-    return importlib.util.find_spec("direct.showbase.ShowBase") is not None
+    try:
+        return importlib.util.find_spec("direct.showbase.ShowBase") is not None
+    except ModuleNotFoundError:
+        return False
 
 
 def _mix_rgb(
@@ -554,7 +557,7 @@ class AuditoryCapacityPanda3DRenderer:
         self._ball_root.setColor(ball_rgb[0], ball_rgb[1], ball_rgb[2], 1.0)
         self._ball_root.setHpr((forward_norm * 540.0) % 360.0, 0.0, 0.0)
 
-        cam_pos, look_target = fixed_camera_pose()
+        cam_pos, look_target = fixed_camera_pose(forward_norm=forward_norm)
         self._base.cam.setPos(*cam_pos)
         self._base.cam.lookAt(*look_target)
 

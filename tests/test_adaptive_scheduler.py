@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from importlib.machinery import ModuleSpec
+from types import ModuleType
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
@@ -11,20 +14,26 @@ os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 import pygame
 import pytest
 
-from cfast_trainer.ant_drills import AntDrillMode
+if "moderngl" not in sys.modules:
+    moderngl_stub = ModuleType("moderngl")
+    moderngl_stub.__spec__ = ModuleSpec("moderngl", loader=None)
+    sys.modules["moderngl"] = moderngl_stub
+
+import cfast_trainer.adaptive_scheduler as adaptive_scheduler
 from cfast_trainer.adaptive_scheduler import (
     ADAPTIVE_SKILL_GRAPH,
-    _candidate,
-    _training_mode_for_role,
     AdaptiveSession,
     AdaptiveSessionBlock,
     AdaptiveSessionPlan,
     AdaptiveStage,
+    _candidate,
+    _training_mode_for_role,
     build_adaptive_session_plan,
     collect_adaptive_evidence,
     rank_adaptive_primitives,
 )
-from cfast_trainer.app import App, AdaptiveSessionScreen, BenchmarkScreen, MenuItem, MenuScreen
+from cfast_trainer.ant_drills import AntDrillMode
+from cfast_trainer.app import AdaptiveSessionScreen, App, BenchmarkScreen, MenuItem, MenuScreen
 from cfast_trainer.benchmark import BenchmarkSession, build_benchmark_plan
 from cfast_trainer.cognitive_core import Phase
 from cfast_trainer.cognitive_core import TestSnapshot as SnapshotModel
@@ -51,6 +60,8 @@ def _base_metrics(
     *,
     score_ratio: float | None = None,
     accuracy: float | None = None,
+    duration_s: float | None = None,
+    training_mode: str | None = None,
     first_accuracy: float | None = None,
     last_accuracy: float | None = None,
     first_timeout_rate: float | None = None,
@@ -66,6 +77,10 @@ def _base_metrics(
         metrics["score_ratio"] = _fmt(score_ratio)
     if accuracy is not None:
         metrics["accuracy"] = _fmt(accuracy)
+    if duration_s is not None:
+        metrics["duration_s"] = _fmt(duration_s)
+    if training_mode is not None:
+        metrics["training_mode"] = str(training_mode)
     if first_accuracy is not None:
         metrics["first_3m_accuracy"] = _fmt(first_accuracy)
     if last_accuracy is not None:
@@ -94,6 +109,8 @@ def _history_entry(
     metrics: dict[str, str],
     activity_kind: str = "test",
     attempt_id: int = 1,
+    difficulty_level_start: int = 5,
+    difficulty_level_end: int = 5,
 ) -> AttemptHistoryEntry:
     stamp = _iso(hours_ago)
     return AttemptHistoryEntry(
@@ -108,9 +125,30 @@ def _history_entry(
         difficulty=0.5,
         started_at_utc=stamp,
         completed_at_utc=stamp,
-        difficulty_level_start=5,
-        difficulty_level_end=5,
+        difficulty_level_start=difficulty_level_start,
+        difficulty_level_end=difficulty_level_end,
         metrics=dict(metrics),
+    )
+
+
+def _benchmark_history_entry(
+    *,
+    hours_ago: float,
+    probe_metrics: dict[str, dict[str, str | float | int]],
+    attempt_id: int,
+) -> AttemptHistoryEntry:
+    metrics: dict[str, str] = {}
+    for probe_code, values in probe_metrics.items():
+        prefix = f"probe.{probe_code}."
+        merged: dict[str, str | float | int] = {"completed": "1"}
+        merged.update(values)
+        for key, value in merged.items():
+            metrics[f"{prefix}{key}"] = _fmt(value)
+    return _history_entry(
+        test_code="benchmark_battery",
+        hours_ago=hours_ago,
+        metrics=metrics,
+        attempt_id=attempt_id,
     )
 
 
@@ -217,6 +255,88 @@ def test_collect_adaptive_evidence_maps_new_symbolic_and_dual_task_drills() -> N
     }
 
 
+def test_collect_adaptive_evidence_maps_supported_official_benchmark_probes() -> None:
+    benchmark = _benchmark_history_entry(
+        hours_ago=3,
+        attempt_id=12,
+        probe_metrics={
+            "system_logic": _base_metrics(score_ratio=0.41),
+            "rapid_tracking": {**_base_metrics(score_ratio=0.39), "overshoot_count": 5},
+            "colours_letters_numbers": {
+                **_base_metrics(score_ratio=0.37, post_error_inflation_ms=850.0),
+                "intrusion_count": 3,
+            },
+            "instrument_comprehension": _base_metrics(score_ratio=0.22),
+        },
+    )
+
+    evidence = collect_adaptive_evidence([benchmark])
+    observed = {(item.primitive_id, item.source_code, item.source_kind) for item in evidence}
+
+    assert ("symbolic_rule_extraction", "system_logic", "benchmark_probe") in observed
+    assert ("tracking_stability_low_load", "rapid_tracking", "benchmark_probe") in observed
+    assert ("dual_task_stability_fatigue", "colours_letters_numbers", "benchmark_probe") in observed
+    assert all(item.source_code != "instrument_comprehension" for item in evidence)
+
+
+def test_collect_adaptive_evidence_uses_five_most_recent_results_per_primitive() -> None:
+    entries = [
+        _history_entry(
+            test_code="ma_one_step_fluency",
+            hours_ago=hours_ago,
+            metrics=_base_metrics(score_ratio=0.40 + (index * 0.05)),
+            activity_kind="drill",
+            attempt_id=index + 1,
+        )
+        for index, hours_ago in enumerate((1, 2, 3, 4, 5, 6))
+    ]
+
+    evidence = collect_adaptive_evidence(entries)
+
+    assert len([item for item in evidence if item.primitive_id == "mental_arithmetic_automaticity"]) == 5
+
+
+def test_collect_adaptive_evidence_weights_tests_difficulty_and_harder_modes_more_heavily() -> None:
+    entries = [
+        _history_entry(
+            test_code="vs_multi_target_class_search",
+            hours_ago=3,
+            metrics=_base_metrics(score_ratio=0.72, duration_s=120.0, training_mode="build"),
+            activity_kind="drill",
+            attempt_id=21,
+            difficulty_level_start=3,
+            difficulty_level_end=3,
+        ),
+        _history_entry(
+            test_code="vs_multi_target_class_search",
+            hours_ago=2,
+            metrics=_base_metrics(score_ratio=0.72, duration_s=120.0, training_mode="pressure"),
+            activity_kind="drill",
+            attempt_id=22,
+            difficulty_level_start=8,
+            difficulty_level_end=8,
+        ),
+        _history_entry(
+            test_code="visual_search",
+            hours_ago=1,
+            metrics=_base_metrics(score_ratio=0.72, duration_s=480.0),
+            activity_kind="test",
+            attempt_id=23,
+            difficulty_level_start=8,
+            difficulty_level_end=8,
+        ),
+    ]
+
+    evidence = collect_adaptive_evidence(entries)
+    weights = {
+        (item.source_kind, item.training_mode, item.difficulty_level): item.evidence_weight
+        for item in evidence
+    }
+
+    assert weights[("integrated_test", "", 8)] > weights[("direct", "build", 3)]
+    assert weights[("direct", "pressure", 8)] > weights[("direct", "build", 3)]
+
+
 def test_rank_adaptive_primitives_prioritizes_weaker_performance() -> None:
     entries = [
         _history_entry(
@@ -237,6 +357,36 @@ def test_rank_adaptive_primitives_prioritizes_weaker_performance() -> None:
 
     assert ranked[0].primitive_id == "mental_arithmetic_automaticity"
     assert ranked[0].weakness > ranked[1].weakness
+
+
+def test_rank_adaptive_primitives_keeps_confidence_lower_with_sparse_history() -> None:
+    sparse = [
+        _history_entry(
+            test_code="ma_one_step_fluency",
+            hours_ago=4,
+            metrics=_base_metrics(score_ratio=0.62, duration_s=120.0),
+            activity_kind="drill",
+            attempt_id=31,
+        ),
+    ]
+    dense = [
+        _history_entry(
+            test_code="ma_one_step_fluency",
+            hours_ago=4 + index,
+            metrics=_base_metrics(score_ratio=0.62 + (index * 0.02), duration_s=120.0),
+            activity_kind="drill",
+            attempt_id=40 + index,
+        )
+        for index in range(5)
+    ]
+
+    sparse_ranked = _rank_map(sparse)
+    dense_ranked = _rank_map(dense)
+
+    assert (
+        sparse_ranked["mental_arithmetic_automaticity"].confidence
+        < dense_ranked["mental_arithmetic_automaticity"].confidence
+    )
 
 
 def test_rank_adaptive_primitives_raises_fatigue_sensitive_domain() -> None:
@@ -459,6 +609,31 @@ def test_build_adaptive_session_plan_returns_none_on_cold_start() -> None:
     assert build_adaptive_session_plan(history=[], seed=123) is None
 
 
+def test_build_adaptive_session_plan_can_target_tracking_from_official_benchmark_history() -> None:
+    benchmark = _benchmark_history_entry(
+        hours_ago=6,
+        attempt_id=60,
+        probe_metrics={
+            "numerical_operations": _base_metrics(score_ratio=0.88),
+            "visual_search": _base_metrics(score_ratio=0.84),
+            "table_reading": _base_metrics(score_ratio=0.82),
+            "system_logic": _base_metrics(score_ratio=0.80),
+            "colours_letters_numbers": _base_metrics(score_ratio=0.79),
+            "rapid_tracking": {
+                **_base_metrics(score_ratio=0.18, accuracy=0.24),
+                "overshoot_count": 7,
+                "rt_variance_ms2": "810000.000000",
+            },
+        },
+    )
+
+    plan = build_adaptive_session_plan(history=[benchmark], seed=808, variant="full")
+
+    assert plan is not None
+    assert plan.blocks[0].primitive_id == "tracking_stability_low_load"
+    assert any(block.drill_code.startswith(("rt_", "sma_")) for block in plan.blocks)
+
+
 def test_adjacent_cross_training_selection_is_linked_in_skill_graph() -> None:
     entries = [
         _history_entry(
@@ -516,6 +691,60 @@ def test_late_session_weakness_changes_pressure_block_and_retention_repeat() -> 
     assert plan.blocks[5].mode == "late_repeat_transfer"
     assert plan.blocks[5].primitive_id == plan.blocks[0].primitive_id
     assert plan.blocks[5].drill_mode is AntDrillMode.BUILD
+
+
+def test_global_fatigue_load_softens_pressure_block_after_long_recent_runtime() -> None:
+    low_fatigue_entries = [
+        _history_entry(
+            test_code="numerical_operations",
+            hours_ago=5 + index,
+            metrics=_base_metrics(score_ratio=0.30, duration_s=120.0),
+            activity_kind="test",
+            attempt_id=80 + index,
+            difficulty_level_start=6,
+            difficulty_level_end=6,
+        )
+        for index in range(5)
+    ]
+    high_fatigue_entries = [
+        _history_entry(
+                test_code="numerical_operations",
+                hours_ago=5 + index,
+                metrics=_base_metrics(
+                    score_ratio=0.30,
+                duration_s=900.0,
+                first_half_accuracy=0.90,
+                second_half_accuracy=0.52,
+                first_half_timeout_rate=0.00,
+                second_half_timeout_rate=0.20,
+                post_error_inflation_ms=1100.0,
+            ),
+            activity_kind="test",
+            attempt_id=90 + index,
+            difficulty_level_start=6,
+            difficulty_level_end=6,
+        )
+        for index in range(5)
+    ]
+
+    low_plan = build_adaptive_session_plan(history=low_fatigue_entries, seed=818, variant="full")
+    high_plan = build_adaptive_session_plan(history=high_fatigue_entries, seed=818, variant="full")
+
+    assert low_plan is not None
+    assert high_plan is not None
+
+    low_pressure = next(block for block in low_plan.blocks if block.mode == "target_pressure_fatigue")
+    high_pressure = next(block for block in high_plan.blocks if block.mode == "target_pressure_fatigue")
+
+    assert low_plan.blocks[0].primitive_id == "mental_arithmetic_automaticity"
+    assert high_plan.blocks[0].primitive_id == "mental_arithmetic_automaticity"
+    assert high_pressure.difficulty_level <= low_pressure.difficulty_level
+    assert high_pressure.primitive_id == low_pressure.primitive_id
+    assert high_pressure.drill_mode in {
+        AntDrillMode.FATIGUE_PROBE,
+        AntDrillMode.TEMPO,
+        AntDrillMode.BUILD,
+    }
 
 
 def test_recent_same_domain_history_prevents_one_domain_spam() -> None:
@@ -634,6 +863,37 @@ def test_variant_selection_changes_duration_and_allowed_form_factors() -> None:
     assert {block.form_factor for block in short.blocks} <= {"micro", "short"}
     assert {block.form_factor for block in full.blocks} <= {"micro", "short", "block_component"}
     assert any(block.form_factor == "block_component" for block in full.blocks)
+
+
+def test_build_adaptive_session_plan_filters_to_available_catalog_primitives(monkeypatch) -> None:
+    visual_only_catalog = tuple(
+        candidate
+        for candidate in adaptive_scheduler.ADAPTIVE_DRILL_CATALOG
+        if candidate.primitive_id == "visual_scan_discipline"
+    )
+    monkeypatch.setattr(adaptive_scheduler, "ADAPTIVE_DRILL_CATALOG", visual_only_catalog)
+
+    entries = [
+        _history_entry(
+            test_code="numerical_operations",
+            hours_ago=10,
+            metrics=_base_metrics(score_ratio=0.22),
+            attempt_id=70,
+        ),
+        _history_entry(
+            test_code="visual_search",
+            hours_ago=10,
+            metrics=_base_metrics(score_ratio=0.44),
+            attempt_id=71,
+        ),
+    ]
+
+    plan = build_adaptive_session_plan(history=entries, seed=909, variant="full")
+
+    assert plan is not None
+    assert plan.blocks
+    assert {block.primitive_id for block in plan.blocks} == {"visual_scan_discipline"}
+    assert all(block.drill_code.startswith("vs_") for block in plan.blocks)
 
 
 def test_training_mode_for_role_uses_new_role_rules() -> None:
@@ -965,6 +1225,87 @@ def test_adaptive_session_results_snapshot_includes_split_half_lines() -> None:
     assert snapshot.stage is AdaptiveStage.RESULTS
     assert any("Block splits:" == line for line in snapshot.note_lines)
     assert any("1H " in line and "2H " in line for line in snapshot.note_lines)
+
+
+def test_adaptive_session_replans_remaining_blocks_after_completed_result() -> None:
+    entries = [
+        _history_entry(
+            test_code="ma_one_step_fluency",
+            hours_ago=4,
+            metrics=_base_metrics(score_ratio=0.52, duration_s=120.0, training_mode="build"),
+            activity_kind="drill",
+            attempt_id=201,
+        ),
+        _history_entry(
+            test_code="tbl_single_lookup_anchor",
+            hours_ago=3,
+            metrics=_base_metrics(score_ratio=0.53, duration_s=120.0, training_mode="build"),
+            activity_kind="drill",
+            attempt_id=202,
+        ),
+    ]
+    base_plan = build_adaptive_session_plan(history=entries, seed=602, variant="full")
+
+    assert base_plan is not None
+    assert base_plan.replan_enabled
+    assert base_plan.blocks[0].primitive_id == "mental_arithmetic_automaticity"
+
+    clock = _FakeClock()
+    first_block = base_plan.blocks[0]
+    first_block_with_builder = AdaptiveSessionBlock(
+        block_index=first_block.block_index,
+        primitive_id=first_block.primitive_id,
+        primitive_label=first_block.primitive_label,
+        drill_code=first_block.drill_code,
+        mode=first_block.mode,
+        duration_s=first_block.duration_s,
+        difficulty_level=first_block.difficulty_level,
+        seed=first_block.seed,
+        reason_tags=first_block.reason_tags,
+        priority=first_block.priority,
+        drill_mode=first_block.drill_mode,
+        builder=lambda: _FakeBlockEngine(
+            clock=clock,
+            title="Perfect First Block",
+            seed=first_block.seed,
+            difficulty_level=first_block.difficulty_level,
+            scored_duration_s=1.0,
+            attempted=4,
+            correct=4,
+        ),
+        form_factor=first_block.form_factor,
+        target_area=first_block.target_area,
+        linked_primitive_id=first_block.linked_primitive_id,
+        comparable_level=first_block.comparable_level,
+    )
+    plan = AdaptiveSessionPlan(
+        code=base_plan.code,
+        title=base_plan.title,
+        version=base_plan.version,
+        generated_at_utc=base_plan.generated_at_utc,
+        description=base_plan.description,
+        notes=base_plan.notes,
+        ranked_primitives=base_plan.ranked_primitives,
+        blocks=(first_block_with_builder, *base_plan.blocks[1:]),
+        variant=base_plan.variant,
+        domain_summaries=base_plan.domain_summaries,
+        replan_enabled=True,
+    )
+    original_second = plan.blocks[1]
+
+    session = AdaptiveSession(clock=clock, seed=602, plan=plan, history=entries)
+    session.activate()
+    clock.advance(1.2)
+    session.update()
+
+    current = session.current_block_plan()
+
+    assert session.stage is AdaptiveStage.BLOCK
+    assert session._replan_count == 1
+    assert current is not None
+    assert current.block_index == original_second.block_index
+    assert current.primitive_id != original_second.primitive_id
+    assert current.primitive_id != first_block.primitive_id
 
 
 def test_results_store_recent_attempt_history_returns_metrics_and_activity_kind(tmp_path) -> None:

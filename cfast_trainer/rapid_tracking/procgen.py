@@ -4,6 +4,8 @@ import math
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
+from ..rapid_tracking_view import rapid_tracking_seed_unit
+from ..rapid_tracking_view import track_to_world_xy as rapid_tracking_track_to_world_xy
 from .legacy import (
     RapidTrackingCompoundLayout,
     RapidTrackingLayoutPolicy,
@@ -14,7 +16,6 @@ from .legacy import (
     build_rapid_tracking_compound_layout,
     select_scene_seed,
 )
-from ..rapid_tracking_view import rapid_tracking_seed_unit, track_to_world_xy as rapid_tracking_track_to_world_xy
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,7 +44,7 @@ def build_distant_terrain_ring(
         path_lateral_bias=float(layout.path_lateral_bias),
     )
     seed = int(layout.seed)
-    slot_count = 6
+    slot_count = 8
     angle_offset_deg = rapid_tracking_seed_unit(seed=seed, salt="backdrop:angle-offset") * 360.0
     features: list[RapidTrackingBackdropTerrain] = []
     for idx in range(slot_count):
@@ -57,53 +58,53 @@ def build_distant_terrain_ring(
         angle_rad = math.radians(angle_deg)
         radius = (
             _lerp(
-                520.0,
-                660.0,
+                620.0,
+                780.0,
                 rapid_tracking_seed_unit(seed=seed, salt=f"backdrop:{idx}:radius"),
             )
             if profile == "mountain"
             else _lerp(
-                430.0,
-                560.0,
+                520.0,
+                680.0,
                 rapid_tracking_seed_unit(seed=seed, salt=f"backdrop:{idx}:radius"),
             )
         )
         scale_x = (
             _lerp(
-                118.0,
-                168.0,
+                82.0,
+                122.0,
                 rapid_tracking_seed_unit(seed=seed, salt=f"backdrop:{idx}:scale-x"),
             )
             if profile == "mountain"
             else _lerp(
-                78.0,
-                122.0,
+                56.0,
+                82.0,
                 rapid_tracking_seed_unit(seed=seed, salt=f"backdrop:{idx}:scale-x"),
             )
         )
         scale_y = (
             _lerp(
+                60.0,
                 92.0,
-                138.0,
                 rapid_tracking_seed_unit(seed=seed, salt=f"backdrop:{idx}:scale-y"),
             )
             if profile == "mountain"
             else _lerp(
-                64.0,
-                106.0,
+                42.0,
+                66.0,
                 rapid_tracking_seed_unit(seed=seed, salt=f"backdrop:{idx}:scale-y"),
             )
         )
         scale_z = (
             _lerp(
-                34.0,
-                56.0,
+                16.0,
+                26.0,
                 rapid_tracking_seed_unit(seed=seed, salt=f"backdrop:{idx}:scale-z"),
             )
             if profile == "mountain"
             else _lerp(
+                10.0,
                 18.0,
-                30.0,
                 rapid_tracking_seed_unit(seed=seed, salt=f"backdrop:{idx}:scale-z"),
             )
         )

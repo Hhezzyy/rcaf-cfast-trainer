@@ -36,12 +36,14 @@ class SpatialIntegrationGlScene:
 class TraceTest1GlScene:
     world: pygame.Rect
     payload: TraceTest1Payload | None
+    practice_mode: bool = False
 
 
 @dataclass(frozen=True, slots=True)
 class TraceTest2GlScene:
     world: pygame.Rect
     payload: TraceTest2Payload | None
+    practice_mode: bool = False
 
 
 GlScene = (

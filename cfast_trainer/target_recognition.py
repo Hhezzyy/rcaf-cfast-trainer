@@ -63,6 +63,8 @@ class TargetRecognitionPayload:
     light_interval_range_s: tuple[float, float] = (5.0, 10.0)
     scan_interval_range_s: tuple[float, float] = (5.0, 10.0)
     scan_repeat_range: tuple[int, int] = (2, 4)
+    scene_objective_label: str = ""
+    scene_clear_all_targets: bool = False
     content_family: str = ""
     variant_id: str = ""
     content_pack: str = "target_recognition"

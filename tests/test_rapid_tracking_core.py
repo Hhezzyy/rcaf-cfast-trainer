@@ -13,8 +13,8 @@ from cfast_trainer.rapid_tracking import (
     RapidTrackingTrainingProfile,
     RapidTrackingTrainingSegment,
     _ellipse_contains_point,
-    _repair_layout_for_visual_stability,
     _readable_layout_evaluation,
+    _repair_layout_for_visual_stability,
     _visual_stability_layout_summary,
     build_distant_terrain_ring,
     build_rapid_tracking_compound_layout,
@@ -531,15 +531,23 @@ def test_readable_scene_seed_resolves_to_non_rejected_layout() -> None:
 def test_visual_stability_repair_shrinks_oversized_hills_to_world_caps() -> None:
     layout = build_rapid_tracking_compound_layout(seed=551)
     hill = next(obstacle for obstacle in layout.obstacles if obstacle.obstacle_id == "hill-4")
-    oversized_hill = replace(hill, radius_x=float(hill.radius_x) * 4.0, radius_y=float(hill.radius_y) * 4.0, height=9.0)
+    oversized_hill = replace(
+        hill, radius_x=float(hill.radius_x) * 4.0, radius_y=float(hill.radius_y) * 4.0, height=9.0
+    )
     modified_layout = replace(
         layout,
-        obstacles=tuple(obstacle for obstacle in layout.obstacles if obstacle.obstacle_id != hill.obstacle_id)
+        obstacles=tuple(
+            obstacle for obstacle in layout.obstacles if obstacle.obstacle_id != hill.obstacle_id
+        )
         + (oversized_hill,),
     )
 
     repaired_layout = _repair_layout_for_visual_stability(layout=modified_layout)
-    repaired_hill = next(obstacle for obstacle in repaired_layout.obstacles if obstacle.obstacle_id == hill.obstacle_id)
+    repaired_hill = next(
+        obstacle
+        for obstacle in repaired_layout.obstacles
+        if obstacle.obstacle_id == hill.obstacle_id
+    )
     world_radius_x, world_radius_y = _obstacle_world_radii(repaired_layout, repaired_hill)
 
     assert repaired_hill.height == pytest.approx(4.2)
@@ -576,9 +584,15 @@ def test_visual_stability_repair_prunes_corridor_and_keepout_scenery_determinist
         layout,
         obstacles=tuple((*layout.obstacles, corridor_hill)),
         scenic_clusters=scenic_clusters,
-        shrub_clusters=tuple(cluster for cluster in scenic_clusters if cluster.asset_id == "shrubs_low_cluster"),
-        tree_clusters=tuple(cluster for cluster in scenic_clusters if cluster.asset_id == "trees_field_cluster"),
-        forest_clusters=tuple(cluster for cluster in scenic_clusters if cluster.asset_id == "forest_canopy_patch"),
+        shrub_clusters=tuple(
+            cluster for cluster in scenic_clusters if cluster.asset_id == "shrubs_low_cluster"
+        ),
+        tree_clusters=tuple(
+            cluster for cluster in scenic_clusters if cluster.asset_id == "trees_field_cluster"
+        ),
+        forest_clusters=tuple(
+            cluster for cluster in scenic_clusters if cluster.asset_id == "forest_canopy_patch"
+        ),
     )
 
     repaired_a = _repair_layout_for_visual_stability(layout=modified_layout)
@@ -630,6 +644,31 @@ def test_visual_stability_summary_and_readable_policy_reject_corridor_roads_and_
     assert summary.corridor_road_count >= 1
     assert summary.corridor_building_count >= 1
     assert evaluation.hard_rejected is True
+
+
+def test_visual_stability_repair_prunes_road_segments_inside_focus_and_camera_keepout() -> None:
+    layout = build_rapid_tracking_compound_layout(seed=551)
+    focus_road = RapidTrackingRoadSegment(
+        segment_id="focus-road",
+        surface="paved",
+        start_anchor_id="focus-start",
+        end_anchor_id="focus-end",
+        anchor_ids=("focus-start", "focus-end"),
+        points=(
+            (float(layout.compound_center_x) - 0.20, float(layout.compound_center_y) - 0.05),
+            (float(layout.compound_center_x) + 0.20, float(layout.compound_center_y) + 0.02),
+        ),
+    )
+    modified_layout = replace(
+        layout,
+        road_segments=tuple((*layout.road_segments, focus_road)),
+    )
+
+    summary = _visual_stability_layout_summary(layout=modified_layout)
+    repaired = _repair_layout_for_visual_stability(layout=modified_layout)
+
+    assert summary.camera_keepout_road_count >= 1
+    assert all(segment.segment_id != "focus-road" for segment in repaired.road_segments)
 
 
 def test_payload_separates_launch_seed_from_scene_seed_for_readable_policy() -> None:
@@ -720,9 +759,8 @@ def test_target_speed_order_matches_brief() -> None:
                 sample_engine._target_y = float(start_anchor.y)
                 sample_engine._script_index = idx - 1
                 sample_engine._start_scene_segment(initial=False)
-            sample_engine._sim_elapsed_s = (
-                sample_engine._segment_started_s
-                + (sample_engine._segment_duration_s * 0.5)
+            sample_engine._sim_elapsed_s = sample_engine._segment_started_s + (
+                sample_engine._segment_duration_s * 0.5
             )
             sample_engine._advance_target()
             speeds.append(math.hypot(sample_engine._target_vx, sample_engine._target_vy))
@@ -755,9 +793,7 @@ def test_truck_segments_bind_to_seeded_road_anchors() -> None:
 
     road_anchor_ids = {anchor.anchor_id for anchor in engine._compound_layout.road_anchors}
     truck_segments = [
-        segment
-        for segment in engine._difficulty_profile().scene_script
-        if segment.kind == "truck"
+        segment for segment in engine._difficulty_profile().scene_script if segment.kind == "truck"
     ]
 
     assert truck_segments
@@ -767,10 +803,16 @@ def test_truck_segments_bind_to_seeded_road_anchors() -> None:
         "offroad_armor_leg",
     }
     assert any(segment.route_kind == "road_convoy" for segment in truck_segments)
-    assert any(segment.route_kind in {"dirt_transfer", "offroad_armor_leg"} for segment in truck_segments)
-    offroad_segments = [segment for segment in truck_segments if segment.route_kind == "offroad_armor_leg"]
+    assert any(
+        segment.route_kind in {"dirt_transfer", "offroad_armor_leg"} for segment in truck_segments
+    )
+    offroad_segments = [
+        segment for segment in truck_segments if segment.route_kind == "offroad_armor_leg"
+    ]
     assert all(segment.variant == "tracked" for segment in offroad_segments)
-    on_road_segments = [segment for segment in truck_segments if segment.route_kind != "offroad_armor_leg"]
+    on_road_segments = [
+        segment for segment in truck_segments if segment.route_kind != "offroad_armor_leg"
+    ]
     assert all(segment.start_anchor_id in road_anchor_ids for segment in on_road_segments)
     assert all(segment.end_anchor_id in road_anchor_ids for segment in on_road_segments)
 
@@ -853,16 +895,22 @@ def test_ground_targets_are_not_marked_obscured_too_early() -> None:
 
     ridge = engine._mountain_ridge_for(0.0)
 
-    assert engine._is_occluded_by_terrain(
-        target_rel_x=0.0,
-        target_rel_y=ridge + 0.05,
-        target_kind="soldier",
-    ) is False
-    assert engine._is_occluded_by_terrain(
-        target_rel_x=0.0,
-        target_rel_y=ridge + 0.18,
-        target_kind="soldier",
-    ) is True
+    assert (
+        engine._is_occluded_by_terrain(
+            target_rel_x=0.0,
+            target_rel_y=ridge + 0.05,
+            target_kind="soldier",
+        )
+        is False
+    )
+    assert (
+        engine._is_occluded_by_terrain(
+            target_rel_x=0.0,
+            target_rel_y=ridge + 0.18,
+            target_kind="soldier",
+        )
+        is True
+    )
 
 
 def test_same_seed_shares_layout_between_practice_and_scored_but_different_phase_scripts() -> None:
@@ -959,7 +1007,9 @@ def test_compound_layout_keeps_obstacles_clear_of_pois_and_each_other() -> None:
 
 def test_compound_layout_keeps_base_loop_and_poi_spurs_connected() -> None:
     layout = build_rapid_tracking_compound_layout(seed=551)
-    paved_segments = tuple(segment for segment in layout.road_segments if segment.surface == "paved")
+    paved_segments = tuple(
+        segment for segment in layout.road_segments if segment.surface == "paved"
+    )
     dirt_segments = tuple(segment for segment in layout.road_segments if segment.surface == "dirt")
 
     assert len(paved_segments) >= 2
@@ -1011,7 +1061,7 @@ def test_distant_terrain_ring_is_seeded_and_surrounds_compound_center() -> None:
 
     assert ring_a == ring_b
     assert ring_a != ring_other
-    assert len(ring_a) == 6
+    assert len(ring_a) == 8
     assert {feature.profile for feature in ring_a} == {"hill", "mountain"}
 
     center_wx, center_wy = rapid_tracking_track_to_world_xy(
@@ -1023,7 +1073,9 @@ def test_distant_terrain_ring_is_seeded_and_surrounds_compound_center() -> None:
         math.hypot(float(feature.world_x) - center_wx, float(feature.world_y) - center_wy)
         for feature in ring_a
     ]
-    assert min(distances) >= 420.0
+    assert min(distances) >= 520.0
+    assert max(feature.scale_z for feature in ring_a if feature.profile == "mountain") <= 26.0
+    assert max(feature.scale_z for feature in ring_a if feature.profile == "hill") <= 18.0
 
     bearings = sorted(
         (
@@ -1036,7 +1088,7 @@ def test_distant_terrain_ring_is_seeded_and_surrounds_compound_center() -> None:
     )
     wrapped = [*bearings, bearings[0] + 360.0]
     max_gap = max(b - a for a, b in zip(wrapped[:-1], wrapped[1:], strict=True))
-    assert max_gap <= 84.0
+    assert max_gap <= 62.0
 
 
 def test_building_handoff_segments_bind_to_real_building_anchors() -> None:
@@ -1044,7 +1096,9 @@ def test_building_handoff_segments_bind_to_real_building_anchors() -> None:
     engine = build_rapid_tracking_test(clock=clock, seed=777, difficulty=0.58)
 
     building_segments = [
-        segment for segment in engine._difficulty_profile().scene_script if segment.cover_mode == "building"
+        segment
+        for segment in engine._difficulty_profile().scene_script
+        if segment.cover_mode == "building"
     ]
     building_anchor_ids = {anchor.anchor_id for anchor in engine._compound_layout.building_anchors}
 

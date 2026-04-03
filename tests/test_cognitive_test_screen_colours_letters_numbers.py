@@ -225,6 +225,93 @@ def test_cln_memory_mouse_click_uses_rendered_option_hitboxes() -> None:
         pygame.quit()
 
 
+def test_cln_memory_choice_hotkey_preserves_typed_math_buffer() -> None:
+    _app, screen, engine = _build_screen(_build_payload(options_active=True))
+    try:
+        screen._input = "42"
+
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_s, "mod": 0, "unicode": ""})
+        )
+
+        assert engine.answers == ["MEM:2"]
+        assert screen._input == "42"
+    finally:
+        pygame.quit()
+
+
+def test_app_routes_scaled_mouse_click_to_cln_option_hitbox() -> None:
+    app, screen, engine = _build_screen(_build_payload(options_active=True))
+    try:
+        display_surface = pygame.display.get_surface()
+        assert display_surface is not None
+        get_window_size = getattr(pygame.display, "get_window_size", None)
+        window_size = (
+            tuple(int(v) for v in get_window_size())
+            if callable(get_window_size)
+            else display_surface.get_size()
+        )
+        app_surface = pygame.Surface(
+            (display_surface.get_width() * 2, display_surface.get_height() * 2),
+            pygame.SRCALPHA,
+        )
+        app.set_surface(app_surface)
+        screen.render(app_surface)
+
+        hitbox = screen._cln_option_hitboxes[2]
+        click_pos = (
+            int(round(hitbox.centerx * window_size[0] / app_surface.get_width())),
+            int(round(hitbox.centery * window_size[1] / app_surface.get_height())),
+        )
+        app.handle_event(
+            pygame.event.Event(
+                pygame.MOUSEBUTTONDOWN,
+                {"button": 1, "pos": click_pos},
+            )
+        )
+
+        assert engine.answers == ["MEM:2"]
+    finally:
+        pygame.quit()
+
+
+def test_cln_main_math_accepts_number_row_keys_without_unicode() -> None:
+    _app, screen, engine = _build_screen(_build_payload(options_active=False))
+    try:
+        for key in (pygame.K_4, pygame.K_2):
+            screen.handle_event(
+                pygame.event.Event(pygame.KEYDOWN, {"key": key, "mod": 0, "unicode": ""})
+            )
+
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "mod": 0, "unicode": ""})
+        )
+
+        assert engine.answers == ["42"]
+    finally:
+        pygame.quit()
+
+
+def test_cln_main_math_accepts_numeric_keypad_digits() -> None:
+    _app, screen, engine = _build_screen(_build_payload(options_active=False))
+    try:
+        for key in (pygame.K_KP4, pygame.K_KP2):
+            screen.handle_event(
+                pygame.event.Event(pygame.KEYDOWN, {"key": key, "mod": 0, "unicode": ""})
+            )
+
+        screen.handle_event(
+            pygame.event.Event(
+                pygame.KEYDOWN,
+                {"key": pygame.K_KP_ENTER, "mod": 0, "unicode": ""},
+            )
+        )
+
+        assert engine.answers == ["42"]
+    finally:
+        pygame.quit()
+
+
 def test_cln_color_keys_use_qwer_mapping() -> None:
     _app, screen, engine = _build_screen(_build_payload(options_active=False))
     try:

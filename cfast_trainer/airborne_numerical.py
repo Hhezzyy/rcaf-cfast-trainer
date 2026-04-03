@@ -6,7 +6,6 @@ from typing import cast
 
 from .adaptive_difficulty import difficulty_level_for_ratio, difficulty_profile_for_code
 from .clock import Clock
-from .content_variants import stable_variant_id
 from .cognitive_core import (
     AnswerScorer,
     Problem,
@@ -14,6 +13,7 @@ from .cognitive_core import (
     TimedTextInputTest,
     round_half_up,
 )
+from .content_variants import stable_variant_id
 
 # -----------------------------------------------------------------------------
 # Airborne Numerical (training recreation)
@@ -784,6 +784,249 @@ def _pick_node_names(rng: SeededRng, n: int) -> tuple[str, ...]:
     return tuple(picks)
 
 
+def _distance_rounding_step(profile: UnitProfile) -> int:
+    if profile.speed_minutes >= 60:
+        return 5
+    if profile.speed_minutes >= 30:
+        return 5
+    return 1
+
+
+def _template_edge_index(template: MapTemplate) -> dict[tuple[int, int], int]:
+    return {
+        tuple(sorted((int(a), int(b)))): idx
+        for idx, (a, b) in enumerate(template.edges)
+    }
+
+
+def _template_neighbors(template: MapTemplate) -> tuple[tuple[int, ...], ...]:
+    adjacency: list[list[int]] = [[] for _ in template.nodes]
+    for a, b in template.edges:
+        adjacency[int(a)].append(int(b))
+        adjacency[int(b)].append(int(a))
+    return tuple(tuple(sorted(neighbors)) for neighbors in adjacency)
+
+
+def _template_edge_geometry_lengths(template: MapTemplate) -> tuple[float, ...]:
+    lengths: list[float] = []
+    for a, b in template.edges:
+        ax, ay = template.nodes[int(a)]
+        bx, by = template.nodes[int(b)]
+        lengths.append(float(math.dist((ax, ay), (bx, by))))
+    return tuple(lengths)
+
+
+_TEMPLATE_ROUTE_CACHE: dict[tuple[str, int, int], tuple[tuple[int, ...], ...]] = {}
+
+
+def _enumerate_simple_routes(
+    template: MapTemplate,
+    *,
+    min_legs: int,
+    max_legs: int,
+) -> tuple[tuple[int, ...], ...]:
+    key = (template.name, int(min_legs), int(max_legs))
+    cached = _TEMPLATE_ROUTE_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    neighbors = _template_neighbors(template)
+    routes: list[tuple[int, ...]] = []
+
+    def visit(path: list[int]) -> None:
+        legs = len(path) - 1
+        if legs >= min_legs:
+            routes.append(tuple(path))
+        if legs >= max_legs:
+            return
+        for nxt in neighbors[path[-1]]:
+            if nxt in path:
+                continue
+            path.append(int(nxt))
+            visit(path)
+            path.pop()
+
+    for start in range(len(template.nodes)):
+        visit([start])
+
+    built = tuple(routes)
+    _TEMPLATE_ROUTE_CACHE[key] = built
+    return built
+
+
+def _route_total_distance(
+    route: tuple[int, ...],
+    *,
+    edge_distances: tuple[int, ...],
+    edge_index: dict[tuple[int, int], int],
+) -> int:
+    total = 0
+    for a, b in zip(route, route[1:], strict=False):
+        total += int(edge_distances[edge_index[tuple(sorted((int(a), int(b))))]])
+    return int(total)
+
+
+def _route_geometry_length(route: tuple[int, ...], template: MapTemplate) -> float:
+    total = 0.0
+    for a, b in zip(route, route[1:], strict=False):
+        ax, ay = template.nodes[int(a)]
+        bx, by = template.nodes[int(b)]
+        total += float(math.dist((ax, ay), (bx, by)))
+    return total
+
+
+def _route_directness_ratio(route: tuple[int, ...], template: MapTemplate) -> float:
+    path_length = _route_geometry_length(route, template)
+    sx, sy = template.nodes[int(route[0])]
+    ex, ey = template.nodes[int(route[-1])]
+    straight = max(1e-6, float(math.dist((sx, sy), (ex, ey))))
+    return path_length / straight
+
+
+def _max_route_directness_ratio(legs: int) -> float:
+    return 1.05 + (0.42 * max(0, int(legs) - 1))
+
+
+def _interpolate_sorted(values: list[int], fraction: float) -> float:
+    if not values:
+        raise ValueError("interpolation requires at least one value")
+    if len(values) == 1:
+        return float(values[0])
+    clamped = max(0.0, min(1.0, float(fraction)))
+    position = clamped * float(len(values) - 1)
+    low = int(math.floor(position))
+    high = int(math.ceil(position))
+    if low == high:
+        return float(values[low])
+    blend = position - float(low)
+    return float(values[low]) * (1.0 - blend) + float(values[high]) * blend
+
+
+def _build_edge_distances(
+    rng: SeededRng,
+    *,
+    template: MapTemplate,
+    unit_profile: UnitProfile,
+) -> tuple[int, ...]:
+    edge_lo, edge_hi = unit_profile.distance_range
+    step = _distance_rounding_step(unit_profile)
+    span = max(0, int(edge_hi) - int(edge_lo))
+    inner_lo = int(edge_lo + round(span * 0.14))
+    inner_hi = int(edge_hi - round(span * 0.08))
+    if inner_hi < inner_lo:
+        inner_lo = int(edge_lo)
+        inner_hi = int(edge_hi)
+
+    lengths = _template_edge_geometry_lengths(template)
+    min_len = min(lengths)
+    max_len = max(lengths)
+    if max_len <= min_len + 1e-6:
+        norms = [0.5 for _ in lengths]
+    else:
+        norms = [(length - min_len) / (max_len - min_len) for length in lengths]
+
+    ordered = sorted(
+        ((float(norms[idx]), float(lengths[idx]), idx) for idx in range(len(lengths))),
+        key=lambda item: (item[0], item[1], item[2]),
+    )
+    distances = [int(edge_lo)] * len(lengths)
+    previous_value = int(edge_lo)
+    previous_norm = -1.0
+    jitter_units = max(1, step)
+
+    for norm, _length, idx in ordered:
+        target = float(inner_lo) + (float(inner_hi - inner_lo) * norm)
+        jitter = int(rng.randint(-jitter_units, jitter_units))
+        rounded = int(round_half_up((target + float(jitter)) / float(step)) * step)
+        rounded = max(int(edge_lo), min(int(edge_hi), rounded))
+        minimum_allowed = previous_value if norm <= previous_norm + 1e-6 else previous_value + step
+        rounded = max(rounded, minimum_allowed)
+        rounded = min(int(edge_hi), rounded)
+        if rounded < previous_value:
+            rounded = previous_value
+        distances[idx] = int(rounded)
+        previous_value = int(rounded)
+        previous_norm = float(norm)
+
+    return tuple(distances)
+
+
+def _pick_route_leg_target(rng: SeededRng, *, min_legs: int, max_legs: int) -> int:
+    choices = list(range(int(min_legs), int(max_legs) + 1))
+    if not choices:
+        return max(1, int(min_legs))
+    total = sum(float((max_legs - leg) + 1) for leg in choices)
+    ticket = rng.random() * total
+    upto = 0.0
+    for leg in choices:
+        upto += float((max_legs - leg) + 1)
+        if ticket <= upto:
+            return int(leg)
+    return int(choices[-1])
+
+
+def _select_route(
+    rng: SeededRng,
+    *,
+    template: MapTemplate,
+    edge_distances: tuple[int, ...],
+    min_legs: int,
+    max_legs: int,
+) -> tuple[int, ...]:
+    min_legs = max(1, int(min_legs))
+    max_legs = max(min_legs, int(max_legs))
+    candidates = _enumerate_simple_routes(template, min_legs=min_legs, max_legs=max_legs)
+    if not candidates:
+        raise RuntimeError(f"template {template.name} has no simple routes for {min_legs}..{max_legs} legs")
+
+    edge_index = _template_edge_index(template)
+    target_legs = _pick_route_leg_target(rng, min_legs=min_legs, max_legs=max_legs)
+    same_leg = [route for route in candidates if (len(route) - 1) == target_legs]
+    route_pool = same_leg if same_leg else list(candidates)
+
+    plausible: list[tuple[tuple[int, ...], int, float]] = []
+    for route in route_pool:
+        legs = len(route) - 1
+        directness = _route_directness_ratio(route, template)
+        if directness > _max_route_directness_ratio(legs):
+            continue
+        total = _route_total_distance(route, edge_distances=edge_distances, edge_index=edge_index)
+        plausible.append((route, total, directness))
+
+    if not plausible:
+        plausible = [
+            (
+                route,
+                _route_total_distance(route, edge_distances=edge_distances, edge_index=edge_index),
+                _route_directness_ratio(route, template),
+            )
+            for route in route_pool
+        ]
+
+    totals = sorted(total for _route, total, _directness in plausible)
+    lower = _interpolate_sorted(totals, 0.12)
+    upper = _interpolate_sorted(totals, 0.88)
+    midband = [
+        candidate
+        for candidate in plausible
+        if lower <= float(candidate[1]) <= upper
+    ]
+    if len(midband) >= max(2, len(plausible) // 3):
+        plausible = midband
+
+    median_total = _interpolate_sorted(sorted(total for _route, total, _directness in plausible), 0.5)
+    ranked = sorted(
+        plausible,
+        key=lambda candidate: (
+            abs(float(candidate[1]) - median_total),
+            candidate[2],
+            tuple(int(node) for node in candidate[0]),
+        ),
+    )
+    selection_pool = ranked[: max(1, min(4, len(ranked)))]
+    return tuple(rng.choice([candidate[0] for candidate in selection_pool]))
+
+
 def _weighted_choice(rng: SeededRng, options: tuple[tuple[str, float], ...]) -> str:
     ticket = rng.random()
     total = 0.0
@@ -1084,7 +1327,11 @@ class AirborneNumericalGenerator:
     ) -> tuple[AirborneScenario, str, int]:
         for _ in range(1024):
             question_kind = _weighted_choice(self._rng, profile.question_kinds)
-            scenario, prompt, answer = self._build_problem(forced_question_kind=question_kind)
+            scenario, prompt, answer = self._build_problem(
+                forced_question_kind=question_kind,
+                min_legs=profile.min_legs,
+                max_legs=profile.max_legs,
+            )
             if _scenario_matches_profile(scenario, profile):
                 return scenario, prompt, answer
         raise RuntimeError(
@@ -1098,34 +1345,31 @@ class AirborneNumericalGenerator:
         forced_unit_profile: UnitProfile | None = None,
         forced_parcel_reference_format: str | None = None,
         forced_fuel_reference_format: str | None = None,
+        min_legs: int = 1,
+        max_legs: int = 4,
     ) -> tuple[AirborneScenario, str, int]:
         rng = self._rng
         template = rng.choice(list(TEMPLATES))
         unit_profile = forced_unit_profile or rng.choice(list(UNIT_PROFILES))
         node_names = _pick_node_names(rng, len(template.nodes))
 
-        edge_lo, edge_hi = unit_profile.distance_range
-        edge_distances = tuple(int(rng.randint(edge_lo, edge_hi)) for _ in template.edges)
-
-        start_node = int(rng.randint(0, len(template.nodes) - 1))
-        route = [start_node]
-        max_legs = int(rng.randint(2, 4))
-        for _ in range(max_legs):
-            cur = route[-1]
-            options = [b if a == cur else a for a, b in template.edges if a == cur or b == cur]
-            unseen = [node for node in options if node not in route]
-            nxt = int(rng.choice(unseen if unseen else options))
-            route.append(nxt)
-        route_t = tuple(route)
-
+        edge_distances = _build_edge_distances(
+            rng,
+            template=template,
+            unit_profile=unit_profile,
+        )
+        route_t = _select_route(
+            rng,
+            template=template,
+            edge_distances=edge_distances,
+            min_legs=min_legs,
+            max_legs=max_legs,
+        )
+        edge_index = _template_edge_index(template)
         legs: list[RouteLeg] = []
         for a, b in zip(route_t, route_t[1:], strict=False):
-            edge_key = tuple(sorted((a, b)))
-            idx = next(
-                i
-                for i, edge in enumerate(template.edges)
-                if tuple(sorted(edge)) == edge_key
-            )
+            edge_key = tuple(sorted((int(a), int(b))))
+            idx = edge_index[edge_key]
             legs.append(RouteLeg(frm=a, to=b, distance=int(edge_distances[idx])))
         legs_t = tuple(legs)
 
@@ -1307,6 +1551,8 @@ class AirborneNumericalGenerator:
                     forced_unit_profile=forced_unit_profile,
                     forced_parcel_reference_format=forced_parcel_reference_format,
                     forced_fuel_reference_format=forced_fuel_reference_format,
+                    min_legs=min_legs,
+                    max_legs=max_legs,
                 )
         self._recent_variants.append(variant_id)
         if len(self._recent_variants) > 4:

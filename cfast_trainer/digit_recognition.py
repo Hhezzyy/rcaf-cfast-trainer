@@ -44,7 +44,9 @@ class DigitRecognitionProfile:
 
     def display_s_for(self, difficulty: float) -> float:
         d = 0.0 if difficulty <= 0.0 else 1.0 if difficulty >= 1.0 else float(difficulty)
-        return float(self.display_s_easy) + ((float(self.display_s_hard) - float(self.display_s_easy)) * d)
+        return float(self.display_s_easy) + (
+            (float(self.display_s_hard) - float(self.display_s_easy)) * d
+        )
 
     def mask_s_for(self, difficulty: float) -> float:
         d = 0.0 if difficulty <= 0.0 else 1.0 if difficulty >= 1.0 else float(difficulty)
@@ -430,6 +432,10 @@ class DigitRecognitionTest:
             payload=self._payload(),
         )
 
+    @staticmethod
+    def _display_answer(trial: DigitRecognitionTrial) -> str:
+        return str(trial.expected)
+
     def _payload(self) -> DigitRecognitionPayload | None:
         if self._phase not in (Phase.PRACTICE, Phase.SCORED):
             return None
@@ -524,7 +530,7 @@ def build_digit_recognition_test(
     difficulty: float = 0.5,
     practice: bool = True,
     scored_duration_s: float = 360.0,
-    ) -> DigitRecognitionTest:
+) -> DigitRecognitionTest:
     profile = DigitRecognitionProfile()
     return DigitRecognitionTest(
         clock=clock,

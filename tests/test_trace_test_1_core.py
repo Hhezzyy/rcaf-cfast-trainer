@@ -7,6 +7,7 @@ import pytest
 
 from cfast_trainer.cognitive_core import Phase
 from cfast_trainer.trace_lattice import TraceLatticeAction, trace_lattice_state
+from cfast_trainer.trace_scene_3d import classify_trace_test_1_view_maneuver
 from cfast_trainer.trace_test_1 import (
     TraceTest1AircraftPlan,
     TraceTest1Command,
@@ -102,6 +103,22 @@ def test_generator_determinism_same_seed_same_sequence() -> None:
     ]
 
 
+def test_generator_answer_matches_camera_space_view_classifier() -> None:
+    gen = TraceTest1Generator(seed=902)
+
+    for difficulty in (0.10, 0.50, 0.80, 0.95):
+        for _ in range(12):
+            problem = gen.next_problem(difficulty=difficulty)
+            payload = problem.payload
+            assert isinstance(payload, TraceTest1PromptPlan)
+            assert int(problem.answer) == int(
+                trace_test_1_answer_code(
+                    classify_trace_test_1_view_maneuver(prompt=payload).value
+                )
+            )
+            gen.commit_prompt(prompt=payload, progress=1.0)
+
+
 def test_difficulty_tiers_match_blue_counts_speed_and_answer_open_points() -> None:
     assert trace_test_1_difficulty_tier(difficulty=0.10).blue_count == 1
     assert trace_test_1_difficulty_tier(difficulty=0.10).speed_multiplier == pytest.approx(0.95)
@@ -127,16 +144,17 @@ def test_difficulty_tiers_match_blue_counts_speed_and_answer_open_points() -> No
 def test_generator_emits_all_commands_without_back_to_back_repeats() -> None:
     gen = TraceTest1Generator(seed=1234)
     seen: set[TraceTest1Command] = set()
-    previous: int | None = None
+    previous_command: TraceTest1Command | None = None
 
     for _ in range(60):
         problem = gen.next_problem(difficulty=0.6)
         payload = problem.payload
         assert isinstance(payload, TraceTest1PromptPlan)
         seen.add(payload.red_plan.command)
-        if previous is not None:
-            assert int(problem.answer) != previous
-        previous = int(problem.answer)
+        if previous_command is not None:
+            assert payload.red_plan.command is not previous_command
+        previous_command = payload.red_plan.command
+        gen.commit_prompt(prompt=payload, progress=1.0)
 
     assert seen == {
         TraceTest1Command.LEFT,
@@ -171,6 +189,20 @@ def test_allowed_commands_filter_limits_emitted_commands() -> None:
         }
 
 
+def test_allowed_visible_commands_filter_limits_visible_answers() -> None:
+    gen = TraceTest1Generator(
+        seed=889,
+        allowed_visible_commands=(TraceTest1Command.LEFT, TraceTest1Command.RIGHT),
+    )
+
+    for _ in range(24):
+        problem = gen.next_problem(difficulty=0.6)
+        payload = problem.payload
+        assert isinstance(payload, TraceTest1PromptPlan)
+        assert int(problem.answer) in {1, 2}
+        gen.commit_prompt(prompt=payload, progress=1.0)
+
+
 def test_allowed_commands_validation_rejects_empty_and_invalid_values() -> None:
     with pytest.raises(ValueError, match="allowed_commands must not be empty"):
         build_trace_test_1_test(
@@ -186,6 +218,14 @@ def test_allowed_commands_validation_rejects_empty_and_invalid_values() -> None:
             seed=92,
             difficulty=0.5,
             config=TraceTest1Config(allowed_commands=("bogus",)),  # type: ignore[arg-type]
+        )
+
+    with pytest.raises(ValueError, match="allowed_commands must not be empty"):
+        build_trace_test_1_test(
+            clock=FakeClock(),
+            seed=93,
+            difficulty=0.5,
+            config=TraceTest1Config(allowed_visible_commands=()),
         )
 
 

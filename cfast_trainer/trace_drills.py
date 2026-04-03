@@ -484,6 +484,7 @@ def _build_tt1_engine(
     mode: AntDrillMode,
     config: TraceDrillConfig | None,
     allowed_commands: tuple[TraceTest1Command, ...] | None,
+    allowed_visible_commands: tuple[TraceTest1Command, ...] | None = None,
 ) -> tuple[object, float, int]:
     mode_profile = ANT_DRILL_MODE_PROFILES[mode]
     cfg = config or TraceDrillConfig()
@@ -507,6 +508,7 @@ def _build_tt1_engine(
             practice_observe_s=float(_DEFAULT_TT1_CONFIG.practice_observe_s * mode_profile.cap_scale),
             scored_observe_s=float(_DEFAULT_TT1_CONFIG.scored_observe_s * mode_profile.cap_scale),
             allowed_commands=allowed_commands,
+            allowed_visible_commands=allowed_visible_commands,
         ),
     )
     return engine, scored_duration_s, practice_questions
@@ -586,7 +588,8 @@ def build_tt1_lateral_anchor_drill(
         difficulty=difficulty,
         mode=normalized_mode,
         config=config,
-        allowed_commands=(TraceTest1Command.LEFT, TraceTest1Command.RIGHT),
+        allowed_commands=None,
+        allowed_visible_commands=(TraceTest1Command.LEFT, TraceTest1Command.RIGHT),
     )
     return _build_single_trace_drill(
         title=f"Trace Test 1: Lateral Anchor ({ANT_DRILL_MODE_PROFILES[normalized_mode].label})",
@@ -619,7 +622,8 @@ def build_tt1_vertical_anchor_drill(
         difficulty=difficulty,
         mode=normalized_mode,
         config=config,
-        allowed_commands=(TraceTest1Command.PUSH, TraceTest1Command.PULL),
+        allowed_commands=None,
+        allowed_visible_commands=(TraceTest1Command.PUSH, TraceTest1Command.PULL),
     )
     return _build_single_trace_drill(
         title=f"Trace Test 1: Vertical Anchor ({ANT_DRILL_MODE_PROFILES[normalized_mode].label})",

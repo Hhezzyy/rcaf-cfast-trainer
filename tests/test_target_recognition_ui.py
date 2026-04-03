@@ -1,13 +1,21 @@
 from __future__ import annotations
 
 import os
+import sys
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from importlib.machinery import ModuleSpec
+from types import ModuleType
 
 import pygame
+
+if "moderngl" not in sys.modules:
+    moderngl_stub = ModuleType("moderngl")
+    moderngl_stub.__spec__ = ModuleSpec("moderngl", loader=None)
+    sys.modules["moderngl"] = moderngl_stub
 
 from cfast_trainer.ant_drills import AntDrillMode
 from cfast_trainer.ant_workouts import (
@@ -30,6 +38,7 @@ class _FakeTREngine:
     def __init__(self, payload: TargetRecognitionPayload, *, title: str) -> None:
         self._payload = payload
         self._title = title
+        self.submit_calls: list[str] = []
 
     def snapshot(self) -> SnapshotModel:
         return SnapshotModel(
@@ -53,6 +62,7 @@ class _FakeTREngine:
         pass
 
     def submit_answer(self, raw: str) -> bool:
+        self.submit_calls.append(str(raw))
         return True
 
     def update(self) -> None:
@@ -230,5 +240,65 @@ def test_target_recognition_workout_block_uses_real_runtime_screen() -> None:
         assert runtime is not None
         assert runtime._tr_selector_hitboxes
         assert set(runtime._tr_selector_hitboxes) == {"scene"}
+    finally:
+        pygame.quit()
+
+
+def test_target_recognition_scene_clear_all_objective_waits_for_last_target() -> None:
+    payload = replace(
+        _build_payload(active_panels=("scene",)),
+        scene_rows=2,
+        scene_cols=2,
+        scene_cells=("TRK:FP", "TNK:HP", "BLD:N", "TRK:F"),
+        scene_entities=(
+            TargetRecognitionSceneEntity("truck", "friendly", False, True),
+            TargetRecognitionSceneEntity("tank", "hostile", False, True),
+            TargetRecognitionSceneEntity("building", "neutral", False, False),
+            TargetRecognitionSceneEntity("truck", "friendly", False, False),
+        ),
+        scene_target="All Priority Targets",
+        scene_has_target=True,
+        scene_target_options=("Friendly Truck (HP)", "Hostile Tank (HP)"),
+        scene_objective_label="All Priority Targets",
+        scene_clear_all_targets=True,
+    )
+    engine = _FakeTREngine(payload, title="Target Recognition: Priority Sweep")
+    _app, screen = _build_screen(engine)
+    try:
+        surface = pygame.display.get_surface()
+        assert surface is not None
+        screen.render(surface)
+
+        assert screen._tr_scene_active_targets == list(payload.scene_target_options)
+
+        def center_for_label(label: str) -> tuple[int, int]:
+            for hit_rect, glyph_id in screen._tr_scene_symbol_hitboxes:
+                glyph = screen._tr_scene_glyphs[glyph_id]
+                if label in glyph.matching_labels:
+                    return hit_rect.center
+            raise AssertionError(f"missing scene glyph for {label}")
+
+        first_target = center_for_label("Friendly Truck (HP)")
+        screen.handle_event(
+            pygame.event.Event(
+                pygame.MOUSEBUTTONDOWN,
+                {"button": 1, "pos": first_target},
+            )
+        )
+
+        assert engine.submit_calls == []
+        assert screen._tr_scene_active_targets == ["Hostile Tank (HP)"]
+
+        screen.render(surface)
+        second_target = center_for_label("Hostile Tank (HP)")
+        screen.handle_event(
+            pygame.event.Event(
+                pygame.MOUSEBUTTONDOWN,
+                {"button": 1, "pos": second_target},
+            )
+        )
+
+        assert engine.submit_calls == ["1"]
+        assert screen._tr_scene_active_targets == []
     finally:
         pygame.quit()

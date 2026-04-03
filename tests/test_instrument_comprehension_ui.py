@@ -16,8 +16,8 @@ from cfast_trainer.ant_workouts import (
     AntWorkoutSession,
 )
 from cfast_trainer.app import (
-    App,
     AntWorkoutScreen,
+    App,
     CognitiveTestScreen,
     DisplayBootstrapResult,
     MenuItem,
@@ -27,21 +27,23 @@ from cfast_trainer.app import (
 from cfast_trainer.cognitive_core import Phase
 from cfast_trainer.cognitive_core import TestSnapshot as SnapshotModel
 from cfast_trainer.ic_drills import build_ic_description_run_drill
+from cfast_trainer.instrument_aircraft_cards import aircraft_card_semantic_drift_tags
 from cfast_trainer.instrument_comprehension import (
     InstrumentAircraftViewPreset,
-    InstrumentHeadingDisplayMode,
+    InstrumentComprehensionConfig,
     InstrumentComprehensionPayload,
     InstrumentComprehensionTrialKind,
-    InstrumentOptionRenderMode,
+    InstrumentHeadingDisplayMode,
     InstrumentOption,
+    InstrumentOptionRenderMode,
     InstrumentState,
+    build_instrument_comprehension_test,
     instrument_aircraft_view_preset_for_code,
 )
 from cfast_trainer.instrument_orientation_solver import (
     attitude_display_observation_from_bank_pitch,
     heading_display_observation_from_heading,
 )
-from cfast_trainer.instrument_aircraft_cards import aircraft_card_semantic_drift_tags
 
 
 class _FakeInstrumentEngine:
@@ -399,6 +401,87 @@ def test_reverse_part_layout_matches_uniform_guide_grid() -> None:
         screen.render(surface)
 
         _assert_uniform_guide_card_grid(screen._instrument_part1_layout)
+    finally:
+        pygame.quit()
+
+
+def test_instruction_screen_renders_part1_preview_content_without_generic_intro_overlay(
+    monkeypatch,
+) -> None:
+    clock = _FakeClock()
+    engine = build_instrument_comprehension_test(
+        clock=clock,
+        seed=17,
+        difficulty=0.5,
+        config=InstrumentComprehensionConfig(scored_duration_s=20.0, practice_questions=1),
+    )
+    _app, screen = _build_live_screen(engine)
+    try:
+        surface = pygame.display.get_surface()
+        assert surface is not None
+        calls = {"dials": 0, "cards": 0, "intro_sections": 0}
+
+        def dials_stub(*args, **kwargs):
+            _ = (args, kwargs)
+            calls["dials"] += 1
+
+        def cards_stub(*args, **kwargs):
+            _ = (args, kwargs)
+            calls["cards"] += 1
+
+        def intro_stub(*args, **kwargs):
+            _ = (args, kwargs)
+            calls["intro_sections"] += 1
+
+        monkeypatch.setattr(screen, "_draw_orientation_prompt_dials", dials_stub)
+        monkeypatch.setattr(screen, "_draw_aircraft_orientation_card", cards_stub)
+        monkeypatch.setattr(screen, "_draw_intro_section", intro_stub)
+
+        screen.render(surface)
+
+        assert calls["dials"] == 1
+        assert calls["cards"] == 5
+        assert calls["intro_sections"] == 0
+        assert screen._instrument_part1_layout is not None
+    finally:
+        pygame.quit()
+
+
+def test_transition_screen_renders_part2_preview_content(monkeypatch) -> None:
+    clock = _FakeClock()
+    engine = build_instrument_comprehension_test(
+        clock=clock,
+        seed=19,
+        difficulty=0.5,
+        config=InstrumentComprehensionConfig(scored_duration_s=20.0, practice_questions=1),
+    )
+    engine.start_practice()
+    assert engine.submit_answer("__skip_practice__") is True
+    engine.start_scored()
+    assert engine.submit_answer("__skip_section__") is True
+
+    _app, screen = _build_live_screen(engine)
+    try:
+        surface = pygame.display.get_surface()
+        assert surface is not None
+        calls = {"prompt": 0, "answers": 0}
+
+        def prompt_stub(*args, **kwargs):
+            _ = (args, kwargs)
+            calls["prompt"] += 1
+
+        def answer_stub(*args, **kwargs):
+            _ = (args, kwargs)
+            calls["answers"] += 1
+
+        monkeypatch.setattr(screen, "_draw_aircraft_prompt_card", prompt_stub)
+        monkeypatch.setattr(screen, "_draw_instrument_panel_answer_card", answer_stub)
+
+        screen.render(surface)
+
+        assert calls["prompt"] == 1
+        assert calls["answers"] == 5
+        assert screen._instrument_part1_layout is not None
     finally:
         pygame.quit()
 

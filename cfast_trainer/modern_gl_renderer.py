@@ -15,6 +15,7 @@ from .aircraft_art import (
     project_fixed_wing_faces,
     rotate_fixed_wing_point,
 )
+from .auditory_capacity import AUDITORY_TRIANGLE_GATE_POINTS
 from .auditory_capacity_view import (
     BALL_FORWARD_IDLE_NORM,
     GATE_DEPTH_SLOTS_NORM,
@@ -25,9 +26,10 @@ from .auditory_capacity_view import (
     fixed_camera_pose,
     forward_norm_to_distance,
     slot_distance,
+)
+from .auditory_capacity_view import (
     tube_frame as _tube_frame,
 )
-from .auditory_capacity import AUDITORY_TRIANGLE_GATE_POINTS
 from .gl_scenes import (
     AuditoryGlScene,
     GlScene,
@@ -39,7 +41,6 @@ from .gl_scenes import (
 )
 from .rapid_tracking import (
     RapidTrackingCompoundLayout,
-    RapidTrackingPayload,
     build_distant_terrain_ring,
     build_rapid_tracking_compound_layout,
 )
@@ -47,25 +48,28 @@ from .rapid_tracking_gl import build_scene_target as build_rapid_tracking_scene_
 from .rapid_tracking_gl import camera_rig_state as rapid_tracking_camera_rig_state
 from .rapid_tracking_view import (
     TARGET_VIEW_LIMIT as RAPID_TRACKING_TARGET_VIEW_LIMIT,
+)
+from .rapid_tracking_view import (
     camera_space_to_viewport,
     estimated_target_world_z,
     rapid_tracking_seed_unit,
-    terrain_height as rapid_tracking_terrain_height,
-    track_to_world_xy as rapid_tracking_track_to_world_xy,
     world_to_camera_space,
+)
+from .rapid_tracking_view import (
+    terrain_height as rapid_tracking_terrain_height,
+)
+from .rapid_tracking_view import (
+    track_to_world_xy as rapid_tracking_track_to_world_xy,
 )
 from .render_assets import RenderAssetCatalog, RenderAssetResolutionError
 from .spatial_integration import SpatialIntegrationSceneView
 from .spatial_integration_gl import build_scene_layout as build_spatial_integration_scene_layout
-from .trace_test_1 import TraceTest1Payload
-from .trace_test_1_gl import (
-    aircraft_screen_poses_for_payload as trace_test_1_aircraft_screen_poses_for_payload,
-    project_scene_position as trace_test_1_project_scene_position,
-)
-from .trace_test_2 import TraceTest2Payload, trace_test_2_track_position, trace_test_2_track_tangent
-from .trace_test_2_gl import (
-    aircraft_screen_pose_for_track as trace_test_2_aircraft_screen_pose_for_track,
-    project_point as trace_test_2_project_point,
+from .trace_scene_3d import (
+    TraceAircraftPose,
+    TraceCameraPose,
+    TraceScene3dSnapshot,
+    build_trace_test_1_scene3d,
+    build_trace_test_2_scene3d,
 )
 
 
@@ -161,9 +165,9 @@ class _ScenePlan:
     overlay_primitives: tuple[_ProjectedOverlayPrimitive, ...]
     asset_ids: tuple[str, ...]
     entity_count: int
-    static_groups: tuple["_RapidTrackingStaticGroup", ...] = ()
-    backdrop_groups: tuple["_RapidTrackingStaticGroup", ...] = ()
-    playfield_groups: tuple["_RapidTrackingStaticGroup", ...] = ()
+    static_groups: tuple[_RapidTrackingStaticGroup, ...] = ()
+    backdrop_groups: tuple[_RapidTrackingStaticGroup, ...] = ()
+    playfield_groups: tuple[_RapidTrackingStaticGroup, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -180,6 +184,14 @@ class _PreparedWorldTriangle:
     normal: Point3
     base_rgb: tuple[float, float, float]
     alpha: float = 1.0
+
+
+@dataclass(frozen=True, slots=True)
+class _ProjectedWorldTriangle2D:
+    depth: float
+    points: tuple[tuple[float, float], tuple[float, float], tuple[float, float]]
+    camera_depths: tuple[float, float, float]
+    extent_px: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -276,6 +288,28 @@ def _world_hpr_from_tangent(
         math.degrees(math.atan2(dx, dy)) % 360.0,
         math.degrees(math.atan2(dz, horiz)),
         float(roll_deg),
+    )
+
+
+def _scene_camera_from_trace_camera(camera: TraceCameraPose) -> _SceneCamera:
+    return _SceneCamera(
+        position=tuple(float(value) for value in camera.position),
+        heading_deg=float(camera.heading_deg),
+        pitch_deg=float(camera.pitch_deg),
+        h_fov_deg=float(camera.h_fov_deg),
+        v_fov_deg=float(camera.v_fov_deg),
+        near_clip=float(camera.near_clip),
+        far_clip=float(camera.far_clip),
+    )
+
+
+def _asset_instance_from_trace_aircraft(pose: TraceAircraftPose) -> _AssetInstance:
+    return _AssetInstance(
+        asset_id=str(pose.asset_id),
+        position=tuple(float(value) for value in pose.position),
+        hpr_deg=tuple(float(value) for value in pose.hpr_deg),
+        scale=tuple(float(value) for value in pose.scale),
+        color=pose.color_rgba,
     )
 
 
@@ -491,9 +525,7 @@ def _box_triangles(
     )
     triangles: list[_MeshTriangle] = []
     for _name, keys in faces:
-        triangles.extend(
-            _triangulate_points(role=role, points=tuple(corners[key] for key in keys))
-        )
+        triangles.extend(_triangulate_points(role=role, points=tuple(corners[key] for key in keys)))
     return tuple(triangles)
 
 
@@ -813,7 +845,9 @@ class _SceneAssetLibrary:
         self._catalog = catalog
         self._mesh_cache: dict[str, _AssetMesh] = {}
 
-    def require_many(self, asset_ids: tuple[str, ...] | list[str] | set[str]) -> tuple[_AssetMesh, ...]:
+    def require_many(
+        self, asset_ids: tuple[str, ...] | list[str] | set[str]
+    ) -> tuple[_AssetMesh, ...]:
         self._catalog.require_many(asset_ids)
         return tuple(self.mesh(asset_id) for asset_id in tuple(asset_ids))
 
@@ -949,7 +983,9 @@ class _SceneAssetLibrary:
             triangles = [
                 *_box_triangles(role="body", size=(0.72, 0.84, 0.52), center=(-0.22, -0.08, 0.24)),
                 *_box_triangles(role="body", size=(0.56, 0.52, 0.46), center=(0.28, 0.14, 0.22)),
-                *_pyramid_triangles(role="accent", size=(0.92, 0.76, 0.54), center=(0.0, 0.0, 0.34)),
+                *_pyramid_triangles(
+                    role="accent", size=(0.92, 0.76, 0.54), center=(0.0, 0.0, 0.34)
+                ),
             ]
             return self._mesh_from_triangles(asset_id=asset_id, triangles=triangles)
         if token == "trees_cluster":
@@ -998,11 +1034,17 @@ class _SceneAssetLibrary:
                 )
             return self._mesh_from_triangles(asset_id=asset_id, triangles=triangles)
         if token == "auditory_gate_circle":
-            return self._mesh_from_triangles(asset_id=asset_id, triangles=_auditory_gate_mesh_triangles("CIRCLE"))
+            return self._mesh_from_triangles(
+                asset_id=asset_id, triangles=_auditory_gate_mesh_triangles("CIRCLE")
+            )
         if token == "auditory_gate_triangle":
-            return self._mesh_from_triangles(asset_id=asset_id, triangles=_auditory_gate_mesh_triangles("TRIANGLE"))
+            return self._mesh_from_triangles(
+                asset_id=asset_id, triangles=_auditory_gate_mesh_triangles("TRIANGLE")
+            )
         if token == "auditory_gate_square":
-            return self._mesh_from_triangles(asset_id=asset_id, triangles=_auditory_gate_mesh_triangles("SQUARE"))
+            return self._mesh_from_triangles(
+                asset_id=asset_id, triangles=_auditory_gate_mesh_triangles("SQUARE")
+            )
         raise RendererBootstrapError(f"Unsupported builtin render asset kind: {builtin_kind}")
 
 
@@ -1017,6 +1059,165 @@ def _scene_local_top_left_to_screen(
         float(rect.x) + float(x),
         float(int(window_height) - (rect.y + float(y))),
     )
+
+
+def _scene_screen_bounds(
+    *,
+    rect: pygame.Rect,
+    window_height: int,
+) -> tuple[float, float, float, float]:
+    top = float(int(window_height) - int(rect.bottom))
+    return (
+        float(rect.x),
+        float(top),
+        float(rect.x + rect.w),
+        float(top + rect.h),
+    )
+
+
+def _world_point_to_camera_space(
+    *,
+    camera: _SceneCamera,
+    point: Point3,
+) -> Point3:
+    return world_to_camera_space(
+        cam_world_x=float(camera.position[0]),
+        cam_world_y=float(camera.position[1]),
+        cam_world_z=float(camera.position[2]),
+        heading_deg=float(camera.heading_deg),
+        pitch_deg=float(camera.pitch_deg),
+        target_world_x=float(point[0]),
+        target_world_y=float(point[1]),
+        target_world_z=float(point[2]),
+    )
+
+
+def _camera_point_inside_frustum(
+    *,
+    camera: _SceneCamera,
+    point: Point3,
+    tolerance: float = 1e-6,
+) -> bool:
+    cam_x, cam_y, cam_z = point
+    if not all(math.isfinite(value) for value in point):
+        return False
+    tan_h = max(1e-4, math.tan(math.radians(float(camera.h_fov_deg) * 0.5)))
+    tan_v = max(1e-4, math.tan(math.radians(float(camera.v_fov_deg) * 0.5)))
+    tol = float(tolerance)
+    return (
+        float(cam_y) >= (float(camera.near_clip) - tol)
+        and float(cam_y) <= (float(camera.far_clip) + tol)
+        and abs(float(cam_x)) <= ((float(cam_y) * tan_h) + tol)
+        and abs(float(cam_z)) <= ((float(cam_y) * tan_v) + tol)
+    )
+
+
+def _interpolate_point3(a: Point3, b: Point3, t: float) -> Point3:
+    return (
+        float(a[0] + ((b[0] - a[0]) * t)),
+        float(a[1] + ((b[1] - a[1]) * t)),
+        float(a[2] + ((b[2] - a[2]) * t)),
+    )
+
+
+def _clip_polygon_against_plane(
+    polygon: tuple[Point3, ...],
+    *,
+    plane_value,
+) -> tuple[Point3, ...]:
+    if not polygon:
+        return ()
+    clipped: list[Point3] = []
+    prev = polygon[-1]
+    prev_value = float(plane_value(prev))
+    prev_inside = prev_value >= 0.0
+    for current in polygon:
+        curr_value = float(plane_value(current))
+        curr_inside = curr_value >= 0.0
+        if curr_inside != prev_inside:
+            denom = prev_value - curr_value
+            if abs(denom) > 1e-9:
+                t = max(0.0, min(1.0, prev_value / denom))
+                clipped.append(_interpolate_point3(prev, current, t))
+        if curr_inside:
+            clipped.append(current)
+        prev = current
+        prev_value = curr_value
+        prev_inside = curr_inside
+    return tuple(clipped)
+
+
+def _clip_camera_polygon_to_frustum(
+    *,
+    camera: _SceneCamera,
+    polygon: tuple[Point3, ...],
+) -> tuple[Point3, ...]:
+    if not polygon:
+        return ()
+    tan_h = max(1e-4, math.tan(math.radians(float(camera.h_fov_deg) * 0.5)))
+    tan_v = max(1e-4, math.tan(math.radians(float(camera.v_fov_deg) * 0.5)))
+    clipped = tuple(polygon)
+    for plane in (
+        lambda point: float(point[1]) - float(camera.near_clip),
+        lambda point: float(camera.far_clip) - float(point[1]),
+        lambda point: float(point[0]) + (float(point[1]) * tan_h),
+        lambda point: (float(point[1]) * tan_h) - float(point[0]),
+        lambda point: float(point[2]) + (float(point[1]) * tan_v),
+        lambda point: (float(point[1]) * tan_v) - float(point[2]),
+    ):
+        clipped = _clip_polygon_against_plane(clipped, plane_value=plane)
+        if len(clipped) < 3:
+            return ()
+    return clipped
+
+
+def _project_clipped_camera_polygon(
+    *,
+    rect: pygame.Rect,
+    window_height: int,
+    camera: _SceneCamera,
+    polygon: tuple[Point3, ...],
+    tolerance_px: float = 1e-3,
+) -> tuple[tuple[float, float, float], ...] | None:
+    if len(polygon) < 3:
+        return None
+    bounds = _scene_screen_bounds(rect=rect, window_height=window_height)
+    projected: list[tuple[float, float, float]] = []
+    for point in polygon:
+        cam_x, cam_y, cam_z = point
+        screen_x, screen_y, _on_screen, in_front = camera_space_to_viewport(
+            cam_x=float(cam_x),
+            cam_y=float(cam_y),
+            cam_z=float(cam_z),
+            size=(max(1, int(rect.w)), max(1, int(rect.h))),
+            h_fov_deg=float(camera.h_fov_deg),
+            v_fov_deg=float(camera.v_fov_deg),
+        )
+        if not in_front or not all(math.isfinite(value) for value in (screen_x, screen_y)):
+            return None
+        proj_x, proj_y = _scene_local_top_left_to_screen(
+            rect=rect,
+            window_height=window_height,
+            x=float(screen_x),
+            y=float(screen_y),
+        )
+        if not all(math.isfinite(value) for value in (proj_x, proj_y, cam_y)):
+            return None
+        if (
+            proj_x < (bounds[0] - float(tolerance_px))
+            or proj_x > (bounds[2] + float(tolerance_px))
+            or proj_y < (bounds[1] - float(tolerance_px))
+            or proj_y > (bounds[3] + float(tolerance_px))
+        ):
+            return None
+        projected.append(
+            (
+                max(bounds[0], min(bounds[2], float(proj_x))),
+                max(bounds[1], min(bounds[3], float(proj_y))),
+                float(cam_y),
+            )
+        )
+    return tuple(projected)
 
 
 def _project_aircraft_marker_polygons(
@@ -1056,7 +1257,7 @@ def _project_aircraft_marker_polygons(
                     y=float(py),
                 )
                 for px, py in face.points
-            )
+            ),
         )
         for face in projected
     )
@@ -1067,7 +1268,11 @@ def _rapid_tracking_target_asset_id(target_kind: str, variant: str) -> str:
     if token == "building":
         return "building_tower" if str(variant).strip().lower() == "tower" else "building_hangar"
     if token == "truck":
-        return "vehicle_tracked" if str(variant).strip().lower() in {"tracked", "armor", "armored"} else "truck_olive"
+        return (
+            "vehicle_tracked"
+            if str(variant).strip().lower() in {"tracked", "armor", "armored"}
+            else "truck_olive"
+        )
     if token == "soldier":
         return "soldiers_patrol"
     if token == "helicopter":
@@ -1090,8 +1295,12 @@ def _build_auditory_scene_plan(scene: AuditoryGlScene) -> _ScenePlan:
     if payload is not None:
         x_half_span = max(0.08, float(payload.tube_half_width))
         z_half_span = max(0.08, float(payload.tube_half_height))
-        local_x = max(-1.0, min(1.0, float(payload.ball_x) / x_half_span)) * (_AUDITORY_TUBE_RX * 0.72)
-        local_z = max(-1.0, min(1.0, float(payload.ball_y) / z_half_span)) * (_AUDITORY_TUBE_RZ * 0.72)
+        local_x = max(-1.0, min(1.0, float(payload.ball_x) / x_half_span)) * (
+            _AUDITORY_TUBE_RX * 0.72
+        )
+        local_z = max(-1.0, min(1.0, float(payload.ball_y) / z_half_span)) * (
+            _AUDITORY_TUBE_RZ * 0.72
+        )
         if float(payload.ball_contact_ratio) >= 1.0:
             ball_color = (0.95, 0.35, 0.38, 0.98)
         else:
@@ -1101,7 +1310,7 @@ def _build_auditory_scene_plan(scene: AuditoryGlScene) -> _ScenePlan:
                 "BLUE": (0.36, 0.62, 0.94, 0.98),
                 "YELLOW": (0.94, 0.82, 0.34, 0.98),
             }.get(str(payload.ball_visual_color).upper(), (0.94, 0.96, 1.0, 0.98))
-    cam_pos, look_target = fixed_camera_pose()
+    cam_pos, look_target = fixed_camera_pose(forward_norm=ball_forward_norm)
     camera = _look_at_camera(
         position=cam_pos,
         target=look_target,
@@ -1147,7 +1356,9 @@ def _build_auditory_scene_plan(scene: AuditoryGlScene) -> _ScenePlan:
     ball_center, _ball_tangent, right, up = _tube_frame(ball_distance)
     gate_asset_ids: set[str] = set()
     if payload is not None:
-        ball_center = _vec_add(ball_center, _vec_add(_vec_scale(right, local_x), _vec_scale(up, local_z)))
+        ball_center = _vec_add(
+            ball_center, _vec_add(_vec_scale(right, local_x), _vec_scale(up, local_z))
+        )
     instances.append(
         _AssetInstance(
             asset_id="auditory_ball",
@@ -1170,8 +1381,12 @@ def _build_auditory_scene_plan(scene: AuditoryGlScene) -> _ScenePlan:
                 0.0,
                 min(1.0, float(gate.visual_slot_index + 1) / float(len(GATE_DEPTH_SLOTS_NORM))),
             )
-            local_z = max(-1.0, min(1.0, float(gate.y_norm) / y_half_span)) * (_AUDITORY_TUBE_RZ * 0.62)
-            radius = max(0.16, (float(gate.aperture_norm) / y_half_span) * (_AUDITORY_TUBE_RZ * 0.82))
+            local_z = max(-1.0, min(1.0, float(gate.y_norm) / y_half_span)) * (
+                _AUDITORY_TUBE_RZ * 0.62
+            )
+            radius = max(
+                0.16, (float(gate.aperture_norm) / y_half_span) * (_AUDITORY_TUBE_RZ * 0.82)
+            )
             gate_pos = _vec_add(center, _vec_scale(up, local_z))
             asset_id = _auditory_gate_asset_id(gate.shape)
             gate_asset_ids.add(asset_id)
@@ -1266,7 +1481,6 @@ def _build_rapid_tracking_scene_plan(scene: RapidTrackingGlScene) -> _ScenePlan:
     target_asset_id = _rapid_tracking_target_asset_id(target.kind, target.variant)
     static_scene = _rapid_tracking_static_scene(int(payload.scene_seed))
     static_bundle = _rapid_tracking_static_bundle(int(payload.scene_seed))
-    layout = static_scene.layout
 
     target_world_z = estimated_target_world_z(
         kind=str(payload.target_kind),
@@ -1299,7 +1513,13 @@ def _build_rapid_tracking_scene_plan(scene: RapidTrackingGlScene) -> _ScenePlan:
         else 2.1
     )
     target_scale = (scale_factor, scale_factor, scale_factor)
-    if target_asset_id in {"building_hangar", "building_tower", "truck_olive", "vehicle_tracked", "soldiers_patrol"}:
+    if target_asset_id in {
+        "building_hangar",
+        "building_tower",
+        "truck_olive",
+        "vehicle_tracked",
+        "soldiers_patrol",
+    }:
         target_world_z = _grounded_asset_world_z(
             asset_id=target_asset_id,
             terrain_z=target_ground_z,
@@ -1348,7 +1568,11 @@ def _build_rapid_tracking_scene_plan(scene: RapidTrackingGlScene) -> _ScenePlan:
     instances.append(
         _AssetInstance(
             asset_id=target_asset_id,
-            position=(float(payload.target_world_x), float(payload.target_world_y), float(target_world_z)),
+            position=(
+                float(payload.target_world_x),
+                float(payload.target_world_y),
+                float(target_world_z),
+            ),
             hpr_deg=(target_heading, 0.0, 0.0),
             scale=target_scale,
         )
@@ -1406,7 +1630,12 @@ def _rapid_tracking_ground_clearance(asset_id: str) -> float:
         return 0.01
     if token in {"truck_olive", "vehicle_tracked"}:
         return 0.02
-    if token in {"forest_canopy_patch", "trees_field_cluster", "trees_pine_cluster", "shrubs_low_cluster"}:
+    if token in {
+        "forest_canopy_patch",
+        "trees_field_cluster",
+        "trees_pine_cluster",
+        "shrubs_low_cluster",
+    }:
         return 0.0
     return 0.0
 
@@ -1452,7 +1681,9 @@ def _rapid_tracking_anchor_world_pos(
     y_bias: float = 0.0,
     clearance: float = 0.0,
 ) -> tuple[float, float, float]:
-    wx, wy = _rapid_tracking_layout_world_xy(layout, track_x=float(anchor.x), track_y=float(anchor.y))
+    wx, wy = _rapid_tracking_layout_world_xy(
+        layout, track_x=float(anchor.x), track_y=float(anchor.y)
+    )
     wy += float(y_bias)
     terrain_z = float(rapid_tracking_terrain_height(float(wx), float(wy)))
     if asset_id is None:
@@ -1475,8 +1706,12 @@ def _rapid_tracking_road_piece_instance(
     end_xy: tuple[float, float],
     width: float,
 ) -> _AssetInstance:
-    start_wx, start_wy = _rapid_tracking_layout_world_xy(layout, track_x=float(start_xy[0]), track_y=float(start_xy[1]))
-    end_wx, end_wy = _rapid_tracking_layout_world_xy(layout, track_x=float(end_xy[0]), track_y=float(end_xy[1]))
+    start_wx, start_wy = _rapid_tracking_layout_world_xy(
+        layout, track_x=float(start_xy[0]), track_y=float(start_xy[1])
+    )
+    end_wx, end_wy = _rapid_tracking_layout_world_xy(
+        layout, track_x=float(end_xy[0]), track_y=float(end_xy[1])
+    )
     center_x = (start_wx + end_wx) * 0.5
     center_y = (start_wy + end_wy) * 0.5
     start_z = float(rapid_tracking_terrain_height(float(start_wx), float(start_wy)))
@@ -1545,16 +1780,22 @@ def _rapid_tracking_cluster_instance(
     cluster,
     asset_id: str | None = None,
 ) -> _AssetInstance:
-    wx, wy = _rapid_tracking_layout_world_xy(layout, track_x=float(cluster.x), track_y=float(cluster.y))
+    wx, wy = _rapid_tracking_layout_world_xy(
+        layout, track_x=float(cluster.x), track_y=float(cluster.y)
+    )
     wz = float(rapid_tracking_terrain_height(float(wx), float(wy)))
     resolved_asset_id = str(asset_id or cluster.asset_id)
     scale = (
-        3.0
-        if resolved_asset_id == "forest_canopy_patch"
-        else 2.6
-        if "tree" in resolved_asset_id
-        else 3.2
-    ) * float(cluster.scale) * (1.0 + (0.04 * max(0, int(cluster.count) - 1)))
+        (
+            3.0
+            if resolved_asset_id == "forest_canopy_patch"
+            else 2.6
+            if "tree" in resolved_asset_id
+            else 3.2
+        )
+        * float(cluster.scale)
+        * (1.0 + (0.04 * max(0, int(cluster.count) - 1)))
+    )
     return _AssetInstance(
         asset_id=resolved_asset_id,
         position=(
@@ -1611,7 +1852,9 @@ def _rapid_tracking_static_scene(seed: int) -> _RapidTrackingStaticScene:
     ambient_instances: list[_AssetInstance] = []
 
     for terrain in build_distant_terrain_ring(layout=layout):
-        terrain_z = float(rapid_tracking_terrain_height(float(terrain.world_x), float(terrain.world_y)))
+        terrain_z = float(
+            rapid_tracking_terrain_height(float(terrain.world_x), float(terrain.world_y))
+        )
         core_instances.append(
             _AssetInstance(
                 asset_id="terrain_hill_mound",
@@ -1639,10 +1882,22 @@ def _rapid_tracking_static_scene(seed: int) -> _RapidTrackingStaticScene:
         )
 
     for obstacle in layout.obstacles:
-        wx, wy = _rapid_tracking_layout_world_xy(layout, track_x=float(obstacle.x), track_y=float(obstacle.y))
+        wx, wy = _rapid_tracking_layout_world_xy(
+            layout, track_x=float(obstacle.x), track_y=float(obstacle.y)
+        )
         wz = float(rapid_tracking_terrain_height(float(wx), float(wy)))
-        scale_x = abs(_rapid_tracking_layout_world_xy(layout, track_x=float(obstacle.x + obstacle.radius_x), track_y=float(obstacle.y))[0] - wx)
-        scale_y = abs(_rapid_tracking_layout_world_xy(layout, track_x=float(obstacle.x), track_y=float(obstacle.y + obstacle.radius_y))[1] - wy)
+        scale_x = abs(
+            _rapid_tracking_layout_world_xy(
+                layout, track_x=float(obstacle.x + obstacle.radius_x), track_y=float(obstacle.y)
+            )[0]
+            - wx
+        )
+        scale_y = abs(
+            _rapid_tracking_layout_world_xy(
+                layout, track_x=float(obstacle.x), track_y=float(obstacle.y + obstacle.radius_y)
+            )[1]
+            - wy
+        )
         if obstacle.kind == "lake":
             scale = (max(7.0, scale_x), max(7.0, scale_y), 1.0)
             core_instances.append(
@@ -1707,7 +1962,9 @@ def _rapid_tracking_static_scene(seed: int) -> _RapidTrackingStaticScene:
             )
 
     for road_segment in layout.road_segments:
-        road_asset = "road_paved_segment" if str(road_segment.surface) == "paved" else "road_dirt_segment"
+        road_asset = (
+            "road_paved_segment" if str(road_segment.surface) == "paved" else "road_dirt_segment"
+        )
         road_width = 8.6 if road_asset == "road_paved_segment" else 6.6
         render_points = _rapid_tracking_render_polyline(
             layout,
@@ -1727,9 +1984,11 @@ def _rapid_tracking_static_scene(seed: int) -> _RapidTrackingStaticScene:
     for anchor in layout.building_anchors:
         asset_id = "building_tower" if str(anchor.variant) == "tower" else "building_hangar"
         scale = (
-            3.7 + (rapid_tracking_seed_unit(seed=int(layout.seed), salt=str(anchor.anchor_id)) * 0.8)
+            3.7
+            + (rapid_tracking_seed_unit(seed=int(layout.seed), salt=str(anchor.anchor_id)) * 0.8)
             if asset_id == "building_tower"
-            else 6.5 + (rapid_tracking_seed_unit(seed=int(layout.seed), salt=str(anchor.anchor_id)) * 1.1)
+            else 6.5
+            + (rapid_tracking_seed_unit(seed=int(layout.seed), salt=str(anchor.anchor_id)) * 1.1)
         )
         wx, wy, wz = _rapid_tracking_anchor_world_pos(
             layout,
@@ -1741,7 +2000,11 @@ def _rapid_tracking_static_scene(seed: int) -> _RapidTrackingStaticScene:
             _AssetInstance(
                 asset_id=asset_id,
                 position=(wx, wy, wz),
-                hpr_deg=(_rapid_tracking_layout_heading(layout, f"{anchor.anchor_id}:heading"), 0.0, 0.0),
+                hpr_deg=(
+                    _rapid_tracking_layout_heading(layout, f"{anchor.anchor_id}:heading"),
+                    0.0,
+                    0.0,
+                ),
                 scale=(scale, scale, scale),
             )
         )
@@ -1792,7 +2055,9 @@ def _rapid_tracking_static_scene(seed: int) -> _RapidTrackingStaticScene:
         *layout.shrub_clusters[:2],
     )
     for idx, cluster in enumerate(scenic_clusters):
-        asset_id = "trees_pine_cluster" if "tree" in str(cluster.asset_id) and idx % 2 == 1 else None
+        asset_id = (
+            "trees_pine_cluster" if "tree" in str(cluster.asset_id) and idx % 2 == 1 else None
+        )
         ambient_instances.append(
             _rapid_tracking_cluster_instance(
                 layout,
@@ -1801,7 +2066,11 @@ def _rapid_tracking_static_scene(seed: int) -> _RapidTrackingStaticScene:
             )
         )
 
-    scenic_pines = [cluster for cluster in layout.scenic_clusters if cluster.asset_id in {"trees_pine_cluster", "trees_field_cluster"}]
+    scenic_pines = [
+        cluster
+        for cluster in layout.scenic_clusters
+        if cluster.asset_id in {"trees_pine_cluster", "trees_field_cluster"}
+    ]
     for idx, cluster in enumerate(scenic_pines[:2]):
         ambient_instances.append(
             _rapid_tracking_cluster_instance(
@@ -1833,7 +2102,11 @@ def _rapid_tracking_static_scene(seed: int) -> _RapidTrackingStaticScene:
             _AssetInstance(
                 asset_id="helicopter_green",
                 position=(wx, wy, terrain + 12.5 + float(layout.altitude_bias)),
-                hpr_deg=(_rapid_tracking_layout_heading(layout, f"{anchor.anchor_id}:air-heading"), 0.0, 0.0),
+                hpr_deg=(
+                    _rapid_tracking_layout_heading(layout, f"{anchor.anchor_id}:air-heading"),
+                    0.0,
+                    0.0,
+                ),
                 scale=(2.2, 2.2, 2.2),
             )
         )
@@ -1844,7 +2117,11 @@ def _rapid_tracking_static_scene(seed: int) -> _RapidTrackingStaticScene:
             _AssetInstance(
                 asset_id="plane_blue",
                 position=(wx, wy, terrain + 20.0 + float(layout.altitude_bias)),
-                hpr_deg=(_rapid_tracking_layout_heading(layout, f"{anchor.anchor_id}:air-heading"), 0.0, 0.0),
+                hpr_deg=(
+                    _rapid_tracking_layout_heading(layout, f"{anchor.anchor_id}:air-heading"),
+                    0.0,
+                    0.0,
+                ),
                 scale=(1.9, 1.9, 1.9),
             )
         )
@@ -1921,8 +2198,12 @@ def _rapid_tracking_static_group_key(
     if layer == "far":
         return f"far:{index:03d}:{instance.asset_id}"
     family = _rapid_tracking_static_group_family(instance.asset_id)
-    cell_x = math.floor((float(instance.position[0]) - float(center_x)) / _RAPID_TRACKING_STATIC_GROUP_CELL_SIZE)
-    cell_y = math.floor((float(instance.position[1]) - float(center_y)) / _RAPID_TRACKING_STATIC_GROUP_CELL_SIZE)
+    cell_x = math.floor(
+        (float(instance.position[0]) - float(center_x)) / _RAPID_TRACKING_STATIC_GROUP_CELL_SIZE
+    )
+    cell_y = math.floor(
+        (float(instance.position[1]) - float(center_y)) / _RAPID_TRACKING_STATIC_GROUP_CELL_SIZE
+    )
     return f"near:{family}:{cell_x}:{cell_y}"
 
 
@@ -1950,9 +2231,8 @@ def _rapid_tracking_static_group_visible(
     angle_margin = math.degrees(math.atan2(radius, safe_depth))
     yaw = abs(math.degrees(math.atan2(cam_x, safe_depth)))
     pitch = abs(math.degrees(math.atan2(cam_z, safe_depth)))
-    return (
-        yaw <= ((float(camera.h_fov_deg) * 0.5) + angle_margin + 6.0)
-        and pitch <= ((float(camera.v_fov_deg) * 0.5) + angle_margin + 6.0)
+    return yaw <= ((float(camera.h_fov_deg) * 0.5) + angle_margin + 6.0) and pitch <= (
+        (float(camera.v_fov_deg) * 0.5) + angle_margin + 6.0
     )
 
 
@@ -2083,7 +2363,11 @@ def _rapid_tracking_static_bundle(seed: int) -> _RapidTrackingStaticBundle:
         world_triangles: list[_PreparedWorldTriangle] = []
         for instance in instances:
             mesh = library.mesh(instance.asset_id)
-            mesh_triangles = mesh.triangles[::2] if layer == "far" and len(mesh.triangles) > 12 else mesh.triangles
+            mesh_triangles = (
+                mesh.triangles[::2]
+                if layer == "far" and len(mesh.triangles) > 12
+                else mesh.triangles
+            )
             for triangle in mesh_triangles:
                 world_points = tuple(
                     _transform_asset_point(
@@ -2168,7 +2452,12 @@ def _build_spatial_integration_scene_plan(scene: SpatialIntegrationGlScene) -> _
             camera=None,
             asset_instances=(),
             overlay_primitives=(),
-            asset_ids=("building_tower", "forest_canopy_patch", "plane_blue", "trees_field_cluster"),
+            asset_ids=(
+                "building_tower",
+                "forest_canopy_patch",
+                "plane_blue",
+                "trees_field_cluster",
+            ),
             entity_count=0,
         )
 
@@ -2293,7 +2582,14 @@ def _build_spatial_integration_scene_plan(scene: SpatialIntegrationGlScene) -> _
         camera=camera,
         asset_instances=tuple(instances),
         overlay_primitives=(),
-        asset_ids=("building_tower", "forest_canopy_patch", "plane_blue", "plane_green", "plane_yellow", "trees_field_cluster"),
+        asset_ids=(
+            "building_tower",
+            "forest_canopy_patch",
+            "plane_blue",
+            "plane_green",
+            "plane_yellow",
+            "trees_field_cluster",
+        ),
         entity_count=len(instances),
     )
 
@@ -2308,72 +2604,20 @@ def _build_trace_test_1_scene_plan(scene: TraceTest1GlScene) -> _ScenePlan:
             camera=None,
             asset_instances=(),
             overlay_primitives=(),
-            asset_ids=("plane_blue", "plane_green", "plane_red", "plane_yellow"),
+            asset_ids=(),
             entity_count=0,
         )
-
-    camera = _look_at_camera(
-        position=(0.0, -208.0, 30.0),
-        target=(0.0, 104.0, 15.0),
-        h_fov_deg=24.0,
-        v_fov_deg=22.0,
-        far_clip=720.0,
-    )
-    instances: list[_AssetInstance] = [
-        _AssetInstance(
-            asset_id="plane_red",
-            position=payload.scene.red_frame.position,
-            hpr_deg=(
-                float(payload.scene.red_frame.attitude.yaw_deg),
-                float(payload.scene.red_frame.attitude.pitch_deg),
-                float(payload.scene.red_frame.attitude.roll_deg),
-            ),
-            scale=(1.7, 1.7, 1.7),
-        )
-    ]
-    blue_assets = ("plane_blue", "plane_green", "plane_yellow", "plane_blue")
-    blue_colors = (
-        (0.34, 0.52, 0.90, 0.96),
-        (0.42, 0.76, 0.54, 0.96),
-        (0.94, 0.82, 0.34, 0.96),
-        (0.66, 0.76, 0.94, 0.96),
-    )
-    for idx, frame in enumerate(payload.scene.blue_frames):
-        instances.append(
-            _AssetInstance(
-                asset_id=blue_assets[idx % len(blue_assets)],
-                position=frame.position,
-                hpr_deg=(
-                    float(frame.attitude.yaw_deg),
-                    float(frame.attitude.pitch_deg),
-                    float(frame.attitude.roll_deg),
-                ),
-                scale=(1.35, 1.35, 1.35),
-                color=blue_colors[idx % len(blue_colors)],
-            )
-        )
+    snapshot = build_trace_test_1_scene3d(payload=payload)
+    asset_instances = tuple(_asset_instance_from_trace_aircraft(pose) for pose in snapshot.aircraft)
     return _ScenePlan(
         kind="trace_test_1",
         rect=rect,
-        camera=camera,
-        asset_instances=tuple(instances),
+        camera=_scene_camera_from_trace_camera(snapshot.camera),
+        asset_instances=asset_instances,
         overlay_primitives=(),
-        asset_ids=("plane_blue", "plane_green", "plane_red", "plane_yellow"),
-        entity_count=len(instances),
+        asset_ids=tuple(sorted({instance.asset_id for instance in asset_instances})),
+        entity_count=len(asset_instances),
     )
-
-
-def _trace_test_2_asset(track) -> tuple[str, tuple[float, float, float, float] | None]:
-    token = str(track.color_name).strip().lower()
-    if token == "red":
-        return "plane_red", None
-    if token == "blue":
-        return "plane_blue", None
-    if token == "yellow":
-        return "plane_yellow", None
-    if token == "silver":
-        return "plane_green", (0.80, 0.84, 0.90, 0.96)
-    return "plane_green", None
 
 
 def _build_trace_test_2_scene_plan(scene: TraceTest2GlScene) -> _ScenePlan:
@@ -2386,40 +2630,25 @@ def _build_trace_test_2_scene_plan(scene: TraceTest2GlScene) -> _ScenePlan:
             camera=None,
             asset_instances=(),
             overlay_primitives=(),
-            asset_ids=("plane_blue", "plane_green", "plane_red", "plane_yellow"),
+            asset_ids=(),
             entity_count=0,
         )
-
-    camera = _look_at_camera(
-        position=(0.0, -72.0, 28.0),
-        target=(0.0, 126.0, 12.0),
-        h_fov_deg=38.0,
-        v_fov_deg=30.0,
-        far_clip=820.0,
+    snapshot = build_trace_test_2_scene3d(
+        payload=payload,
+        practice_mode=bool(scene.practice_mode),
     )
-    progress = float(payload.observe_progress)
-    instances: list[_AssetInstance] = []
-    for track in payload.aircraft:
-        position = trace_test_2_track_position(track=track, progress=progress)
-        tangent = trace_test_2_track_tangent(track=track, progress=progress)
-        asset_id, color = _trace_test_2_asset(track)
-        instances.append(
-            _AssetInstance(
-                asset_id=asset_id,
-                position=(float(position.x), float(position.y), float(position.z)),
-                hpr_deg=_world_hpr_from_tangent(tangent=tangent, roll_deg=0.0),
-                scale=(1.18, 1.18, 1.18),
-                color=color,
-            )
-        )
+    asset_instances = tuple(
+        _asset_instance_from_trace_aircraft(pose)
+        for pose in (*snapshot.aircraft, *snapshot.ghosts)
+    )
     return _ScenePlan(
         kind="trace_test_2",
         rect=rect,
-        camera=camera,
-        asset_instances=tuple(instances),
+        camera=_scene_camera_from_trace_camera(snapshot.camera),
+        asset_instances=asset_instances,
         overlay_primitives=(),
-        asset_ids=("plane_blue", "plane_green", "plane_red", "plane_yellow"),
-        entity_count=len(instances),
+        asset_ids=tuple(sorted({instance.asset_id for instance in asset_instances})),
+        entity_count=len(asset_instances),
     )
 
 
@@ -2461,6 +2690,7 @@ class ModernSceneRenderer:
             "entity_count": 0,
             "viewport": (self._win_w, self._win_h),
         }
+        self._last_rt_world_debug: dict[str, object] = {}
 
         self._ctx.enable(moderngl.BLEND)
         self._ctx.blend_func = (
@@ -2607,14 +2837,17 @@ class ModernSceneRenderer:
 
     def _draw_scene(self, *, scene: GlScene) -> None:
         kind = gl_scene_name(scene)
+        scene_debug: dict[str, object] = {}
         if isinstance(scene, AuditoryGlScene):
             scene_plan = _build_auditory_scene_plan(scene)
             self._scene_assets.require_many(scene_plan.asset_ids)
             entity_count = self._draw_auditory_scene(scene=scene, scene_plan=scene_plan)
         elif isinstance(scene, RapidTrackingGlScene):
+            self._last_rt_world_debug = {}
             scene_plan = _build_rapid_tracking_scene_plan(scene)
             self._scene_assets.require_many(scene_plan.asset_ids)
             entity_count = self._draw_rapid_tracking_scene(scene=scene, scene_plan=scene_plan)
+            scene_debug = dict(self._last_rt_world_debug)
         elif isinstance(scene, SpatialIntegrationGlScene):
             scene_plan = _build_spatial_integration_scene_plan(scene)
             self._scene_assets.require_many(scene_plan.asset_ids)
@@ -2632,6 +2865,7 @@ class ModernSceneRenderer:
             "entity_count": int(entity_count),
             "viewport": (self._win_w, self._win_h),
         }
+        self._last_scene_debug.update(scene_debug)
 
     def _scene_origin(self, rect: pygame.Rect) -> tuple[float, float]:
         return float(rect.x), float(self._win_h - rect.bottom)
@@ -2673,7 +2907,7 @@ class ModernSceneRenderer:
                 _DepthColorVertex(c[0], c[1], float(depth_c), *color),
             ]
         )
-        
+
     @staticmethod
     def _camera_depth_norm(*, depth: float, camera: _SceneCamera) -> float:
         span = max(1e-6, float(camera.far_clip) - float(camera.near_clip))
@@ -2899,16 +3133,7 @@ class ModernSceneRenderer:
         camera: _SceneCamera,
         point: Point3,
     ) -> tuple[float, float, float] | None:
-        cam_x, cam_y, cam_z = world_to_camera_space(
-            cam_world_x=float(camera.position[0]),
-            cam_world_y=float(camera.position[1]),
-            cam_world_z=float(camera.position[2]),
-            heading_deg=float(camera.heading_deg),
-            pitch_deg=float(camera.pitch_deg),
-            target_world_x=float(point[0]),
-            target_world_y=float(point[1]),
-            target_world_z=float(point[2]),
-        )
+        cam_x, cam_y, cam_z = _world_point_to_camera_space(camera=camera, point=point)
         if cam_y <= float(camera.near_clip) or cam_y >= float(camera.far_clip):
             return None
         screen_x, screen_y, _on_screen, in_front = camera_space_to_viewport(
@@ -2929,13 +3154,99 @@ class ModernSceneRenderer:
         )
         return screen_point[0], screen_point[1], float(cam_y)
 
+    def _project_world_triangle_clipped(
+        self,
+        *,
+        rect: pygame.Rect,
+        camera: _SceneCamera,
+        points: tuple[Point3, Point3, Point3],
+    ) -> tuple[list[_ProjectedWorldTriangle2D], bool, int]:
+        camera_points: list[Point3] = []
+        clipped = False
+        for point in points:
+            camera_point = _world_point_to_camera_space(camera=camera, point=point)
+            if not all(math.isfinite(value) for value in camera_point):
+                return [], False, 1
+            if not _camera_point_inside_frustum(camera=camera, point=camera_point):
+                clipped = True
+            camera_points.append(camera_point)
+        clipped_polygon = _clip_camera_polygon_to_frustum(
+            camera=camera,
+            polygon=tuple(camera_points),
+        )
+        if len(clipped_polygon) < 3:
+            return [], clipped, 1
+        projected_polygon = _project_clipped_camera_polygon(
+            rect=rect,
+            window_height=self._win_h,
+            camera=camera,
+            polygon=clipped_polygon,
+        )
+        if projected_polygon is None or len(projected_polygon) < 3:
+            return [], clipped, 1
+        bounds = _scene_screen_bounds(rect=rect, window_height=self._win_h)
+        fan_origin = projected_polygon[0]
+        emitted: list[_ProjectedWorldTriangle2D] = []
+        rejected = 0
+        for idx in range(1, len(projected_polygon) - 1):
+            tri = (
+                fan_origin,
+                projected_polygon[idx],
+                projected_polygon[idx + 1],
+            )
+            screen_points = (
+                (float(tri[0][0]), float(tri[0][1])),
+                (float(tri[1][0]), float(tri[1][1])),
+                (float(tri[2][0]), float(tri[2][1])),
+            )
+            min_x = min(point[0] for point in screen_points)
+            max_x = max(point[0] for point in screen_points)
+            min_y = min(point[1] for point in screen_points)
+            max_y = max(point[1] for point in screen_points)
+            if max_x < bounds[0] or min_x > bounds[2] or max_y < bounds[1] or min_y > bounds[3]:
+                rejected += 1
+                continue
+            area = (screen_points[1][0] - screen_points[0][0]) * (
+                screen_points[2][1] - screen_points[0][1]
+            ) - (screen_points[1][1] - screen_points[0][1]) * (
+                screen_points[2][0] - screen_points[0][0]
+            )
+            if abs(area) <= 0.35:
+                rejected += 1
+                continue
+            camera_depths = (
+                float(tri[0][2]),
+                float(tri[1][2]),
+                float(tri[2][2]),
+            )
+            emitted.append(
+                _ProjectedWorldTriangle2D(
+                    depth=sum(camera_depths) / 3.0,
+                    points=screen_points,
+                    camera_depths=camera_depths,
+                    extent_px=max(max_x - min_x, max_y - min_y),
+                )
+            )
+        if not emitted:
+            return [], clipped, max(1, rejected)
+        return emitted, clipped, rejected
+
     def _render_scene_plan(self, *, scene_plan: _ScenePlan) -> None:
         camera = scene_plan.camera
+        use_depth_world = scene_plan.kind == "rapid_tracking"
+        rt_world_debug = {
+            "world_triangles_input": 0,
+            "world_triangles_emitted": 0,
+            "world_triangles_clipped": 0,
+            "world_triangles_rejected": 0,
+            "max_projected_extent_px": 0.0,
+        }
+        if use_depth_world:
+            self._last_rt_world_debug = dict(rt_world_debug)
         if camera is None or (not scene_plan.asset_instances and not scene_plan.static_groups):
             return
 
         light_dir = _vec_normalize((0.34, 0.58, 0.74))
-        use_depth_world = scene_plan.kind == "rapid_tracking"
         static_groups = (
             (*scene_plan.backdrop_groups, *scene_plan.playfield_groups)
             if use_depth_world and (scene_plan.backdrop_groups or scene_plan.playfield_groups)
@@ -2955,103 +3266,179 @@ class ModernSceneRenderer:
                 continue
             is_far = group.layer == "far"
             for triangle in group.triangles:
-                projected_points: list[tuple[float, float]] = []
-                depths: list[float] = []
-                for point in triangle.points:
-                    projected = self._project_world_to_screen(
-                        rect=scene_plan.rect,
-                        camera=camera,
-                        point=point,
-                    )
-                    if projected is None:
-                        projected_points = []
-                        break
-                    projected_points.append((projected[0], projected[1]))
-                    depths.append(projected[2])
-                if len(projected_points) != 3:
-                    continue
-                area = (
-                    (projected_points[1][0] - projected_points[0][0]) * (projected_points[2][1] - projected_points[0][1])
-                    - (projected_points[1][1] - projected_points[0][1]) * (projected_points[2][0] - projected_points[0][0])
-                )
-                if abs(area) <= 0.35:
-                    continue
-                light = max(
-                    0.0,
-                    min(
-                        1.0,
-                        (triangle.normal[0] * light_dir[0])
-                        + (triangle.normal[1] * light_dir[1])
-                        + (triangle.normal[2] * light_dir[2]),
-                    ),
-                )
-                if is_far:
-                    shade = 0.30 + (light * 0.44)
-                    depth_t = max(0.0, min(1.0, (sum(depths) / 3.0 - 220.0) / 900.0))
-                    base_rgb = _mix_rgb(triangle.base_rgb, (0.50, 0.60, 0.68), 0.30 + (0.30 * depth_t))
-                    alpha = max(0.42, triangle.alpha * (0.82 - (0.22 * depth_t)))
-                else:
-                    shade = 0.38 + (light * 0.62)
-                    depth_t = max(0.0, min(1.0, (sum(depths) / 3.0 - 120.0) / 700.0))
-                    base_rgb = _mix_rgb(triangle.base_rgb, (0.40, 0.48, 0.44), 0.06 * depth_t)
-                    alpha = triangle.alpha
-                fill_color = (
-                    max(0.0, min(1.0, base_rgb[0] * shade)),
-                    max(0.0, min(1.0, base_rgb[1] * shade)),
-                    max(0.0, min(1.0, base_rgb[2] * shade)),
-                    max(0.0, min(1.0, alpha)),
-                )
-                projected_triangles.append(
-                    (
-                        sum(depths) / 3.0,
-                        (
-                            projected_points[0],
-                            projected_points[1],
-                            projected_points[2],
-                        ),
-                        (
-                            self._camera_depth_norm(depth=depths[0], camera=camera),
-                            self._camera_depth_norm(depth=depths[1], camera=camera),
-                            self._camera_depth_norm(depth=depths[2], camera=camera),
+                rt_world_debug["world_triangles_input"] += 1
+                if use_depth_world:
+                    projected_world_triangles, was_clipped, rejected = (
+                        self._project_world_triangle_clipped(
+                            rect=scene_plan.rect,
+                            camera=camera,
+                            points=triangle.points,
                         )
-                        if use_depth_world
-                        else None,
-                        fill_color,
                     )
-                )
+                    if was_clipped:
+                        rt_world_debug["world_triangles_clipped"] += 1
+                    rt_world_debug["world_triangles_rejected"] += int(rejected)
+                    if not projected_world_triangles:
+                        continue
+                else:
+                    projected_points: list[tuple[float, float]] = []
+                    depths: list[float] = []
+                    for point in triangle.points:
+                        projected = self._project_world_to_screen(
+                            rect=scene_plan.rect,
+                            camera=camera,
+                            point=point,
+                        )
+                        if projected is None:
+                            projected_points = []
+                            break
+                        projected_points.append((projected[0], projected[1]))
+                        depths.append(projected[2])
+                    if len(projected_points) != 3:
+                        continue
+                    projected_world_triangles = [
+                        _ProjectedWorldTriangle2D(
+                            depth=sum(depths) / 3.0,
+                            points=(
+                                projected_points[0],
+                                projected_points[1],
+                                projected_points[2],
+                            ),
+                            camera_depths=(depths[0], depths[1], depths[2]),
+                            extent_px=max(
+                                max(point[0] for point in projected_points)
+                                - min(point[0] for point in projected_points),
+                                max(point[1] for point in projected_points)
+                                - min(point[1] for point in projected_points),
+                            ),
+                        )
+                    ]
+                for projected_world_triangle in projected_world_triangles:
+                    projected_points = projected_world_triangle.points
+                    depths = projected_world_triangle.camera_depths
+                    area = (projected_points[1][0] - projected_points[0][0]) * (
+                        projected_points[2][1] - projected_points[0][1]
+                    ) - (projected_points[1][1] - projected_points[0][1]) * (
+                        projected_points[2][0] - projected_points[0][0]
+                    )
+                    if abs(area) <= 0.35:
+                        rt_world_debug["world_triangles_rejected"] += 1
+                        continue
+                    light = max(
+                        0.0,
+                        min(
+                            1.0,
+                            (triangle.normal[0] * light_dir[0])
+                            + (triangle.normal[1] * light_dir[1])
+                            + (triangle.normal[2] * light_dir[2]),
+                        ),
+                    )
+                    if is_far:
+                        shade = 0.30 + (light * 0.44)
+                        depth_t = max(0.0, min(1.0, (sum(depths) / 3.0 - 220.0) / 900.0))
+                        base_rgb = _mix_rgb(
+                            triangle.base_rgb, (0.50, 0.60, 0.68), 0.30 + (0.30 * depth_t)
+                        )
+                        alpha = max(0.42, triangle.alpha * (0.82 - (0.22 * depth_t)))
+                    else:
+                        shade = 0.38 + (light * 0.62)
+                        depth_t = max(0.0, min(1.0, (sum(depths) / 3.0 - 120.0) / 700.0))
+                        base_rgb = _mix_rgb(triangle.base_rgb, (0.40, 0.48, 0.44), 0.06 * depth_t)
+                        alpha = triangle.alpha
+                    fill_color = (
+                        max(0.0, min(1.0, base_rgb[0] * shade)),
+                        max(0.0, min(1.0, base_rgb[1] * shade)),
+                        max(0.0, min(1.0, base_rgb[2] * shade)),
+                        max(0.0, min(1.0, alpha)),
+                    )
+                    projected_triangles.append(
+                        (
+                            projected_world_triangle.depth,
+                            projected_points,
+                            (
+                                self._camera_depth_norm(depth=depths[0], camera=camera),
+                                self._camera_depth_norm(depth=depths[1], camera=camera),
+                                self._camera_depth_norm(depth=depths[2], camera=camera),
+                            )
+                            if use_depth_world
+                            else None,
+                            fill_color,
+                        )
+                    )
+                    rt_world_debug["world_triangles_emitted"] += 1
+                    rt_world_debug["max_projected_extent_px"] = max(
+                        float(rt_world_debug["max_projected_extent_px"]),
+                        float(projected_world_triangle.extent_px),
+                    )
 
         for instance in scene_plan.asset_instances:
             mesh = self._scene_assets.mesh(instance.asset_id)
             base_override = instance.color
             rotated_normal_cache: dict[Point3, Point3] = {}
             for triangle in mesh.triangles:
-                projected_points: list[tuple[float, float]] = []
-                depths: list[float] = []
-                for point in triangle.points:
-                    world_point = self._transform_instance_point(point, instance)
-                    projected = self._project_world_to_screen(
-                        rect=scene_plan.rect,
-                        camera=camera,
-                        point=world_point,
-                    )
-                    if projected is None:
-                        projected_points = []
-                        break
-                    projected_points.append((projected[0], projected[1]))
-                    depths.append(projected[2])
-                if len(projected_points) != 3:
-                    continue
-                area = (
-                    (projected_points[1][0] - projected_points[0][0]) * (projected_points[2][1] - projected_points[0][1])
-                    - (projected_points[1][1] - projected_points[0][1]) * (projected_points[2][0] - projected_points[0][0])
+                world_points = tuple(
+                    self._transform_instance_point(point, instance) for point in triangle.points
                 )
-                if abs(area) <= 0.35:
-                    continue
+                rt_world_debug["world_triangles_input"] += 1
+                if use_depth_world:
+                    projected_world_triangles, was_clipped, rejected = (
+                        self._project_world_triangle_clipped(
+                            rect=scene_plan.rect,
+                            camera=camera,
+                            points=world_points,
+                        )
+                    )
+                    if was_clipped:
+                        rt_world_debug["world_triangles_clipped"] += 1
+                    rt_world_debug["world_triangles_rejected"] += int(rejected)
+                    if not projected_world_triangles:
+                        continue
+                else:
+                    projected_points: list[tuple[float, float]] = []
+                    depths: list[float] = []
+                    for point in world_points:
+                        projected = self._project_world_to_screen(
+                            rect=scene_plan.rect,
+                            camera=camera,
+                            point=point,
+                        )
+                        if projected is None:
+                            projected_points = []
+                            break
+                        projected_points.append((projected[0], projected[1]))
+                        depths.append(projected[2])
+                    if len(projected_points) != 3:
+                        continue
+                    projected_world_triangles = [
+                        _ProjectedWorldTriangle2D(
+                            depth=sum(depths) / 3.0,
+                            points=(
+                                projected_points[0],
+                                projected_points[1],
+                                projected_points[2],
+                            ),
+                            camera_depths=(depths[0], depths[1], depths[2]),
+                            extent_px=max(
+                                max(point[0] for point in projected_points)
+                                - min(point[0] for point in projected_points),
+                                max(point[1] for point in projected_points)
+                                - min(point[1] for point in projected_points),
+                            ),
+                        )
+                    ]
                 world_normal = rotated_normal_cache.get(triangle.normal)
                 if world_normal is None:
                     world_normal = self._transform_instance_normal(triangle.normal, instance)
                     rotated_normal_cache[triangle.normal] = world_normal
-                light = max(0.0, min(1.0, (world_normal[0] * light_dir[0]) + (world_normal[1] * light_dir[1]) + (world_normal[2] * light_dir[2])))
+                light = max(
+                    0.0,
+                    min(
+                        1.0,
+                        (world_normal[0] * light_dir[0])
+                        + (world_normal[1] * light_dir[1])
+                        + (world_normal[2] * light_dir[2]),
+                    ),
+                )
                 shade = 0.38 + (light * 0.62)
                 if base_override is None:
                     base_rgb = mesh.color_for_role(triangle.role)
@@ -3065,24 +3452,27 @@ class ModernSceneRenderer:
                     max(0.0, min(1.0, base_rgb[2] * shade)),
                     max(0.0, min(1.0, alpha)),
                 )
-                projected_triangles.append(
-                    (
-                        sum(depths) / 3.0,
+                for projected_world_triangle in projected_world_triangles:
+                    depths = projected_world_triangle.camera_depths
+                    projected_triangles.append(
                         (
-                            projected_points[0],
-                            projected_points[1],
-                            projected_points[2],
-                        ),
-                        (
-                            self._camera_depth_norm(depth=depths[0], camera=camera),
-                            self._camera_depth_norm(depth=depths[1], camera=camera),
-                            self._camera_depth_norm(depth=depths[2], camera=camera),
+                            projected_world_triangle.depth,
+                            projected_world_triangle.points,
+                            (
+                                self._camera_depth_norm(depth=depths[0], camera=camera),
+                                self._camera_depth_norm(depth=depths[1], camera=camera),
+                                self._camera_depth_norm(depth=depths[2], camera=camera),
+                            )
+                            if use_depth_world
+                            else None,
+                            fill_color,
                         )
-                        if use_depth_world
-                        else None,
-                        fill_color,
                     )
-                )
+                    rt_world_debug["world_triangles_emitted"] += 1
+                    rt_world_debug["max_projected_extent_px"] = max(
+                        float(rt_world_debug["max_projected_extent_px"]),
+                        float(projected_world_triangle.extent_px),
+                    )
 
         projected_triangles.sort(key=lambda item: item[0], reverse=True)
         for _depth, points, depth_norms, color in projected_triangles:
@@ -3119,6 +3509,14 @@ class ModernSceneRenderer:
                     filled=primitive.filled,
                     width=primitive.width,
                 )
+        if use_depth_world:
+            self._last_rt_world_debug = {
+                "world_triangles_input": int(rt_world_debug["world_triangles_input"]),
+                "world_triangles_emitted": int(rt_world_debug["world_triangles_emitted"]),
+                "world_triangles_clipped": int(rt_world_debug["world_triangles_clipped"]),
+                "world_triangles_rejected": int(rt_world_debug["world_triangles_rejected"]),
+                "max_projected_extent_px": float(rt_world_debug["max_projected_extent_px"]),
+            }
 
     @staticmethod
     def _build_vortex_rgba(*, size: int) -> tuple[bytes, int]:
@@ -3229,8 +3627,12 @@ class ModernSceneRenderer:
         center_is_scene_top_left: bool = False,
     ) -> None:
         palette = build_pygame_palette(
-            body_color=tuple(max(0, min(255, int(round(channel * 255.0)))) for channel in color[:3]),
-            outline_color=tuple(max(0, min(255, int(round(channel * 255.0)))) for channel in outline[:3]),
+            body_color=tuple(
+                max(0, min(255, int(round(channel * 255.0)))) for channel in color[:3]
+            ),
+            outline_color=tuple(
+                max(0, min(255, int(round(channel * 255.0)))) for channel in outline[:3]
+            ),
         )
         role_colors = {
             "body": palette.body,
@@ -3274,7 +3676,9 @@ class ModernSceneRenderer:
             )
         for face in projected_faces:
             base = role_colors.get(face.role, palette.body)
-            fill = tuple(max(0, min(255, int(round(channel * float(face.shade))))) for channel in base)
+            fill = tuple(
+                max(0, min(255, int(round(channel * float(face.shade))))) for channel in base
+            )
             fill_color = (fill[0] / 255.0, fill[1] / 255.0, fill[2] / 255.0, color[3])
             points = [(float(px), float(py)) for px, py in face.points]
             self._add_filled_polygon(points, fill_color)
@@ -3282,7 +3686,6 @@ class ModernSceneRenderer:
 
     def _draw_auditory_scene(self, *, scene: AuditoryGlScene, scene_plan: _ScenePlan) -> int:
         rect = scene.world
-        payload = scene.payload
         time_fill_ratio = scene.time_fill_ratio
         vw = max(1, int(rect.w))
         vh = max(1, int(rect.h))
@@ -3329,7 +3732,9 @@ class ModernSceneRenderer:
             )
         return int(scene_plan.entity_count)
 
-    def _draw_rapid_tracking_scene(self, *, scene: RapidTrackingGlScene, scene_plan: _ScenePlan) -> int:
+    def _draw_rapid_tracking_scene(
+        self, *, scene: RapidTrackingGlScene, scene_plan: _ScenePlan
+    ) -> int:
         rect = scene.world
         payload = scene.payload
         vw = max(1, int(rect.w))
@@ -3377,7 +3782,9 @@ class ModernSceneRenderer:
             return 0
 
         target = build_rapid_tracking_scene_target(payload=payload, size=(vw, vh))
-        target_center = self._to_screen(rect, float(target.overlay.screen_x), float(vh - target.overlay.screen_y))
+        target_center = self._to_screen(
+            rect, float(target.overlay.screen_x), float(vh - target.overlay.screen_y)
+        )
         center = self._to_screen(rect, float(vw) * 0.5, float(vh) * 0.5)
         box_half_w = max(
             18.0,
@@ -3417,15 +3824,13 @@ class ModernSceneRenderer:
             width=2.0,
         )
         reticle_x = (
-            ((float(payload.reticle_x) + float(RAPID_TRACKING_TARGET_VIEW_LIMIT))
-            / (float(RAPID_TRACKING_TARGET_VIEW_LIMIT) * 2.0))
-            * float(vw)
-        )
+            (float(payload.reticle_x) + float(RAPID_TRACKING_TARGET_VIEW_LIMIT))
+            / (float(RAPID_TRACKING_TARGET_VIEW_LIMIT) * 2.0)
+        ) * float(vw)
         reticle_y = (
-            ((float(payload.reticle_y) + float(RAPID_TRACKING_TARGET_VIEW_LIMIT))
-            / (float(RAPID_TRACKING_TARGET_VIEW_LIMIT) * 2.0))
-            * float(vh)
-        )
+            (float(payload.reticle_y) + float(RAPID_TRACKING_TARGET_VIEW_LIMIT))
+            / (float(RAPID_TRACKING_TARGET_VIEW_LIMIT) * 2.0)
+        ) * float(vh)
         reticle_center = self._to_screen(rect, reticle_x, float(vh) - reticle_y)
         self._add_circle(
             center=reticle_center,
@@ -3447,10 +3852,14 @@ class ModernSceneRenderer:
             (0.98, 0.95, 0.84, 0.66),
             width=1.0,
         )
-        self._add_circle(center=target_center, radius=30.0, color=(0.92, 0.98, 0.96, 0.64), filled=False)
+        self._add_circle(
+            center=target_center, radius=30.0, color=(0.92, 0.98, 0.96, 0.64), filled=False
+        )
         return max(1, int(scene_plan.entity_count))
 
-    def _draw_spatial_integration_scene(self, *, scene: SpatialIntegrationGlScene, scene_plan: _ScenePlan) -> int:
+    def _draw_spatial_integration_scene(
+        self, *, scene: SpatialIntegrationGlScene, scene_plan: _ScenePlan
+    ) -> int:
         rect = scene.world
         payload = scene.payload
         vw = max(1, int(rect.w))
@@ -3484,12 +3893,20 @@ class ModernSceneRenderer:
         for marker in layout.landmarks:
             center = self._to_screen(rect, float(marker.screen_x), float(vh - marker.screen_y))
             self._add_circle(center=center, radius=7.0, color=(0.98, 0.88, 0.42, 0.94))
-            self._add_circle(center=center, radius=11.0, color=(0.98, 0.94, 0.72, 0.44), filled=False)
-        prev = self._to_screen(rect, float(layout.aircraft_prev[0]), float(vh - layout.aircraft_prev[1]))
-        now = self._to_screen(rect, float(layout.aircraft_now[0]), float(vh - layout.aircraft_now[1]))
+            self._add_circle(
+                center=center, radius=11.0, color=(0.98, 0.94, 0.72, 0.44), filled=False
+            )
+        prev = self._to_screen(
+            rect, float(layout.aircraft_prev[0]), float(vh - layout.aircraft_prev[1])
+        )
+        now = self._to_screen(
+            rect, float(layout.aircraft_now[0]), float(vh - layout.aircraft_now[1])
+        )
         self._add_line(prev, now, (0.94, 0.78, 0.32, 0.82), width=2.0)
         if layout.aircraft_future is not None:
-            future = self._to_screen(rect, float(layout.aircraft_future[0]), float(vh - layout.aircraft_future[1]))
+            future = self._to_screen(
+                rect, float(layout.aircraft_future[0]), float(vh - layout.aircraft_future[1])
+            )
             self._add_line(now, future, (0.94, 0.56, 0.30, 0.82), width=2.0)
         return max(int(scene_plan.entity_count), len(layout.landmarks) + 1)
 
@@ -3511,7 +3928,37 @@ class ModernSceneRenderer:
             self._to_screen(rect, 0.0, float(vh)),
             (0.48, 0.60, 0.74, 1.0),
         )
+        if scene.payload is None:
+            return 0
         self._render_scene_plan(scene_plan=scene_plan)
+        if scene.practice_mode:
+            horizon_y = float(vh * 0.52)
+            left = _scene_local_top_left_to_screen(
+                rect=rect,
+                window_height=self._win_h,
+                x=0.0,
+                y=horizon_y,
+            )
+            right = _scene_local_top_left_to_screen(
+                rect=rect,
+                window_height=self._win_h,
+                x=float(vw),
+                y=horizon_y,
+            )
+            center = _scene_local_top_left_to_screen(
+                rect=rect,
+                window_height=self._win_h,
+                x=float(vw * 0.5),
+                y=float(vh * 0.5),
+            )
+            self._add_line(left, right, (0.92, 0.96, 1.0, 0.28), width=1.0)
+            self._add_circle(
+                center=center,
+                radius=max(16.0, min(vw, vh) * 0.045),
+                color=(0.92, 0.96, 1.0, 0.18),
+                filled=False,
+                width=1.2,
+            )
         return int(scene_plan.entity_count)
 
     def _draw_trace_test_2_scene(self, *, scene: TraceTest2GlScene, scene_plan: _ScenePlan) -> int:
@@ -3533,6 +3980,8 @@ class ModernSceneRenderer:
             self._to_screen(rect, 0.0, horizon),
             (0.40, 0.46, 0.52, 1.0),
         )
+        if scene.payload is None:
+            return 0
         self._render_scene_plan(scene_plan=scene_plan)
         return int(scene_plan.entity_count)
 

@@ -9,14 +9,18 @@ from functools import lru_cache
 
 from ..adaptive_difficulty import difficulty_level_for_ratio, difficulty_profile_for_code
 from ..clock import Clock
-from ..content_variants import content_metadata_from_payload
 from ..cognitive_core import Phase, QuestionEvent, SeededRng, TestSnapshot, clamp01, lerp_int
+from ..content_variants import content_metadata_from_payload
 from ..rapid_tracking_view import (
     camera_pose_compat,
-    camera_rig_state as rapid_tracking_camera_rig_state,
     estimated_target_world_z,
-    target_projection as rapid_tracking_target_projection,
     track_to_world_xy,
+)
+from ..rapid_tracking_view import (
+    camera_rig_state as rapid_tracking_camera_rig_state,
+)
+from ..rapid_tracking_view import (
+    target_projection as rapid_tracking_target_projection,
 )
 
 
@@ -378,6 +382,7 @@ class _VisualStabilityLayoutSummary:
     corridor_building_count: int
     corridor_obstacle_count: int
     corridor_large_foliage_count: int
+    camera_keepout_road_count: int
     camera_keepout_obstacle_count: int
     camera_keepout_foliage_count: int
 
@@ -460,7 +465,11 @@ def rapid_tracking_target_cue(*, kind: str, variant: str = "", handoff_mode: str
     elif target_kind == "building":
         cue = "BUILDING HANDOFF"
     elif target_kind == "truck":
-        cue = "TRACKED VEHICLE / FAST" if target_variant in {"tracked", "armor", "armored"} else "ROAD MOVEMENT / FAST"
+        cue = (
+            "TRACKED VEHICLE / FAST"
+            if target_variant in {"tracked", "armor", "armored"}
+            else "ROAD MOVEMENT / FAST"
+        )
     elif target_kind == "helicopter":
         cue = "AIR HANDOFF / FASTER"
     elif target_kind == "jet":
@@ -530,11 +539,11 @@ def _normalize_layout_policy(
 
 def _readable_scene_seed_hash(*, base_seed: int, salt: int) -> int:
     value = ((int(base_seed) & 0xFFFFFFFF) ^ 0x9E3779B9 ^ (int(salt) * 0x85EBCA6B)) & 0xFFFFFFFF
-    value ^= (value >> 16)
+    value ^= value >> 16
     value = (value * 0x7FEB352D) & 0xFFFFFFFF
-    value ^= (value >> 15)
+    value ^= value >> 15
     value = (value * 0x846CA68B) & 0xFFFFFFFF
-    value ^= (value >> 16)
+    value ^= value >> 16
     normalized = int(value & 0x7FFFFFFF)
     if normalized <= 0:
         normalized = max(1, int(salt))
@@ -580,7 +589,9 @@ def _circle_intersects_rect(
     x_lo, x_hi, y_lo, y_hi = rect
     nearest_x = _clamp(float(center_x), float(x_lo), float(x_hi))
     nearest_y = _clamp(float(center_y), float(y_lo), float(y_hi))
-    return _distance_sq(float(center_x), float(center_y), nearest_x, nearest_y) <= float(radius) ** 2
+    return (
+        _distance_sq(float(center_x), float(center_y), nearest_x, nearest_y) <= float(radius) ** 2
+    )
 
 
 def _polyline_intersects_rect(
@@ -600,6 +611,39 @@ def _polyline_intersects_rect(
     return False
 
 
+def _polyline_sample_points(
+    points: Sequence[tuple[float, float]],
+) -> tuple[tuple[float, float], ...]:
+    if not points:
+        return ()
+    samples: list[tuple[float, float]] = [
+        (float(points[0][0]), float(points[0][1])),
+    ]
+    for start, end in zip(points, points[1:], strict=False):
+        samples.append(
+            (
+                (float(start[0]) + float(end[0])) * 0.5,
+                (float(start[1]) + float(end[1])) * 0.5,
+            )
+        )
+        samples.append((float(end[0]), float(end[1])))
+    return tuple(samples)
+
+
+def _track_point_in_rect(
+    *,
+    x: float,
+    y: float,
+    rect: tuple[float, float, float, float],
+    padding: float = 0.0,
+) -> bool:
+    x_lo, x_hi, y_lo, y_hi = rect
+    return bool(
+        (float(x_lo) - float(padding)) <= float(x) <= (float(x_hi) + float(padding))
+        and (float(y_lo) - float(padding)) <= float(y) <= (float(y_hi) + float(padding))
+    )
+
+
 def _layout_focus_world_xy(layout: RapidTrackingCompoundLayout) -> tuple[float, float]:
     return track_to_world_xy(
         track_x=float(layout.compound_center_x),
@@ -608,7 +652,9 @@ def _layout_focus_world_xy(layout: RapidTrackingCompoundLayout) -> tuple[float, 
     )
 
 
-def _layout_camera_sample_world_positions(layout: RapidTrackingCompoundLayout) -> tuple[tuple[float, float], ...]:
+def _layout_camera_sample_world_positions(
+    layout: RapidTrackingCompoundLayout,
+) -> tuple[tuple[float, float], ...]:
     focus_x, focus_y = _layout_focus_world_xy(layout)
     samples: list[tuple[float, float]] = []
     for progress in _VISUAL_STABILITY_CAMERA_SAMPLE_PROGRESS:
@@ -661,6 +707,159 @@ def _world_distance_to_track_point(
     return _distance(float(point_world_x), float(point_world_y), float(world_x), float(world_y))
 
 
+def _road_segment_violates_visual_keepout(
+    *,
+    layout: RapidTrackingCompoundLayout,
+    segment: RapidTrackingRoadSegment,
+    focus_world_x: float,
+    focus_world_y: float,
+    camera_samples: tuple[tuple[float, float], ...],
+) -> bool:
+    for track_x, track_y in _polyline_sample_points(segment.points):
+        focus_distance = _world_distance_to_track_point(
+            layout=layout,
+            track_x=float(track_x),
+            track_y=float(track_y),
+            world_x=float(focus_world_x),
+            world_y=float(focus_world_y),
+        )
+        if focus_distance < _VISUAL_STABILITY_FOCUS_KEEP_OUT_WORLD:
+            return True
+        for sample_x, sample_y in camera_samples:
+            sample_distance = _world_distance_to_track_point(
+                layout=layout,
+                track_x=float(track_x),
+                track_y=float(track_y),
+                world_x=float(sample_x),
+                world_y=float(sample_y),
+            )
+            if sample_distance < _VISUAL_STABILITY_CAMERA_KEEP_OUT_WORLD:
+                return True
+    return False
+
+
+def _repair_road_segment_for_visual_stability(
+    *,
+    layout: RapidTrackingCompoundLayout,
+    segment: RapidTrackingRoadSegment,
+    corridor: tuple[float, float, float, float],
+    focus_world_x: float,
+    focus_world_y: float,
+    camera_samples: tuple[tuple[float, float], ...],
+) -> RapidTrackingRoadSegment | None:
+    if len(segment.points) < 2:
+        return None
+    if not _polyline_intersects_rect(
+        points=segment.points,
+        rect=corridor,
+        padding=_READABLE_TRACKING_CORRIDOR_PADDING,
+    ) and not _road_segment_violates_visual_keepout(
+        layout=layout,
+        segment=segment,
+        focus_world_x=float(focus_world_x),
+        focus_world_y=float(focus_world_y),
+        camera_samples=camera_samples,
+    ):
+        return segment
+
+    points = tuple((float(x), float(y)) for x, y in segment.points)
+    safe_edges: list[tuple[int, int]] = []
+    run_start: int | None = None
+    for idx, (start, end) in enumerate(zip(points, points[1:], strict=False)):
+        midpoint = (
+            (float(start[0]) + float(end[0])) * 0.5,
+            (float(start[1]) + float(end[1])) * 0.5,
+        )
+        edge_samples = (start, midpoint, end)
+        edge_is_safe = True
+        for sample_x, sample_y in edge_samples:
+            if _track_point_in_rect(
+                x=float(sample_x),
+                y=float(sample_y),
+                rect=corridor,
+                padding=_READABLE_TRACKING_CORRIDOR_PADDING,
+            ):
+                edge_is_safe = False
+                break
+            focus_distance = _world_distance_to_track_point(
+                layout=layout,
+                track_x=float(sample_x),
+                track_y=float(sample_y),
+                world_x=float(focus_world_x),
+                world_y=float(focus_world_y),
+            )
+            if focus_distance < _VISUAL_STABILITY_FOCUS_KEEP_OUT_WORLD:
+                edge_is_safe = False
+                break
+            if any(
+                _world_distance_to_track_point(
+                    layout=layout,
+                    track_x=float(sample_x),
+                    track_y=float(sample_y),
+                    world_x=float(camera_x),
+                    world_y=float(camera_y),
+                )
+                < _VISUAL_STABILITY_CAMERA_KEEP_OUT_WORLD
+                for camera_x, camera_y in camera_samples
+            ):
+                edge_is_safe = False
+                break
+        if edge_is_safe:
+            if run_start is None:
+                run_start = idx
+            continue
+        if run_start is not None:
+            safe_edges.append((run_start, idx))
+            run_start = None
+    if run_start is not None:
+        safe_edges.append((run_start, len(points) - 1))
+    if not safe_edges:
+        return None
+
+    point_runs = [
+        (start_idx, end_edge_idx + 1)
+        for start_idx, end_edge_idx in safe_edges
+        if (end_edge_idx + 1) > start_idx
+    ]
+    if not point_runs:
+        return None
+    best_start, best_end = max(
+        point_runs,
+        key=lambda item: ((item[1] - item[0]), -item[0]),
+    )
+    repaired_points = points[best_start : best_end + 1]
+    if len(repaired_points) < 2:
+        return None
+
+    if len(segment.anchor_ids) == len(segment.points):
+        repaired_anchor_ids = segment.anchor_ids[best_start : best_end + 1]
+    else:
+        repaired_anchor_ids = segment.anchor_ids
+    if len(repaired_anchor_ids) < 2:
+        return None
+
+    repaired = replace(
+        segment,
+        start_anchor_id=str(repaired_anchor_ids[0]),
+        end_anchor_id=str(repaired_anchor_ids[-1]),
+        anchor_ids=tuple(repaired_anchor_ids),
+        points=tuple(repaired_points),
+    )
+    if _polyline_intersects_rect(
+        points=repaired.points,
+        rect=corridor,
+        padding=_READABLE_TRACKING_CORRIDOR_PADDING,
+    ) or _road_segment_violates_visual_keepout(
+        layout=layout,
+        segment=repaired,
+        focus_world_x=float(focus_world_x),
+        focus_world_y=float(focus_world_y),
+        camera_samples=camera_samples,
+    ):
+        return None
+    return repaired
+
+
 def _repair_local_hill_obstacle(
     *,
     layout: RapidTrackingCompoundLayout,
@@ -711,12 +910,15 @@ def _visual_stability_layout_summary(
     corridor_road_count = sum(
         1
         for segment in layout.road_segments
-        if _polyline_intersects_rect(points=segment.points, rect=corridor, padding=_READABLE_TRACKING_CORRIDOR_PADDING)
+        if _polyline_intersects_rect(
+            points=segment.points, rect=corridor, padding=_READABLE_TRACKING_CORRIDOR_PADDING
+        )
     )
     corridor_building_count = sum(
         1
         for anchor in layout.building_anchors
-        if corridor[0] <= float(anchor.x) <= corridor[1] and corridor[2] <= float(anchor.y) <= corridor[3]
+        if corridor[0] <= float(anchor.x) <= corridor[1]
+        and corridor[2] <= float(anchor.y) <= corridor[3]
     )
     corridor_obstacle_count = sum(
         1
@@ -737,6 +939,17 @@ def _visual_stability_layout_summary(
             center_y=float(cluster.y),
             radius=float(cluster.radius),
             rect=corridor,
+        )
+    )
+    camera_keepout_road_count = sum(
+        1
+        for segment in layout.road_segments
+        if _road_segment_violates_visual_keepout(
+            layout=layout,
+            segment=segment,
+            focus_world_x=float(focus_world_x),
+            focus_world_y=float(focus_world_y),
+            camera_samples=camera_samples,
         )
     )
     camera_keepout_obstacle_count = 0
@@ -792,6 +1005,7 @@ def _visual_stability_layout_summary(
         corridor_building_count=int(corridor_building_count),
         corridor_obstacle_count=int(corridor_obstacle_count),
         corridor_large_foliage_count=int(corridor_large_foliage_count),
+        camera_keepout_road_count=int(camera_keepout_road_count),
         camera_keepout_obstacle_count=int(camera_keepout_obstacle_count),
         camera_keepout_foliage_count=int(camera_keepout_foliage_count),
     )
@@ -805,13 +1019,19 @@ def _repair_layout_for_visual_stability(
     focus_world_x, focus_world_y = _layout_focus_world_xy(layout)
     camera_samples = _layout_camera_sample_world_positions(layout)
     repaired_road_segments = tuple(
-        segment
+        repaired_segment
         for segment in layout.road_segments
-        if not _polyline_intersects_rect(
-            points=segment.points,
-            rect=corridor,
-            padding=_READABLE_TRACKING_CORRIDOR_PADDING,
+        for repaired_segment in (
+            _repair_road_segment_for_visual_stability(
+                layout=layout,
+                segment=segment,
+                corridor=corridor,
+                focus_world_x=float(focus_world_x),
+                focus_world_y=float(focus_world_y),
+                camera_samples=camera_samples,
+            ),
         )
+        if repaired_segment is not None
     )
     repaired_obstacles: list[RapidTrackingObstacle] = []
     for source_obstacle in layout.obstacles:
@@ -823,13 +1043,16 @@ def _repair_layout_for_visual_stability(
             padding=_READABLE_TRACKING_CORRIDOR_PADDING,
         ):
             continue
-        too_close_to_focus = _world_distance_to_track_point(
-            layout=layout,
-            track_x=float(obstacle.x),
-            track_y=float(obstacle.y),
-            world_x=float(focus_world_x),
-            world_y=float(focus_world_y),
-        ) < _VISUAL_STABILITY_FOCUS_KEEP_OUT_WORLD
+        too_close_to_focus = (
+            _world_distance_to_track_point(
+                layout=layout,
+                track_x=float(obstacle.x),
+                track_y=float(obstacle.y),
+                world_x=float(focus_world_x),
+                world_y=float(focus_world_y),
+            )
+            < _VISUAL_STABILITY_FOCUS_KEEP_OUT_WORLD
+        )
         too_close_to_camera = any(
             _world_distance_to_track_point(
                 layout=layout,
@@ -837,7 +1060,8 @@ def _repair_layout_for_visual_stability(
                 track_y=float(obstacle.y),
                 world_x=float(sample_x),
                 world_y=float(sample_y),
-            ) < _VISUAL_STABILITY_CAMERA_KEEP_OUT_WORLD
+            )
+            < _VISUAL_STABILITY_CAMERA_KEEP_OUT_WORLD
             for sample_x, sample_y in camera_samples
         )
         if obstacle_kind in {"hill", "lake"} and (too_close_to_focus or too_close_to_camera):
@@ -855,13 +1079,16 @@ def _repair_layout_for_visual_stability(
             rect=corridor,
         ):
             continue
-        too_close_to_focus = _world_distance_to_track_point(
-            layout=layout,
-            track_x=float(cluster.x),
-            track_y=float(cluster.y),
-            world_x=float(focus_world_x),
-            world_y=float(focus_world_y),
-        ) < _VISUAL_STABILITY_FOCUS_KEEP_OUT_WORLD
+        too_close_to_focus = (
+            _world_distance_to_track_point(
+                layout=layout,
+                track_x=float(cluster.x),
+                track_y=float(cluster.y),
+                world_x=float(focus_world_x),
+                world_y=float(focus_world_y),
+            )
+            < _VISUAL_STABILITY_FOCUS_KEEP_OUT_WORLD
+        )
         too_close_to_camera = any(
             _world_distance_to_track_point(
                 layout=layout,
@@ -869,7 +1096,8 @@ def _repair_layout_for_visual_stability(
                 track_y=float(cluster.y),
                 world_x=float(sample_x),
                 world_y=float(sample_y),
-            ) < _VISUAL_STABILITY_CAMERA_KEEP_OUT_WORLD
+            )
+            < _VISUAL_STABILITY_CAMERA_KEEP_OUT_WORLD
             for sample_x, sample_y in camera_samples
         )
         if asset_id != "shrubs_low_cluster" and (too_close_to_focus or too_close_to_camera):
@@ -884,9 +1112,15 @@ def _repair_layout_for_visual_stability(
             seen_tree_positions.add(position_key)
         repaired_clusters.append(cluster)
 
-    shrub_clusters = tuple(cluster for cluster in repaired_clusters if cluster.asset_id == "shrubs_low_cluster")
-    tree_clusters = tuple(cluster for cluster in repaired_clusters if cluster.asset_id == "trees_field_cluster")
-    forest_clusters = tuple(cluster for cluster in repaired_clusters if cluster.asset_id == "forest_canopy_patch")
+    shrub_clusters = tuple(
+        cluster for cluster in repaired_clusters if cluster.asset_id == "shrubs_low_cluster"
+    )
+    tree_clusters = tuple(
+        cluster for cluster in repaired_clusters if cluster.asset_id == "trees_field_cluster"
+    )
+    forest_clusters = tuple(
+        cluster for cluster in repaired_clusters if cluster.asset_id == "forest_canopy_patch"
+    )
     return replace(
         layout,
         road_segments=repaired_road_segments,
@@ -898,12 +1132,15 @@ def _repair_layout_for_visual_stability(
     )
 
 
-def _readable_layout_evaluation(*, layout: RapidTrackingCompoundLayout) -> _ReadableSceneSeedEvaluation:
+def _readable_layout_evaluation(
+    *, layout: RapidTrackingCompoundLayout
+) -> _ReadableSceneSeedEvaluation:
     corridor = _rapid_tracking_readable_corridor(layout)
     corridor_building_count = sum(
         1
         for anchor in layout.building_anchors
-        if corridor[0] <= float(anchor.x) <= corridor[1] and corridor[2] <= float(anchor.y) <= corridor[3]
+        if corridor[0] <= float(anchor.x) <= corridor[1]
+        and corridor[2] <= float(anchor.y) <= corridor[3]
     )
     corridor_forest_count = sum(
         1
@@ -919,7 +1156,8 @@ def _readable_layout_evaluation(*, layout: RapidTrackingCompoundLayout) -> _Read
         _circle_intersects_rect(
             center_x=float(obstacle.x),
             center_y=float(obstacle.y),
-            radius=max(float(obstacle.radius_x), float(obstacle.radius_y)) + _READABLE_TRACKING_CORRIDOR_PADDING,
+            radius=max(float(obstacle.radius_x), float(obstacle.radius_y))
+            + _READABLE_TRACKING_CORRIDOR_PADDING,
             rect=corridor,
         )
         for obstacle in layout.obstacles
@@ -950,12 +1188,14 @@ def _readable_layout_evaluation(*, layout: RapidTrackingCompoundLayout) -> _Read
     nearby_building_count = sum(
         1
         for anchor in layout.building_anchors
-        if _distance(float(anchor.x), float(anchor.y), center_x, center_y) <= _READABLE_NEARBY_ANCHOR_DISTANCE
+        if _distance(float(anchor.x), float(anchor.y), center_x, center_y)
+        <= _READABLE_NEARBY_ANCHOR_DISTANCE
     )
     nearby_ridge_count = sum(
         1
         for anchor in layout.ridge_anchors
-        if _distance(float(anchor.x), float(anchor.y), center_x, center_y) <= _READABLE_NEARBY_ANCHOR_DISTANCE
+        if _distance(float(anchor.x), float(anchor.y), center_x, center_y)
+        <= _READABLE_NEARBY_ANCHOR_DISTANCE
     )
 
     building_xs = [float(anchor.x) for anchor in layout.building_anchors]
@@ -973,6 +1213,7 @@ def _readable_layout_evaluation(*, layout: RapidTrackingCompoundLayout) -> _Read
         or stability.corridor_building_count > 0
         or stability.corridor_obstacle_count > 0
         or stability.corridor_large_foliage_count > 0
+        or stability.camera_keepout_road_count > 0
         or stability.camera_keepout_obstacle_count > 0
     )
     path_bias_penalty = abs(float(layout.path_lateral_bias))
@@ -989,6 +1230,7 @@ def _readable_layout_evaluation(*, layout: RapidTrackingCompoundLayout) -> _Read
         + (-18.0 * float(stability.corridor_road_count))
         + (-24.0 * float(stability.corridor_obstacle_count))
         + (-18.0 * float(stability.corridor_large_foliage_count))
+        + (-20.0 * float(stability.camera_keepout_road_count))
         + (-14.0 * float(stability.camera_keepout_foliage_count))
         + (-1.0 * nearby_building_penalty)
         + (-1.0 * nearby_ridge_penalty)
@@ -1548,7 +1790,10 @@ class RapidTrackingScenarioGenerator:
                         route_kind="building_hold",
                         start_anchor_id=building.anchor_id,
                         end_anchor_id=building.anchor_id,
-                        duration_s=1.35 + (0.16 * rapid_tracking_seed_unit(seed=self._seed, salt=f"building:{idx}")),
+                        duration_s=1.35
+                        + (
+                            0.16 * rapid_tracking_seed_unit(seed=self._seed, salt=f"building:{idx}")
+                        ),
                         handoff=handoff,
                         cover_mode="building",
                         focus_anchor_id=building.anchor_id,
@@ -1607,7 +1852,9 @@ class RapidTrackingScenarioGenerator:
 
             focus_anchor_id = ""
             if cover_mode == "terrain":
-                focus_anchor_id = layout.ridge_anchors[idx % max(1, len(layout.ridge_anchors))].anchor_id
+                focus_anchor_id = layout.ridge_anchors[
+                    idx % max(1, len(layout.ridge_anchors))
+                ].anchor_id
 
             segments.append(
                 RapidTrackingSceneSegment(
@@ -1838,7 +2085,9 @@ def _placement_clear(
     if float(y) < (y_lo + radius) or float(y) > (y_hi - radius):
         return False
     for poi in pois:
-        if _distance(float(x), float(y), float(poi.x), float(poi.y)) < (float(radius) + float(poi.radius)):
+        if _distance(float(x), float(y), float(poi.x), float(poi.y)) < (
+            float(radius) + float(poi.radius)
+        ):
             return False
     for obstacle in obstacles:
         padding = float(radius) + (0.18 if obstacle.kind == "lake" else 0.10)
@@ -1856,7 +2105,9 @@ def _placement_clear(
     return True
 
 
-def _sample_point_in_box(rng: SeededRng, box: tuple[float, float, float, float]) -> tuple[float, float]:
+def _sample_point_in_box(
+    rng: SeededRng, box: tuple[float, float, float, float]
+) -> tuple[float, float]:
     x_lo, x_hi, y_lo, y_hi = box
     return (
         rng.uniform(float(x_lo), float(x_hi)),
@@ -1884,18 +2135,26 @@ def _best_clear_point_in_box(
             y = _lerp(float(y_lo), float(y_hi), ty)
             if not _placement_clear(x=x, y=y, radius=radius, pois=pois, obstacles=obstacles):
                 continue
-            poi_clearance = min(
-                (_distance(float(x), float(y), float(poi.x), float(poi.y)) - float(poi.radius))
-                for poi in pois
-            ) if pois else radius
-            obstacle_clearance = min(
-                max(
-                    0.0,
-                    _distance(float(x), float(y), float(obstacle.x), float(obstacle.y))
-                    - max(float(obstacle.radius_x), float(obstacle.radius_y)),
+            poi_clearance = (
+                min(
+                    (_distance(float(x), float(y), float(poi.x), float(poi.y)) - float(poi.radius))
+                    for poi in pois
                 )
-                for obstacle in obstacles
-            ) if obstacles else radius
+                if pois
+                else radius
+            )
+            obstacle_clearance = (
+                min(
+                    max(
+                        0.0,
+                        _distance(float(x), float(y), float(obstacle.x), float(obstacle.y))
+                        - max(float(obstacle.radius_x), float(obstacle.radius_y)),
+                    )
+                    for obstacle in obstacles
+                )
+                if obstacles
+                else radius
+            )
             score = min(poi_clearance, obstacle_clearance)
             if score > best_score:
                 best_score = score
@@ -1915,7 +2174,9 @@ def _build_seeded_bases(*, seed: int, rng: SeededRng) -> tuple[RapidTrackingPoi,
                 variant=base_variants[idx % len(base_variants)],
                 x=float(x),
                 y=float(y),
-                radius=(0.36 + (rapid_tracking_seed_unit(seed=seed, salt=f"base-radius:{idx}") * 0.08))
+                radius=(
+                    0.36 + (rapid_tracking_seed_unit(seed=seed, salt=f"base-radius:{idx}") * 0.08)
+                )
                 * _RAPID_TRACKING_ZONE_RADIUS_SCALE,
             )
         )
@@ -1946,7 +2207,9 @@ def _build_seeded_pois(
         point = None
         for _ in range(128):
             x, y = _sample_point_in_box(rng, box)
-            if _placement_clear(x=x, y=y, radius=radius + _RAPID_TRACKING_POI_CLEARANCE_PAD, pois=used, obstacles=()):
+            if _placement_clear(
+                x=x, y=y, radius=radius + _RAPID_TRACKING_POI_CLEARANCE_PAD, pois=used, obstacles=()
+            ):
                 point = (x, y)
                 break
         if point is None:
@@ -1990,14 +2253,18 @@ def _build_seeded_obstacles(
     )
     obstacles: list[RapidTrackingObstacle] = []
     for idx, (kind, box, base_rx, base_ry, base_height) in enumerate(specs):
-        radius_scale = 0.90 + (rapid_tracking_seed_unit(seed=seed, salt=f"obstacle-scale:{idx}") * 0.24)
+        radius_scale = 0.90 + (
+            rapid_tracking_seed_unit(seed=seed, salt=f"obstacle-scale:{idx}") * 0.24
+        )
         radius_multiplier = 1.0 if str(kind) == "hill" else _RAPID_TRACKING_OBSTACLE_RADIUS_SCALE
         radius_x = base_rx * radius_scale * radius_multiplier
         radius_y = base_ry * radius_scale * radius_multiplier
         point = None
         for _ in range(160):
             x, y = _sample_point_in_box(rng, box)
-            if _placement_clear(x=x, y=y, radius=max(radius_x, radius_y) + 0.20, pois=pois, obstacles=obstacles):
+            if _placement_clear(
+                x=x, y=y, radius=max(radius_x, radius_y) + 0.20, pois=pois, obstacles=obstacles
+            ):
                 point = (x, y)
                 break
         if point is None:
@@ -2018,8 +2285,15 @@ def _build_seeded_obstacles(
                 y=float(point[1]),
                 radius_x=float(radius_x),
                 radius_y=float(radius_y),
-                rotation_deg=(rapid_tracking_seed_unit(seed=seed, salt=f"obstacle-rot:{idx}") * 50.0) - 25.0,
-                height=float(base_height) * (0.90 + (rapid_tracking_seed_unit(seed=seed, salt=f"obstacle-height:{idx}") * 0.22)),
+                rotation_deg=(
+                    rapid_tracking_seed_unit(seed=seed, salt=f"obstacle-rot:{idx}") * 50.0
+                )
+                - 25.0,
+                height=float(base_height)
+                * (
+                    0.90
+                    + (rapid_tracking_seed_unit(seed=seed, salt=f"obstacle-height:{idx}") * 0.22)
+                ),
             )
         )
     return tuple(obstacles)
@@ -2105,7 +2379,12 @@ def _astar_track_path(
         current_x, current_y = _grid_point(current[0], current[1])
         for dx, dy in neighbors:
             nxt = (current[0] + dx, current[1] + dy)
-            if nxt[0] < 0 or nxt[0] >= _RAPID_TRACKING_GRID_W or nxt[1] < 0 or nxt[1] >= _RAPID_TRACKING_GRID_H:
+            if (
+                nxt[0] < 0
+                or nxt[0] >= _RAPID_TRACKING_GRID_W
+                or nxt[1] < 0
+                or nxt[1] >= _RAPID_TRACKING_GRID_H
+            ):
                 continue
             nxt_x, nxt_y = _grid_point(nxt[0], nxt[1])
             penalty = _routing_penalty(x=nxt_x, y=nxt_y, obstacles=obstacles)
@@ -2140,7 +2419,7 @@ def _build_seeded_building_anchors(
     pois: Sequence[RapidTrackingPoi],
 ) -> tuple[RapidTrackingAnchor, ...]:
     anchors: list[RapidTrackingAnchor] = []
-    for idx, base in enumerate(bases):
+    for base in bases:
         offsets = ((-0.18, 0.12, "hangar"), (0.22, -0.04, "tower"))
         for sub_idx, (off_x, off_y, variant) in enumerate(offsets):
             anchors.append(
@@ -2173,7 +2452,7 @@ def _build_seeded_patrol_anchors(
     pois: Sequence[RapidTrackingPoi],
 ) -> tuple[RapidTrackingAnchor, ...]:
     anchors: list[RapidTrackingAnchor] = []
-    for idx, poi in enumerate(pois):
+    for poi in pois:
         angle = rapid_tracking_seed_unit(seed=seed, salt=f"patrol-angle:{poi.poi_id}") * math.tau
         radius = max(0.16, float(poi.radius) + 0.08)
         for sub_idx, phase in enumerate((0.0, math.pi)):
@@ -2197,7 +2476,9 @@ def _build_handoff_zones(
     patrol_lookup = {anchor.anchor_id.split("-")[1]: anchor for anchor in patrols}
     zones: list[RapidTrackingHandoffZone] = []
     for poi in pois:
-        anchor = patrol_lookup.get(str(poi.poi_id).split("-", 1)[1], patrols[0] if patrols else None)
+        anchor = patrol_lookup.get(
+            str(poi.poi_id).split("-", 1)[1], patrols[0] if patrols else None
+        )
         anchor_id = anchor.anchor_id if anchor is not None else ""
         carrier_kinds = ("soldier", "truck") if poi.kind == "base" else ("soldier",)
         zones.append(
@@ -2212,7 +2493,9 @@ def _build_handoff_zones(
     return tuple(zones)
 
 
-def _build_ridge_anchors(obstacles: Sequence[RapidTrackingObstacle]) -> tuple[RapidTrackingAnchor, ...]:
+def _build_ridge_anchors(
+    obstacles: Sequence[RapidTrackingObstacle],
+) -> tuple[RapidTrackingAnchor, ...]:
     ridges: list[RapidTrackingAnchor] = []
     for idx, obstacle in enumerate(obstacles):
         if obstacle.kind != "hill":
@@ -2239,7 +2522,9 @@ def _minimum_spanning_edges(pois: Sequence[RapidTrackingPoi]) -> list[tuple[int,
         best: tuple[float, int, int] | None = None
         for a in connected:
             for b in remaining:
-                distance = _distance(float(pois[a].x), float(pois[a].y), float(pois[b].x), float(pois[b].y))
+                distance = _distance(
+                    float(pois[a].x), float(pois[a].y), float(pois[b].x), float(pois[b].y)
+                )
                 candidate = (distance, a, b)
                 if best is None or candidate < best:
                     best = candidate
@@ -2267,14 +2552,27 @@ def _build_seeded_road_network(
         for b_idx in range(a_idx + 1, len(bases)):
             if (a_idx, b_idx) in edge_pairs or (b_idx, a_idx) in edge_pairs:
                 continue
-            distance = _distance(float(bases[a_idx].x), float(bases[a_idx].y), float(bases[b_idx].x), float(bases[b_idx].y))
+            distance = _distance(
+                float(bases[a_idx].x),
+                float(bases[a_idx].y),
+                float(bases[b_idx].x),
+                float(bases[b_idx].y),
+            )
             if distance > best_extra:
                 best_extra = distance
                 extra_pair = (a_idx, b_idx)
     if extra_pair is not None:
         edge_pairs.append(extra_pair)
 
-    def add_segment(*, surface: str, start_id: str, start_xy: tuple[float, float], end_id: str, end_xy: tuple[float, float], seg_idx: int) -> None:
+    def add_segment(
+        *,
+        surface: str,
+        start_id: str,
+        start_xy: tuple[float, float],
+        end_id: str,
+        end_xy: tuple[float, float],
+        seg_idx: int,
+    ) -> None:
         polyline = _astar_track_path(start=start_xy, goal=end_xy, obstacles=obstacles)
         anchor_ids: list[str] = []
         for point_idx, point in enumerate(polyline):
@@ -2340,18 +2638,56 @@ def _build_air_anchors(
                 anchor_id=f"helo-{idx}",
                 family="helicopter",
                 variant="air",
-                x=float(poi.x + ((0.28 if idx % 2 == 0 else -0.32) * _RAPID_TRACKING_ZONE_RADIUS_SCALE)),
+                x=float(
+                    poi.x + ((0.28 if idx % 2 == 0 else -0.32) * _RAPID_TRACKING_ZONE_RADIUS_SCALE)
+                ),
                 y=float(poi.y - (0.34 * _RAPID_TRACKING_ZONE_RADIUS_SCALE)),
             )
         )
     x_lo, x_hi, y_lo, y_hi = _RAPID_TRACKING_WORLD_BOUNDS
     jets = [
-        RapidTrackingAnchor(anchor_id="jet-left-low", family="jet", variant="red", x=x_lo + 0.34, y=-0.72 * _RAPID_TRACKING_LAYOUT_SCALE_Y),
-        RapidTrackingAnchor(anchor_id="jet-right-low", family="jet", variant="yellow", x=x_hi - 0.30, y=-0.52 * _RAPID_TRACKING_LAYOUT_SCALE_Y),
-        RapidTrackingAnchor(anchor_id="jet-left-mid", family="jet", variant="blue", x=x_lo + 0.48, y=0.12 * _RAPID_TRACKING_LAYOUT_SCALE_Y),
-        RapidTrackingAnchor(anchor_id="jet-right-mid", family="jet", variant="green", x=x_hi - 0.42, y=0.18 * _RAPID_TRACKING_LAYOUT_SCALE_Y),
-        RapidTrackingAnchor(anchor_id="jet-left-high", family="jet", variant="red", x=x_lo + 0.26, y=0.88 * _RAPID_TRACKING_LAYOUT_SCALE_Y),
-        RapidTrackingAnchor(anchor_id="jet-right-high", family="jet", variant="yellow", x=x_hi - 0.36, y=0.98 * _RAPID_TRACKING_LAYOUT_SCALE_Y),
+        RapidTrackingAnchor(
+            anchor_id="jet-left-low",
+            family="jet",
+            variant="red",
+            x=x_lo + 0.34,
+            y=-0.72 * _RAPID_TRACKING_LAYOUT_SCALE_Y,
+        ),
+        RapidTrackingAnchor(
+            anchor_id="jet-right-low",
+            family="jet",
+            variant="yellow",
+            x=x_hi - 0.30,
+            y=-0.52 * _RAPID_TRACKING_LAYOUT_SCALE_Y,
+        ),
+        RapidTrackingAnchor(
+            anchor_id="jet-left-mid",
+            family="jet",
+            variant="blue",
+            x=x_lo + 0.48,
+            y=0.12 * _RAPID_TRACKING_LAYOUT_SCALE_Y,
+        ),
+        RapidTrackingAnchor(
+            anchor_id="jet-right-mid",
+            family="jet",
+            variant="green",
+            x=x_hi - 0.42,
+            y=0.18 * _RAPID_TRACKING_LAYOUT_SCALE_Y,
+        ),
+        RapidTrackingAnchor(
+            anchor_id="jet-left-high",
+            family="jet",
+            variant="red",
+            x=x_lo + 0.26,
+            y=0.88 * _RAPID_TRACKING_LAYOUT_SCALE_Y,
+        ),
+        RapidTrackingAnchor(
+            anchor_id="jet-right-high",
+            family="jet",
+            variant="yellow",
+            x=x_hi - 0.36,
+            y=0.98 * _RAPID_TRACKING_LAYOUT_SCALE_Y,
+        ),
     ]
     return tuple(helos), tuple(jets)
 
@@ -2373,9 +2709,11 @@ def _build_scenic_clusters(
                 fallback="shrub",
                 x=float(poi.x + (0.14 if idx % 2 == 0 else -0.14)),
                 y=float(poi.y + (0.18 if idx % 3 == 0 else -0.12)),
-                radius=0.10 + (rapid_tracking_seed_unit(seed=seed, salt=f"shrub-radius:{idx}") * 0.10),
+                radius=0.10
+                + (rapid_tracking_seed_unit(seed=seed, salt=f"shrub-radius:{idx}") * 0.10),
                 count=4 + int(idx % 3),
-                scale=0.92 + (rapid_tracking_seed_unit(seed=seed, salt=f"shrub-scale:{idx}") * 0.28),
+                scale=0.92
+                + (rapid_tracking_seed_unit(seed=seed, salt=f"shrub-scale:{idx}") * 0.28),
             )
         )
     hill_obstacles = [obstacle for obstacle in obstacles if obstacle.kind == "hill"]
@@ -2387,7 +2725,8 @@ def _build_scenic_clusters(
                 fallback="trees",
                 x=float(obstacle.x),
                 y=float(obstacle.y + obstacle.radius_y + 0.14),
-                radius=0.20 + (rapid_tracking_seed_unit(seed=seed, salt=f"tree-radius:{idx}") * 0.10),
+                radius=0.20
+                + (rapid_tracking_seed_unit(seed=seed, salt=f"tree-radius:{idx}") * 0.10),
                 count=4 + idx,
                 scale=1.10 + (rapid_tracking_seed_unit(seed=seed, salt=f"tree-scale:{idx}") * 0.34),
             )
@@ -2402,9 +2741,11 @@ def _build_scenic_clusters(
                 fallback="forest",
                 x=float(obstacle.x + obstacle.radius_x + 0.22),
                 y=float(obstacle.y),
-                radius=0.26 + (rapid_tracking_seed_unit(seed=seed, salt=f"forest-radius:{idx}") * 0.10),
+                radius=0.26
+                + (rapid_tracking_seed_unit(seed=seed, salt=f"forest-radius:{idx}") * 0.10),
                 count=5 + idx,
-                scale=1.90 + (rapid_tracking_seed_unit(seed=seed, salt=f"forest-scale:{idx}") * 0.42),
+                scale=1.90
+                + (rapid_tracking_seed_unit(seed=seed, salt=f"forest-scale:{idx}") * 0.42),
             )
         )
     road_sample = road_anchors[:: max(1, len(road_anchors) // 6)] if road_anchors else ()
@@ -2466,14 +2807,18 @@ def _build_seeded_traffic_routes(
                 variant=str(building.variant),
                 start_anchor_id=str(building.anchor_id),
                 end_anchor_id=str(building.anchor_id),
-                base_duration_s=1.20 + (rapid_tracking_seed_unit(seed=seed, salt=f"duration:{building.anchor_id}") * 0.28),
+                base_duration_s=1.20
+                + (
+                    rapid_tracking_seed_unit(seed=seed, salt=f"duration:{building.anchor_id}")
+                    * 0.28
+                ),
                 cover_mode="building",
                 focus_anchor_id=str(building.anchor_id),
             )
         )
 
     zones = (*bases, *pois)
-    for idx, zone in enumerate(zones):
+    for zone in zones:
         zone_patrols = patrol_by_zone.get(zone.poi_id, [])
         if len(zone_patrols) >= 2:
             start = zone_patrols[0]
@@ -2490,7 +2835,7 @@ def _build_seeded_traffic_routes(
                     cover_mode="open",
                 )
             )
-    for idx, zone in enumerate(zones):
+    for zone in zones:
         nearest = None
         nearest_distance = math.inf
         for other in zones:
@@ -2544,7 +2889,9 @@ def _build_seeded_traffic_routes(
                     variant="olive",
                     start_anchor_id=start_anchor_id,
                     end_anchor_id=end_anchor_id,
-                    base_duration_s=max(1.0, leg_distance * (1.8 if route_kind == "road_convoy" else 2.2)),
+                    base_duration_s=max(
+                        1.0, leg_distance * (1.8 if route_kind == "road_convoy" else 2.2)
+                    ),
                     cover_mode=cover_mode,
                     focus_anchor_id=focus_anchor_id,
                     surface=surface,
@@ -2664,9 +3011,15 @@ def _build_seeded_rapid_tracking_layout(*, seed: int) -> RapidTrackingCompoundLa
         obstacles=obstacles,
         road_anchors=road_anchors,
     )
-    shrub_clusters = tuple(cluster for cluster in scenic_clusters if cluster.asset_id == "shrubs_low_cluster")
-    tree_clusters = tuple(cluster for cluster in scenic_clusters if cluster.asset_id == "trees_field_cluster")
-    forest_clusters = tuple(cluster for cluster in scenic_clusters if cluster.asset_id == "forest_canopy_patch")
+    shrub_clusters = tuple(
+        cluster for cluster in scenic_clusters if cluster.asset_id == "shrubs_low_cluster"
+    )
+    tree_clusters = tuple(
+        cluster for cluster in scenic_clusters if cluster.asset_id == "trees_field_cluster"
+    )
+    forest_clusters = tuple(
+        cluster for cluster in scenic_clusters if cluster.asset_id == "forest_canopy_patch"
+    )
     traffic_routes = _build_seeded_traffic_routes(
         seed=seed,
         bases=bases,
@@ -2729,9 +3082,15 @@ def _pick_route_candidate(
         start = anchors.get(str(route.start_anchor_id))
         distance = 0.0
         if previous is not None and start is not None:
-            distance = _distance(float(previous.x), float(previous.y), float(start.x), float(start.y))
+            distance = _distance(
+                float(previous.x), float(previous.y), float(start.x), float(start.y)
+            )
         route_penalty = 2.2 if route.route_id in recent_route_ids else 0.0
-        building_penalty = 1.5 if route.route_kind == "building_hold" and route.start_anchor_id in recent_buildings else 0.0
+        building_penalty = (
+            1.5
+            if route.route_kind == "building_hold" and route.start_anchor_id in recent_buildings
+            else 0.0
+        )
         return (distance + route_penalty + building_penalty, route_penalty, building_penalty)
 
     ranked = sorted(routes, key=score)
@@ -2784,7 +3143,11 @@ def _build_seeded_rapid_tracking_schedule(
     if not filtered_routes:
         return ()
 
-    weights = dict(_RAPID_TRACKING_PHASE_ROUTE_WEIGHTS.get(phase, _RAPID_TRACKING_PHASE_ROUTE_WEIGHTS["scored"]))
+    weights = dict(
+        _RAPID_TRACKING_PHASE_ROUTE_WEIGHTS.get(
+            phase, _RAPID_TRACKING_PHASE_ROUTE_WEIGHTS["scored"]
+        )
+    )
     available_by_kind: dict[str, list[RapidTrackingTrafficRoute]] = {}
     for route in filtered_routes:
         available_by_kind.setdefault(str(route.route_kind), []).append(route)
@@ -2802,13 +3165,19 @@ def _build_seeded_rapid_tracking_schedule(
     elif handoff_modes == {"jump"}:
         jump_rate = 1.0
 
-    previous_end = layout.handoff_zones[0].anchor_id if layout.handoff_zones else filtered_routes[0].start_anchor_id
+    previous_end = (
+        layout.handoff_zones[0].anchor_id
+        if layout.handoff_zones
+        else filtered_routes[0].start_anchor_id
+    )
     recent_route_ids: list[str] = []
     recent_buildings: list[str] = []
     segments: list[RapidTrackingSceneSegment] = []
     segment_count = int(_RAPID_TRACKING_PHASE_SEGMENT_COUNTS.get(phase, 16))
     seeded_route_pool = tuple(
-        route for route in filtered_routes if any(route.route_kind == family for family, _weight in weighted_families)
+        route
+        for route in filtered_routes
+        if any(route.route_kind == family for family, _weight in weighted_families)
     )
 
     def append_route(route: RapidTrackingTrafficRoute, *, idx: int) -> None:
@@ -2851,7 +3220,9 @@ def _build_seeded_rapid_tracking_schedule(
             rng=rng,
             anchors=anchors,
             previous_end=previous_end,
-            routes=tuple(route for route in seeded_route_pool if route.carrier_kind == carrier_kind),
+            routes=tuple(
+                route for route in seeded_route_pool if route.carrier_kind == carrier_kind
+            ),
             recent_route_ids=tuple(recent_route_ids[-4:]),
             recent_buildings=tuple(recent_buildings[-2:]),
         )
@@ -2889,7 +3260,11 @@ def _build_seeded_rapid_tracking_schedule(
         if terrain_truck is not None:
             seeded_routes.append(terrain_truck)
             previous_end = str(terrain_truck.end_anchor_id)
-    previous_end = layout.handoff_zones[0].anchor_id if layout.handoff_zones else filtered_routes[0].start_anchor_id
+    previous_end = (
+        layout.handoff_zones[0].anchor_id
+        if layout.handoff_zones
+        else filtered_routes[0].start_anchor_id
+    )
     for idx, route in enumerate(seeded_routes[:segment_count]):
         append_route(route, idx=idx)
 
@@ -2909,6 +3284,7 @@ def _build_seeded_rapid_tracking_schedule(
 
     return tuple(segments)
 
+
 def build_rapid_tracking_compound_layout(*, seed: int) -> RapidTrackingCompoundLayout:
     return RapidTrackingScenarioGenerator(seed=seed).build().layout
 
@@ -2926,7 +3302,12 @@ def _build_readable_candidate_road_anchors(
         for b_idx in range(a_idx + 1, len(bases)):
             if (a_idx, b_idx) in base_edges or (b_idx, a_idx) in base_edges:
                 continue
-            distance = _distance(float(bases[a_idx].x), float(bases[a_idx].y), float(bases[b_idx].x), float(bases[b_idx].y))
+            distance = _distance(
+                float(bases[a_idx].x),
+                float(bases[a_idx].y),
+                float(bases[b_idx].x),
+                float(bases[b_idx].y),
+            )
             if distance > best_extra:
                 best_extra = distance
                 extra_pair = (a_idx, b_idx)
@@ -3023,9 +3404,15 @@ def _build_readable_candidate_layout(*, seed: int) -> RapidTrackingCompoundLayou
         obstacles=obstacles,
         road_anchors=road_anchors,
     )
-    shrub_clusters = tuple(cluster for cluster in scenic_clusters if cluster.asset_id == "shrubs_low_cluster")
-    tree_clusters = tuple(cluster for cluster in scenic_clusters if cluster.asset_id == "trees_field_cluster")
-    forest_clusters = tuple(cluster for cluster in scenic_clusters if cluster.asset_id == "forest_canopy_patch")
+    shrub_clusters = tuple(
+        cluster for cluster in scenic_clusters if cluster.asset_id == "shrubs_low_cluster"
+    )
+    tree_clusters = tuple(
+        cluster for cluster in scenic_clusters if cluster.asset_id == "trees_field_cluster"
+    )
+    forest_clusters = tuple(
+        cluster for cluster in scenic_clusters if cluster.asset_id == "forest_canopy_patch"
+    )
     compound_center_x = sum(float(base.x) for base in bases) / max(1, len(bases))
     compound_center_y = sum(float(base.y) for base in bases) / max(1, len(bases))
     layout = RapidTrackingCompoundLayout(
@@ -3061,7 +3448,7 @@ def _build_readable_candidate_layout(*, seed: int) -> RapidTrackingCompoundLayou
 
 @lru_cache(maxsize=256)
 def _select_scene_seed_cached(base_seed: int, policy_value: str) -> int:
-    resolved_policy = _normalize_layout_policy(policy_value)
+    _normalize_layout_policy(policy_value)
     approximate_evaluations: list[_ReadableSceneSeedEvaluation] = []
     for candidate_seed in _readable_scene_seed_candidates(base_seed=int(base_seed)):
         candidate_layout = _build_readable_candidate_layout(seed=int(candidate_seed))
@@ -3269,22 +3656,30 @@ class RapidTrackingEngine:
             label = str(raw.label).strip() or "Rapid Tracking Segment"
             focus_label = str(raw.focus_label).strip() or label
             duration_s = max(15.0, float(raw.duration_s))
-            active_target_kinds = tuple(
-                kind
-                for kind in (
-                    str(kind).strip().lower()
-                    for kind in tuple(raw.active_target_kinds) or RAPID_TRACKING_TARGET_KIND_ORDER
+            active_target_kinds = (
+                tuple(
+                    kind
+                    for kind in (
+                        str(kind).strip().lower()
+                        for kind in tuple(raw.active_target_kinds)
+                        or RAPID_TRACKING_TARGET_KIND_ORDER
+                    )
+                    if kind in RAPID_TRACKING_TARGET_KIND_ORDER
                 )
-                if kind in RAPID_TRACKING_TARGET_KIND_ORDER
-            ) or RAPID_TRACKING_TARGET_KIND_ORDER
-            active_challenges = tuple(
-                challenge
-                for challenge in (
-                    str(challenge).strip().lower()
-                    for challenge in tuple(raw.active_challenges) or RAPID_TRACKING_CHALLENGE_ORDER
+                or RAPID_TRACKING_TARGET_KIND_ORDER
+            )
+            active_challenges = (
+                tuple(
+                    challenge
+                    for challenge in (
+                        str(challenge).strip().lower()
+                        for challenge in tuple(raw.active_challenges)
+                        or RAPID_TRACKING_CHALLENGE_ORDER
+                    )
+                    if challenge
                 )
-                if challenge
-            ) or RAPID_TRACKING_CHALLENGE_ORDER
+                or RAPID_TRACKING_CHALLENGE_ORDER
+            )
             profile = raw.profile
             normalized.append(
                 RapidTrackingTrainingSegment(
@@ -3307,7 +3702,8 @@ class RapidTrackingEngine:
                             mode
                             for mode in (
                                 str(mode).strip().lower()
-                                for mode in tuple(profile.cover_modes) or ("open", "building", "terrain")
+                                for mode in tuple(profile.cover_modes)
+                                or ("open", "building", "terrain")
                             )
                             if mode in {"open", "building", "terrain"}
                         )
@@ -3468,11 +3864,9 @@ class RapidTrackingEngine:
     def _refresh_active_training_segment(self) -> None:
         if not self._active_training_segments or self._current_training_segment is None:
             return
-        while (
-            self._active_training_segment_index + 1 < len(self._active_training_segments)
-            and (self._sim_elapsed_s - self._training_segment_started_elapsed_s)
-            >= float(self._current_training_segment.duration_s)
-        ):
+        while self._active_training_segment_index + 1 < len(self._active_training_segments) and (
+            self._sim_elapsed_s - self._training_segment_started_elapsed_s
+        ) >= float(self._current_training_segment.duration_s):
             if self._phase is Phase.SCORED and self._window_samples > 0:
                 self._score_active_window()
                 self._window_elapsed_s = 0.0
@@ -3521,7 +3915,9 @@ class RapidTrackingEngine:
             camera_assist_strength=0.0,
         )
 
-    def _active_scene_script(self, profile: RapidTrackingDifficultyProfile) -> tuple[RapidTrackingSceneSegment, ...]:
+    def _active_scene_script(
+        self, profile: RapidTrackingDifficultyProfile
+    ) -> tuple[RapidTrackingSceneSegment, ...]:
         if self._current_training_segment is not None and self._active_training_script:
             return self._active_training_script
         if self._phase is Phase.PRACTICE:
@@ -3681,9 +4077,10 @@ class RapidTrackingEngine:
             phase=self._phase,
             prompt=self.current_prompt(),
             input_hint=(
-                "Pan freely with configured HOTAS movement, rudder or left-right input, and joystick axis 1 or up-down input. "
-                "Keep the target centered, then hold the configured capture binding or Space when it is inside the "
-                "center camera box."
+                "Pan freely with configured HOTAS movement, rudder or left-right input, "
+                "and joystick axis 1 or up-down input. Keep the target centered, then hold "
+                "the configured joystick capture binding when it is inside the center "
+                "camera box."
             ),
             time_remaining_s=self.time_remaining_s(),
             attempted_scored=self._scored_attempted,
@@ -3696,13 +4093,18 @@ class RapidTrackingEngine:
         if self._phase is Phase.INSTRUCTIONS:
             return (
                 f"{self._title}\n"
-                "Scope a target-rich compound from a bobbing helicopter while the aircraft circles overhead.\n"
-                "Foot patrols move slowly, road vehicles move faster, helicopters move faster still, "
+                "Scope a target-rich compound from a bobbing helicopter while the aircraft "
+                "circles overhead.\n"
+                "Foot patrols move slowly, road vehicles move faster, helicopters move "
+                "faster still, "
                 "and jets are the fastest passes.\n"
-                "Targets may duck into buildings or disappear behind terrain; during building handoffs "
+                "Targets may duck into buildings or disappear behind terrain; during "
+                "building handoffs "
                 "you track the structure until the next target emerges.\n"
-                "Pan the camera freely, keep the target centered, and keep it inside the center camera box to bank box score. "
-                "Hold the configured capture binding or Space when the target is inside the center camera box to zoom and capture.\n"
+                "Pan the camera freely, keep the target centered, and keep it inside the "
+                "center camera box to bank box score. Hold the configured capture binding "
+                "when the target is inside the center camera box to zoom and "
+                "capture.\n"
                 "Press Enter to begin practice."
             )
         if self._phase is Phase.PRACTICE_DONE:
@@ -3724,7 +4126,10 @@ class RapidTrackingEngine:
                 f"{summary.capture_hits}/{summary.capture_attempts}  "
                 f"Points: {summary.capture_points}"
             )
-        return "Track the active target through handoffs, keep it in the center box to bank box score, and capture it cleanly."
+        return (
+            "Track the active target through handoffs, keep it in the center box to "
+            "bank box score, and capture it cleanly."
+        )
 
     def scored_summary(self) -> RapidTrackingSummary:
         attempted = int(self._scored_attempted)
@@ -3760,7 +4165,9 @@ class RapidTrackingEngine:
         capture_accuracy = 0.0 if capture_attempts == 0 else capture_hits / capture_attempts
         capture_max_points = int(self._capture_max_points)
         capture_score_ratio = (
-            0.0 if capture_max_points <= 0 else float(self._capture_points) / float(capture_max_points)
+            0.0
+            if capture_max_points <= 0
+            else float(self._capture_points) / float(capture_max_points)
         )
 
         return RapidTrackingSummary(
@@ -4001,10 +4408,16 @@ class RapidTrackingEngine:
                 self._accumulator_s = 0.0
 
     def _advance_camera(self, dt: float) -> None:
-        self._camera_yaw_deg = (self._camera_yaw_deg + (self._control_x * self._cfg.camera_yaw_rate_deg_s * dt)) % 360.0
+        self._camera_yaw_deg = (
+            self._camera_yaw_deg + (self._control_x * self._cfg.camera_yaw_rate_deg_s * dt)
+        ) % 360.0
         self._camera_pitch_deg = max(
             -89.0,
-            min(89.0, self._camera_pitch_deg + ((-self._control_y) * self._cfg.camera_pitch_rate_deg_s * dt)),
+            min(
+                89.0,
+                self._camera_pitch_deg
+                + ((-self._control_y) * self._cfg.camera_pitch_rate_deg_s * dt),
+            ),
         )
         self._reticle_x = 0.0
         self._reticle_y = 0.0
@@ -4226,7 +4639,9 @@ class RapidTrackingEngine:
             or next_handoff == "jump"
             or self._target_cover_state != prev_cover
         ):
-            self._target_preview_until_s = self._sim_elapsed_s + self._effective_preview_duration_s()
+            self._target_preview_until_s = (
+                self._sim_elapsed_s + self._effective_preview_duration_s()
+            )
 
     def _refresh_drift_vector(self) -> None:
         profile = self._difficulty_profile()
@@ -4319,12 +4734,16 @@ class RapidTrackingEngine:
 
         self._capture_last_at_s = self._sim_elapsed_s
         self._capture_attempts += 1
-        max_points = self._capture_points_for_kind(self._target_kind) + self._capture_box_bonus_points()
+        max_points = (
+            self._capture_points_for_kind(self._target_kind) + self._capture_box_bonus_points()
+        )
         self._capture_max_points += max_points
 
         hit = self._target_in_capture_box(require_visible=True)
         if hit:
-            points = self._capture_points_for_kind(self._target_kind) + self._capture_box_bonus_points()
+            points = (
+                self._capture_points_for_kind(self._target_kind) + self._capture_box_bonus_points()
+            )
             self._capture_hits += 1
             self._capture_points += points
             self._capture_zoom_until_s = self._sim_elapsed_s + self._cfg.capture_zoom_s
@@ -4372,8 +4791,10 @@ class RapidTrackingEngine:
         if not projection.in_front:
             return False
         return (
-            abs(projection.target_rel_x - self._reticle_x) <= self._effective_capture_box_half_width()
-            and abs(projection.target_rel_y - self._reticle_y) <= self._effective_capture_box_half_height()
+            abs(projection.target_rel_x - self._reticle_x)
+            <= self._effective_capture_box_half_width()
+            and abs(projection.target_rel_y - self._reticle_y)
+            <= self._effective_capture_box_half_height()
         )
 
     def _current_capture_zoom(self) -> float:
@@ -4391,7 +4812,9 @@ class RapidTrackingEngine:
         if self._phase is Phase.PRACTICE:
             if self._cfg.practice_duration_s <= 0.0:
                 return 1.0
-            return clamp01((self._clock.now() - self._phase_started_at_s) / self._cfg.practice_duration_s)
+            return clamp01(
+                (self._clock.now() - self._phase_started_at_s) / self._cfg.practice_duration_s
+            )
         if self._phase in (Phase.SCORED, Phase.RESULTS):
             if self._cfg.scored_duration_s <= 0.0:
                 return 1.0
@@ -4436,7 +4859,11 @@ class RapidTrackingEngine:
                     None,
                     extras={
                         "content_family": "rapid_tracking",
-                        "variant_id": f"{self._target_kind}:{self._target_variant}:{self._segment_route_kind}",
+                        "variant_id": (
+                            f"{self._target_kind}:"
+                            f"{self._target_variant}:"
+                            f"{self._segment_route_kind}"
+                        ),
                         "content_pack": "rapid_tracking",
                         "kind": self._target_kind,
                         "target_variant": self._target_variant,
@@ -4519,7 +4946,9 @@ class RapidTrackingEngine:
             target_world_y=float(target_world_y),
             focus_world_x=float(focus_world_x),
             focus_world_y=float(focus_world_y),
-            turbulence_strength=float(self._effective_turbulence_strength(self._difficulty_profile())),
+            turbulence_strength=float(
+                self._effective_turbulence_strength(self._difficulty_profile())
+            ),
         )
         projection = rapid_tracking_target_projection(
             rig=rig,
@@ -4554,7 +4983,9 @@ class RapidTrackingEngine:
             target_world_y=float(target_world_y),
             focus_world_x=float(focus_world_x),
             focus_world_y=float(focus_world_y),
-            turbulence_strength=float(self._effective_turbulence_strength(self._difficulty_profile())),
+            turbulence_strength=float(
+                self._effective_turbulence_strength(self._difficulty_profile())
+            ),
         )
         target_world_z = estimated_target_world_z(
             kind=str(self._target_kind),
@@ -4564,12 +4995,15 @@ class RapidTrackingEngine:
             scene_progress=self._scene_progress(),
             seed=int(self._scene_seed),
         )
-        self._camera_yaw_deg = math.degrees(
-            math.atan2(
-                float(target_world_x) - float(rig.cam_world_x),
-                float(target_world_y) - float(rig.cam_world_y),
+        self._camera_yaw_deg = (
+            math.degrees(
+                math.atan2(
+                    float(target_world_x) - float(rig.cam_world_x),
+                    float(target_world_y) - float(rig.cam_world_y),
+                )
             )
-        ) % 360.0
+            % 360.0
+        )
         horizontal_distance = math.hypot(
             float(target_world_x) - float(rig.cam_world_x),
             float(target_world_y) - float(rig.cam_world_y),

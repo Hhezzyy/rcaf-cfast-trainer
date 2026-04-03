@@ -1,13 +1,21 @@
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import replace
 from dataclasses import dataclass
+from importlib.machinery import ModuleSpec
+from types import ModuleType
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 
 import pygame
+
+if "moderngl" not in sys.modules:
+    moderngl_stub = ModuleType("moderngl")
+    moderngl_stub.__spec__ = ModuleSpec("moderngl", loader=None)
+    sys.modules["moderngl"] = moderngl_stub
 
 from cfast_trainer.app import App, CognitiveTestScreen, MenuItem, MenuScreen
 from cfast_trainer.ant_drills import AntDrillMode
@@ -205,6 +213,42 @@ def test_study_scene_uses_same_scene_with_different_reference_view_heading() -> 
 
         assert captured["heading"] == int(payload.reference_views[1].heading_deg)
         assert captured["north"] == (-int(payload.reference_views[1].heading_deg)) % 360
+    finally:
+        pygame.quit()
+
+
+def test_study_scene_falls_back_to_builtin_renderer_when_external_3d_is_unavailable(
+    monkeypatch,
+) -> None:
+    payload = _payload_for(part=SpatialIntegrationPart.STATIC, study=True, question_index=1)
+    _app, screen = _build_screen(_FakeSpatialEngine(payload))
+    asset_calls = {"count": 0}
+    try:
+        surface = pygame.display.get_surface()
+        assert surface is not None
+        crop = _study_scene_content_rect(size=surface.get_size())
+
+        monkeypatch.setattr(
+            screen,
+            "_get_spatial_integration_panda_renderer",
+            lambda *, size: None,
+        )
+
+        def fail_blocked_world(**_: object) -> None:
+            raise AssertionError("Spatial Integration should use the built-in scene fallback.")
+
+        monkeypatch.setattr(screen, "_render_scene_panda_blocked_world", fail_blocked_world)
+        original_asset = screen._draw_spatial_scene_asset
+
+        def wrapped_asset(*args, **kwargs):
+            asset_calls["count"] += 1
+            return original_asset(*args, **kwargs)
+
+        screen._draw_spatial_scene_asset = wrapped_asset  # type: ignore[method-assign]
+        screen.render(surface)
+
+        assert asset_calls["count"] > 0
+        assert pygame.transform.average_color(surface.subsurface(crop))[:3] != (0, 0, 0)
     finally:
         pygame.quit()
 

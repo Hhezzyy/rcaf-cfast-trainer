@@ -2,8 +2,16 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from importlib.machinery import ModuleSpec
+import sys
+from types import ModuleType
 
 import pygame
+
+if "moderngl" not in sys.modules:
+    moderngl_stub = ModuleType("moderngl")
+    moderngl_stub.__spec__ = ModuleSpec("moderngl", loader=None)
+    sys.modules["moderngl"] = moderngl_stub
 
 from cfast_trainer.app import App, CognitiveTestScreen, DifficultySettingsStore, MenuItem, MenuScreen
 from cfast_trainer.cognitive_core import Phase

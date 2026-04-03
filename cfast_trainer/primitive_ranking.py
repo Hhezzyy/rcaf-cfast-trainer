@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 from .adaptive_difficulty import DifficultyFamilyId, difficulty_profile_for_family
 from .canonical_drill_registry import canonical_drill_spec, resolved_canonical_drill_code
 from .guide_skill_catalog import guide_ranking_primitive_id_for_code, official_guide_test
+from .training_modes import mode_token
 
 if TYPE_CHECKING:
     from .persistence import AttemptHistoryEntry
@@ -19,6 +20,81 @@ _MAX_EVIDENCE_PER_PRIMITIVE = 6
 _DEFAULT_MASTERY = 0.65
 _DEFAULT_SPEED = 0.65
 _TIE_EPSILON = 1.0e-9
+_FATIGUE_MODERATE_THRESHOLD = 0.45
+_FATIGUE_HIGH_THRESHOLD = 0.65
+
+_LEGACY_SOURCE_WEIGHTS: tuple[tuple[str, float], ...] = (
+    ("benchmark_probe", 1.0),
+    ("direct", 1.0),
+    ("coarse_workout", 1.0),
+    ("adaptive_block", 1.0),
+    ("integrated_test", 1.0),
+)
+_ADAPTIVE_SOURCE_WEIGHTS: tuple[tuple[str, float], ...] = (
+    ("benchmark_probe", 1.45),
+    ("integrated_test", 1.35),
+    ("direct", 1.0),
+    ("adaptive_block", 0.95),
+    ("coarse_workout", 0.85),
+)
+_DEFAULT_MODE_WEIGHTS: tuple[tuple[str, float], ...] = (
+    ("fresh", 0.94),
+    ("build", 1.0),
+    ("tempo", 1.08),
+    ("pressure", 1.18),
+    ("fatigue_probe", 1.22),
+    ("recovery", 0.90),
+    ("stress", 1.15),
+)
+
+
+@dataclass(frozen=True, slots=True)
+class PrimitiveEvidencePolicy:
+    max_evidence_total: int = _MAX_EVIDENCE_TOTAL
+    max_evidence_per_primitive: int = _MAX_EVIDENCE_PER_PRIMITIVE
+    source_weights: tuple[tuple[str, float], ...] = _LEGACY_SOURCE_WEIGHTS
+    training_mode_weights: tuple[tuple[str, float], ...] = _DEFAULT_MODE_WEIGHTS
+    difficulty_reference_level: int = 5
+    difficulty_weight_step: float = 0.0
+    min_alpha: float = 0.12
+    max_alpha: float = 0.75
+    recent_activity_limit: int = 5
+    runtime_reference_s: float = 60.0 * 60.0
+    runtime_weight: float = 0.45
+    degradation_weight: float = 0.55
+
+
+LEGACY_PRIMITIVE_EVIDENCE_POLICY = PrimitiveEvidencePolicy()
+ADAPTIVE_WORKOUT_EVIDENCE_POLICY = PrimitiveEvidencePolicy(
+    max_evidence_total=30,
+    max_evidence_per_primitive=5,
+    source_weights=_ADAPTIVE_SOURCE_WEIGHTS,
+    difficulty_reference_level=5,
+    difficulty_weight_step=0.04,
+    min_alpha=0.12,
+    max_alpha=0.75,
+    recent_activity_limit=5,
+    runtime_reference_s=60.0 * 60.0,
+    runtime_weight=0.45,
+    degradation_weight=0.55,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class AdaptiveFatigueSnapshot:
+    recent_activity_count: int
+    accumulated_runtime_s: float
+    runtime_load: float
+    degradation_load: float
+    fatigue_load: float
+
+    @property
+    def is_moderate(self) -> bool:
+        return self.fatigue_load >= _FATIGUE_MODERATE_THRESHOLD
+
+    @property
+    def is_high(self) -> bool:
+        return self.fatigue_load >= _FATIGUE_HIGH_THRESHOLD
 
 
 def _utc_now_iso() -> str:
@@ -93,6 +169,51 @@ def _alpha_for_source_kind(source_kind: str) -> float:
     if source_kind == "direct":
         return 0.35
     return 0.20
+
+
+def _weight_lookup(
+    entries: tuple[tuple[str, float], ...],
+    key: str,
+    *,
+    default: float = 1.0,
+) -> float:
+    token = str(key).strip().lower()
+    for entry_key, weight in entries:
+        if entry_key == token:
+            return float(weight)
+    return float(default)
+
+
+def _source_weight(policy: PrimitiveEvidencePolicy, source_kind: str) -> float:
+    return _weight_lookup(policy.source_weights, source_kind)
+
+
+def _training_mode_weight(policy: PrimitiveEvidencePolicy, training_mode: str) -> float:
+    return _weight_lookup(policy.training_mode_weights, training_mode)
+
+
+def _difficulty_weight(
+    policy: PrimitiveEvidencePolicy,
+    difficulty_level: int | None,
+) -> float:
+    if difficulty_level is None:
+        return 1.0
+    delta = float(int(difficulty_level) - int(policy.difficulty_reference_level))
+    return max(0.75, min(1.40, 1.0 + (delta * float(policy.difficulty_weight_step))))
+
+
+def _evidence_weight(
+    *,
+    policy: PrimitiveEvidencePolicy,
+    source_kind: str,
+    difficulty_level: int | None,
+    training_mode: str,
+) -> float:
+    return (
+        _source_weight(policy, source_kind)
+        * _difficulty_weight(policy, difficulty_level)
+        * _training_mode_weight(policy, training_mode)
+    )
 
 
 def _speed_score(rt_ms: float | None) -> float | None:
@@ -224,6 +345,52 @@ def _interference_penalty(metrics: dict[str, str]) -> float | None:
     return _clamp(total_errors / _attempted_count(metrics))
 
 
+def _missed_input_penalty(metrics: dict[str, str]) -> float | None:
+    omission_count = _metric_int(metrics, "omission_count")
+    timeout_count = _metric_int(metrics, "timeout_count")
+    if omission_count is None and timeout_count is None:
+        return None
+    total_missed = float((omission_count or 0) + (timeout_count or 0))
+    return _clamp(total_missed / _attempted_count(metrics))
+
+
+def _rt_drift_penalty(metrics: dict[str, str]) -> float | None:
+    inflation = _metric_float(metrics, "half_mean_rt_inflation_ms")
+    if inflation is None:
+        first_half = _metric_float(metrics, "first_half_mean_rt_ms")
+        second_half = _metric_float(metrics, "second_half_mean_rt_ms")
+        if first_half is not None and second_half is not None:
+            inflation = max(0.0, float(second_half) - float(first_half))
+    if inflation is None:
+        first_window = _metric_float(metrics, "first_3m_mean_rt_ms")
+        last_window = _metric_float(metrics, "last_3m_mean_rt_ms")
+        if first_window is not None and last_window is not None:
+            inflation = max(0.0, float(last_window) - float(first_window))
+    if inflation is None:
+        return None
+    return _clamp(max(0.0, float(inflation)) / 1500.0)
+
+
+def _degradation_load(metrics: dict[str, str]) -> float | None:
+    instability = _instability_penalty(metrics)
+    control = _control_penalty(metrics, instability_penalty=instability)
+    values = [
+        _fatigue_penalty(metrics),
+        _post_error_penalty(metrics),
+        instability,
+        _lapse_penalty(metrics),
+        _interference_penalty(metrics),
+        _missed_input_penalty(metrics),
+        _rt_drift_penalty(metrics),
+        control,
+    ]
+    available = [float(value) for value in values if value is not None]
+    if not available:
+        timeout_rate = _metric_float(metrics, "timeout_rate")
+        return None if timeout_rate is None else _clamp(timeout_rate)
+    return _clamp(sum(available) / float(len(available)))
+
+
 def _age_retention_need(last_trained_at_utc: str | None, *, now_epoch: float) -> float:
     if last_trained_at_utc is None:
         return 0.0
@@ -239,6 +406,96 @@ def _age_retention_need(last_trained_at_utc: str | None, *, now_epoch: float) ->
 
 def _difficulty_family_label(family_id: DifficultyFamilyId) -> str:
     return difficulty_profile_for_family(family_id, 5, "build").label
+
+
+def _duration_s_for_history_entry(entry: AttemptHistoryEntry) -> float | None:
+    duration_s = _metric_float(entry.metrics, "duration_s")
+    if duration_s is not None and duration_s >= 0.0:
+        return float(duration_s)
+    try:
+        started = _epoch_s(entry.started_at_utc)
+        completed = _epoch_s(entry.completed_at_utc)
+    except Exception:
+        return None
+    if completed < started:
+        return None
+    return float(completed - started)
+
+
+def _source_kind_for_history_entry(entry: AttemptHistoryEntry) -> str:
+    token = str(entry.test_code or "").strip().lower()
+    if token == "benchmark_battery":
+        return "benchmark_probe"
+    if token in {"adaptive_session", "adaptive_session_short", "adaptive_session_micro"}:
+        return "adaptive_block"
+    source = _source_for_code(token)
+    if source is not None:
+        return str(source[1])
+    return str(entry.activity_kind or "direct").strip().lower() or "direct"
+
+
+def adaptive_fatigue_snapshot(
+    history: list[AttemptHistoryEntry],
+    *,
+    now_utc: str | None = None,
+    policy: PrimitiveEvidencePolicy = ADAPTIVE_WORKOUT_EVIDENCE_POLICY,
+) -> AdaptiveFatigueSnapshot:
+    _ = now_utc
+    recent_entries = sorted(
+        history,
+        key=lambda entry: (_epoch_s(entry.completed_at_utc), entry.attempt_id),
+        reverse=True,
+    )[: max(0, int(policy.recent_activity_limit))]
+    if not recent_entries:
+        return AdaptiveFatigueSnapshot(
+            recent_activity_count=0,
+            accumulated_runtime_s=0.0,
+            runtime_load=0.0,
+            degradation_load=0.0,
+            fatigue_load=0.0,
+        )
+
+    accumulated_runtime_s = 0.0
+    weighted_runtime_s = 0.0
+    degradation_total = 0.0
+    degradation_weight = 0.0
+    for entry in recent_entries:
+        level = entry.difficulty_level_end if entry.difficulty_level_end is not None else entry.difficulty_level_start
+        training_mode = mode_token(entry.metrics.get("training_mode"))
+        weight = _evidence_weight(
+            policy=policy,
+            source_kind=_source_kind_for_history_entry(entry),
+            difficulty_level=level,
+            training_mode=training_mode,
+        )
+        duration_s = _duration_s_for_history_entry(entry)
+        if duration_s is not None:
+            accumulated_runtime_s += float(duration_s)
+            weighted_runtime_s += float(duration_s) * float(weight)
+        degradation = _degradation_load(entry.metrics)
+        if degradation is not None:
+            degradation_total += float(degradation) * float(weight)
+            degradation_weight += float(weight)
+
+    runtime_load = 0.0
+    if policy.runtime_reference_s > 0.0:
+        runtime_load = _clamp(weighted_runtime_s / float(policy.runtime_reference_s))
+    degradation_load = (
+        0.0
+        if degradation_weight <= 0.0
+        else _clamp(degradation_total / float(degradation_weight))
+    )
+    fatigue_load = _clamp(
+        (float(policy.runtime_weight) * runtime_load)
+        + (float(policy.degradation_weight) * degradation_load)
+    )
+    return AdaptiveFatigueSnapshot(
+        recent_activity_count=len(recent_entries),
+        accumulated_runtime_s=float(accumulated_runtime_s),
+        runtime_load=float(runtime_load),
+        degradation_load=float(degradation_load),
+        fatigue_load=float(fatigue_load),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -273,6 +530,9 @@ class PrimitiveEvidence:
     mean_rt_ms: float | None
     median_rt_ms: float | None
     speed_score: float | None
+    training_mode: str
+    runtime_s: float | None
+    evidence_weight: float
     fatigue_penalty: float | None
     post_error_penalty: float | None
     instability_penalty: float | None
@@ -832,18 +1092,19 @@ def collect_primitive_evidence(
     history: list[AttemptHistoryEntry],
     *,
     now_utc: str | None = None,
+    policy: PrimitiveEvidencePolicy = LEGACY_PRIMITIVE_EVIDENCE_POLICY,
 ) -> list[PrimitiveEvidence]:
     _ = now_utc
     mapped: list[PrimitiveEvidence] = []
     for entry in history:
-        mapped.extend(_evidence_from_attempt(entry))
+        mapped.extend(_evidence_from_attempt(entry, policy=policy))
     mapped.sort(key=lambda evidence: (evidence.completed_at_epoch_s, evidence.source_code), reverse=True)
     per_primitive_counts: dict[str, int] = defaultdict(int)
     limited: list[PrimitiveEvidence] = []
     for evidence in mapped:
-        if len(limited) >= _MAX_EVIDENCE_TOTAL:
+        if len(limited) >= int(policy.max_evidence_total):
             break
-        if per_primitive_counts[evidence.primitive_id] >= _MAX_EVIDENCE_PER_PRIMITIVE:
+        if per_primitive_counts[evidence.primitive_id] >= int(policy.max_evidence_per_primitive):
             continue
         limited.append(evidence)
         per_primitive_counts[evidence.primitive_id] += 1
@@ -855,10 +1116,11 @@ def rank_primitives(
     *,
     now_utc: str | None = None,
     seed: int = 0,
+    policy: PrimitiveEvidencePolicy = LEGACY_PRIMITIVE_EVIDENCE_POLICY,
 ) -> PrimitiveRankingResult:
     now_token = now_utc or _utc_now_iso()
     now_epoch = _epoch_s(now_token)
-    evidence = collect_primitive_evidence(history, now_utc=now_token)
+    evidence = collect_primitive_evidence(history, now_utc=now_token, policy=policy)
     grouped: dict[str, list[PrimitiveEvidence]] = {primitive.primitive_id: [] for primitive in _PRIMITIVES}
     for item in evidence:
         grouped[item.primitive_id].append(item)
@@ -1356,11 +1618,15 @@ def _domain_summaries_from_items(
     return summaries
 
 
-def _evidence_from_attempt(entry: AttemptHistoryEntry) -> list[PrimitiveEvidence]:
+def _evidence_from_attempt(
+    entry: AttemptHistoryEntry,
+    *,
+    policy: PrimitiveEvidencePolicy,
+) -> list[PrimitiveEvidence]:
     if entry.test_code == "benchmark_battery":
-        return _benchmark_evidence_from_attempt(entry)
+        return _benchmark_evidence_from_attempt(entry, policy=policy)
     if entry.test_code in {"adaptive_session", "adaptive_session_short", "adaptive_session_micro"}:
-        return _adaptive_block_evidence_from_attempt(entry)
+        return _adaptive_block_evidence_from_attempt(entry, policy=policy)
     source = _source_for_code(entry.test_code)
     if source is None:
         return []
@@ -1373,15 +1639,30 @@ def _evidence_from_attempt(entry: AttemptHistoryEntry) -> list[PrimitiveEvidence
         metrics=entry.metrics,
         difficulty_level_start=entry.difficulty_level_start,
         difficulty_level_end=entry.difficulty_level_end,
+        policy=policy,
     )
     return [] if evidence is None else [evidence]
 
 
-def _benchmark_evidence_from_attempt(entry: AttemptHistoryEntry) -> list[PrimitiveEvidence]:
+def _benchmark_evidence_from_attempt(
+    entry: AttemptHistoryEntry,
+    *,
+    policy: PrimitiveEvidencePolicy,
+) -> list[PrimitiveEvidence]:
     out: list[PrimitiveEvidence] = []
-    for probe_code, primitive in _BENCHMARK_PROBE_TO_PRIMITIVE.items():
+    probe_codes = sorted(
+        {
+            key.split(".")[1]
+            for key in entry.metrics
+            if key.startswith("probe.") and len(key.split(".")) >= 3
+        }
+    )
+    for probe_code in probe_codes:
         prefix = f"probe.{probe_code}."
         if not _metric_bool(entry.metrics, f"{prefix}completed"):
+            continue
+        primitive = _benchmark_probe_primitive(probe_code)
+        if primitive is None:
             continue
         metrics = {
             key[len(prefix):]: value
@@ -1396,13 +1677,18 @@ def _benchmark_evidence_from_attempt(entry: AttemptHistoryEntry) -> list[Primiti
             metrics=metrics,
             difficulty_level_start=_metric_level(metrics, "difficulty_level_start", "difficulty_level"),
             difficulty_level_end=_metric_level(metrics, "difficulty_level_end", "difficulty_level"),
+            policy=policy,
         )
         if evidence is not None:
             out.append(evidence)
     return out
 
 
-def _adaptive_block_evidence_from_attempt(entry: AttemptHistoryEntry) -> list[PrimitiveEvidence]:
+def _adaptive_block_evidence_from_attempt(
+    entry: AttemptHistoryEntry,
+    *,
+    policy: PrimitiveEvidencePolicy,
+) -> list[PrimitiveEvidence]:
     block_numbers = sorted(
         {
             key.split(".")[1]
@@ -1431,6 +1717,7 @@ def _adaptive_block_evidence_from_attempt(entry: AttemptHistoryEntry) -> list[Pr
             metrics=metrics,
             difficulty_level_start=_metric_level(metrics, "difficulty_level_start", "difficulty_level"),
             difficulty_level_end=_metric_level(metrics, "difficulty_level_end", "difficulty_level"),
+            policy=policy,
         )
         if evidence is not None:
             out.append(evidence)
@@ -1459,6 +1746,19 @@ def _source_for_code(test_code: str | None) -> tuple[PrimitiveDefinition, str] |
     return None
 
 
+def _benchmark_probe_primitive(probe_code: str | None) -> PrimitiveDefinition | None:
+    token = str(probe_code or "").strip().lower()
+    if token == "":
+        return None
+    primitive = _BENCHMARK_PROBE_TO_PRIMITIVE.get(token)
+    if primitive is not None:
+        return primitive
+    resolved = _source_for_code(token)
+    if resolved is None:
+        return None
+    return resolved[0]
+
+
 def _build_evidence(
     *,
     primitive: PrimitiveDefinition,
@@ -1468,6 +1768,7 @@ def _build_evidence(
     metrics: dict[str, str],
     difficulty_level_start: int | None,
     difficulty_level_end: int | None,
+    policy: PrimitiveEvidencePolicy,
 ) -> PrimitiveEvidence | None:
     score_ratio = _metric_float(metrics, "score_ratio")
     accuracy = _metric_float(metrics, "accuracy")
@@ -1499,6 +1800,13 @@ def _build_evidence(
     ):
         return None
     level = difficulty_level_end if difficulty_level_end is not None else difficulty_level_start
+    training_mode = mode_token(metrics.get("training_mode"))
+    evidence_weight = _evidence_weight(
+        policy=policy,
+        source_kind=source_kind,
+        difficulty_level=level,
+        training_mode=training_mode,
+    )
     return PrimitiveEvidence(
         primitive_id=primitive.primitive_id,
         domain_id=primitive.domain_id,
@@ -1506,7 +1814,11 @@ def _build_evidence(
         source_kind=str(source_kind),
         completed_at_utc=str(completed_at_utc),
         completed_at_epoch_s=_epoch_s(completed_at_utc),
-        alpha=_alpha_for_source_kind(source_kind),
+        alpha=_clamp(
+            _alpha_for_source_kind(source_kind) * float(evidence_weight),
+            low=float(policy.min_alpha),
+            high=float(policy.max_alpha),
+        ),
         accuracy=None if accuracy is None else _clamp(accuracy),
         score_ratio=None if score_ratio is None else _clamp(score_ratio),
         performance_score=None if performance_score is None else _clamp(performance_score),
@@ -1514,6 +1826,9 @@ def _build_evidence(
         mean_rt_ms=None if mean_rt_ms is None else max(0.0, float(mean_rt_ms)),
         median_rt_ms=None if median_rt_ms is None else max(0.0, float(median_rt_ms)),
         speed_score=_speed_score(mean_rt_ms if mean_rt_ms is not None else median_rt_ms),
+        training_mode=str(training_mode),
+        runtime_s=_metric_float(metrics, "duration_s"),
+        evidence_weight=float(evidence_weight),
         fatigue_penalty=fatigue,
         post_error_penalty=post_error,
         instability_penalty=instability,

@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 
 from .clock import Clock
-from .content_variants import content_metadata_from_payload, stable_variant_id
 from .cognitive_core import (
     AnswerScorer,
     AttemptSummary,
@@ -15,6 +14,19 @@ from .cognitive_core import (
     TestSnapshot,
     clamp01,
     lerp_int,
+)
+from .content_variants import content_metadata_from_payload, stable_variant_id
+from .instrument_orientation_solver import (
+    INSTRUMENT_COMMON_MISREAD_TAGS,
+    INSTRUMENT_DISTRACTOR_FALLBACKS,
+    apply_distractor_profile,
+    describe_instrument_state,
+    display_match_error,
+    display_observation_from_state,
+    interpretation_error,
+    lower_band_profile_pool,
+    nearest_profile_candidates,
+    solve_instrument_interpretation,
 )
 
 
@@ -88,19 +100,13 @@ class InstrumentComprehensionPayload:
     content_pack: str = "instrument_comprehension"
 
 
-from .instrument_orientation_solver import (
-    INSTRUMENT_COMMON_MISREAD_TAGS,
-    INSTRUMENT_DISTRACTOR_FALLBACKS,
-    apply_distractor_profile,
-    display_match_error,
-    display_observation_from_state,
-    describe_instrument_state,
-    lower_band_profile_pool,
-    nearest_profile_candidates,
-    solve_instrument_interpretation,
-    interpretation_error,
-)
-
+@dataclass(frozen=True, slots=True)
+class InstrumentComprehensionInstructionPage:
+    kind: InstrumentComprehensionTrialKind
+    title: str
+    guidance: tuple[str, ...]
+    action_prompt: str
+    payload: InstrumentComprehensionPayload
 
 @dataclass(frozen=True, slots=True)
 class _InstrumentOptionSeed:
@@ -152,6 +158,173 @@ def airspeed_turn(speed_kts: int) -> float:
 
     speed = max(0, min(360, int(speed_kts)))
     return speed / 360.0
+
+
+def _instruction_demo_base_state() -> InstrumentState:
+    return InstrumentState(
+        speed_kts=220,
+        altitude_ft=5000,
+        vertical_rate_fpm=0,
+        bank_deg=-12,
+        pitch_deg=6,
+        heading_deg=78,
+        slip=0,
+    )
+
+
+def _instruction_demo_payload(
+    kind: InstrumentComprehensionTrialKind,
+) -> InstrumentComprehensionPayload:
+    base = _instruction_demo_base_state()
+    if kind is InstrumentComprehensionTrialKind.INSTRUMENTS_TO_AIRCRAFT:
+        options = tuple(
+            InstrumentOption(
+                code=code,
+                state=replace(
+                    base,
+                    heading_deg=(base.heading_deg + (code - 3) * 28) % 360,
+                    pitch_deg=base.pitch_deg + (code - 3),
+                    bank_deg=base.bank_deg + (code - 3) * 4,
+                ),
+                description=describe_instrument_state(
+                    replace(
+                        base,
+                        heading_deg=(base.heading_deg + (code - 3) * 28) % 360,
+                        pitch_deg=base.pitch_deg + (code - 3),
+                        bank_deg=base.bank_deg + (code - 3) * 4,
+                    )
+                ),
+                view_preset=instrument_aircraft_view_preset_for_code(code),
+                distractor_tag="correct" if code == 3 else f"instruction_demo_{code}",
+            )
+            for code in range(1, 6)
+        )
+        return InstrumentComprehensionPayload(
+            kind=kind,
+            prompt_state=base,
+            prompt_description=describe_instrument_state(base),
+            options=options,
+            option_errors=(36, 18, 0, 20, 42),
+            full_credit_error=0,
+            zero_credit_error=90,
+            option_render_mode=InstrumentOptionRenderMode.AIRCRAFT,
+            heading_display_mode=InstrumentHeadingDisplayMode.ROTATING_ROSE,
+            content_family="instruction_part1",
+            variant_id=stable_variant_id("instruction", kind.value, "part1"),
+        )
+
+    if kind is InstrumentComprehensionTrialKind.AIRCRAFT_TO_INSTRUMENTS:
+        options = tuple(
+            InstrumentOption(
+                code=code,
+                state=replace(
+                    base,
+                    heading_deg=(base.heading_deg + (code - 3) * 32) % 360,
+                    pitch_deg=base.pitch_deg + (code - 3),
+                    bank_deg=base.bank_deg + (code - 3) * 5,
+                ),
+                description=describe_instrument_state(
+                    replace(
+                        base,
+                        heading_deg=(base.heading_deg + (code - 3) * 32) % 360,
+                        pitch_deg=base.pitch_deg + (code - 3),
+                        bank_deg=base.bank_deg + (code - 3) * 5,
+                    )
+                ),
+                distractor_tag="correct" if code == 3 else f"instruction_demo_{code}",
+            )
+            for code in range(1, 6)
+        )
+        return InstrumentComprehensionPayload(
+            kind=kind,
+            prompt_state=base,
+            prompt_description=describe_instrument_state(base),
+            options=options,
+            option_errors=(40, 24, 0, 18, 36),
+            full_credit_error=0,
+            zero_credit_error=90,
+            prompt_view_preset=instrument_aircraft_reverse_prompt_view_preset(),
+            option_render_mode=InstrumentOptionRenderMode.INSTRUMENT_PANEL,
+            heading_display_mode=InstrumentHeadingDisplayMode.MOVING_ARROW,
+            content_family="instruction_part2",
+            variant_id=stable_variant_id("instruction", kind.value, "part2"),
+        )
+
+    options = tuple(
+        InstrumentOption(
+            code=code,
+            state=replace(
+                base,
+                speed_kts=base.speed_kts + ((code - 3) * 10),
+                altitude_ft=base.altitude_ft + ((code - 3) * 1000),
+                vertical_rate_fpm=(code - 3) * 400,
+                heading_deg=(base.heading_deg + ((code - 3) * 90)) % 360,
+            ),
+            description=describe_instrument_state(
+                replace(
+                    base,
+                    speed_kts=base.speed_kts + ((code - 3) * 10),
+                    altitude_ft=base.altitude_ft + ((code - 3) * 1000),
+                    vertical_rate_fpm=(code - 3) * 400,
+                    heading_deg=(base.heading_deg + ((code - 3) * 90)) % 360,
+                )
+            ),
+            distractor_tag="correct" if code == 3 else f"instruction_demo_{code}",
+        )
+        for code in range(1, 6)
+    )
+    return InstrumentComprehensionPayload(
+        kind=kind,
+        prompt_state=base,
+        prompt_description=describe_instrument_state(base),
+        options=options,
+        option_errors=(36, 18, 0, 16, 32),
+        full_credit_error=0,
+        zero_credit_error=90,
+        option_render_mode=InstrumentOptionRenderMode.DESCRIPTION,
+        heading_display_mode=InstrumentHeadingDisplayMode.ROTATING_ROSE,
+        content_family="instruction_part3",
+        variant_id=stable_variant_id("instruction", kind.value, "part3"),
+    )
+
+
+def build_instrument_comprehension_instruction_page(
+    *,
+    kind: InstrumentComprehensionTrialKind,
+    action_prompt: str,
+) -> InstrumentComprehensionInstructionPage:
+    if kind is InstrumentComprehensionTrialKind.INSTRUMENTS_TO_AIRCRAFT:
+        title = "Part 1 Preview: Instruments to Aircraft"
+        guidance = (
+            "Read bank, pitch, and heading together before you look at the answer cards.",
+            "Match the outside view that best fits the nose attitude, wing bank, and heading picture.",
+            "This preview uses the live Part 1 aircraft-card layout.",
+        )
+    elif kind is InstrumentComprehensionTrialKind.AIRCRAFT_TO_INSTRUMENTS:
+        title = "Part 2 Preview: Aircraft to Instruments"
+        guidance = (
+            "Start from the aircraft picture, then reverse-match it to the instrument panel.",
+            "Attitude is usually the fastest anchor; use heading and climb or descent to confirm.",
+            "This preview uses the live Part 2 reverse-match layout.",
+        )
+    else:
+        title = "Part 3 Preview: Instruments to Description"
+        guidance = (
+            "Read the full panel as one flight story: heading, bank, pitch, climb or descent, altitude, then speed.",
+            "Choose the description that best matches the whole picture, not just a single dial.",
+            "This preview uses the live Part 3 description layout.",
+        )
+
+    if title.strip() == "" or not any(line.strip() for line in guidance):
+        raise RuntimeError("Instrument Comprehension instruction page must include visible content")
+
+    return InstrumentComprehensionInstructionPage(
+        kind=kind,
+        title=title,
+        guidance=guidance,
+        action_prompt=str(action_prompt).strip(),
+        payload=_instruction_demo_payload(kind),
+    )
 
 
 class InstrumentComprehensionScorer(AnswerScorer):
@@ -792,6 +965,24 @@ class InstrumentComprehensionEngine:
 
     def instructions(self) -> list[str]:
         return list(self._instructions)
+
+    def instruction_page(self) -> InstrumentComprehensionInstructionPage | None:
+        if self._phase not in (Phase.INSTRUCTIONS, Phase.PRACTICE_DONE):
+            return None
+
+        if self._phase is Phase.INSTRUCTIONS:
+            kind = _PART_ORDER[0]
+        elif self._pending_done_action == "next_part_practice" and self._part_idx + 1 < len(
+            _PART_ORDER
+        ):
+            kind = _PART_ORDER[self._part_idx + 1]
+        else:
+            kind = _PART_ORDER[self._part_idx]
+
+        return build_instrument_comprehension_instruction_page(
+            kind=kind,
+            action_prompt=self.current_prompt(),
+        )
 
     def can_exit(self) -> bool:
         return self._phase in (

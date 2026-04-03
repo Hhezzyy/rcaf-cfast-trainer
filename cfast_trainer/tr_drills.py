@@ -53,6 +53,12 @@ class TargetRecognitionTimedDrill(TimedCapDrill):
 
 class _TargetRecognitionTrainingGenerator(TargetRecognitionGenerator):
     _SIMPLE_SCAN_TOKENS = ("<>", "[]", "/\\", "()", "==", "{}")
+    _SCENE_CLEAR_ALL_LABEL_CAP = 4
+    _SCENE_CATEGORY_LABELS = {
+        "truck": "All Trucks",
+        "tank": "All Tanks",
+        "building": "All Buildings",
+    }
 
     def __init__(
         self,
@@ -61,6 +67,7 @@ class _TargetRecognitionTrainingGenerator(TargetRecognitionGenerator):
         mode: AntDrillMode | str,
         active_panel_sequence: tuple[tuple[str, ...], ...],
         scene_mode: str = "full",
+        scene_objective_mode: str = "standard",
         scan_pool_mode: str = "full",
         cadence_style: str = "steady",
     ) -> None:
@@ -71,6 +78,7 @@ class _TargetRecognitionTrainingGenerator(TargetRecognitionGenerator):
             for seq in active_panel_sequence
         )
         self._scene_mode = str(scene_mode)
+        self._scene_objective_mode = str(scene_objective_mode)
         self._scan_pool_mode = str(scan_pool_mode)
         self._cadence_style = str(cadence_style)
         self._problem_index = 0
@@ -84,7 +92,24 @@ class _TargetRecognitionTrainingGenerator(TargetRecognitionGenerator):
         scene_rows = lerp_int(5, 7, d)
         scene_cols = lerp_int(8, 11, d)
         scene_has_target = self._rng.random() < presence_prob
-        if self._scene_mode == "basic":
+        scene_objective_label = ""
+        scene_clear_all_targets = False
+        if self._scene_objective_mode != "standard":
+            (
+                scene_entities,
+                scene_target,
+                scene_has_target,
+                scene_target_options,
+                scene_cells,
+                scene_objective_label,
+                scene_clear_all_targets,
+            ) = self._build_scene_clear_all_objective(
+                rows=scene_rows,
+                cols=scene_cols,
+                has_target=scene_has_target,
+                difficulty=d,
+            )
+        elif self._scene_mode == "basic":
             (
                 scene_entities,
                 scene_target_criteria,
@@ -96,6 +121,7 @@ class _TargetRecognitionTrainingGenerator(TargetRecognitionGenerator):
                 has_target=scene_has_target,
                 difficulty=d,
             )
+            scene_target = self._scene_criteria_label(scene_target_criteria)
         else:
             (
                 scene_entities,
@@ -108,7 +134,7 @@ class _TargetRecognitionTrainingGenerator(TargetRecognitionGenerator):
                 has_target=scene_has_target,
                 difficulty=d,
             )
-        scene_target = self._scene_criteria_label(scene_target_criteria)
+            scene_target = self._scene_criteria_label(scene_target_criteria)
 
         light_target_pattern = self._build_light_pattern()
         light_has_target = self._rng.random() < presence_prob
@@ -163,6 +189,8 @@ class _TargetRecognitionTrainingGenerator(TargetRecognitionGenerator):
             light_interval_range_s=self._light_interval_range_s_for(d),
             scan_interval_range_s=self._scan_interval_range_s_for(d),
             scan_repeat_range=self._scan_repeat_range_for(d),
+            scene_objective_label=scene_objective_label,
+            scene_clear_all_targets=scene_clear_all_targets,
         )
 
         expected_matches = sum(
@@ -175,10 +203,289 @@ class _TargetRecognitionTrainingGenerator(TargetRecognitionGenerator):
         )
 
         return Problem(
-            prompt=self._prompt_for_active_panels(active_panels),
+            prompt=self._prompt_for_active_panels(
+                active_panels,
+                scene_objective_label=scene_objective_label,
+                scene_clear_all_targets=scene_clear_all_targets,
+            ),
             answer=expected_matches,
             payload=payload,
         )
+
+    def _build_scene_clear_all_objective(
+        self,
+        *,
+        rows: int,
+        cols: int,
+        has_target: bool,
+        difficulty: float,
+    ) -> tuple[
+        tuple[TargetRecognitionSceneEntity, ...],
+        str,
+        bool,
+        tuple[str, ...],
+        tuple[str, ...],
+        str,
+        bool,
+    ]:
+        objective_mode = self._scene_objective_mode
+        category_shape = (
+            str(self._rng.choice(self._SCENE_SHAPES)) if objective_mode == "category" else None
+        )
+        objective_label = self._scene_objective_label(
+            objective_mode=objective_mode,
+            category_shape=category_shape,
+        )
+        selected_criteria: tuple[TargetRecognitionSceneCriteria, ...] = ()
+        if has_target:
+            selected_criteria = self._pick_scene_objective_criteria(
+                objective_mode=objective_mode,
+                difficulty=difficulty,
+                category_shape=category_shape,
+            )
+
+        entities = self._build_scene_entities_for_objective(
+            count=max(1, int(rows * cols)),
+            difficulty=difficulty,
+            objective_mode=objective_mode,
+            objective_criteria=selected_criteria,
+            category_shape=category_shape,
+        )
+        scene_target_options = tuple(
+            self._scene_criteria_label(criteria) for criteria in selected_criteria
+        )
+        scene_cells = tuple(self._scene_entity_code(entity) for entity in entities)
+        return (
+            entities,
+            objective_label,
+            bool(scene_target_options),
+            scene_target_options,
+            scene_cells,
+            objective_label,
+            True,
+        )
+
+    def _pick_scene_objective_criteria(
+        self,
+        *,
+        objective_mode: str,
+        difficulty: float,
+        category_shape: str | None,
+    ) -> tuple[TargetRecognitionSceneCriteria, ...]:
+        candidates = list(
+            self._scene_objective_criteria_pool(
+                objective_mode=objective_mode,
+                category_shape=category_shape,
+            )
+        )
+        for idx in range(len(candidates) - 1, 0, -1):
+            swap = int(self._rng.randint(0, idx))
+            candidates[idx], candidates[swap] = candidates[swap], candidates[idx]
+        if not candidates:
+            return ()
+        take = min(len(candidates), self._scene_objective_label_count(difficulty))
+        return tuple(candidates[:take])
+
+    def _scene_objective_criteria_pool(
+        self,
+        *,
+        objective_mode: str,
+        category_shape: str | None,
+    ) -> tuple[TargetRecognitionSceneCriteria, ...]:
+        shapes = self._SCENE_SHAPES
+        if objective_mode == "category" and category_shape is not None:
+            shapes = (category_shape,)
+        pool: list[TargetRecognitionSceneCriteria] = []
+        for shape in shapes:
+            for affiliation in self._SCENE_AFFILIATIONS:
+                for require_damaged in (None, True):
+                    for require_high_priority in (None, True):
+                        criteria = TargetRecognitionSceneCriteria(
+                            shape=shape,
+                            affiliation=affiliation,
+                            require_damaged=require_damaged,
+                            require_high_priority=require_high_priority,
+                        )
+                        if not self._criteria_matches_scene_objective(
+                            criteria,
+                            objective_mode=objective_mode,
+                            category_shape=category_shape,
+                        ):
+                            continue
+                        pool.append(criteria)
+        return tuple(pool)
+
+    def _build_scene_entities_for_objective(
+        self,
+        *,
+        count: int,
+        difficulty: float,
+        objective_mode: str,
+        objective_criteria: tuple[TargetRecognitionSceneCriteria, ...],
+        category_shape: str | None,
+    ) -> tuple[TargetRecognitionSceneEntity, ...]:
+        entities = [
+            self._random_scene_entity_for_objective(
+                difficulty=difficulty,
+                objective_mode=objective_mode,
+                category_shape=category_shape,
+                want_match=False,
+            )
+            for _ in range(max(1, int(count)))
+        ]
+        if not objective_criteria:
+            return tuple(entities)
+
+        order = list(range(len(entities)))
+        for idx in range(len(order) - 1, 0, -1):
+            swap = int(self._rng.randint(0, idx))
+            order[idx], order[swap] = order[swap], order[idx]
+        desired_matches = min(
+            len(entities),
+            max(len(objective_criteria), lerp_int(2, 6, difficulty)),
+        )
+        for idx in range(desired_matches):
+            criteria = objective_criteria[idx % len(objective_criteria)]
+            if idx >= len(objective_criteria):
+                criteria = objective_criteria[int(self._rng.randint(0, len(objective_criteria) - 1))]
+            entities[order[idx]] = self._scene_entity_from_criteria(criteria)
+        return tuple(entities)
+
+    def _random_scene_entity(self, *, difficulty: float) -> TargetRecognitionSceneEntity:
+        damaged, high_priority = self._roll_scene_modifiers(difficulty=difficulty)
+        return TargetRecognitionSceneEntity(
+            shape=str(self._rng.choice(self._SCENE_SHAPES)),
+            affiliation=str(self._rng.choice(self._SCENE_AFFILIATIONS)),
+            damaged=damaged,
+            high_priority=high_priority,
+        )
+
+    def _random_scene_entity_for_objective(
+        self,
+        *,
+        difficulty: float,
+        objective_mode: str,
+        category_shape: str | None,
+        want_match: bool,
+    ) -> TargetRecognitionSceneEntity:
+        for _ in range(96):
+            candidate = self._random_scene_entity(difficulty=difficulty)
+            if (
+                self._scene_entity_matches_objective(
+                    candidate,
+                    objective_mode=objective_mode,
+                    category_shape=category_shape,
+                )
+                is want_match
+            ):
+                return candidate
+        return self._scene_objective_fallback_entity(
+            objective_mode=objective_mode,
+            category_shape=category_shape,
+            want_match=want_match,
+        )
+
+    def _scene_entity_matches_objective(
+        self,
+        entity: TargetRecognitionSceneEntity,
+        *,
+        objective_mode: str,
+        category_shape: str | None,
+    ) -> bool:
+        if objective_mode == "priority":
+            return bool(entity.high_priority)
+        if objective_mode == "damaged":
+            return bool(entity.damaged)
+        if objective_mode == "category":
+            return category_shape is not None and entity.shape == category_shape
+        return False
+
+    @staticmethod
+    def _criteria_matches_scene_objective(
+        criteria: TargetRecognitionSceneCriteria,
+        *,
+        objective_mode: str,
+        category_shape: str | None,
+    ) -> bool:
+        if objective_mode == "priority":
+            return criteria.require_high_priority is True
+        if objective_mode == "damaged":
+            return criteria.require_damaged is True
+        if objective_mode == "category":
+            return category_shape is not None and criteria.shape == category_shape
+        return False
+
+    @staticmethod
+    def _scene_entity_from_criteria(
+        criteria: TargetRecognitionSceneCriteria,
+    ) -> TargetRecognitionSceneEntity:
+        return TargetRecognitionSceneEntity(
+            shape=criteria.shape,
+            affiliation=criteria.affiliation,
+            damaged=criteria.require_damaged is True,
+            high_priority=criteria.require_high_priority is True,
+        )
+
+    def _scene_objective_fallback_entity(
+        self,
+        *,
+        objective_mode: str,
+        category_shape: str | None,
+        want_match: bool,
+    ) -> TargetRecognitionSceneEntity:
+        if objective_mode == "priority":
+            return TargetRecognitionSceneEntity(
+                shape="truck",
+                affiliation="friendly",
+                damaged=False,
+                high_priority=want_match,
+            )
+        if objective_mode == "damaged":
+            return TargetRecognitionSceneEntity(
+                shape="truck",
+                affiliation="friendly",
+                damaged=want_match,
+                high_priority=False,
+            )
+        if objective_mode == "category" and category_shape is not None:
+            if want_match:
+                return TargetRecognitionSceneEntity(
+                    shape=category_shape,
+                    affiliation="friendly",
+                    damaged=False,
+                    high_priority=False,
+                )
+            other_shapes = tuple(shape for shape in self._SCENE_SHAPES if shape != category_shape)
+            fallback_shape = other_shapes[0] if other_shapes else "truck"
+            return TargetRecognitionSceneEntity(
+                shape=fallback_shape,
+                affiliation="friendly",
+                damaged=False,
+                high_priority=False,
+            )
+        return TargetRecognitionSceneEntity(
+            shape="truck",
+            affiliation="friendly",
+            damaged=False,
+            high_priority=False,
+        )
+
+    def _scene_objective_label_count(self, difficulty: float) -> int:
+        return min(self._SCENE_CLEAR_ALL_LABEL_CAP, max(1, lerp_int(2, 4, difficulty)))
+
+    def _scene_objective_label(
+        self,
+        *,
+        objective_mode: str,
+        category_shape: str | None,
+    ) -> str:
+        if objective_mode == "priority":
+            return "All Priority Targets"
+        if objective_mode == "damaged":
+            return "All Damaged Targets"
+        if objective_mode == "category" and category_shape is not None:
+            return self._SCENE_CATEGORY_LABELS.get(category_shape, "All Category Targets")
+        return ""
 
     def _build_scene_entities_basic(
         self,
@@ -349,7 +656,13 @@ class _TargetRecognitionTrainingGenerator(TargetRecognitionGenerator):
         value = base + (self._family_pace_delta() * 0.45) - (difficulty * 0.18)
         return round(max(0.95, min(2.4, value)), 3)
 
-    def _prompt_for_active_panels(self, active_panels: tuple[str, ...]) -> str:
+    def _prompt_for_active_panels(
+        self,
+        active_panels: tuple[str, ...],
+        *,
+        scene_objective_label: str = "",
+        scene_clear_all_targets: bool = False,
+    ) -> str:
         labels = {
             "scene": "Map",
             "light": "Light",
@@ -357,6 +670,11 @@ class _TargetRecognitionTrainingGenerator(TargetRecognitionGenerator):
             "system": "System",
         }
         active_text = ", ".join(labels[panel] for panel in active_panels)
+        if scene_clear_all_targets and "scene" in active_panels and scene_objective_label:
+            return (
+                f"Active panels: {active_text}. "
+                f"Clear {scene_objective_label.lower()} before the item advances."
+            )
         return f"Active panels: {active_text}. Register matches only in the active panels."
 
 
@@ -378,6 +696,42 @@ class TrSceneModifierRunGenerator(_TargetRecognitionTrainingGenerator):
             mode=mode,
             active_panel_sequence=(("scene",),),
             scene_mode="full",
+            cadence_style="steady",
+        )
+
+
+class TrPrioritySweepGenerator(_TargetRecognitionTrainingGenerator):
+    def __init__(self, *, seed: int, mode: AntDrillMode | str) -> None:
+        super().__init__(
+            seed=seed,
+            mode=mode,
+            active_panel_sequence=(("scene",),),
+            scene_mode="full",
+            scene_objective_mode="priority",
+            cadence_style="steady",
+        )
+
+
+class TrDamagedSweepGenerator(_TargetRecognitionTrainingGenerator):
+    def __init__(self, *, seed: int, mode: AntDrillMode | str) -> None:
+        super().__init__(
+            seed=seed,
+            mode=mode,
+            active_panel_sequence=(("scene",),),
+            scene_mode="full",
+            scene_objective_mode="damaged",
+            cadence_style="steady",
+        )
+
+
+class TrCategorySweepGenerator(_TargetRecognitionTrainingGenerator):
+    def __init__(self, *, seed: int, mode: AntDrillMode | str) -> None:
+        super().__init__(
+            seed=seed,
+            mode=mode,
+            active_panel_sequence=(("scene",),),
+            scene_mode="full",
+            scene_objective_mode="category",
             cadence_style="steady",
         )
 
@@ -574,6 +928,96 @@ def build_tr_light_anchor_drill(
         mode=mode,
         config=cfg,
         base_caps_by_level=(16.0, 15.0, 14.0, 13.0, 12.0, 11.0, 10.0, 9.0, 8.0, 7.0),
+    )
+
+
+def build_tr_priority_sweep_drill(
+    *,
+    clock: Clock,
+    seed: int,
+    difficulty: float = 0.5,
+    mode: AntDrillMode | str = AntDrillMode.BUILD,
+    config: TrDrillConfig | None = None,
+) -> TargetRecognitionTimedDrill:
+    cfg = config or TrDrillConfig()
+    profile = ANT_DRILL_MODE_PROFILES[_normalize_mode(mode)]
+    return _build_tr_drill(
+        title_base="Target Recognition: Priority Sweep",
+        instructions=(
+            "Target Recognition: Priority Sweep",
+            f"Mode: {profile.label}",
+            "Stay on the map panel and clear every high-priority target before the item can advance.",
+            "The live target strip names the active priority labels, while the other panels stay visible but OFF.",
+            "Mouse only: use the live Target Recognition panel interactions.",
+            "Press Enter to begin practice.",
+        ),
+        generator=TrPrioritySweepGenerator(seed=seed, mode=mode),
+        clock=clock,
+        seed=seed,
+        difficulty=difficulty,
+        mode=mode,
+        config=cfg,
+        base_caps_by_level=(18.0, 17.0, 16.0, 15.0, 14.0, 13.0, 12.0, 11.0, 10.0, 9.0),
+    )
+
+
+def build_tr_damaged_sweep_drill(
+    *,
+    clock: Clock,
+    seed: int,
+    difficulty: float = 0.5,
+    mode: AntDrillMode | str = AntDrillMode.BUILD,
+    config: TrDrillConfig | None = None,
+) -> TargetRecognitionTimedDrill:
+    cfg = config or TrDrillConfig()
+    profile = ANT_DRILL_MODE_PROFILES[_normalize_mode(mode)]
+    return _build_tr_drill(
+        title_base="Target Recognition: Damaged Sweep",
+        instructions=(
+            "Target Recognition: Damaged Sweep",
+            f"Mode: {profile.label}",
+            "Stay on the map panel and clear every damaged target before the item can advance.",
+            "The live target strip names the active damaged labels, while the other panels stay visible but OFF.",
+            "Mouse only: use the live Target Recognition panel interactions.",
+            "Press Enter to begin practice.",
+        ),
+        generator=TrDamagedSweepGenerator(seed=seed, mode=mode),
+        clock=clock,
+        seed=seed,
+        difficulty=difficulty,
+        mode=mode,
+        config=cfg,
+        base_caps_by_level=(18.0, 17.0, 16.0, 15.0, 14.0, 13.0, 12.0, 11.0, 10.0, 9.0),
+    )
+
+
+def build_tr_category_sweep_drill(
+    *,
+    clock: Clock,
+    seed: int,
+    difficulty: float = 0.5,
+    mode: AntDrillMode | str = AntDrillMode.BUILD,
+    config: TrDrillConfig | None = None,
+) -> TargetRecognitionTimedDrill:
+    cfg = config or TrDrillConfig()
+    profile = ANT_DRILL_MODE_PROFILES[_normalize_mode(mode)]
+    return _build_tr_drill(
+        title_base="Target Recognition: Category Sweep",
+        instructions=(
+            "Target Recognition: Category Sweep",
+            f"Mode: {profile.label}",
+            "Stay on the map panel and clear every target from the named shape category before the item can advance.",
+            "The live target strip keeps the current category objective visible while the other panels stay OFF.",
+            "Mouse only: use the live Target Recognition panel interactions.",
+            "Press Enter to begin practice.",
+        ),
+        generator=TrCategorySweepGenerator(seed=seed, mode=mode),
+        clock=clock,
+        seed=seed,
+        difficulty=difficulty,
+        mode=mode,
+        config=cfg,
+        base_caps_by_level=(18.0, 17.0, 16.0, 15.0, 14.0, 13.0, 12.0, 11.0, 10.0, 9.0),
     )
 
 

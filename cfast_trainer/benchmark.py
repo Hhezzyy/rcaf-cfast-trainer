@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 from .adaptive_difficulty import build_resolved_difficulty_context, difficulty_ratio_for_level
 from .airborne_numerical import build_airborne_numerical_test
@@ -12,12 +12,12 @@ from .angles_bearings_degrees import (
 )
 from .auditory_capacity import AuditoryCapacityConfig, build_auditory_capacity_test
 from .clock import Clock
+from .cognitive_core import Phase, TestSnapshot
 from .cognitive_updating import CognitiveUpdatingConfig, build_cognitive_updating_test
 from .colours_letters_numbers import (
     ColoursLettersNumbersConfig,
     build_colours_letters_numbers_test,
 )
-from .cognitive_core import Phase
 from .digit_recognition import build_digit_recognition_test
 from .guide_skill_catalog import OFFICIAL_GUIDE_TESTS
 from .instrument_comprehension import (
@@ -36,13 +36,15 @@ from .situational_awareness import SituationalAwarenessConfig, build_situational
 from .spatial_integration import SpatialIntegrationConfig, build_spatial_integration_test
 from .system_logic import SystemLogicConfig, build_system_logic_test
 from .table_reading import TableReadingConfig, build_table_reading_test
-from .telemetry import TelemetryAnalytics, TelemetryEvent, telemetry_analytics_from_events
 from .target_recognition import TargetRecognitionConfig, build_target_recognition_test
+from .telemetry import TelemetryAnalytics, TelemetryEvent, telemetry_analytics_from_events
 from .trace_test_1 import TraceTest1Config, build_trace_test_1_test
 from .trace_test_2 import TraceTest2Config, build_trace_test_2_test
 from .training_modes import split_half_note_fragment
 from .vigilance import VigilanceConfig, build_vigilance_test
 from .visual_search import VisualSearchConfig, build_visual_search_test
+
+
 @dataclass(frozen=True, slots=True)
 class BenchmarkProbePlan:
     probe_code: str
@@ -67,7 +69,7 @@ class BenchmarkPlan:
         return float(sum(probe.duration_s for probe in self.probes))
 
 
-class BenchmarkStage(str, Enum):
+class BenchmarkStage(StrEnum):
     INTRO = "intro"
     PROBE = "probe"
     RESULTS = "results"
@@ -135,6 +137,107 @@ class BenchmarkSummary:
     difficulty_policy: str = "fixed_per_probe"
 
 
+class _PreparedBenchmarkProbeRuntime:
+    _SKIP_TOKENS = frozenset({"__skip_section__", "skip_section", "__skip_all__", "skip_all"})
+
+    def __init__(self, *, engine: object, probe_label: str) -> None:
+        self._engine = engine
+        self._probe_label = str(probe_label)
+        self._launched = False
+        self._forced_results = False
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._engine, name)
+
+    @property
+    def phase(self) -> Phase:
+        engine_phase = getattr(self._engine, "phase", None)
+        if self._forced_results or engine_phase is Phase.RESULTS:
+            return Phase.RESULTS
+        if not self._launched:
+            return Phase.PRACTICE_DONE
+        if isinstance(engine_phase, Phase):
+            return engine_phase
+        return Phase.SCORED
+
+    def can_exit(self) -> bool:
+        if not self._launched:
+            return True
+        can_exit = getattr(self._engine, "can_exit", None)
+        if callable(can_exit):
+            return bool(can_exit())
+        return self.phase is not Phase.SCORED
+
+    def start_practice(self) -> None:
+        self._launch_into_scored()
+
+    def start_scored(self) -> None:
+        self._launch_into_scored()
+
+    def submit_answer(self, raw: str) -> bool:
+        token = str(raw).strip().lower()
+        if not self._launched:
+            if token in self._SKIP_TOKENS:
+                self._forced_results = True
+                return True
+            return False
+        submit = getattr(self._engine, "submit_answer", None)
+        if not callable(submit):
+            return False
+        return bool(submit(raw))
+
+    def update(self) -> None:
+        if not self._launched or self._forced_results:
+            return
+        update = getattr(self._engine, "update", None)
+        if callable(update):
+            update()
+
+    def finish(self) -> None:
+        if not self._launched:
+            self._forced_results = True
+            return
+        finish = getattr(self._engine, "finish", None)
+        if callable(finish):
+            finish()
+            return
+        if hasattr(self._engine, "phase"):
+            try:
+                self._engine.phase = Phase.RESULTS
+            except Exception:
+                if hasattr(self._engine, "_phase"):
+                    self._engine._phase = Phase.RESULTS
+
+    def snapshot(self) -> TestSnapshot:
+        if self._launched:
+            return self._engine.snapshot()
+        base = self._engine.snapshot()
+        return TestSnapshot(
+            title=str(base.title),
+            phase=Phase.PRACTICE_DONE,
+            prompt=("Benchmark probe ready.\nPress Enter to begin the timed segment."),
+            input_hint="Press Enter to begin timed block",
+            time_remaining_s=None,
+            attempted_scored=int(base.attempted_scored),
+            correct_scored=int(base.correct_scored),
+            payload=None,
+        )
+
+    def _launch_into_scored(self) -> None:
+        if self._launched or self._forced_results:
+            return
+        starter = getattr(self._engine, "start_scored", None)
+        if callable(starter):
+            starter()
+        if getattr(self._engine, "phase", None) is not Phase.SCORED:
+            practice_starter = getattr(self._engine, "start_practice", None)
+            if callable(practice_starter):
+                practice_starter()
+            if callable(starter):
+                starter()
+        self._launched = True
+
+
 class BenchmarkSession:
     _NOMINAL_DIFFICULTY = 0.5
 
@@ -166,6 +269,9 @@ class BenchmarkSession:
         if self._stage is BenchmarkStage.RESULTS:
             return Phase.RESULTS
         if self._stage is BenchmarkStage.PROBE:
+            current_phase = getattr(self._current_engine, "phase", None)
+            if isinstance(current_phase, Phase):
+                return current_phase
             return Phase.SCORED
         return Phase.INSTRUCTIONS
 
@@ -174,7 +280,15 @@ class BenchmarkSession:
         return self._stage
 
     def can_exit(self) -> bool:
-        return self._stage in (BenchmarkStage.INTRO, BenchmarkStage.RESULTS)
+        if self._stage in (BenchmarkStage.INTRO, BenchmarkStage.RESULTS):
+            return True
+        current_engine = self._current_engine
+        if current_engine is None:
+            return True
+        can_exit = getattr(current_engine, "can_exit", None)
+        if callable(can_exit):
+            return bool(can_exit())
+        return getattr(current_engine, "phase", None) is not Phase.SCORED
 
     def current_engine(self) -> object | None:
         return self._current_engine
@@ -233,10 +347,10 @@ class BenchmarkSession:
                 finish()
             elif hasattr(engine, "phase"):
                 try:
-                    setattr(engine, "phase", Phase.RESULTS)
+                    engine.phase = Phase.RESULTS
                 except Exception:
                     if hasattr(engine, "_phase"):
-                        setattr(engine, "_phase", Phase.RESULTS)
+                        engine._phase = Phase.RESULTS
         self.sync_runtime()
 
     def update(self) -> None:
@@ -306,7 +420,6 @@ class BenchmarkSession:
             )
 
         current_probe = self.current_probe_plan()
-        probe_snap = self._current_probe_snapshot()
         return BenchmarkSnapshot(
             stage=self._stage,
             title=self._plan.title,
@@ -340,20 +453,28 @@ class BenchmarkSession:
         correct = sum(result.correct for _plan, result, _completed in probe_attempts)
         accuracy = 0.0 if attempted <= 0 else float(correct) / float(attempted)
         duration_s = sum(result.duration_s for _plan, result, _completed in probe_attempts)
-        throughput_per_min = 0.0 if duration_s <= 0.0 else (float(attempted) / float(duration_s)) * 60.0
-        total_score = sum(float(result.total_score or 0.0) for _plan, result, _completed in probe_attempts)
-        max_score = sum(float(result.max_score or 0.0) for _plan, result, _completed in probe_attempts)
+        throughput_per_min = (
+            0.0 if duration_s <= 0.0 else (float(attempted) / float(duration_s)) * 60.0
+        )
+        total_score = sum(
+            float(result.total_score or 0.0) for _plan, result, _completed in probe_attempts
+        )
+        max_score = sum(
+            float(result.max_score or 0.0) for _plan, result, _completed in probe_attempts
+        )
         score_ratio = 0.0 if max_score <= 0.0 else total_score / max_score
 
         analytics = self._aggregate_analytics()
         available_plans = [plan for plan, _result, _completed in probe_attempts]
-        difficulty_level_start = None if not available_plans else available_plans[0].difficulty_level
+        difficulty_level_start = (
+            None if not available_plans else available_plans[0].difficulty_level
+        )
         difficulty_level_end = None if not available_plans else available_plans[-1].difficulty_level
         difficulty_change_count = 0
         if available_plans:
             difficulty_change_count = sum(
                 1
-                for previous, current in zip(available_plans, available_plans[1:])
+                for previous, current in zip(available_plans, available_plans[1:], strict=False)
                 if previous.difficulty_level != current.difficulty_level
             )
 
@@ -364,9 +485,7 @@ class BenchmarkSession:
             duration_s=float(duration_s),
             throughput_per_min=float(throughput_per_min),
             mean_response_time_s=(
-                None
-                if analytics.mean_rt_ms is None
-                else float(analytics.mean_rt_ms) / 1000.0
+                None if analytics.mean_rt_ms is None else float(analytics.mean_rt_ms) / 1000.0
             ),
             total_score=float(total_score),
             max_score=float(max_score),
@@ -413,7 +532,9 @@ class BenchmarkSession:
         events: list[TelemetryEvent] = []
         item_offset = 0
 
-        for index, (probe, result, completed) in enumerate(self._probe_attempts(include_partial=True)):
+        for index, (probe, result, completed) in enumerate(
+            self._probe_attempts(include_partial=True)
+        ):
             offset_ms = self._probe_offset_ms(index)
             probe_extra = {
                 "probe_code": probe.probe_code,
@@ -516,23 +637,19 @@ class BenchmarkSession:
         self._current_probe_index = int(index)
         probe = self._plan.probes[self._current_probe_index]
         engine = probe.builder()
-        setattr(engine, "_difficulty_code", str(probe.probe_code))
-        setattr(
-            engine,
-            "_resolved_difficulty_context",
-            build_resolved_difficulty_context(
-                probe.probe_code,
-                mode="fixed",
-                launch_level=int(probe.difficulty_level),
-                fixed_level=int(probe.difficulty_level),
-                adaptive_enabled=False,
-            ),
+        engine._difficulty_code = str(probe.probe_code)
+        engine._resolved_difficulty_context = build_resolved_difficulty_context(
+            probe.probe_code,
+            mode="fixed",
+            launch_level=int(probe.difficulty_level),
+            fixed_level=int(probe.difficulty_level),
+            adaptive_enabled=False,
         )
-        self._current_engine = engine
+        self._current_engine = _PreparedBenchmarkProbeRuntime(
+            engine=engine,
+            probe_label=probe.label,
+        )
         self._stage = BenchmarkStage.PROBE
-        starter = getattr(engine, "start_scored", None)
-        if callable(starter):
-            starter()
 
     def _complete_current_probe(self) -> None:
         probe = self.current_probe_plan()
@@ -653,7 +770,7 @@ class BenchmarkSession:
         difficulty_level_end = None if not plans else plans[-1].difficulty_level
         difficulty_change_count = sum(
             1
-            for previous, current in zip(plans, plans[1:])
+            for previous, current in zip(plans, plans[1:], strict=False)
             if previous.difficulty_level != current.difficulty_level
         )
         return {
@@ -690,7 +807,8 @@ class BenchmarkSession:
         ]
         for idx, probe in enumerate(self._plan.probes, start=1):
             lines.append(
-                f"{idx}. {probe.label} | seed {probe.seed} | level {probe.difficulty_level} | {int(round(probe.duration_s))}s"
+                f"{idx}. {probe.label} | seed {probe.seed} | "
+                f"level {probe.difficulty_level} | {int(round(probe.duration_s))}s"
             )
         return tuple(lines)
 

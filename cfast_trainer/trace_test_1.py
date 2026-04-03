@@ -67,6 +67,7 @@ class TraceTest1Config:
     practice_observe_s: float = 5.0
     scored_observe_s: float = 4.3
     allowed_commands: tuple["TraceTest1Command", ...] | None = None
+    allowed_visible_commands: tuple["TraceTest1Command", ...] | None = None
 
 
 class TraceTest1Command(StrEnum):
@@ -732,9 +733,15 @@ class TraceTest1Generator:
         *,
         seed: int,
         allowed_commands: tuple[TraceTest1Command, ...] | None = None,
+        allowed_visible_commands: tuple[TraceTest1Command, ...] | None = None,
     ) -> None:
         self._rng = SeededRng(seed)
         self._allowed_commands = _normalize_allowed_commands(allowed_commands)
+        self._allowed_visible_commands = (
+            None
+            if allowed_visible_commands is None
+            else _normalize_allowed_commands(allowed_visible_commands)
+        )
         self._prompt_index = 0
         self._last_red_command: TraceTest1Command | None = None
         self._tier: TraceTest1DifficultyTier | None = None
@@ -745,30 +752,43 @@ class TraceTest1Generator:
         self._pending_prompt: TraceTest1PromptPlan | None = None
 
     def next_problem(self, *, difficulty: float) -> Problem:
+        from .trace_scene_3d import classify_trace_test_1_view_maneuver
+
         tier = trace_test_1_difficulty_tier(difficulty=difficulty)
         self._ensure_tier_initialized(tier=tier)
         if self._pending_prompt is not None:
             self.commit_prompt(prompt=self._pending_prompt, progress=1.0)
-
-        red_plan = self._build_red_plan(tier=tier)
-        blue_plans = tuple(
-            self._build_blue_plan(state=state, tier=tier) for state in self._blue_lattice_states
-        )
-        prompt = TraceTest1PromptPlan(
-            prompt_index=int(self._prompt_index),
-            answer_open_progress=float(tier.answer_open_progress),
-            speed_multiplier=float(tier.speed_multiplier),
-            red_plan=red_plan,
-            blue_plans=blue_plans,
-        )
-        self._pending_prompt = prompt
-        self._prompt_index += 1
-        correct_code = int(_COMMAND_TO_CODE[red_plan.command])
-        return Problem(
-            prompt=f"Trace Test 1 {red_plan.command.value}",
-            answer=correct_code,
-            payload=prompt,
-        )
+        for _attempt in range(64):
+            red_plan = self._build_red_plan(tier=tier)
+            blue_plans = tuple(
+                self._build_blue_plan(state=state, tier=tier) for state in self._blue_lattice_states
+            )
+            prompt = TraceTest1PromptPlan(
+                prompt_index=int(self._prompt_index),
+                answer_open_progress=float(tier.answer_open_progress),
+                speed_multiplier=float(tier.speed_multiplier),
+                red_plan=red_plan,
+                blue_plans=blue_plans,
+            )
+            classified_command = classify_trace_test_1_view_maneuver(
+                prompt=prompt,
+                viewpoint_bearing_deg=_VIEWPOINT_BEARING_DEG,
+            )
+            if (
+                self._allowed_visible_commands is not None
+                and classified_command not in self._allowed_visible_commands
+            ):
+                self.commit_prompt(prompt=prompt, progress=1.0)
+                continue
+            self._pending_prompt = prompt
+            self._prompt_index += 1
+            correct_code = int(_COMMAND_TO_CODE[classified_command])
+            return Problem(
+                prompt=f"Trace Test 1 {classified_command.value}",
+                answer=correct_code,
+                payload=prompt,
+            )
+        raise RuntimeError("Unable to build a visible Trace Test 1 prompt from the current stream state")
 
     def commit_prompt(
         self,
@@ -1043,7 +1063,16 @@ class TraceTest1Engine:
         self._difficulty = clamp01(difficulty)
         self._cfg = cfg
         allowed_commands = _normalize_allowed_commands(self._cfg.allowed_commands)
-        self._generator = TraceTest1Generator(seed=self._seed, allowed_commands=allowed_commands)
+        allowed_visible_commands = (
+            None
+            if self._cfg.allowed_visible_commands is None
+            else _normalize_allowed_commands(self._cfg.allowed_visible_commands)
+        )
+        self._generator = TraceTest1Generator(
+            seed=self._seed,
+            allowed_commands=allowed_commands,
+            allowed_visible_commands=allowed_visible_commands,
+        )
 
         self._phase = Phase.INSTRUCTIONS
         self._current_problem: Problem | None = None

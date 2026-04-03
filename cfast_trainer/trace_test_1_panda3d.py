@@ -8,16 +8,20 @@ import pygame
 from .aircraft_art import (
     build_panda_palette,
     build_panda3d_fixed_wing_model,
+    fixed_wing_heading_from_screen_heading,
     panda3d_fixed_wing_hpr_from_world_hpr,
 )
 from .trace_test_1 import TraceTest1Command, TraceTest1Payload
-from .trace_test_1_gl import project_scene_position
+from .trace_test_1_gl import aircraft_screen_pose_for_frame, project_scene_position
 
 
 def panda3d_trace_test_1_rendering_available() -> bool:
     if os.environ.get("SDL_VIDEODRIVER", "").strip().lower() == "dummy":
         return False
-    return importlib.util.find_spec("direct.showbase.ShowBase") is not None
+    try:
+        return importlib.util.find_spec("direct.showbase.ShowBase") is not None
+    except ModuleNotFoundError:
+        return False
 
 
 class TraceTest1Panda3DRenderer:
@@ -168,11 +172,17 @@ class TraceTest1Panda3DRenderer:
         answer_open_progress: float,
         size: tuple[int, int],
     ) -> tuple[float, float, float]:
-        _ = (command, observe_progress, answer_open_progress, size)
+        screen_heading_deg, pitch_deg, roll_deg = aircraft_screen_pose_for_frame(
+            frame,
+            command=command,
+            observe_progress=observe_progress,
+            answer_open_progress=answer_open_progress,
+            size=size,
+        )
         return panda3d_fixed_wing_hpr_from_world_hpr(
-            heading_deg=float(frame.attitude.yaw_deg),
-            pitch_deg=float(frame.attitude.pitch_deg),
-            roll_deg=float(frame.attitude.roll_deg),
+            heading_deg=fixed_wing_heading_from_screen_heading(screen_heading_deg),
+            pitch_deg=float(pitch_deg),
+            roll_deg=float(roll_deg),
         )
 
     def _build_aircraft_model(

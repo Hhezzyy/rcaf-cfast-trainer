@@ -5,36 +5,36 @@ from dataclasses import dataclass, replace
 import pytest
 
 from cfast_trainer.cognitive_core import Problem
+from cfast_trainer.instrument_aircraft_cards import (
+    aircraft_card_pose_distance,
+    aircraft_card_pose_signature,
+    aircraft_card_semantic_drift_tags,
+)
 from cfast_trainer.instrument_comprehension import (
     InstrumentAircraftViewPreset,
     InstrumentComprehensionConfig,
     InstrumentComprehensionGenerator,
-    InstrumentHeadingDisplayMode,
     InstrumentComprehensionPayload,
-    InstrumentOptionRenderMode,
     InstrumentComprehensionScorer,
     InstrumentComprehensionTrialKind,
+    InstrumentHeadingDisplayMode,
     InstrumentOption,
+    InstrumentOptionRenderMode,
     InstrumentState,
     airspeed_turn,
     altimeter_hand_turns,
     build_instrument_comprehension_test,
-    instrument_aircraft_view_preset_for_code,
     instrument_aircraft_reverse_prompt_view_preset,
+    instrument_aircraft_view_preset_for_code,
 )
 from cfast_trainer.instrument_orientation_solver import (
     INSTRUMENT_COMMON_MISREAD_TAGS,
     apply_distractor_profile,
     display_match_error,
     display_observation_from_state,
-    lower_band_profile_pool,
     interpreted_heading_from_display,
+    lower_band_profile_pool,
     north_up_heading_from_display,
-)
-from cfast_trainer.instrument_aircraft_cards import (
-    aircraft_card_semantic_drift_tags,
-    aircraft_card_pose_distance,
-    aircraft_card_pose_signature,
 )
 
 
@@ -462,3 +462,49 @@ def test_skip_commands_advance_across_practice_parts_and_results() -> None:
 
     assert engine.submit_answer("__skip_all__") is True
     assert engine.phase.value == "results"
+
+
+def test_instruction_pages_are_populated_for_each_instrument_part() -> None:
+    clock = FakeClock()
+    engine = build_instrument_comprehension_test(
+        clock=clock,
+        seed=21,
+        difficulty=0.5,
+        config=InstrumentComprehensionConfig(scored_duration_s=20.0, practice_questions=1),
+    )
+
+    page = engine.instruction_page()
+    assert page is not None
+    assert page.kind is InstrumentComprehensionTrialKind.INSTRUMENTS_TO_AIRCRAFT
+    assert page.title.strip() != ""
+    assert any(line.strip() for line in page.guidance)
+    assert page.action_prompt.strip() != ""
+    assert isinstance(page.payload, InstrumentComprehensionPayload)
+
+    engine.start_practice()
+    assert engine.submit_answer("__skip_practice__") is True
+    page = engine.instruction_page()
+    assert page is not None
+    assert page.kind is InstrumentComprehensionTrialKind.INSTRUMENTS_TO_AIRCRAFT
+    assert page.action_prompt.strip() != ""
+
+    engine.start_scored()
+    assert engine.submit_answer("__skip_section__") is True
+    page = engine.instruction_page()
+    assert page is not None
+    assert page.kind is InstrumentComprehensionTrialKind.AIRCRAFT_TO_INSTRUMENTS
+    assert page.title.strip() != ""
+    assert any(line.strip() for line in page.guidance)
+
+    engine.start_scored()
+    assert engine.submit_answer("__skip_practice__") is True
+    page = engine.instruction_page()
+    assert page is not None
+    assert page.kind is InstrumentComprehensionTrialKind.AIRCRAFT_TO_INSTRUMENTS
+
+    engine.start_scored()
+    assert engine.submit_answer("__skip_section__") is True
+    page = engine.instruction_page()
+    assert page is not None
+    assert page.kind is InstrumentComprehensionTrialKind.INSTRUMENTS_TO_DESCRIPTION
+    assert any(line.strip() for line in page.guidance)

@@ -2,11 +2,19 @@ from __future__ import annotations
 
 import json
 import math
+import sys
 from dataclasses import replace
+from importlib.machinery import ModuleSpec
 from types import SimpleNamespace
+from types import ModuleType
 
 import pygame
 import pytest
+
+if "moderngl" not in sys.modules:
+    moderngl_stub = ModuleType("moderngl")
+    moderngl_stub.__spec__ = ModuleSpec("moderngl", loader=None)
+    sys.modules["moderngl"] = moderngl_stub
 
 from cfast_trainer.aircraft_art import (
     apply_fixed_wing_view_rotation,
@@ -15,7 +23,11 @@ from cfast_trainer.aircraft_art import (
     rotate_fixed_wing_point,
 )
 from cfast_trainer.auditory_capacity import AuditoryCapacityGate, build_auditory_capacity_test
-from cfast_trainer.auditory_capacity_view import BALL_FORWARD_IDLE_NORM, GATE_DEPTH_SLOTS_NORM, TUNNEL_GEOMETRY_END_DISTANCE
+from cfast_trainer.auditory_capacity_view import (
+    BALL_FORWARD_IDLE_NORM,
+    GATE_DEPTH_SLOTS_NORM,
+    TUNNEL_GEOMETRY_END_DISTANCE,
+)
 from cfast_trainer.gl_scenes import (
     AuditoryGlScene,
     RapidTrackingGlScene,
@@ -26,31 +38,34 @@ from cfast_trainer.gl_scenes import (
 from cfast_trainer.modern_gl_renderer import (
     ModernSceneRenderer,
     _AssetInstance,
-    _GeometryBatch,
-    _PreparedWorldTriangle,
-    _RapidTrackingStaticScene,
-    _RapidTrackingStaticGroup,
-    _SceneAssetLibrary,
-    _SceneCamera,
     _build_auditory_scene_plan,
     _build_rapid_tracking_scene_plan,
-    _rapid_tracking_static_scene,
-    _rapid_tracking_static_bundle,
-    _rapid_tracking_static_group_layer,
-    _rapid_tracking_static_group_visible,
-    _rapid_tracking_layout_world_xy,
-    _rapid_tracking_render_polyline,
-    _rapid_tracking_road_piece_instance,
-    _grounded_asset_world_z,
     _build_spatial_integration_scene_plan,
     _build_trace_test_1_scene_plan,
     _build_trace_test_2_scene_plan,
+    _GeometryBatch,
+    _grounded_asset_world_z,
+    _PreparedWorldTriangle,
     _project_aircraft_marker_polygons,
+    _rapid_tracking_layout_world_xy,
+    _rapid_tracking_render_polyline,
+    _rapid_tracking_road_piece_instance,
+    _rapid_tracking_static_bundle,
+    _rapid_tracking_static_group_layer,
+    _rapid_tracking_static_group_visible,
+    _rapid_tracking_static_scene,
+    _RapidTrackingStaticGroup,
+    _RapidTrackingStaticScene,
     _scene_local_top_left_to_screen,
-    _world_hpr_from_tangent,
+    _SceneAssetLibrary,
+    _SceneCamera,
+    _ScenePlan,
+)
+from cfast_trainer.rapid_tracking import (
+    build_rapid_tracking_compound_layout,
+    build_rapid_tracking_test,
 )
 from cfast_trainer.render_assets import RenderAssetCatalog
-from cfast_trainer.rapid_tracking import build_rapid_tracking_compound_layout, build_rapid_tracking_test
 from cfast_trainer.spatial_integration import build_spatial_integration_test
 from cfast_trainer.trace_test_1 import (
     TraceTest1Generator,
@@ -59,7 +74,7 @@ from cfast_trainer.trace_test_1 import (
     TraceTest1TrialStage,
     trace_test_1_scene_frames,
 )
-from cfast_trainer.trace_test_2 import TraceTest2Generator, trace_test_2_track_tangent
+from cfast_trainer.trace_test_2 import TraceTest2Generator
 
 
 class _FakeClock:
@@ -274,6 +289,8 @@ def _build_pipeline_probe_renderer() -> ModernSceneRenderer:
     renderer._win_h = 360
     renderer._batch = _GeometryBatch()
     renderer._last_scene_debug = {}
+    renderer._last_rt_world_debug = {}
+    renderer._scene_assets = _SceneAssetLibrary(RenderAssetCatalog())
     renderer._vortex_texture = object()
     renderer._ui_texture = None
     renderer._ui_tex_size = (0, 0)
@@ -307,9 +324,15 @@ def test_auditory_scene_plan_includes_volumetric_gate_assets_when_visible() -> N
     scene = _auditory_scene_with_visible_gates()
 
     plan = _build_auditory_scene_plan(scene)
-    gate_ids = {instance.asset_id for instance in plan.asset_instances if instance.asset_id.startswith("auditory_gate_")}
+    gate_ids = {
+        instance.asset_id
+        for instance in plan.asset_instances
+        if instance.asset_id.startswith("auditory_gate_")
+    }
 
-    assert {"auditory_gate_circle", "auditory_gate_triangle", "auditory_gate_square"} <= set(plan.asset_ids)
+    assert {"auditory_gate_circle", "auditory_gate_triangle", "auditory_gate_square"} <= set(
+        plan.asset_ids
+    )
     assert gate_ids == {"auditory_gate_circle", "auditory_gate_triangle", "auditory_gate_square"}
     for instance in plan.asset_instances:
         if instance.asset_id.startswith("auditory_gate_"):
@@ -320,8 +343,9 @@ def test_auditory_scene_plan_includes_volumetric_gate_assets_when_visible() -> N
             assert instance.color[3] > 0.0
 
 
-def test_auditory_scene_plan_camera_stays_fixed_across_time_and_ball_offsets() -> None:
+def test_auditory_scene_plan_camera_follows_forward_progress_but_ignores_ball_offsets() -> None:
     baseline = _build_auditory_scene_plan(_auditory_scene_with_ball_offset(ball_x=0.0, ball_y=0.0))
+    lateral = _build_auditory_scene_plan(_auditory_scene_with_ball_offset(ball_x=0.82, ball_y=-0.60))
     shifted_payload = replace(
         _auditory_payload(),
         phase_elapsed_s=9.4,
@@ -339,8 +363,11 @@ def test_auditory_scene_plan_camera_stays_fixed_across_time_and_ball_offsets() -
     )
 
     assert baseline.camera is not None
+    assert lateral.camera is not None
     assert shifted.camera is not None
-    assert shifted.camera == baseline.camera
+    assert lateral.camera == baseline.camera
+    assert shifted.camera.position[1] > baseline.camera.position[1]
+    assert shifted.camera.position[0] > baseline.camera.position[0]
 
 
 def test_auditory_scene_plan_gate_positions_stay_fixed_for_same_slot_assignments() -> None:
@@ -390,8 +417,12 @@ def test_auditory_scene_plan_ball_moves_forward_toward_fixed_gate_slots() -> Non
 
     near_plan = _build_auditory_scene_plan(scene_near)
     far_plan = _build_auditory_scene_plan(scene_far)
-    near_ball = next(instance for instance in near_plan.asset_instances if instance.asset_id == "auditory_ball")
-    far_ball = next(instance for instance in far_plan.asset_instances if instance.asset_id == "auditory_ball")
+    near_ball = next(
+        instance for instance in near_plan.asset_instances if instance.asset_id == "auditory_ball"
+    )
+    far_ball = next(
+        instance for instance in far_plan.asset_instances if instance.asset_id == "auditory_ball"
+    )
 
     assert far_ball.position[1] > near_ball.position[1]
 
@@ -401,7 +432,11 @@ def test_auditory_scene_plan_keeps_far_end_tunnel_ring_in_front_of_camera() -> N
     assert plan.camera is not None
 
     farthest_rib = max(
-        (instance for instance in plan.asset_instances if instance.asset_id == "auditory_tunnel_rib"),
+        (
+            instance
+            for instance in plan.asset_instances
+            if instance.asset_id == "auditory_tunnel_rib"
+        ),
         key=lambda instance: instance.position[1],
     )
 
@@ -513,9 +548,18 @@ def test_rapid_tracking_scene_plan_includes_target_and_scenery_assets() -> None:
     } <= asset_ids
     assert plan.static_groups
     assert {group.layer for group in plan.static_groups} >= {"near", "far"}
-    assert any(asset_id in {"truck_olive", "vehicle_tracked", "soldiers_patrol"} for asset_id in instance_ids)
     assert any(
-        asset_id in {"forest_canopy_patch", "shrubs_low_cluster", "trees_field_cluster", "trees_pine_cluster"}
+        asset_id in {"truck_olive", "vehicle_tracked", "soldiers_patrol"}
+        for asset_id in instance_ids
+    )
+    assert any(
+        asset_id
+        in {
+            "forest_canopy_patch",
+            "shrubs_low_cluster",
+            "trees_field_cluster",
+            "trees_pine_cluster",
+        }
         for asset_id in instance_ids
     )
     assert len(plan.asset_instances) <= 95
@@ -550,8 +594,14 @@ def test_rapid_tracking_static_bundle_changes_with_scene_seed() -> None:
     bundle_a = _rapid_tracking_static_bundle(551)
     bundle_b = _rapid_tracking_static_bundle(552)
 
-    signature_a = tuple((group.group_id, round(group.center[0], 2), round(group.center[1], 2)) for group in bundle_a.groups)
-    signature_b = tuple((group.group_id, round(group.center[0], 2), round(group.center[1], 2)) for group in bundle_b.groups)
+    signature_a = tuple(
+        (group.group_id, round(group.center[0], 2), round(group.center[1], 2))
+        for group in bundle_a.groups
+    )
+    signature_b = tuple(
+        (group.group_id, round(group.center[0], 2), round(group.center[1], 2))
+        for group in bundle_b.groups
+    )
 
     assert signature_a != signature_b
 
@@ -621,9 +671,15 @@ def test_rapid_tracking_scene_plan_uses_scene_seed_for_camera_and_scenery(monkey
         captured["target_world_z_seed"] = int(kwargs["seed"])
         return 0.0
 
-    monkeypatch.setattr("cfast_trainer.modern_gl_renderer.rapid_tracking_camera_rig_state", fake_camera_rig_state)
-    monkeypatch.setattr("cfast_trainer.modern_gl_renderer._rapid_tracking_static_scene", fake_static_scene)
-    monkeypatch.setattr("cfast_trainer.modern_gl_renderer.estimated_target_world_z", fake_estimated_target_world_z)
+    monkeypatch.setattr(
+        "cfast_trainer.modern_gl_renderer.rapid_tracking_camera_rig_state", fake_camera_rig_state
+    )
+    monkeypatch.setattr(
+        "cfast_trainer.modern_gl_renderer._rapid_tracking_static_scene", fake_static_scene
+    )
+    monkeypatch.setattr(
+        "cfast_trainer.modern_gl_renderer.estimated_target_world_z", fake_estimated_target_world_z
+    )
 
     _build_rapid_tracking_scene_plan(scene)
 
@@ -670,12 +726,16 @@ def test_rapid_tracking_scene_plan_limits_readable_ambient_clutter(monkeypatch) 
         asset_ids=tuple(sorted({instance.asset_id for instance in ambient_instances})),
     )
     rank_by_position = {
-        tuple(instance.position): idx
-        for idx, instance in enumerate(ambient_instances)
+        tuple(instance.position): idx for idx, instance in enumerate(ambient_instances)
     }
 
-    monkeypatch.setattr("cfast_trainer.modern_gl_renderer._rapid_tracking_static_scene", lambda _seed: static_scene)
-    monkeypatch.setattr("cfast_trainer.modern_gl_renderer._rapid_tracking_static_instance_visible", lambda *args, **kwargs: True)
+    monkeypatch.setattr(
+        "cfast_trainer.modern_gl_renderer._rapid_tracking_static_scene", lambda _seed: static_scene
+    )
+    monkeypatch.setattr(
+        "cfast_trainer.modern_gl_renderer._rapid_tracking_static_instance_visible",
+        lambda *args, **kwargs: True,
+    )
     monkeypatch.setattr(
         "cfast_trainer.modern_gl_renderer._rapid_tracking_visibility_rank",
         lambda instance, **kwargs: rank_by_position[tuple(instance.position)],
@@ -696,7 +756,9 @@ def test_rapid_tracking_scene_plan_limits_readable_ambient_clutter(monkeypatch) 
     assert len(default_ambient) == 6
     assert sum(1 for instance in default_ambient if instance.asset_id == "forest_canopy_patch") == 1
     assert len(readable_ambient) == 4
-    assert sum(1 for instance in readable_ambient if instance.asset_id == "forest_canopy_patch") <= 1
+    assert (
+        sum(1 for instance in readable_ambient if instance.asset_id == "forest_canopy_patch") <= 1
+    )
 
 
 def test_rapid_tracking_local_hills_never_enter_backdrop_layer() -> None:
@@ -714,6 +776,103 @@ def test_rapid_tracking_local_hills_never_enter_backdrop_layer() -> None:
     )
 
 
+def test_rapid_tracking_world_projection_clips_horizontal_frustum_spill() -> None:
+    renderer = _build_pipeline_probe_renderer()
+    camera = _SceneCamera(
+        position=(0.0, 0.0, 0.0),
+        heading_deg=0.0,
+        pitch_deg=0.0,
+        h_fov_deg=60.0,
+        v_fov_deg=40.0,
+    )
+    triangle = _PreparedWorldTriangle(
+        points=((18.0, 40.0, -4.0), (40.0, 40.0, 4.0), (18.0, 80.0, 2.0)),
+        normal=(0.0, 0.0, 1.0),
+        base_rgb=(0.44, 0.56, 0.48),
+    )
+    scene_plan = _ScenePlan(
+        kind="rapid_tracking",
+        rect=pygame.Rect(0, 0, 640, 360),
+        camera=camera,
+        asset_instances=(),
+        overlay_primitives=(),
+        asset_ids=(),
+        entity_count=1,
+        static_groups=(
+            _RapidTrackingStaticGroup(
+                group_id="clip",
+                layer="near",
+                center=(25.0, 53.0, 0.0),
+                radius=36.0,
+                triangles=(triangle,),
+                instance_count=1,
+            ),
+        ),
+    )
+
+    renderer._render_scene_plan(scene_plan=scene_plan)
+
+    assert renderer._batch.scene_triangles
+    assert all(
+        math.isfinite(vertex.x) and math.isfinite(vertex.y)
+        for vertex in renderer._batch.scene_triangles
+    )
+    assert all(0.0 <= vertex.x <= 640.0 for vertex in renderer._batch.scene_triangles)
+    assert all(0.0 <= vertex.y <= 360.0 for vertex in renderer._batch.scene_triangles)
+    debug = renderer._last_rt_world_debug
+    assert debug["world_triangles_input"] == 1
+    assert debug["world_triangles_clipped"] == 1
+    assert debug["world_triangles_emitted"] >= 1
+
+
+def test_rapid_tracking_world_projection_clips_near_plane_to_finite_triangles() -> None:
+    renderer = _build_pipeline_probe_renderer()
+    camera = _SceneCamera(
+        position=(0.0, 0.0, 0.0),
+        heading_deg=0.0,
+        pitch_deg=0.0,
+        h_fov_deg=60.0,
+        v_fov_deg=40.0,
+        near_clip=0.12,
+    )
+    triangle = _PreparedWorldTriangle(
+        points=((0.0, 0.05, 0.0), (0.18, 1.20, 0.0), (-0.18, 1.20, 0.12)),
+        normal=(0.0, 0.0, 1.0),
+        base_rgb=(0.50, 0.54, 0.58),
+    )
+    scene_plan = _ScenePlan(
+        kind="rapid_tracking",
+        rect=pygame.Rect(0, 0, 640, 360),
+        camera=camera,
+        asset_instances=(),
+        overlay_primitives=(),
+        asset_ids=(),
+        entity_count=1,
+        static_groups=(
+            _RapidTrackingStaticGroup(
+                group_id="near-clip",
+                layer="near",
+                center=(0.0, 0.82, 0.04),
+                radius=1.2,
+                triangles=(triangle,),
+                instance_count=1,
+            ),
+        ),
+    )
+
+    renderer._render_scene_plan(scene_plan=scene_plan)
+
+    assert renderer._batch.scene_triangles
+    assert all(
+        math.isfinite(vertex.x) and math.isfinite(vertex.y)
+        for vertex in renderer._batch.scene_triangles
+    )
+    assert all(0.0 <= vertex.x <= 640.0 for vertex in renderer._batch.scene_triangles)
+    assert all(0.0 <= vertex.y <= 360.0 for vertex in renderer._batch.scene_triangles)
+    assert renderer._last_rt_world_debug["world_triangles_clipped"] == 1
+    assert renderer._last_rt_world_debug["max_projected_extent_px"] <= 640.0
+
+
 def test_rapid_tracking_playfield_groups_stay_within_radius_cap_for_seed_551() -> None:
     bundle = _rapid_tracking_static_bundle(551)
     playfield_groups = [group for group in bundle.groups if group.layer != "far"]
@@ -728,11 +887,14 @@ def test_grounded_asset_world_z_uses_mesh_base_height(monkeypatch) -> None:
         def mesh(_asset_id: str):
             return SimpleNamespace(base_z=1.5)
 
-    monkeypatch.setattr("cfast_trainer.modern_gl_renderer._rapid_tracking_static_asset_library", lambda: _FakeLibrary())
-
-    assert _grounded_asset_world_z(asset_id="road_paved_segment", terrain_z=10.0, scale=(1.0, 1.0, 2.0)) == pytest.approx(
-        7.01
+    monkeypatch.setattr(
+        "cfast_trainer.modern_gl_renderer._rapid_tracking_static_asset_library",
+        lambda: _FakeLibrary(),
     )
+
+    assert _grounded_asset_world_z(
+        asset_id="road_paved_segment", terrain_z=10.0, scale=(1.0, 1.0, 2.0)
+    ) == pytest.approx(7.01)
 
 
 def test_rapid_tracking_render_polyline_subdivides_long_world_segments() -> None:
@@ -760,12 +922,39 @@ def test_rapid_tracking_render_polyline_subdivides_long_world_segments() -> None
         assert math.hypot(float(end_wx - start_wx), float(end_wy - start_wy)) <= 24.0001
 
 
+def test_rapid_tracking_seed_551_scene_debug_reports_clipped_world_geometry() -> None:
+    renderer = _build_pipeline_probe_renderer()
+    renderer._flush_color_geometry = lambda: None
+    renderer._flush_world_geometry = lambda: None
+
+    renderer._draw_scene(
+        scene=RapidTrackingGlScene(
+            world=pygame.Rect(0, 0, 640, 360),
+            payload=_rapid_tracking_payload(),
+            active_phase=True,
+        )
+    )
+
+    debug = renderer.debug_last_scene()
+
+    assert debug["kind"] == "rapid_tracking"
+    assert debug["world_triangles_input"] > 0
+    assert debug["world_triangles_emitted"] > 0
+    assert debug["world_triangles_clipped"] > 0
+    assert debug["world_triangles_rejected"] >= 0
+    assert debug["max_projected_extent_px"] <= 640.0
+
+
 def test_rapid_tracking_road_piece_uses_average_sampled_height(monkeypatch) -> None:
     layout = build_rapid_tracking_compound_layout(seed=551)
     start_xy = (-0.5, 0.2)
     end_xy = (0.7, 0.2)
-    start_wx, start_wy = _rapid_tracking_layout_world_xy(layout, track_x=float(start_xy[0]), track_y=float(start_xy[1]))
-    end_wx, end_wy = _rapid_tracking_layout_world_xy(layout, track_x=float(end_xy[0]), track_y=float(end_xy[1]))
+    start_wx, start_wy = _rapid_tracking_layout_world_xy(
+        layout, track_x=float(start_xy[0]), track_y=float(start_xy[1])
+    )
+    end_wx, end_wy = _rapid_tracking_layout_world_xy(
+        layout, track_x=float(end_xy[0]), track_y=float(end_xy[1])
+    )
     mid_wx = (start_wx + end_wx) * 0.5
     mid_wy = (start_wy + end_wy) * 0.5
 
@@ -778,7 +967,9 @@ def test_rapid_tracking_road_piece_uses_average_sampled_height(monkeypatch) -> N
             return 17.0
         raise AssertionError(f"unexpected sample: {(wx, wy)}")
 
-    monkeypatch.setattr("cfast_trainer.modern_gl_renderer.rapid_tracking_terrain_height", fake_terrain_height)
+    monkeypatch.setattr(
+        "cfast_trainer.modern_gl_renderer.rapid_tracking_terrain_height", fake_terrain_height
+    )
 
     instance = _rapid_tracking_road_piece_instance(
         layout,
@@ -854,49 +1045,84 @@ def test_spatial_integration_scene_plan_includes_aircraft_and_landmarks() -> Non
     assert plan.camera is not None
     assert "plane_blue" in instance_ids
     assert any(asset_id == "building_tower" for asset_id in instance_ids)
-    assert any(asset_id in {"trees_field_cluster", "forest_canopy_patch"} for asset_id in instance_ids)
+    assert any(
+        asset_id in {"trees_field_cluster", "forest_canopy_patch"} for asset_id in instance_ids
+    )
     assert plan.entity_count == len(plan.asset_instances)
 
 
-def test_trace_test_1_scene_plan_uses_plane_mesh_instances_and_frame_hpr() -> None:
+def test_trace_test_1_scene_plan_builds_real_world_camera_and_aircraft_instances() -> None:
     payload = _trace_test_1_payload()
     scene = TraceTest1GlScene(world=pygame.Rect(0, 0, 640, 360), payload=payload)
 
     plan = _build_trace_test_1_scene_plan(scene)
 
     assert plan.camera is not None
-    assert plan.camera.position[1] <= -200.0
-    assert plan.camera.h_fov_deg >= 24.0
-    assert plan.asset_ids == ("plane_blue", "plane_green", "plane_red", "plane_yellow")
     assert plan.overlay_primitives == ()
     assert plan.entity_count == 1 + len(payload.scene.blue_frames)
+    assert len(plan.asset_instances) == plan.entity_count
     assert plan.asset_instances[0].asset_id == "plane_red"
-    assert plan.asset_instances[0].hpr_deg == pytest.approx(
-        (
-            payload.scene.red_frame.attitude.yaw_deg,
-            payload.scene.red_frame.attitude.pitch_deg,
-            payload.scene.red_frame.attitude.roll_deg,
-        )
-    )
-    assert all(instance.asset_id.startswith("plane_") for instance in plan.asset_instances)
+    assert all(instance.asset_id == "plane_blue" for instance in plan.asset_instances[1:])
+    assert set(plan.asset_ids) == {"plane_blue", "plane_red"}
 
 
-def test_trace_test_2_scene_plan_uses_plane_mesh_instances_and_tangent_hpr() -> None:
+def test_trace_test_2_scene_plan_builds_real_world_camera_and_practice_ghosts() -> None:
     payload = _trace_test_2_payload()
-    scene = TraceTest2GlScene(world=pygame.Rect(0, 0, 640, 360), payload=payload)
+    scene = TraceTest2GlScene(
+        world=pygame.Rect(0, 0, 640, 360),
+        payload=payload,
+        practice_mode=True,
+    )
 
     plan = _build_trace_test_2_scene_plan(scene)
 
     assert plan.camera is not None
-    assert plan.camera.position[1] <= -70.0
-    assert plan.camera.h_fov_deg <= 40.0
-    assert plan.asset_ids == ("plane_blue", "plane_green", "plane_red", "plane_yellow")
     assert plan.overlay_primitives == ()
-    assert plan.entity_count == len(payload.aircraft)
-    for instance, track in zip(plan.asset_instances, payload.aircraft, strict=True):
-        tangent = trace_test_2_track_tangent(track=track, progress=payload.observe_progress)
-        assert instance.asset_id.startswith("plane_")
-        assert instance.hpr_deg == pytest.approx(_world_hpr_from_tangent(tangent=tangent, roll_deg=0.0))
+    assert len(plan.asset_instances) == plan.entity_count
+    assert plan.entity_count > len(payload.aircraft)
+    assert {"plane_blue", "plane_green", "plane_red", "plane_yellow"} >= set(plan.asset_ids)
+
+
+def test_trace_test_1_draw_scene_invokes_shared_world_scene_renderer(monkeypatch) -> None:
+    renderer = _build_pipeline_probe_renderer()
+    scene = TraceTest1GlScene(world=pygame.Rect(0, 0, 640, 360), payload=_trace_test_1_payload())
+    scene_plan = _build_trace_test_1_scene_plan(scene)
+    calls: list[int] = []
+
+    monkeypatch.setattr(
+        renderer,
+        "_render_scene_plan",
+        lambda *, scene_plan: calls.append(len(scene_plan.asset_instances)),
+    )
+
+    entity_count = renderer._draw_trace_test_1_scene(scene=scene, scene_plan=scene_plan)
+
+    assert entity_count == scene_plan.entity_count
+    assert calls == [scene_plan.entity_count]
+    assert renderer._batch.triangles
+
+
+def test_trace_test_2_draw_scene_invokes_shared_world_scene_renderer(monkeypatch) -> None:
+    renderer = _build_pipeline_probe_renderer()
+    scene = TraceTest2GlScene(
+        world=pygame.Rect(0, 0, 640, 360),
+        payload=_trace_test_2_payload(),
+        practice_mode=True,
+    )
+    scene_plan = _build_trace_test_2_scene_plan(scene)
+    calls: list[int] = []
+
+    monkeypatch.setattr(
+        renderer,
+        "_render_scene_plan",
+        lambda *, scene_plan: calls.append(len(scene_plan.asset_instances)),
+    )
+
+    entity_count = renderer._draw_trace_test_2_scene(scene=scene, scene_plan=scene_plan)
+
+    assert entity_count == scene_plan.entity_count
+    assert calls == [scene_plan.entity_count]
+    assert renderer._batch.triangles
 
 
 def test_trace_marker_projection_preserves_heading_bank_and_stable_translation() -> None:

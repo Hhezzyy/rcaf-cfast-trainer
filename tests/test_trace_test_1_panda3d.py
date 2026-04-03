@@ -1,9 +1,18 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import sys
+from importlib.machinery import ModuleSpec
+from types import ModuleType
+import os
 
 import pygame
 import pytest
+
+if "moderngl" not in sys.modules:
+    moderngl_stub = ModuleType("moderngl")
+    moderngl_stub.__spec__ = ModuleSpec("moderngl", loader=None)
+    sys.modules["moderngl"] = moderngl_stub
 
 from cfast_trainer.app import App, CognitiveTestScreen, MenuItem, MenuScreen
 from cfast_trainer.trace_lattice import TraceLatticeAction, trace_lattice_state
@@ -84,6 +93,8 @@ def _panda_hpr_for_prompt(
 
 
 def _run_probe() -> dict[str, object]:
+    previous_driver = os.environ.get("SDL_VIDEODRIVER")
+    os.environ["SDL_VIDEODRIVER"] = "dummy"
     pygame.init()
     screen: CognitiveTestScreen | None = None
     try:
@@ -122,6 +133,10 @@ def _run_probe() -> dict[str, object]:
             if callable(close):
                 close()
         pygame.quit()
+        if previous_driver is None:
+            os.environ.pop("SDL_VIDEODRIVER", None)
+        else:
+            os.environ["SDL_VIDEODRIVER"] = previous_driver
 
 
 def test_panda3d_trace_test_1_rendering_disabled_for_dummy_video(monkeypatch) -> None:
@@ -142,16 +157,30 @@ def test_panda3d_trace_test_1_rendering_ignores_non_panda_preference(monkeypatch
     assert panda3d_trace_test_1_rendering_available() is True
 
 
-def test_trace_test_1_panda_hpr_tracks_world_orientation_for_all_commands() -> None:
+def test_trace_test_1_panda_hpr_tracks_trace_screen_pose_for_all_commands() -> None:
     assert _panda_hpr_for_prompt(_manual_prompt(TraceTest1Command.LEFT), progress=0.68) == pytest.approx((270.0, 0.0, 0.0))
     assert _panda_hpr_for_prompt(_manual_prompt(TraceTest1Command.RIGHT), progress=0.68) == pytest.approx((90.0, 0.0, 0.0))
-    assert _panda_hpr_for_prompt(_manual_prompt(TraceTest1Command.PUSH), progress=0.68) == pytest.approx((0.0, 90.0, 0.0))
+    assert _panda_hpr_for_prompt(_manual_prompt(TraceTest1Command.PUSH), progress=0.68) == pytest.approx((180.0, 90.0, 0.0))
     assert _panda_hpr_for_prompt(_manual_prompt(TraceTest1Command.PULL), progress=0.68) == pytest.approx((0.0, -90.0, 0.0))
 
 
-def test_trace_test_1_panda_hpr_stays_neutral_during_lead_in() -> None:
-    assert _panda_hpr_for_prompt(_manual_prompt(TraceTest1Command.LEFT), progress=0.18) == pytest.approx((0.0, 0.0, 0.0))
-    assert _panda_hpr_for_prompt(_manual_prompt(TraceTest1Command.PUSH), progress=0.18) == pytest.approx((0.0, 0.0, 0.0))
+def test_trace_test_1_panda_hpr_matches_shared_lead_in_screen_heading() -> None:
+    assert _panda_hpr_for_prompt(_manual_prompt(TraceTest1Command.LEFT), progress=0.18) == pytest.approx((19.536654938128393, 0.0, 0.0))
+    assert _panda_hpr_for_prompt(_manual_prompt(TraceTest1Command.PUSH), progress=0.18) == pytest.approx((19.536654938128393, 0.0, 0.0))
+
+
+def test_panda3d_trace_test_1_rendering_returns_false_when_direct_is_missing(monkeypatch) -> None:
+    monkeypatch.delenv("SDL_VIDEODRIVER", raising=False)
+
+    def _missing(_name: str):
+        raise ModuleNotFoundError("direct")
+
+    monkeypatch.setattr(
+        "cfast_trainer.trace_test_1_panda3d.importlib.util.find_spec",
+        _missing,
+    )
+
+    assert panda3d_trace_test_1_rendering_available() is False
 
 
 def test_trace_test_1_panda_hpr_sampling_is_deterministic_for_same_seed() -> None:
@@ -195,7 +224,7 @@ def test_trace_test_1_panda_hpr_sampling_is_deterministic_for_same_seed() -> Non
     assert samples_a == samples_b
 
 
-def test_trace_test_1_panda_hpr_uses_frame_attitude_without_anchor_fallback() -> None:
+def test_trace_test_1_panda_hpr_uses_trace_command_fallback_when_frame_motion_decays() -> None:
     prompt = _manual_prompt(TraceTest1Command.LEFT)
     progress = 0.68
     frame = trace_test_1_scene_frames(prompt=prompt, progress=progress).red_frame
@@ -214,7 +243,7 @@ def test_trace_test_1_panda_hpr_uses_frame_attitude_without_anchor_fallback() ->
         size=(640, 640),
     )
 
-    assert hpr == pytest.approx((0.0, 0.0, 0.0))
+    assert hpr == pytest.approx((290.0, 0.0, 0.0))
 
 
 def test_trace_test_1_screen_queues_modern_gl_runtime() -> None:

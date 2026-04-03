@@ -8,9 +8,16 @@ os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 
 import pygame
 
-from cfast_trainer.app import App, CognitiveTestScreen, DifficultySettingsStore, MenuItem, MenuScreen
+from cfast_trainer.app import (
+    App,
+    CognitiveTestScreen,
+    DifficultySettingsStore,
+    MenuItem,
+    MenuScreen,
+)
 from cfast_trainer.cognitive_core import Phase, Problem
 from cfast_trainer.cognitive_core import TestSnapshot as SnapshotModel
+from cfast_trainer.digit_recognition import build_digit_recognition_test
 
 
 class FakeClock:
@@ -78,7 +85,9 @@ class _ReviewEngine:
         return
 
 
-def _build_screen(*, tmp_path, review_mode: bool, payload: object | None) -> tuple[CognitiveTestScreen, FakeClock]:
+def _build_screen(
+    *, tmp_path, review_mode: bool, payload: object | None
+) -> tuple[CognitiveTestScreen, FakeClock]:
     pygame.init()
     surface = pygame.display.set_mode((960, 540))
     font = pygame.font.Font(None, 36)
@@ -88,9 +97,55 @@ def _build_screen(*, tmp_path, review_mode: bool, payload: object | None) -> tup
     app.push(MenuScreen(app, "Main", [MenuItem("Quit", app.quit)], is_root=True))
     clock = FakeClock()
     engine = _ReviewEngine(clock=clock, payload=payload)
-    screen = CognitiveTestScreen(app, engine_factory=lambda: engine, test_code="numerical_operations")
+    screen = CognitiveTestScreen(
+        app, engine_factory=lambda: engine, test_code="numerical_operations"
+    )
     app.push(screen)
     return screen, clock
+
+
+def _build_digit_recognition_screen(
+    *,
+    tmp_path,
+    review_mode: bool,
+    clock: FakeClock,
+    seed: int = 17,
+) -> CognitiveTestScreen:
+    pygame.init()
+    surface = pygame.display.set_mode((960, 540))
+    font = pygame.font.Font(None, 36)
+    store = DifficultySettingsStore(tmp_path / "difficulty-settings.json")
+    store.set_review_mode_enabled(review_mode)
+    app = App(surface=surface, font=font, difficulty_settings_store=store)
+    app.push(MenuScreen(app, "Main", [MenuItem("Quit", app.quit)], is_root=True))
+    screen = CognitiveTestScreen(
+        app,
+        engine_factory=lambda: build_digit_recognition_test(
+            clock=clock,
+            seed=seed,
+            practice=True,
+            scored_duration_s=10.0,
+        ),
+        test_code="digit_recognition",
+    )
+    app.push(screen)
+    return screen
+
+
+def _advance_digit_recognition_to_question(clock: FakeClock, screen: CognitiveTestScreen) -> None:
+    screen._engine.start_practice()
+    clock.advance(1.3)
+    screen._engine.update()
+    clock.advance(0.3)
+    screen._engine.update()
+
+
+def _wrong_digit_answer(expected: str) -> str:
+    if len(expected) > 1:
+        replacement = "0" if expected[-1] != "0" else "1"
+        return expected[:-1] + replacement
+    replacement = (int(expected) + 1) % 10
+    return str(replacement)
 
 
 def test_review_mode_pauses_after_typed_submit_until_second_enter(tmp_path) -> None:
@@ -154,6 +209,85 @@ def test_review_mode_off_keeps_fast_submit_behavior(tmp_path) -> None:
         )
 
         assert screen._review_state is None
+        assert screen._input == ""
+    finally:
+        pygame.quit()
+
+
+def test_digit_recognition_review_mode_shows_correct_answer_for_wrong_submit(tmp_path) -> None:
+    clock = FakeClock()
+    screen = _build_digit_recognition_screen(
+        tmp_path=tmp_path,
+        review_mode=True,
+        clock=clock,
+    )
+    try:
+        _advance_digit_recognition_to_question(clock, screen)
+        trial = screen._engine._current
+        assert trial is not None
+        wrong_answer = _wrong_digit_answer(trial.expected)
+
+        screen._input = wrong_answer
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "mod": 0, "unicode": ""})
+        )
+
+        assert screen._review_state is not None
+        assert screen._review_state.submitted_raw == wrong_answer
+        assert screen._review_state.correct_answer_text == trial.expected
+        assert screen._review_state.blocks_runtime is True
+        assert screen._review_clock is not None
+        assert screen._review_clock.is_paused() is True
+    finally:
+        pygame.quit()
+
+
+def test_digit_recognition_review_mode_shows_correct_answer_for_correct_submit(tmp_path) -> None:
+    clock = FakeClock()
+    screen = _build_digit_recognition_screen(
+        tmp_path=tmp_path,
+        review_mode=True,
+        clock=clock,
+        seed=23,
+    )
+    try:
+        _advance_digit_recognition_to_question(clock, screen)
+        trial = screen._engine._current
+        assert trial is not None
+
+        screen._input = trial.expected
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "mod": 0, "unicode": ""})
+        )
+
+        assert screen._review_state is not None
+        assert screen._review_state.submitted_raw == trial.expected
+        assert screen._review_state.correct_answer_text == trial.expected
+    finally:
+        pygame.quit()
+
+
+def test_digit_recognition_without_review_mode_keeps_answer_hidden(tmp_path) -> None:
+    clock = FakeClock()
+    screen = _build_digit_recognition_screen(
+        tmp_path=tmp_path,
+        review_mode=False,
+        clock=clock,
+        seed=31,
+    )
+    try:
+        _advance_digit_recognition_to_question(clock, screen)
+        trial = screen._engine._current
+        assert trial is not None
+        wrong_answer = _wrong_digit_answer(trial.expected)
+
+        screen._input = wrong_answer
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "mod": 0, "unicode": ""})
+        )
+
+        assert screen._review_state is None
+        assert screen._engine.snapshot().practice_feedback is None
         assert screen._input == ""
     finally:
         pygame.quit()

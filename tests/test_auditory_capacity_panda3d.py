@@ -1,9 +1,17 @@
 from __future__ import annotations
 
+import sys
 from dataclasses import replace
+from importlib.machinery import ModuleSpec
+from types import ModuleType
 
 import pygame
 import pytest
+
+if "moderngl" not in sys.modules:
+    moderngl_stub = ModuleType("moderngl")
+    moderngl_stub.__spec__ = ModuleSpec("moderngl", loader=None)
+    sys.modules["moderngl"] = moderngl_stub
 
 from cfast_trainer.app import (
     App,
@@ -141,6 +149,16 @@ def test_panda3d_auditory_rendering_ignores_non_panda_preference(monkeypatch) ->
     )
 
     assert panda3d_auditory_rendering_available() is True
+
+
+def test_panda3d_auditory_rendering_handles_missing_direct_package(monkeypatch) -> None:
+    monkeypatch.delenv("SDL_VIDEODRIVER", raising=False)
+    monkeypatch.setattr(
+        "cfast_trainer.auditory_capacity_panda3d.importlib.util.find_spec",
+        lambda _name: (_ for _ in ()).throw(ModuleNotFoundError("direct")),
+    )
+
+    assert panda3d_auditory_rendering_available() is False
 
 
 def test_auditory_screen_queues_gl_runtime_when_opengl_enabled(
@@ -310,6 +328,32 @@ def test_camera_is_stable_across_ball_offsets() -> None:
         cam_pos_b = renderer._base.cam.getPos()
 
         assert tuple(cam_pos_b) == pytest.approx(tuple(cam_pos_a))
+    finally:
+        renderer.close()
+
+
+def test_camera_advances_with_ball_forward_progress() -> None:
+    if not panda3d_auditory_rendering_available():
+        pytest.skip("Panda3D unavailable")
+
+    renderer = AuditoryCapacityPanda3DRenderer(size=(640, 360))
+    try:
+        near_payload = replace(
+            _payload_with_gate(x_norm=0.85, slot_index=7),
+            ball_forward_norm=float(BALL_FORWARD_IDLE_NORM),
+        )
+        far_payload = replace(
+            near_payload,
+            ball_forward_norm=0.74,
+        )
+
+        renderer._update_ball(payload=near_payload)
+        cam_pos_a = renderer._base.cam.getPos()
+        renderer._update_ball(payload=far_payload)
+        cam_pos_b = renderer._base.cam.getPos()
+
+        assert float(cam_pos_b[1]) > float(cam_pos_a[1])
+        assert float(cam_pos_b[0]) > float(cam_pos_a[0])
     finally:
         renderer.close()
 

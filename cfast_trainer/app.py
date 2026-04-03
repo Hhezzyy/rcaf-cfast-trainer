@@ -238,6 +238,7 @@ from .instrument_aircraft_cards import (
 )
 from .instrument_comprehension import (
     InstrumentAircraftViewPreset,
+    InstrumentComprehensionInstructionPage,
     InstrumentComprehensionPayload,
     InstrumentHeadingDisplayMode,
     InstrumentComprehensionTrialKind,
@@ -416,10 +417,13 @@ from .target_recognition import (
     build_target_recognition_test,
 )
 from .tr_drills import (
+    build_tr_category_sweep_drill,
+    build_tr_damaged_sweep_drill,
     build_tr_light_anchor_drill,
     build_tr_mixed_tempo_drill,
     build_tr_panel_switch_run_drill,
     build_tr_pressure_run_drill,
+    build_tr_priority_sweep_drill,
     build_tr_scan_anchor_drill,
     build_tr_scene_anchor_drill,
     build_tr_scene_modifier_run_drill,
@@ -4050,6 +4054,85 @@ class App:
     def set_surface(self, surface: pygame.Surface) -> None:
         self._surface = surface
 
+    def _window_pointer_space(self) -> tuple[int, int] | None:
+        get_window_size = getattr(pygame.display, "get_window_size", None)
+        if not callable(get_window_size):
+            return None
+        try:
+            raw_size = get_window_size()
+        except Exception:
+            return None
+        try:
+            width = max(1, int(raw_size[0]))
+            height = max(1, int(raw_size[1]))
+        except Exception:
+            return None
+        return (width, height)
+
+    def _surface_pointer_space(self) -> tuple[int, int]:
+        return (
+            max(1, int(self._surface.get_width())),
+            max(1, int(self._surface.get_height())),
+        )
+
+    @staticmethod
+    def _scale_pointer_component(value: object, *, src: int, dst: int) -> int:
+        try:
+            numeric = float(value)
+        except Exception:
+            numeric = 0.0
+        scaled = int(round(numeric * (float(dst) / float(max(1, src)))))
+        return max(0, min(dst - 1, scaled))
+
+    @staticmethod
+    def _scale_pointer_delta(value: object, *, src: int, dst: int) -> int:
+        try:
+            numeric = float(value)
+        except Exception:
+            numeric = 0.0
+        return int(round(numeric * (float(dst) / float(max(1, src)))))
+
+    def _normalize_pointer_event(self, event: pygame.event.Event) -> pygame.event.Event:
+        if event.type not in (
+            pygame.MOUSEMOTION,
+            pygame.MOUSEBUTTONDOWN,
+            pygame.MOUSEBUTTONUP,
+        ):
+            return event
+        window_space = self._window_pointer_space()
+        if window_space is None:
+            return event
+        surface_space = self._surface_pointer_space()
+        if surface_space == window_space:
+            return event
+
+        payload = dict(getattr(event, "dict", {}))
+        pos = payload.get("pos")
+        if isinstance(pos, tuple) and len(pos) >= 2:
+            payload["pos"] = (
+                self._scale_pointer_component(pos[0], src=window_space[0], dst=surface_space[0]),
+                self._scale_pointer_component(pos[1], src=window_space[1], dst=surface_space[1]),
+            )
+        if "x" in payload:
+            payload["x"] = self._scale_pointer_component(
+                payload["x"],
+                src=window_space[0],
+                dst=surface_space[0],
+            )
+        if "y" in payload:
+            payload["y"] = self._scale_pointer_component(
+                payload["y"],
+                src=window_space[1],
+                dst=surface_space[1],
+            )
+        rel = payload.get("rel")
+        if isinstance(rel, tuple) and len(rel) >= 2:
+            payload["rel"] = (
+                self._scale_pointer_delta(rel[0], src=window_space[0], dst=surface_space[0]),
+                self._scale_pointer_delta(rel[1], src=window_space[1], dst=surface_space[1]),
+            )
+        return pygame.event.Event(event.type, payload)
+
     def set_opengl_enabled(self, enabled: bool) -> None:
         self._opengl_enabled = bool(enabled)
         if not self._opengl_enabled:
@@ -4126,6 +4209,10 @@ class App:
         warning = None
         if self._headless_mode:
             warning = "HEADLESS"
+        elif self.used_renderer_fallback():
+            warning = "FALLBACK"
+        elif self.used_failure_recovery():
+            warning = "RECOVERED"
         return RunStateIndicator(
             shell_state=shell_state,
             display_mode=str(self._window_mode).upper(),
@@ -4135,7 +4222,7 @@ class App:
         )
 
     def used_renderer_fallback(self) -> bool:
-        return False
+        return bool(self._renderer_fallback_used)
 
     def used_failure_recovery(self) -> bool:
         return bool(self._failure_recovery_used)
@@ -4173,7 +4260,11 @@ class App:
         return action
 
     def note_renderer_fallback(self) -> None:
-        return
+        self._renderer_fallback_used = True
+
+    def _should_render_run_state_indicator(self) -> bool:
+        state = self.current_run_state()
+        return self._dev_tools_enabled or state.warning is not None
 
     def set_renderer_path(self, path: str) -> None:
         token = str(path).strip().upper()
@@ -4419,6 +4510,7 @@ class App:
         self.quit(exit_reason=str(reason), exit_code=1)
 
     def handle_event(self, event: pygame.event.Event) -> None:
+        event = self._normalize_pointer_event(event)
         if event.type == pygame.QUIT:
             self.quit()
             return
@@ -4577,7 +4669,8 @@ class App:
         if self._shell_pause_active and not self._shell_pause_delegates_to_screen(self._current_screen()):
             self._render_shell_pause_overlay(self._surface)
         self._render_menu_banner(self._surface)
-        self._render_run_state_indicator(self._surface)
+        if self._should_render_run_state_indicator():
+            self._render_run_state_indicator(self._surface)
 
     def queue_gl_scene(self, scene: GlScene) -> None:
         if not self._opengl_enabled:
@@ -6001,8 +6094,18 @@ class BenchmarkScreen(_SharedPauseMenuMixin):
             if not self._pause_menu_active:
                 self._session.sync_runtime()
             latest = self._session.snapshot()
+            latest_engine = self._session.current_engine()
+            latest_engine_id = None if latest_engine is None else id(latest_engine)
+            if latest.stage is BenchmarkStage.PROBE and latest_engine_id != self._runtime_engine_id:
+                self._ensure_runtime_screen()
+                runtime = cast(CognitiveTestScreen | None, self._runtime_screen)
+                if runtime is not None:
+                    runtime._set_external_pause_state(self._pause_menu_active)
+                    runtime.render(surface)
+                latest = self._session.snapshot()
             if latest.stage is BenchmarkStage.PROBE:
-                self._render_probe_overlay(surface, latest)
+                if self._should_render_probe_overlay():
+                    self._render_probe_overlay(surface, latest)
                 if self._pause_menu_active:
                     self._render_pause_overlay(surface)
                 return
@@ -6231,6 +6334,9 @@ class BenchmarkScreen(_SharedPauseMenuMixin):
             hint_text = "Enter or Backspace: Exit"
         hint = self._tiny_font.render(hint_text, True, (188, 204, 228))
         surface.blit(hint, hint.get_rect(midbottom=(panel.centerx, panel.bottom - 18)))
+
+    def _should_render_probe_overlay(self) -> bool:
+        return bool(self._app.dev_tools_enabled())
 
     def _render_probe_overlay(self, surface: pygame.Surface, snap: object) -> None:
         overlay = pygame.Rect(18, 14, min(500, surface.get_width() - 36), 88)
@@ -10044,6 +10150,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         # Airborne-specific UI state (hold-to-show overlays).
         self._air_overlay: str | None = None  # "intro" | "fuel" | "parcel"
         self._air_show_distances = False
+        self._air_overlay_keyboard_state: set[int] = set()
 
         # Cached procedural sprites for Instrument Comprehension dials.
         self._instrument_sprite_cache: dict[tuple[object, ...], pygame.Surface] = {}
@@ -10373,10 +10480,34 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 y += line_h
             y += 2
 
+    def _instrument_instruction_page(
+        self,
+        snap: TestSnapshot,
+    ) -> InstrumentComprehensionInstructionPage | None:
+        if not str(snap.title).startswith("Instrument Comprehension"):
+            return None
+        if snap.phase not in (Phase.INSTRUCTIONS, Phase.PRACTICE_DONE):
+            return None
+
+        get_page = getattr(self._engine, "instruction_page", None)
+        if not callable(get_page):
+            return None
+
+        page = get_page()
+        if not isinstance(page, InstrumentComprehensionInstructionPage):
+            return None
+        if page.title.strip() == "" or not any(line.strip() for line in page.guidance):
+            raise RuntimeError(
+                "Instrument Comprehension intro screen received an empty instruction page"
+            )
+        return page
+
     def _render_test_intro_overlay(self, surface: pygame.Surface, snap: TestSnapshot) -> None:
         if snap.phase not in (Phase.INSTRUCTIONS, Phase.PRACTICE_DONE):
             return
         if self._test_code is None:
+            return
+        if self._instrument_instruction_page(snap) is not None:
             return
 
         briefing = TEST_GUIDE_BRIEFS.get(self._test_code)
@@ -10578,6 +10709,52 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
     def _clear_camera_keyboard_state(self) -> None:
         self._camera_keyboard_state.clear()
 
+    def _update_airborne_overlay_keyboard_state(self, event: pygame.event.Event) -> None:
+        tracked = {
+            pygame.K_a,
+            pygame.K_s,
+            pygame.K_d,
+            pygame.K_f,
+        }
+        if event.type == pygame.KEYDOWN and event.key in tracked:
+            self._air_overlay_keyboard_state.add(int(event.key))
+        elif event.type == pygame.KEYUP and event.key in tracked:
+            self._air_overlay_keyboard_state.discard(int(event.key))
+
+    def _clear_airborne_overlay_state(self) -> None:
+        self._air_overlay_keyboard_state.clear()
+        self._air_overlay = None
+        self._air_show_distances = False
+
+    @staticmethod
+    def _keyboard_key_active(key: int, fallback_state: set[int]) -> bool:
+        try:
+            if bool(pygame.key.get_pressed()[key]):
+                return True
+        except Exception:
+            pass
+        return int(key) in fallback_state
+
+    def _sync_airborne_overlay_state(self, scenario: AirborneScenario | None) -> None:
+        if scenario is None:
+            self._clear_airborne_overlay_state()
+            return
+
+        held_state = self._air_overlay_keyboard_state
+        self._air_show_distances = self._keyboard_key_active(pygame.K_a, held_state)
+
+        held_overlays = {
+            "intro": self._keyboard_key_active(pygame.K_s, held_state),
+            "fuel": self._keyboard_key_active(pygame.K_d, held_state),
+            "parcel": self._keyboard_key_active(pygame.K_f, held_state),
+        }
+        if self._air_overlay in held_overlays and held_overlays[self._air_overlay]:
+            return
+        self._air_overlay = next(
+            (token for token in ("parcel", "fuel", "intro") if held_overlays[token]),
+            None,
+        )
+
     def _runtime_frozen(self) -> bool:
         return bool(
             self._pause_menu_active
@@ -10611,10 +10788,12 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             self._pause_settings_selected = 0
             self._staged_difficulty_level = self._current_engine_difficulty_level()
             self._clear_camera_keyboard_state()
+            self._clear_airborne_overlay_state()
             self._stop_auditory_audio()
             self._stop_situational_awareness_audio()
         else:
             self._clear_camera_keyboard_state()
+            self._clear_airborne_overlay_state()
             self._pause_menu_mode = "menu"
             self._staged_difficulty_level = None
         self._sync_pausable_clock_state()
@@ -10698,6 +10877,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
 
     def handle_event(self, event: pygame.event.Event) -> None:
         self._update_camera_keyboard_state(event)
+        self._update_airborne_overlay_keyboard_state(event)
         self._expire_review_state_if_needed()
         snap = self._engine.snapshot()
         self._sync_intro_loading_state(snap.phase)
@@ -10838,26 +11018,10 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             dr = cast(DigitRecognitionPayload, p)
         if dr is not None and not dr.accepting_input:
             return
-        # Airborne: hold-to-show overlays.
-        if scenario is not None:
-            if event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_s:
-                    self._air_overlay = "intro"
-                elif event.key == pygame.K_d:
-                    self._air_overlay = "fuel"
-                elif event.key == pygame.K_f:
-                    self._air_overlay = "parcel"
-                elif event.key == pygame.K_a:
-                    self._air_show_distances = True
-            elif event.type == pygame.KEYUP:
-                if event.key == pygame.K_a:
-                    self._air_show_distances = False
-                elif event.key == pygame.K_s and self._air_overlay == "intro":
-                    self._air_overlay = None
-                elif event.key == pygame.K_d and self._air_overlay == "fuel":
-                    self._air_overlay = None
-                elif event.key == pygame.K_f and self._air_overlay == "parcel":
-                    self._air_overlay = None
+        # Airborne: hold-to-show overlays follow the actual current held key state.
+        if scenario is not None and event.type in (pygame.KEYDOWN, pygame.KEYUP):
+            if event.key in (pygame.K_a, pygame.K_s, pygame.K_d, pygame.K_f):
+                self._sync_airborne_overlay_state(scenario)
 
         if (
             event.type == pygame.JOYBUTTONDOWN
@@ -10897,24 +11061,6 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             and not self._app.has_explicit_action_binding("auditory_trigger")
         ):
             self._engine.submit_answer("TRIGGER")
-            return
-
-        if (
-            event.type == pygame.MOUSEBUTTONDOWN
-            and rapid_tracking_payload is not None
-            and snap.phase in (Phase.PRACTICE, Phase.SCORED)
-            and getattr(event, "button", 0) == 1
-        ):
-            self._engine.submit_answer("CAPTURE_HOLD_START")
-            return
-
-        if (
-            event.type == pygame.MOUSEBUTTONUP
-            and rapid_tracking_payload is not None
-            and snap.phase in (Phase.PRACTICE, Phase.SCORED)
-            and getattr(event, "button", 0) == 1
-        ):
-            self._engine.submit_answer("CAPTURE_HOLD_END")
             return
 
         if (
@@ -11068,10 +11214,10 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         ):
             pos = getattr(event, "pos", None)
             if pos is not None:
-                if cln_payload.options_active:
+                if bool(getattr(cln_payload, "memory_active", True)) and cln_payload.options_active:
                     for code, rect in self._cln_option_hitboxes.items():
                         if rect.collidepoint(pos):
-                            self._engine.submit_answer(f"MEM:{code}")
+                            self._submit_cln_memory_choice(int(code))
                             return
                 if bool(getattr(cln_payload, "secondary_math_choice_active", False)):
                     for code, rect in self._cln_secondary_math_hitboxes.items():
@@ -11300,15 +11446,6 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                         self._cognitive_updating_refresh_runtime_state()
                         return
 
-        if (
-            event.type == pygame.KEYUP
-            and rapid_tracking_payload is not None
-            and snap.phase in (Phase.PRACTICE, Phase.SCORED)
-            and event.key == pygame.K_SPACE
-        ):
-            self._engine.submit_answer("CAPTURE_HOLD_END")
-            return
-
         if event.type != pygame.KEYDOWN:
             return
 
@@ -11505,20 +11642,14 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                     or cln_memory_choice_keys(len(getattr(cln_payload, "options", ())))
                 )
             )
-            memory_key = {
-                pygame.K_a: "A",
-                pygame.K_s: "S",
-                pygame.K_d: "D",
-                pygame.K_f: "F",
-                pygame.K_g: "G",
-                pygame.K_h: "H",
-                pygame.K_j: "J",
-                pygame.K_k: "K",
-                pygame.K_l: "L",
-            }.get(key)
-            if memory_key is not None and cln_payload.options_active:
-                if memory_key in memory_choice_keys:
-                    self._engine.submit_answer(f"MEM:{memory_choice_keys.index(memory_key) + 1}")
+            memory_choice = None
+            if bool(getattr(cln_payload, "memory_active", True)) and cln_payload.options_active:
+                memory_choice = self._cln_memory_choice_from_key(
+                    key=key,
+                    memory_choice_keys=memory_choice_keys,
+                )
+            if memory_choice is not None:
+                if self._submit_cln_memory_choice(memory_choice):
                     return
 
             lane_pairs = cln_lane_key_pairs(
@@ -11532,7 +11663,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 pygame.K_t: "T",
                 pygame.K_y: "Y",
             }.get(key)
-            if color_key is not None:
+            if color_key is not None and bool(getattr(cln_payload, "colour_active", True)):
                 valid_lane_keys = {label for _color, label in lane_pairs}
                 if color_key in valid_lane_keys:
                     self._engine.submit_answer(f"CLR:{color_key}")
@@ -11550,10 +11681,8 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                     self._engine.submit_answer(f"MATH2:{secondary_choice}")
                     return
 
-            if bool(getattr(cln_payload, "math_active", False)):
-                ch = event.unicode
-                if ch and (ch.isdigit() or (ch == "-" and self._input == "")):
-                    self._input += ch
+            if bool(getattr(cln_payload, "math_active", True)):
+                self._append_cln_math_input(event)
                 return
 
             return
@@ -11937,8 +12066,6 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             return
 
         if rapid_tracking_payload is not None:
-            if key == pygame.K_SPACE:
-                self._engine.submit_answer("CAPTURE_HOLD_START")
             return
 
         if tr_payload is not None:
@@ -12733,7 +12860,9 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             elif isinstance(self._engine, RapidTrackingEngine) or str(
                 getattr(self._engine, "_title", "")
             ).startswith("Dual-Task Bridge"):
-                control_x, control_y = self._read_sensory_motor_control()
+                control_x, control_y = self._read_sensory_motor_control(
+                    allow_keyboard_fallback=False
+                )
                 set_control = getattr(self._engine, "set_control", None)
                 if callable(set_control):
                     set_control(horizontal=control_x, vertical=control_y)
@@ -12895,6 +13024,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 dr = p
             elif hasattr(p, "display_digits") and hasattr(p, "accepting_input"):
                 dr = cast(DigitRecognitionPayload, p)
+        self._sync_airborne_overlay_state(scenario)
 
         is_numerical_ops = str(snap.title).startswith("Numerical Operations")
         is_math_reasoning = (
@@ -13426,7 +13556,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             self._vigilance_focus = "row" if row == "" else "col"
             return False
         accepted = self._submit_answer_with_review(f"{row},{col}")
-        if accepted and not self._review_state_active():
+        if accepted:
             self._vigilance_clear_inputs()
             self._input = ""
         return bool(accepted)
@@ -13477,6 +13607,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 RapidTrackingPayload,
                 SensoryMotorApparatusPayload,
                 TargetRecognitionPayload,
+                VigilancePayload,
             ),
         ):
             return False
@@ -13899,6 +14030,79 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         if token.isdigit():
             return self._choice_key_label(int(token))
         return token.upper()
+
+    @staticmethod
+    def _digit_from_key(key: int) -> str | None:
+        return {
+            pygame.K_0: "0",
+            pygame.K_1: "1",
+            pygame.K_2: "2",
+            pygame.K_3: "3",
+            pygame.K_4: "4",
+            pygame.K_5: "5",
+            pygame.K_6: "6",
+            pygame.K_7: "7",
+            pygame.K_8: "8",
+            pygame.K_9: "9",
+            pygame.K_KP0: "0",
+            pygame.K_KP1: "1",
+            pygame.K_KP2: "2",
+            pygame.K_KP3: "3",
+            pygame.K_KP4: "4",
+            pygame.K_KP5: "5",
+            pygame.K_KP6: "6",
+            pygame.K_KP7: "7",
+            pygame.K_KP8: "8",
+            pygame.K_KP9: "9",
+        }.get(key)
+
+    @staticmethod
+    def _cln_memory_key_label(key: int) -> str | None:
+        return {
+            pygame.K_a: "A",
+            pygame.K_s: "S",
+            pygame.K_d: "D",
+            pygame.K_f: "F",
+            pygame.K_g: "G",
+            pygame.K_h: "H",
+            pygame.K_j: "J",
+            pygame.K_k: "K",
+            pygame.K_l: "L",
+        }.get(key)
+
+    @classmethod
+    def _cln_memory_choice_from_key(
+        cls,
+        *,
+        key: int,
+        memory_choice_keys: tuple[str, ...],
+    ) -> int | None:
+        label = cls._cln_memory_key_label(key)
+        if label is None:
+            return None
+        try:
+            return tuple(str(item).upper() for item in memory_choice_keys).index(label) + 1
+        except ValueError:
+            return None
+
+    def _submit_cln_memory_choice(self, choice: int) -> bool:
+        return bool(self._engine.submit_answer(f"MEM:{int(choice)}"))
+
+    def _append_cln_math_input(self, event: pygame.event.Event) -> bool:
+        ch = str(getattr(event, "unicode", "") or "")
+        if ch and ch.isdigit():
+            self._input += ch
+            return True
+        digit = self._digit_from_key(int(getattr(event, "key", 0)))
+        if digit is not None:
+            self._input += digit
+            return True
+        if self._input == "" and (
+            ch == "-" or int(getattr(event, "key", 0)) in (pygame.K_MINUS, pygame.K_KP_MINUS)
+        ):
+            self._input = "-"
+            return True
+        return False
 
     def _resolve_live_answer_mode(
         self,
@@ -14393,7 +14597,34 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         *,
         control_mode: str = "split",
         axis_focus: str = "both",
+        allow_keyboard_fallback: bool = True,
     ) -> tuple[float, float]:
+        def _fallback_axis_value(
+            joystick: pygame.joystick.Joystick | None,
+            axis_index: int,
+        ) -> float:
+            if joystick is None:
+                return 0.0
+            try:
+                axis_count = int(joystick.get_numaxes())
+            except Exception:
+                axis_count = 0
+            if axis_index < 0 or axis_index >= axis_count:
+                return 0.0
+            profiles = self._app.input_profiles_store()
+            raw = _axis_raw_value(joystick, axis_index)
+            if profiles is None:
+                return raw
+            try:
+                profile = profiles.active_profile()
+            except Exception:
+                return raw
+            settings = profiles.get_axis_calibration(
+                profile_id=profile.profile_id,
+                axis_key=_axis_key(joystick, axis_index),
+            )
+            return _apply_axis_calibration(raw, settings)
+
         keys = pygame.key.get_pressed()
         keyboard_state = self._camera_keyboard_state
 
@@ -14424,13 +14655,13 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         if explicit_primary_vertical:
             vertical = float(self._app.bound_axis_role_value("primary_vertical") or 0.0)
         elif primary is not None and primary_axis_count > 1:
-            vertical = max(-1.0, min(1.0, float(primary.get_axis(1))))
+            vertical = _fallback_axis_value(primary, 1)
 
         if mode == "joystick_only":
             if explicit_primary_horizontal:
                 horizontal = float(self._app.bound_axis_role_value("primary_horizontal") or 0.0)
             elif primary is not None and primary_axis_count > 0:
-                horizontal = max(-1.0, min(1.0, float(primary.get_axis(0))))
+                horizontal = _fallback_axis_value(primary, 0)
         else:
             if explicit_rudder_horizontal:
                 horizontal = float(self._app.bound_axis_role_value("rudder_horizontal") or 0.0)
@@ -14449,7 +14680,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                     preferred_indices = (3, 2, 0, 1)
                     for idx in preferred_indices:
                         if idx < device_axis_count:
-                            rudder_value = max(-1.0, min(1.0, float(device.get_axis(idx))))
+                            rudder_value = _fallback_axis_value(device, idx)
                             break
                     if rudder_value is not None:
                         break
@@ -14458,13 +14689,17 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 if rudder_value is None:
                     for idx in (3, 4, 5, 2, 1, 0):
                         if idx < primary_axis_count:
-                            rudder_value = max(-1.0, min(1.0, float(primary.get_axis(idx))))
+                            rudder_value = _fallback_axis_value(primary, idx)
                             break
 
                 horizontal = 0.0 if rudder_value is None else rudder_value
 
-        out_horizontal = key_horizontal if abs(key_horizontal) > 0.001 else horizontal
-        out_vertical = key_vertical if abs(key_vertical) > 0.001 else vertical
+        if allow_keyboard_fallback:
+            out_horizontal = key_horizontal if abs(key_horizontal) > 0.001 else horizontal
+            out_vertical = key_vertical if abs(key_vertical) > 0.001 else vertical
+        else:
+            out_horizontal = horizontal
+            out_vertical = vertical
         focus = str(axis_focus).strip().lower()
         if focus == "horizontal":
             out_vertical = 0.0
@@ -14640,7 +14875,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             )
 
         if snap.phase in (Phase.INSTRUCTIONS, Phase.PRACTICE_DONE):
-            footer = "Enter: Continue  |  Esc/Backspace: Back"
+            footer = "Enter: Continue  |  Esc/Backspace: Pause"
         elif snap.phase in (Phase.PRACTICE, Phase.SCORED):
             if payload is not None and payload.control_mode == "joystick_only":
                 footer = "Joystick X controls left/right; joystick axis 1 controls up/down."
@@ -14650,8 +14885,9 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 footer = f"{footer} Vertical input ignored."
             elif payload is not None and payload.axis_focus == "vertical":
                 footer = f"{footer} Horizontal input ignored."
+            footer = f"{footer}  |  Esc/Backspace: Pause"
         else:
-            footer = "Enter: Return to Tests"
+            footer = "Enter: Return to Tests  |  Esc/Backspace: Pause"
         foot = self._tiny_font.render(footer, True, text_muted)
         surface.blit(foot, foot.get_rect(midbottom=(frame.centerx, frame.bottom - 10)))
 
@@ -19487,10 +19723,19 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 surface.blit(off_surf, off_surf.get_rect(center=value_rect.center))
             elif panel_key == "scene":
                 lines = list(self._tr_scene_active_targets)
+                objective_label = str(getattr(payload, "scene_objective_label", "")).strip()
                 y = value_rect.y
                 line_h = self._tiny_font.get_linesize() + 1
                 self._tr_scene_target_cap = max(1, value_rect.h // max(1, line_h))
-                lines = lines[: self._tr_scene_target_cap]
+                if objective_label:
+                    objective_surf = self._tiny_font.render(objective_label, True, text_muted)
+                    surface.blit(objective_surf, (value_rect.x, y))
+                    y += line_h
+                    if not lines and not bool(payload.scene_has_target):
+                        lines = ["No live targets"]
+                    lines = lines[: max(0, self._tr_scene_target_cap - 1)]
+                else:
+                    lines = lines[: self._tr_scene_target_cap]
                 for line in lines:
                     surf = self._tiny_font.render(line, True, text_main)
                     surface.blit(surf, (value_rect.x, y))
@@ -19998,6 +20243,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
     def _target_recognition_sync_scene_stream(self, payload: TargetRecognitionPayload) -> None:
         now_ms = pygame.time.get_ticks()
         pid = id(payload)
+        clear_all_targets = bool(getattr(payload, "scene_clear_all_targets", False))
         if self._tr_scene_payload_id != pid:
             self._tr_scene_payload_id = pid
             self._tr_scene_rng = random.Random(
@@ -20007,11 +20253,17 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             self._tr_scene_glyph_order = []
             self._tr_scene_next_glyph_id = 1
             self._tr_scene_symbol_hitboxes = []
-            self._tr_scene_target_queue = (
-                list(payload.scene_target_options) if payload.scene_has_target else []
+            self._tr_scene_target_queue = []
+            self._tr_scene_active_targets = (
+                list(payload.scene_target_options)
+                if payload.scene_has_target and clear_all_targets
+                else []
             )
-            self._tr_scene_active_targets = []
-            self._tr_scene_next_target_add_ms = now_ms + 1200
+            if payload.scene_has_target and not clear_all_targets:
+                self._tr_scene_target_queue = list(payload.scene_target_options)
+                self._tr_scene_next_target_add_ms = now_ms + 1200
+            else:
+                self._tr_scene_next_target_add_ms = 0
             self._tr_scene_anim_frame = 0
             self._tr_scene_last_update_ms = now_ms
             self._tr_scene_base_cache = None
@@ -20075,7 +20327,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 if glyph.alpha < glyph.max_alpha:
                     glyph.alpha = min(glyph.max_alpha, glyph.alpha + fade)
 
-        if payload.scene_has_target:
+        if payload.scene_has_target and not clear_all_targets:
             while now_ms >= self._tr_scene_next_target_add_ms:
                 if (
                     self._tr_scene_target_queue
@@ -20102,7 +20354,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                     self._target_recognition_scene_spawn_interval_ms()
                 )
 
-            self._target_recognition_scene_prune_completed_targets()
+        self._target_recognition_scene_prune_completed_targets()
 
     def _target_recognition_scene_prune_completed_targets(self) -> None:
         if not self._tr_scene_active_targets:
@@ -20126,6 +20378,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         glyph = self._tr_scene_glyphs.get(int(glyph_id))
         if glyph is None:
             return False
+        clear_all_targets = bool(getattr(payload, "scene_clear_all_targets", False))
 
         if glyph.kind == "beacon":
             self._tr_scene_points += 1
@@ -20133,14 +20386,14 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             self._target_recognition_scene_reseed_glyph(
                 payload, glyph, kind="beacon", force_non_target=True
             )
-            return True
+            return not clear_all_targets
         if glyph.kind == "unknown":
             self._tr_scene_points += 1
             self._tr_scene_unknown_hits += 1
             self._target_recognition_scene_reseed_glyph(
                 payload, glyph, kind="unknown", force_non_target=True
             )
-            return True
+            return not clear_all_targets
 
         active = set(self._tr_scene_active_targets)
         hit_target = bool(active.intersection(glyph.matching_labels))
@@ -20151,6 +20404,8 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 payload, glyph, kind="entity", force_non_target=True
             )
             self._target_recognition_scene_prune_completed_targets()
+            if clear_all_targets:
+                return not self._tr_scene_active_targets
             return True
 
         self._tr_scene_misses += 1
@@ -20182,6 +20437,8 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             return
 
         active = set(self._tr_scene_active_targets)
+        if bool(getattr(payload, "scene_clear_all_targets", False)):
+            active = set(payload.scene_target_options)
         for _ in range(72):
             damaged, high_priority = self._target_recognition_scene_roll_modifiers()
             candidate = TargetRecognitionSceneEntity(
@@ -21915,6 +22172,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             surface,
             scene,
             payload=payload,
+            practice_mode=snap.phase is Phase.PRACTICE,
         )
 
     def _draw_trace_test_1_scene(
@@ -21923,6 +22181,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         rect: pygame.Rect,
         *,
         payload: TraceTest1Payload | None,
+        practice_mode: bool,
     ) -> None:
         if self._app.opengl_enabled:
             surface.fill((0, 0, 0, 0), rect)
@@ -21933,6 +22192,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                     TraceTest1GlScene(
                         world=pygame.Rect(inner),
                         payload=payload,
+                        practice_mode=practice_mode,
                     )
                 )
             return
@@ -22055,6 +22315,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                         TraceTest2GlScene(
                             world=pygame.Rect(inner),
                             payload=scene_payload,
+                            practice_mode=snap.phase is Phase.PRACTICE,
                         )
                     )
                 return
@@ -22796,27 +23057,8 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             surface.blit(tag, (view.x + 6, view.y + 6))
             return
 
-        if allow_external_3d:
-            if not self._scene_panda_requirement_failed("spatial_integration"):
-                self._fail_scene_panda_requirement(
-                    "spatial_integration",
-                    scene_label="Spatial Integration",
-                    category="renderer_unavailable",
-                    summary="Spatial Integration requires Panda3D, but no renderer instance could be created.",
-                )
-            self._render_scene_panda_blocked_world(
-                surface=surface,
-                world=view,
-                scene_label=title_override or "Spatial Integration",
-                failed=True,
-                detail=self._scene_panda_failure_summary(
-                    "spatial_integration",
-                    scene_label="Spatial Integration",
-                ),
-            )
-            tag = self._tiny_font.render(title_override or "Panda3D required", True, (224, 236, 252))
-            surface.blit(tag, (view.x + 6, view.y + 6))
-            return
+        # Spatial Integration keeps a built-in pygame scene renderer so the
+        # study loop remains playable even when external 3D is unavailable.
 
         sky_top = (86, 132, 198)
         sky_bottom = (238, 168, 142)
@@ -23706,6 +23948,10 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
     ) -> None:
         self._instrument_part1_layout = None
         self._instrument_part3_layout = None
+        instruction_page = self._instrument_instruction_page(snap)
+        display_payload = payload if payload is not None else (
+            None if instruction_page is None else instruction_page.payload
+        )
         w, h = surface.get_size()
         bg = (4, 9, 90)
         frame_bg = (6, 14, 112)
@@ -23728,12 +23974,12 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             surface, border, (header.x, header.bottom), (header.right, header.bottom), 1
         )
 
-        if payload is not None:
+        if display_payload is not None:
             part_title = {
                 InstrumentComprehensionTrialKind.INSTRUMENTS_TO_AIRCRAFT: "Instrument Interpretation Test Part 1",
                 InstrumentComprehensionTrialKind.AIRCRAFT_TO_INSTRUMENTS: "Instrument Interpretation Test Part 2",
                 InstrumentComprehensionTrialKind.INSTRUMENTS_TO_DESCRIPTION: "Instrument Interpretation Test Part 3",
-            }.get(payload.kind, "Instrument Interpretation Test")
+            }.get(display_payload.kind, "Instrument Interpretation Test")
         else:
             part_title = "Instrument Interpretation Test"
         mode_label = {
@@ -23774,6 +24020,16 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         footer = pygame.Rect(work.x, work.bottom - footer_h, work.w, footer_h)
         question_rect = pygame.Rect(work.x + 3, work.y + 3, work.w - 6, work.h - footer_h - 4)
 
+        if snap.phase in (Phase.INSTRUCTIONS, Phase.PRACTICE_DONE) and instruction_page is not None:
+            self._render_instrument_instruction_page(
+                surface,
+                snap,
+                instruction_page=instruction_page,
+                panel=question_rect,
+                footer=footer,
+            )
+            return
+
         if snap.phase in (Phase.PRACTICE, Phase.SCORED) and payload is not None:
             self._render_instrument_comprehension_question(surface, snap, payload, question_rect)
             self._render_instrument_answer_entry(surface, snap, footer)
@@ -23802,6 +24058,61 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             max_lines=12,
         )
         self._render_instrument_answer_entry(surface, snap, footer)
+
+    def _render_instrument_instruction_page(
+        self,
+        surface: pygame.Surface,
+        snap: TestSnapshot,
+        *,
+        instruction_page: InstrumentComprehensionInstructionPage,
+        panel: pygame.Rect,
+        footer: pygame.Rect,
+    ) -> None:
+        border = (228, 238, 255)
+        text_main = (236, 244, 255)
+        text_muted = (186, 202, 228)
+        accent = (242, 228, 132)
+        guide_h = max(86, min(112, panel.h // 4))
+        guide = pygame.Rect(panel.x, panel.y, panel.w, guide_h)
+        pygame.draw.rect(surface, (18, 28, 108), guide)
+        pygame.draw.rect(surface, border, guide, 1)
+
+        guide_inner = guide.inflate(-12, -10)
+        title = self._small_font.render(instruction_page.title, True, accent)
+        surface.blit(title, (guide_inner.x, guide_inner.y))
+        guidance_text = "\n".join(instruction_page.guidance)
+        self._draw_wrapped_text(
+            surface,
+            guidance_text,
+            pygame.Rect(
+                guide_inner.x,
+                guide_inner.y + 26,
+                guide_inner.w,
+                guide_inner.h - 28,
+            ),
+            color=text_main,
+            font=self._tiny_font,
+            max_lines=6,
+        )
+
+        demo_panel = pygame.Rect(panel.x, guide.bottom + 10, panel.w, panel.bottom - guide.bottom - 10)
+        self._render_instrument_comprehension_question(
+            surface,
+            snap,
+            instruction_page.payload,
+            demo_panel,
+        )
+
+        pygame.draw.rect(surface, (0, 0, 0), footer)
+        action_prompt = instruction_page.action_prompt or str(snap.prompt)
+        self._draw_wrapped_text(
+            surface,
+            action_prompt,
+            pygame.Rect(footer.x + 8, footer.y + 2, footer.w - 16, footer.h - 4),
+            color=text_muted,
+            font=self._tiny_font,
+            max_lines=1,
+        )
 
     def _render_instrument_answer_entry(
         self,
@@ -26973,6 +27284,67 @@ def _rebootstrap_display_for_transition(
     )
 
 
+def _capture_display_transition_frame(display_surface: pygame.Surface) -> pygame.Surface | None:
+    source = pygame.display.get_surface()
+    if source is None:
+        source = display_surface
+    try:
+        size = (max(1, int(source.get_width())), max(1, int(source.get_height())))
+    except Exception:
+        return None
+    try:
+        tobytes = getattr(pygame.image, "tobytes", None)
+        if callable(tobytes):
+            pixels = tobytes(source, "RGBA", True)
+        else:
+            pixels = pygame.image.tostring(source, "RGBA", True)
+    except Exception:
+        try:
+            return source.copy()
+        except Exception:
+            return None
+    try:
+        frombytes = getattr(pygame.image, "frombytes", None)
+        if callable(frombytes):
+            return frombytes(pixels, size, "RGBA", True)
+        return pygame.image.fromstring(pixels, size, "RGBA", True)
+    except Exception:
+        return None
+
+
+def _present_display_transition_frame(
+    *,
+    display_surface: pygame.Surface,
+    gl_renderer: ModernSceneRenderer | None,
+    transition_frame: pygame.Surface | None,
+) -> bool:
+    if transition_frame is None:
+        return False
+    target_size = (
+        max(1, int(display_surface.get_width())),
+        max(1, int(display_surface.get_height())),
+    )
+    frame = transition_frame
+    if frame.get_size() != target_size:
+        try:
+            frame = pygame.transform.smoothscale(frame, target_size)
+        except Exception:
+            try:
+                frame = pygame.transform.scale(frame, target_size)
+            except Exception:
+                return False
+    try:
+        if gl_renderer is not None:
+            gl_renderer.resize(window_size=target_size)
+            gl_renderer.render_frame(ui_surface=frame, scene=None)
+        else:
+            display_surface.blit(frame, (0, 0))
+        pygame.display.flip()
+    except Exception:
+        return False
+    return True
+
+
 def _apply_display_bootstrap_to_app(
     *,
     app: "App",
@@ -28271,6 +28643,7 @@ def run(
                 clock=real_clock,
                 seed=session_seed,
                 plan=plan,
+                history=history,
             )
             return AdaptiveSessionScreen(
                 app,
@@ -28450,6 +28823,30 @@ def run(
             test_code="tr_scene_modifier_run",
             title="Target Recognition: Scene Modifier Run",
             builder=build_tr_scene_modifier_run_drill,
+            mode=mode,
+        )
+
+    def open_tr_priority_sweep(mode: AntDrillMode) -> None:
+        _open_tr_drill(
+            test_code="tr_priority_sweep",
+            title="Target Recognition: Priority Sweep",
+            builder=build_tr_priority_sweep_drill,
+            mode=mode,
+        )
+
+    def open_tr_damaged_sweep(mode: AntDrillMode) -> None:
+        _open_tr_drill(
+            test_code="tr_damaged_sweep",
+            title="Target Recognition: Damaged Sweep",
+            builder=build_tr_damaged_sweep_drill,
+            mode=mode,
+        )
+
+    def open_tr_category_sweep(mode: AntDrillMode) -> None:
+        _open_tr_drill(
+            test_code="tr_category_sweep",
+            title="Target Recognition: Category Sweep",
+            builder=build_tr_category_sweep_drill,
             mode=mode,
         )
 
@@ -29758,6 +30155,9 @@ def run(
             (
                 ("tr_scene_anchor", "Scene Anchor", open_tr_scene_anchor),
                 ("tr_scene_modifier_run", "Scene Modifier Run", open_tr_scene_modifier_run),
+                ("tr_priority_sweep", "Priority Sweep", open_tr_priority_sweep),
+                ("tr_damaged_sweep", "Damaged Sweep", open_tr_damaged_sweep),
+                ("tr_category_sweep", "Category Sweep", open_tr_category_sweep),
                 ("tr_light_anchor", "Light Anchor", open_tr_light_anchor),
                 ("tr_scan_anchor", "Scan Anchor", open_tr_scan_anchor),
                 ("tr_system_anchor", "System Anchor", open_tr_system_anchor),
@@ -30170,6 +30570,7 @@ def run(
                 )
                 rebootstrap = _resolve_display_rebootstrap(lifecycle_state)
                 if rebootstrap is not None:
+                    transition_frame = _capture_display_transition_frame(display_surface)
                     bootstrap = _rebootstrap_display_for_transition(
                         decision=rebootstrap,
                         video_driver=video_driver,
@@ -30184,6 +30585,11 @@ def run(
                         app=app,
                         bootstrap=bootstrap,
                         window_mode=window_mode,
+                    )
+                    _present_display_transition_frame(
+                        display_surface=display_surface,
+                        gl_renderer=gl_renderer,
+                        transition_frame=transition_frame,
                     )
                     if gl_renderer is None:
                         continue

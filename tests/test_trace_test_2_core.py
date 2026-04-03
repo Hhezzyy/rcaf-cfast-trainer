@@ -6,6 +6,10 @@ import math
 import pytest
 
 from cfast_trainer.cognitive_core import Phase
+from cfast_trainer.trace_scene_3d import (
+    build_trace_test_2_scene3d,
+    trace_test_2_track_sample_points,
+)
 from cfast_trainer.trace_lattice import DEFAULT_TRACE_LATTICE_SPEC, TraceLatticeAction
 from cfast_trainer.trace_test_2 import (
     TraceTest2AircraftTrack,
@@ -44,6 +48,21 @@ def test_generator_determinism_same_seed_same_sequence() -> None:
     assert [(p.prompt, p.answer, p.payload) for p in seq1] == [
         (p.prompt, p.answer, p.payload) for p in seq2
     ]
+
+
+def test_trace_test_2_scene3d_builder_is_deterministic_and_practice_adds_ghosts() -> None:
+    payload = TraceTest2Generator(seed=72).next_problem(difficulty=0.58).payload
+
+    assert isinstance(payload, TraceTest2Payload)
+
+    scored_snapshot = build_trace_test_2_scene3d(payload=payload, practice_mode=False)
+    repeat_snapshot = build_trace_test_2_scene3d(payload=payload, practice_mode=False)
+    practice_snapshot = build_trace_test_2_scene3d(payload=payload, practice_mode=True)
+
+    assert scored_snapshot == repeat_snapshot
+    assert len(scored_snapshot.aircraft) == len(payload.aircraft)
+    assert practice_snapshot.aircraft == scored_snapshot.aircraft
+    assert len(practice_snapshot.ghosts) > 0
 
 
 def test_generated_problem_has_four_color_options_and_guide_question_kinds() -> None:
@@ -144,6 +163,20 @@ def test_generated_scene_contains_unique_answer_facts() -> None:
     assert len(left) == 1
     assert len(right) == 1
     assert len({straight[0], left[0], right[0], leftmost, highest}) >= 4
+
+
+def test_track_sample_points_cover_start_mid_and_end_positions() -> None:
+    payload = TraceTest2Generator(seed=33).next_problem(difficulty=0.6).payload
+    assert isinstance(payload, TraceTest2Payload)
+
+    for track in payload.aircraft:
+        samples = trace_test_2_track_sample_points(track=track)
+        assert len(samples) >= 3
+        assert samples[0] == pytest.approx(
+            (track.waypoints[0].x, track.waypoints[0].y, track.waypoints[0].z)
+        )
+        end = track.waypoints[-1]
+        assert samples[-1] == pytest.approx((end.x, end.y, end.z))
 
 
 def test_easy_difficulty_non_straight_tracks_take_one_forward_step_before_turning() -> None:

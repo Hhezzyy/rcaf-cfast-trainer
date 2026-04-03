@@ -1,11 +1,13 @@
 from __future__ import annotations
 
-import math
-
-import pygame
 import pytest
 
 from cfast_trainer.trace_lattice import TraceLatticeAction, trace_lattice_state
+from cfast_trainer.trace_scene_3d import (
+    build_trace_test_1_scene3d,
+    classify_trace_test_1_view_maneuver,
+    trace_test_1_camera_space_delta,
+)
 from cfast_trainer.trace_test_1 import (
     TraceTest1AircraftPlan,
     TraceTest1Command,
@@ -17,34 +19,15 @@ from cfast_trainer.trace_test_1 import (
     _tt1_aircraft_state_from_lattice_state,
     trace_test_1_scene_frames,
 )
-from cfast_trainer.trace_test_1_gl import (
-    aircraft_hpr_for_frame,
-    aircraft_screen_poses_for_payload,
-    aircraft_screen_pose_for_frame,
-    build_scene_frames,
-    project_scene_position,
-    screen_heading_deg,
-)
 
 
-def _sample_prompt(*, difficulty: float = 0.82) -> TraceTest1PromptPlan:
-    payload = TraceTest1Generator(seed=44).next_problem(difficulty=difficulty).payload
-    assert isinstance(payload, TraceTest1PromptPlan)
-    return payload
-
-
-def _prompt_start_state(command: TraceTest1Command):
-    starts = {
+def _manual_plan(command: TraceTest1Command) -> TraceTest1AircraftPlan:
+    state = {
         TraceTest1Command.LEFT: trace_lattice_state(col=4, row=1, level=2, forward=(0, 1, 0), up=(0, 0, 1)),
         TraceTest1Command.RIGHT: trace_lattice_state(col=2, row=1, level=2, forward=(0, 1, 0), up=(0, 0, 1)),
         TraceTest1Command.PUSH: trace_lattice_state(col=3, row=1, level=3, forward=(0, 1, 0), up=(0, 0, 1)),
         TraceTest1Command.PULL: trace_lattice_state(col=3, row=1, level=1, forward=(0, 1, 0), up=(0, 0, 1)),
-    }
-    return starts[command]
-
-
-def _manual_plan(command: TraceTest1Command) -> TraceTest1AircraftPlan:
-    state = _prompt_start_state(command)
+    }[command]
     return TraceTest1AircraftPlan(
         start_state=_tt1_aircraft_state_from_lattice_state(state),
         command=command,
@@ -70,196 +53,67 @@ def _manual_prompt(command: TraceTest1Command) -> TraceTest1PromptPlan:
     )
 
 
-def _screen_heading_for_prompt(prompt: TraceTest1PromptPlan, *, progress: float) -> float:
-    frame = trace_test_1_scene_frames(prompt=prompt, progress=progress).red_frame
-    return screen_heading_deg(
-        frame,
-        command=prompt.red_plan.command,
-        observe_progress=progress,
-        answer_open_progress=prompt.answer_open_progress,
-        size=(960, 540),
-    )
-
-
-def _screen_pose_for_prompt(
-    prompt: TraceTest1PromptPlan,
-    *,
-    progress: float,
-) -> tuple[float, float, float]:
-    frame = trace_test_1_scene_frames(prompt=prompt, progress=progress).red_frame
-    return aircraft_screen_pose_for_frame(
-        frame,
-        command=prompt.red_plan.command,
-        observe_progress=progress,
-        answer_open_progress=prompt.answer_open_progress,
-        size=(960, 540),
-    )
-
-
-def test_trace_test_1_aircraft_hpr_matches_heading_pitch_and_roll() -> None:
-    prompt = _sample_prompt()
-    scene = build_scene_frames(prompt=prompt, progress=0.78)
-    hpr = aircraft_hpr_for_frame(scene.red_frame)
-
-    assert len(hpr) == 3
-    assert hpr[0] == scene.red_frame.travel_heading_deg
-    assert hpr[1] == scene.red_frame.attitude.pitch_deg
-    assert hpr[2] == scene.red_frame.attitude.roll_deg
-
-
-def test_trace_test_1_projection_keeps_red_on_screen_and_projects_blues() -> None:
-    prompt = _sample_prompt(difficulty=0.95)
-    scene = build_scene_frames(prompt=prompt, progress=0.48)
-
-    red_center, red_scale = project_scene_position(scene.red_frame.position, size=(960, 540))
-    assert 0.0 <= red_center[0] <= 960.0
-    assert 0.0 <= red_center[1] <= 540.0
-    assert red_scale > 0.0
-
-    for blue_frame in scene.blue_frames:
-        blue_center, blue_scale = project_scene_position(blue_frame.position, size=(960, 540))
-        assert math.isfinite(blue_center[0])
-        assert math.isfinite(blue_center[1])
-        assert blue_scale > 0.0
-
-
-def test_trace_test_1_lattice_lead_in_screen_heading_is_shared_across_commands() -> None:
-    headings = [
-        _screen_heading_for_prompt(_manual_prompt(command), progress=0.18)
-        for command in TraceTest1Command
-    ]
-
-    assert all(math.isfinite(heading) for heading in headings)
-    assert max(headings) - min(headings) <= 0.01
-
-
-def test_trace_test_1_screen_pose_matches_lattice_command_orientations() -> None:
-    assert _screen_pose_for_prompt(_manual_prompt(TraceTest1Command.LEFT), progress=0.68) == pytest.approx((-180.0, 0.0, 0.0))
-    assert _screen_pose_for_prompt(_manual_prompt(TraceTest1Command.RIGHT), progress=0.68) == pytest.approx((0.0, 0.0, 0.0))
-    assert _screen_pose_for_prompt(_manual_prompt(TraceTest1Command.PUSH), progress=0.68) == pytest.approx((90.0, -90.0, 0.0))
-    assert _screen_pose_for_prompt(_manual_prompt(TraceTest1Command.PULL), progress=0.68) == pytest.approx((-90.0, 90.0, 0.0))
-
-
-def test_trace_test_1_screen_pose_sampling_is_deterministic_for_same_seed() -> None:
-    progresses = (0.18, 0.42, 0.66, 0.84)
-    prompt_a = TraceTest1Generator(seed=44).next_problem(difficulty=0.82).payload
-    prompt_b = TraceTest1Generator(seed=44).next_problem(difficulty=0.82).payload
-
-    assert isinstance(prompt_a, TraceTest1PromptPlan)
-    assert isinstance(prompt_b, TraceTest1PromptPlan)
-
-    frames_a = tuple(
-        trace_test_1_scene_frames(prompt=prompt_a, progress=progress).red_frame
-        for progress in progresses
-    )
-    frames_b = tuple(
-        trace_test_1_scene_frames(prompt=prompt_b, progress=progress).red_frame
-        for progress in progresses
-    )
-    poses_a = tuple(
-        aircraft_screen_pose_for_frame(
-            frame,
-            command=prompt_a.red_plan.command,
-            observe_progress=progress,
-            answer_open_progress=prompt_a.answer_open_progress,
-            size=(960, 540),
-        )
-        for frame, progress in zip(frames_a, progresses, strict=True)
-    )
-    poses_b = tuple(
-        aircraft_screen_pose_for_frame(
-            frame,
-            command=prompt_b.red_plan.command,
-            observe_progress=progress,
-            answer_open_progress=prompt_b.answer_open_progress,
-            size=(960, 540),
-        )
-        for frame, progress in zip(frames_b, progresses, strict=True)
-    )
-
-    assert frames_a == frames_b
-    assert poses_a == poses_b
-
-
-def test_trace_test_1_payload_blue_commands_drive_blue_screen_poses() -> None:
-    prompt = TraceTest1PromptPlan(
-        prompt_index=0,
-        answer_open_progress=0.36,
-        speed_multiplier=1.15,
-        red_plan=_manual_plan(TraceTest1Command.LEFT),
-        blue_plans=(
-            _manual_plan(TraceTest1Command.RIGHT),
-            _manual_plan(TraceTest1Command.PUSH),
-        ),
-    )
-    progress = 0.68
-    scene = trace_test_1_scene_frames(prompt=prompt, progress=progress)
-    payload = TraceTest1Payload(
+def _sample_payload(*, difficulty: float = 0.82, progress: float = 0.68) -> TraceTest1Payload:
+    prompt = TraceTest1Generator(seed=44).next_problem(difficulty=difficulty).payload
+    assert isinstance(prompt, TraceTest1PromptPlan)
+    return TraceTest1Payload(
         trial_stage=TraceTest1TrialStage.ANSWER_OPEN,
         stage_time_remaining_s=1.0,
         observe_progress=progress,
         prompt_index=prompt.prompt_index,
         active_command=prompt.red_plan.command,
         blue_commands=tuple(blue_plan.command for blue_plan in prompt.blue_plans),
-        scene=scene,
+        scene=trace_test_1_scene_frames(prompt=prompt, progress=progress),
         options=(),
-        correct_code=1,
+        correct_code=int(
+            {
+                TraceTest1Command.LEFT: 1,
+                TraceTest1Command.RIGHT: 2,
+                TraceTest1Command.PUSH: 3,
+                TraceTest1Command.PULL: 4,
+            }[classify_trace_test_1_view_maneuver(prompt=prompt)]
+        ),
         prompt_window_s=4.3,
         answer_open_progress=prompt.answer_open_progress,
         speed_multiplier=prompt.speed_multiplier,
         viewpoint_bearing_deg=180,
     )
 
-    red_pose, blue_poses = aircraft_screen_poses_for_payload(payload, size=(960, 540))
 
-    assert payload.blue_commands == (TraceTest1Command.RIGHT, TraceTest1Command.PUSH)
-    assert red_pose == pytest.approx((-180.0, 0.0, 0.0))
-    assert len(blue_poses) == 2
-    assert blue_poses[0] == pytest.approx((0.0, 0.0, 0.0))
-    assert blue_poses[1] == pytest.approx((90.0, -90.0, 0.0))
+def test_trace_test_1_projected_view_delta_separates_manual_commands() -> None:
+    expected = {
+        TraceTest1Command.LEFT: (-1.0, 0.0),
+        TraceTest1Command.RIGHT: (1.0, 0.0),
+        TraceTest1Command.PUSH: (0.0, 1.0),
+        TraceTest1Command.PULL: (0.0, -1.0),
+    }
 
-
-def test_trace_test_1_forward_depth_changes_scale_and_vertical_position() -> None:
-    near_center, near_scale = project_scene_position((0.0, 26.0, 12.0), size=(960, 540))
-    far_center, far_scale = project_scene_position((0.0, 40.0, 12.0), size=(960, 540))
-
-    assert near_center[0] == pytest.approx(far_center[0], abs=0.01)
-    assert far_center[1] < near_center[1]
-    assert near_scale > far_scale
-
-
-def test_trace_test_1_altitude_changes_vertical_position_without_depth_scale_shift() -> None:
-    low_center, low_scale = project_scene_position((0.0, 40.0, 6.0), size=(960, 540))
-    high_center, high_scale = project_scene_position((0.0, 40.0, 18.0), size=(960, 540))
-
-    assert low_center[0] == pytest.approx(high_center[0], abs=0.01)
-    assert low_center[1] > high_center[1]
-    assert low_scale == pytest.approx(high_scale, abs=0.01)
+    for command, (expected_x_sign, expected_y_sign) in expected.items():
+        delta = trace_test_1_camera_space_delta(prompt=_manual_prompt(command))
+        if expected_x_sign != 0.0:
+            assert delta[0] * expected_x_sign > 0.0
+            assert abs(delta[0]) > abs(delta[1])
+        else:
+            assert delta[1] * expected_y_sign > 0.0
+            assert abs(delta[1]) > abs(delta[0])
 
 
-def test_trace_test_1_lateral_turns_translate_horizontally_after_rotation_phase() -> None:
-    left_prompt = _manual_prompt(TraceTest1Command.LEFT)
-    right_prompt = _manual_prompt(TraceTest1Command.RIGHT)
+def test_trace_test_1_scene3d_builder_is_deterministic_for_same_payload() -> None:
+    payload = _sample_payload()
 
-    left_centers = [
-        project_scene_position(
-            trace_test_1_scene_frames(prompt=left_prompt, progress=progress).red_frame.position,
-            size=(960, 540),
-        )[0]
-        for progress in (0.36, 0.40, 0.68, 1.0)
-    ]
-    right_centers = [
-        project_scene_position(
-            trace_test_1_scene_frames(prompt=right_prompt, progress=progress).red_frame.position,
-            size=(960, 540),
-        )[0]
-        for progress in (0.36, 0.40, 0.68, 1.0)
-    ]
+    first = build_trace_test_1_scene3d(payload=payload)
+    second = build_trace_test_1_scene3d(payload=payload)
 
-    assert left_centers[0] == pytest.approx(left_centers[1], abs=0.01)
-    assert left_centers[2][0] < left_centers[1][0]
-    assert left_centers[3][0] < left_centers[2][0]
+    assert first == second
+    assert len(first.aircraft) == 1 + len(payload.scene.blue_frames)
+    assert first.aircraft[0].asset_id == "plane_red"
+    assert all(aircraft.asset_id == "plane_blue" for aircraft in first.aircraft[1:])
 
-    assert right_centers[0] == pytest.approx(right_centers[1], abs=0.01)
-    assert right_centers[2][0] > right_centers[1][0]
-    assert right_centers[3][0] > right_centers[2][0]
+
+def test_trace_test_1_scene3d_camera_tracks_real_world_aircraft_pose() -> None:
+    payload = _sample_payload(progress=0.24)
+    snapshot = build_trace_test_1_scene3d(payload=payload)
+
+    assert snapshot.camera.position != snapshot.camera.target
+    assert snapshot.camera.target[1] > snapshot.camera.position[1]
+    assert snapshot.aircraft[0].position == pytest.approx(payload.scene.red_frame.position)

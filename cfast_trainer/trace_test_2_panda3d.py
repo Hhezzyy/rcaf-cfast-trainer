@@ -9,6 +9,7 @@ import pygame
 from .aircraft_art import (
     build_panda_palette,
     build_panda3d_fixed_wing_model,
+    panda3d_fixed_wing_hpr_from_screen_heading,
     panda3d_fixed_wing_hpr_from_world_tangent,
 )
 from .trace_test_2 import (
@@ -17,12 +18,16 @@ from .trace_test_2 import (
     trace_test_2_track_position,
     trace_test_2_track_tangent,
 )
+from .trace_test_2_gl import aircraft_screen_pose_for_track
 
 
 def panda3d_trace_test_2_rendering_available() -> bool:
     if os.environ.get("SDL_VIDEODRIVER", "").strip().lower() == "dummy":
         return False
-    return importlib.util.find_spec("direct.showbase.ShowBase") is not None
+    try:
+        return importlib.util.find_spec("direct.showbase.ShowBase") is not None
+    except ModuleNotFoundError:
+        return False
 
 
 def _clamp(v: float, lo: float, hi: float) -> float:
@@ -164,8 +169,17 @@ class TraceTest2Panda3DRenderer:
         size: tuple[int, int],
         tangent: tuple[float, float, float],
     ) -> tuple[float, float, float]:
-        _ = (track, progress, size)
-        return cls._aircraft_hpr_from_tangent(tangent=tangent)
+        screen_heading_deg, pitch_deg, roll_deg = aircraft_screen_pose_for_track(
+            track=track,
+            progress=progress,
+            size=size,
+            tangent=tangent,
+        )
+        return panda3d_fixed_wing_hpr_from_screen_heading(
+            screen_heading_deg=screen_heading_deg,
+            pitch_deg=float(pitch_deg),
+            roll_deg=float(roll_deg),
+        )
 
     @staticmethod
     def _track_tangent(

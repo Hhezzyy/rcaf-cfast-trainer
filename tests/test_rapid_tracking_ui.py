@@ -8,10 +8,11 @@ os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 
 import pygame
+import pytest
 
 from cfast_trainer.ant_drills import AntDrillMode
 from cfast_trainer.ant_workouts import AntWorkoutBlockPlan, AntWorkoutPlan, AntWorkoutSession
-from cfast_trainer.app import App, AntWorkoutScreen, CognitiveTestScreen, MenuItem, MenuScreen
+from cfast_trainer.app import AntWorkoutScreen, App, CognitiveTestScreen, MenuItem, MenuScreen
 from cfast_trainer.cognitive_core import Phase
 from cfast_trainer.cognitive_core import TestSnapshot as SnapshotModel
 from cfast_trainer.rapid_tracking import RapidTrackingPayload, build_rapid_tracking_test
@@ -27,6 +28,14 @@ class _FakeClock:
 
     def advance(self, dt: float) -> None:
         self.t += dt
+
+
+class _PressedKeys:
+    def __init__(self, active: set[int]) -> None:
+        self._active = set(active)
+
+    def __getitem__(self, key: int) -> int:
+        return 1 if key in self._active else 0
 
 
 class _FakeRapidTrackingEngine:
@@ -196,12 +205,12 @@ def test_rapid_tracking_real_drill_engine_exposes_focus_metadata_on_live_screen(
         pygame.quit()
 
 
-def test_rapid_tracking_space_hold_starts_zoom_and_release_restores_view() -> None:
+def test_rapid_tracking_joybutton_hold_starts_zoom_and_release_restores_view() -> None:
     clock = _FakeClock()
     screen = _build_live_rt_screen(clock=clock)
     try:
         screen.handle_event(
-            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_SPACE, "unicode": " "})
+            pygame.event.Event(pygame.JOYBUTTONDOWN, {"button": 0})
         )
         clock.advance(0.30)
         screen._engine.update()
@@ -210,7 +219,7 @@ def test_rapid_tracking_space_hold_starts_zoom_and_release_restores_view() -> No
         assert zoomed.capture_zoom > 0.8
 
         screen.handle_event(
-            pygame.event.Event(pygame.KEYUP, {"key": pygame.K_SPACE, "unicode": ""})
+            pygame.event.Event(pygame.JOYBUTTONUP, {"button": 0})
         )
         clock.advance(0.30)
         screen._engine.update()
@@ -221,7 +230,7 @@ def test_rapid_tracking_space_hold_starts_zoom_and_release_restores_view() -> No
         pygame.quit()
 
 
-def test_rapid_tracking_mouse_and_trigger_use_hold_tokens() -> None:
+def test_rapid_tracking_ignores_mouse_and_keyboard_capture_inputs() -> None:
     payload = _sample_payload()
     _app, screen = _build_screen(
         _FakeRapidTrackingEngine(payload, title="Rapid Tracking: Lock Anchor")
@@ -234,6 +243,12 @@ def test_rapid_tracking_mouse_and_trigger_use_hold_tokens() -> None:
             pygame.event.Event(pygame.MOUSEBUTTONUP, {"button": 1, "pos": (20, 20)})
         )
         screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_SPACE, "unicode": " "})
+        )
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYUP, {"key": pygame.K_SPACE, "unicode": ""})
+        )
+        screen.handle_event(
             pygame.event.Event(pygame.JOYBUTTONDOWN, {"button": 0})
         )
         screen.handle_event(
@@ -243,8 +258,29 @@ def test_rapid_tracking_mouse_and_trigger_use_hold_tokens() -> None:
         assert cast(_FakeRapidTrackingEngine, screen._engine).submissions == [
             "CAPTURE_HOLD_START",
             "CAPTURE_HOLD_END",
-            "CAPTURE_HOLD_START",
-            "CAPTURE_HOLD_END",
         ]
+    finally:
+        pygame.quit()
+
+
+def test_rapid_tracking_render_ignores_keyboard_camera_fallback(monkeypatch) -> None:
+    clock = _FakeClock()
+    screen = _build_live_rt_screen(clock=clock)
+    try:
+        surface = pygame.display.get_surface()
+        assert surface is not None
+        monkeypatch.setattr(pygame.key, "get_pressed", lambda: _PressedKeys({pygame.K_LEFT, pygame.K_UP}))
+        monkeypatch.setattr("cfast_trainer.app._iter_connected_joysticks", lambda: [])
+
+        before = screen._engine.snapshot().payload
+        assert before is not None
+
+        clock.advance(0.30)
+        screen.render(surface)
+
+        after = screen._engine.snapshot().payload
+        assert after is not None
+        assert after.camera_yaw_deg == pytest.approx(before.camera_yaw_deg)
+        assert after.camera_pitch_deg == pytest.approx(before.camera_pitch_deg)
     finally:
         pygame.quit()

@@ -6,13 +6,13 @@ from datetime import UTC, datetime
 from enum import Enum
 from typing import cast
 
-from .ant_drills import AntDrillMode
 from .adaptive_difficulty import (
     LaunchDifficultyMode,
     ResolvedDifficultyContext,
     build_resolved_difficulty_context,
     clamp_level,
 )
+from .ant_drills import AntDrillMode
 from .ant_workouts import AntWorkoutBlockPlan, build_workout_block_engine
 from .canonical_drill_registry import (
     CANONICAL_DRILL_BY_CODE,
@@ -24,10 +24,17 @@ from .cognitive_core import Phase
 from .guide_skill_catalog import guide_ranking_primitive_id_for_code, guide_subskill_ids_for_code
 from .persistence import AttemptHistoryEntry
 from .primitive_ranking import (
-    PRIMITIVES as _RANKED_PRIMITIVES,
+    ADAPTIVE_WORKOUT_EVIDENCE_POLICY,
     PRIMITIVE_BY_ID as _RANKED_PRIMITIVE_BY_ID,
+)
+from .primitive_ranking import (
+    PRIMITIVES as _RANKED_PRIMITIVES,
+)
+from .primitive_ranking import (
+    AdaptiveFatigueSnapshot,
     PrimitiveDomainSummary,
     PrimitiveRankingItem,
+    adaptive_fatigue_snapshot,
     collect_primitive_evidence,
     rank_primitives,
 )
@@ -139,6 +146,7 @@ class AdaptiveSessionPlan:
     blocks: tuple[AdaptiveSessionBlock, ...]
     variant: str = "full"
     domain_summaries: tuple[PrimitiveDomainSummary, ...] = ()
+    replan_enabled: bool = False
 
     @property
     def scored_duration_s(self) -> float:
@@ -482,12 +490,36 @@ ADAPTIVE_DRILL_CATALOG: tuple[AdaptiveDrillCandidate, ...] = (
 )
 
 
+def _catalog_primitive_ids() -> frozenset[str]:
+    return frozenset(candidate.primitive_id for candidate in ADAPTIVE_DRILL_CATALOG)
+
+
+def _catalog_candidates_for_primitive(
+    primitive_id: str,
+    *,
+    role: str | None = None,
+) -> tuple[AdaptiveDrillCandidate, ...]:
+    token = str(primitive_id).strip().lower()
+    return tuple(
+        candidate
+        for candidate in ADAPTIVE_DRILL_CATALOG
+        if candidate.primitive_id == token and (role is None or role in candidate.role_support)
+    )
+
+
 def collect_adaptive_evidence(
     history: list[AttemptHistoryEntry],
     *,
     now_utc: str | None = None,
 ) -> list[AdaptiveEvidence]:
-    return cast(list[AdaptiveEvidence], collect_primitive_evidence(history, now_utc=now_utc))
+    return cast(
+        list[AdaptiveEvidence],
+        collect_primitive_evidence(
+            history,
+            now_utc=now_utc,
+            policy=ADAPTIVE_WORKOUT_EVIDENCE_POLICY,
+        ),
+    )
 
 
 def rank_adaptive_primitives(
@@ -496,7 +528,12 @@ def rank_adaptive_primitives(
     now_utc: str | None = None,
     seed: int = 0,
 ) -> tuple[AdaptivePriorityBreakdown, ...]:
-    ranking = rank_primitives(history, now_utc=now_utc, seed=seed)
+    ranking = rank_primitives(
+        history,
+        now_utc=now_utc,
+        seed=seed,
+        policy=ADAPTIVE_WORKOUT_EVIDENCE_POLICY,
+    )
     return cast(tuple[AdaptivePriorityBreakdown, ...], ranking.weakest_primitives)
 
 
@@ -587,6 +624,7 @@ def _adjusted_priority(
     *,
     recent_sessions: list[AdaptiveHistorySessionSummary],
     now_utc: str,
+    fatigue_snapshot: AdaptiveFatigueSnapshot | None = None,
 ) -> float:
     adjusted = float(item.priority)
     recent_primary = recent_sessions[0] if recent_sessions else None
@@ -601,6 +639,13 @@ def _adjusted_priority(
     age_h = _hours_since(item.last_trained_at_utc, now_utc=now_utc)
     if 48.0 <= age_h <= 72.0 and item.retention >= 0.45:
         adjusted += 0.10
+    fatigue = fatigue_snapshot
+    if fatigue is not None and fatigue.is_moderate:
+        dominant = _dominant_penalty_name(item)
+        if dominant in {"fatigue", "lapse", "post_error"}:
+            adjusted -= 0.08 if fatigue.is_high else 0.04
+        elif dominant == "weakness" and fatigue.is_high and item.fatigue_penalty >= 0.22:
+            adjusted -= 0.05
     return max(0.0, adjusted)
 
 
@@ -681,11 +726,19 @@ def _select_primary_target(
     *,
     recent_sessions: list[AdaptiveHistorySessionSummary],
     now_utc: str,
+    fatigue_snapshot: AdaptiveFatigueSnapshot | None = None,
 ) -> AdaptivePriorityBreakdown:
     adjusted = sorted(
         (
             (
-                _adjusted_priority(item, recent_sessions=recent_sessions, now_utc=now_utc),
+                float(
+                    _adjusted_priority(
+                        item,
+                        recent_sessions=recent_sessions,
+                        now_utc=now_utc,
+                        fatigue_snapshot=fatigue_snapshot,
+                    )
+                ),
                 float(item.priority),
                 item,
             )
@@ -719,6 +772,7 @@ def _link_for_target_area(
     ranked_by_id: dict[str, AdaptivePriorityBreakdown],
     recent_sessions: list[AdaptiveHistorySessionSummary],
     now_utc: str,
+    fatigue_snapshot: AdaptiveFatigueSnapshot | None = None,
 ) -> tuple[AdaptiveSkillLink, str] | None:
     scored: list[tuple[float, str, AdaptiveSkillLink]] = []
     recent_primary = recent_sessions[0] if recent_sessions else None
@@ -735,7 +789,12 @@ def _link_for_target_area(
                 break
         if linked_area == "" and link.linked_target_areas:
             linked_area = link.linked_target_areas[0][1]
-        score = _adjusted_priority(neighbor, recent_sessions=recent_sessions, now_utc=now_utc) + area_boost
+        score = _adjusted_priority(
+            neighbor,
+            recent_sessions=recent_sessions,
+            now_utc=now_utc,
+            fatigue_snapshot=fatigue_snapshot,
+        ) + area_boost
         if (
             recent_primary is not None
             and recent_primary.primary_primitive_id == neighbor.primitive_id
@@ -774,31 +833,60 @@ def _level_for_role(
     target_base_level: int,
     adjacent_item: PrimitiveRankingItem | None = None,
     retention_repeat: bool = False,
+    fatigue_snapshot: AdaptiveFatigueSnapshot | None = None,
 ) -> tuple[int, int | None]:
     target_confidence = float(target_item.confidence)
     meltdown_cap = _meltdown_cap_applies(target_item, base_level=target_base_level)
+    fatigue_high = fatigue_snapshot is not None and fatigue_snapshot.is_high
+    fatigue_moderate = fatigue_snapshot is not None and fatigue_snapshot.is_moderate
     if role == "target_anchor":
         level = target_base_level - 2 if (target_confidence < 0.50 or meltdown_cap) else target_base_level - 1
+        if fatigue_high:
+            level -= 1
         return (clamp_level(level), None)
     if role == "target_tempo":
-        return (clamp_level(target_base_level), None)
+        level = target_base_level - 1 if fatigue_high else target_base_level
+        return (clamp_level(level), None)
     if role == "adjacent_cross_train":
+        if adjacent_item is None:
+            level = target_base_level - 1 if target_confidence < 0.55 else target_base_level
+            if fatigue_high:
+                level -= 1
+            return (clamp_level(level), None)
         assert adjacent_item is not None
         adjacent_base = clamp_level(int(adjacent_item.recommended_level))
         level = min(int(target_base_level), int(adjacent_base))
         if float(adjacent_item.confidence) < 0.55 or target_confidence < 0.55:
             level -= 1
+        if fatigue_high:
+            level -= 1
         return (clamp_level(level), None)
     if role == "reassessment_probe":
         comparable = _comparable_probe_level(target_item, base_level=target_base_level)
+        if fatigue_high:
+            comparable = clamp_level(int(comparable) - 1)
         return (clamp_level(comparable), int(comparable))
     if role == "target_pressure_fatigue":
-        level = target_base_level + 1 if (float(target_item.level_confidence) >= 0.45 and not meltdown_cap) else target_base_level
+        if fatigue_high:
+            level = target_base_level - 1
+        elif fatigue_moderate:
+            level = target_base_level
+        else:
+            level = (
+                target_base_level + 1
+                if (float(target_item.level_confidence) >= 0.45 and not meltdown_cap)
+                else target_base_level
+            )
         return (clamp_level(level), None)
     if role == "late_repeat_transfer":
         if retention_repeat:
             comparable = _comparable_probe_level(target_item, base_level=target_base_level)
+            if fatigue_high:
+                comparable = clamp_level(int(comparable) - 1)
             return (clamp_level(comparable), int(comparable))
+        if adjacent_item is None:
+            level = target_base_level - 1 if fatigue_high else target_base_level
+            return (clamp_level(level), None)
         assert adjacent_item is not None
         return _level_for_role(
             role="adjacent_cross_train",
@@ -806,6 +894,7 @@ def _level_for_role(
             target_base_level=target_base_level,
             adjacent_item=adjacent_item,
             retention_repeat=False,
+            fatigue_snapshot=fatigue_snapshot,
         )
     return (clamp_level(target_base_level), None)
 
@@ -829,15 +918,19 @@ def _training_mode_for_role(
     target_confidence: float | None = None,
     fatigue_dominant: bool = False,
     retention_repeat: bool = False,
+    fatigue_snapshot: AdaptiveFatigueSnapshot | None = None,
 ) -> AntDrillMode:
+    fatigue_high = fatigue_snapshot is not None and fatigue_snapshot.is_high
     if role == "target_anchor":
         if supports_training_mode(drill_code, AntDrillMode.FRESH):
             return AntDrillMode.FRESH
         return AntDrillMode.BUILD
     if role == "target_tempo":
+        if fatigue_high:
+            return AntDrillMode.BUILD
         return AntDrillMode.TEMPO if supports_training_mode(drill_code, AntDrillMode.TEMPO) else AntDrillMode.PRESSURE
     if role == "adjacent_cross_train":
-        if target_confidence is not None and target_confidence < 0.55:
+        if fatigue_high or (target_confidence is not None and target_confidence < 0.55):
             return AntDrillMode.BUILD
         return AntDrillMode.TEMPO
     if role == "reassessment_probe":
@@ -845,8 +938,14 @@ def _training_mode_for_role(
     if role == "target_pressure_fatigue":
         if fatigue_dominant and supports_training_mode(drill_code, AntDrillMode.FATIGUE_PROBE):
             return AntDrillMode.FATIGUE_PROBE
+        if fatigue_high:
+            if supports_training_mode(drill_code, AntDrillMode.TEMPO):
+                return AntDrillMode.TEMPO
+            return AntDrillMode.BUILD
         return AntDrillMode.PRESSURE
     if role == "late_repeat_transfer":
+        if fatigue_high:
+            return AntDrillMode.BUILD
         return AntDrillMode.BUILD if retention_repeat else AntDrillMode.TEMPO
     return AntDrillMode.BUILD
 
@@ -883,17 +982,11 @@ def _select_candidate(
     previous_target_area: str | None,
     retention_repeat: bool,
 ) -> AdaptiveDrillCandidate:
-    candidates = [
-        candidate
-        for candidate in ADAPTIVE_DRILL_CATALOG
-        if candidate.primitive_id == primitive_id and role in candidate.role_support
-    ]
+    candidates = list(_catalog_candidates_for_primitive(primitive_id, role=role))
     if not candidates:
-        candidates = [
-            candidate
-            for candidate in ADAPTIVE_DRILL_CATALOG
-            if candidate.primitive_id == primitive_id
-        ]
+        candidates = list(_catalog_candidates_for_primitive(primitive_id))
+    if not candidates:
+        raise LookupError(f"no adaptive drill candidates available for primitive {primitive_id}")
     allowed = variant_spec.allowed_form_factors
     filtered = [candidate for candidate in candidates if candidate.form_factor in allowed]
     if filtered:
@@ -928,25 +1021,46 @@ def _select_candidate(
     return scored[0][2]
 
 
-def build_adaptive_session_plan(
+def _build_adaptive_session_plan_core(
     *,
     history: list[AttemptHistoryEntry],
     seed: int,
-    now_utc: str | None = None,
-    recommended_level: int | None = None,
-    fixed_mode: bool = False,
-    variant: str = "full",
+    now_token: str,
+    recommended_level: int | None,
+    fixed_mode: bool,
+    variant_spec: AdaptiveVariantSpec,
+    start_block_index: int = 0,
+    prior_blocks: tuple[AdaptiveSessionBlock, ...] = (),
+    previous_target_area: str | None = None,
 ) -> AdaptiveSessionPlan | None:
-    now_token = now_utc or _utc_now_iso()
-    variant_spec = _variant_spec(variant)
-    ranking = rank_primitives(history, now_utc=now_token, seed=seed)
-    ranked = cast(tuple[AdaptivePriorityBreakdown, ...], ranking.weakest_primitives)
-    if not any(item.evidence_count > 0 for item in ranked):
+    ranking = rank_primitives(
+        history,
+        now_utc=now_token,
+        seed=seed,
+        policy=ADAPTIVE_WORKOUT_EVIDENCE_POLICY,
+    )
+    eligible_primitive_ids = _catalog_primitive_ids()
+    ranked = tuple(
+        item
+        for item in cast(tuple[AdaptivePriorityBreakdown, ...], ranking.weakest_primitives)
+        if item.primitive_id in eligible_primitive_ids
+    )
+    if not ranked or not any(item.evidence_count > 0 for item in ranked):
         return None
     ranked_by_id = {item.primitive_id: item for item in ranked}
     recent_sessions = _recent_adaptive_sessions(history)
     recent_session = recent_sessions[0] if recent_sessions else None
-    target = _select_primary_target(ranked, recent_sessions=recent_sessions, now_utc=now_token)
+    fatigue_snapshot = adaptive_fatigue_snapshot(
+        history,
+        now_utc=now_token,
+        policy=ADAPTIVE_WORKOUT_EVIDENCE_POLICY,
+    )
+    target = _select_primary_target(
+        ranked,
+        recent_sessions=recent_sessions,
+        now_utc=now_token,
+        fatigue_snapshot=fatigue_snapshot,
+    )
     target_area = _target_area_for_primitive(target)
     target_base_level = clamp_level(recommended_level or int(target.recommended_level))
     adjacent_selection = _link_for_target_area(
@@ -955,14 +1069,17 @@ def build_adaptive_session_plan(
         ranked_by_id=ranked_by_id,
         recent_sessions=recent_sessions,
         now_utc=now_token,
+        fatigue_snapshot=fatigue_snapshot,
     )
     adjacent_link = None if adjacent_selection is None else adjacent_selection[0]
     adjacent_area = "" if adjacent_selection is None else adjacent_selection[1]
     adjacent_item = None if adjacent_link is None else ranked_by_id.get(adjacent_link.linked_primitive_id)
     retention_repeat = _retention_repeat_needed(target, now_utc=now_token)
-    blocks: list[AdaptiveSessionBlock] = []
-    previous_target_area: str | None = None
-    for block_index, role in enumerate(_ROLE_SEQUENCE):
+    blocks: list[AdaptiveSessionBlock] = list(prior_blocks)
+    previous_area = previous_target_area
+    if previous_area is None and blocks:
+        previous_area = blocks[-1].target_area
+    for block_index, role in enumerate(_ROLE_SEQUENCE[start_block_index:], start=start_block_index):
         if role in {"target_anchor", "target_tempo", "reassessment_probe", "target_pressure_fatigue"}:
             block_item = target
             block_primitive = _PRIMITIVE_BY_ID[target.primitive_id]
@@ -994,6 +1111,7 @@ def build_adaptive_session_plan(
                     ranked_by_id=ranked_by_id,
                     recent_sessions=recent_sessions,
                     now_utc=now_token,
+                    fatigue_snapshot=fatigue_snapshot,
                 )
                 late_link = None if late_link_selection is None else late_link_selection[0]
                 late_area = "" if late_link_selection is None else late_link_selection[1]
@@ -1015,6 +1133,7 @@ def build_adaptive_session_plan(
             target_base_level=target_base_level,
             adjacent_item=block_adjacent_item,
             retention_repeat=candidate_retention_repeat,
+            fatigue_snapshot=fatigue_snapshot,
         )
         candidate = _select_candidate(
             primitive_id=block_item.primitive_id,
@@ -1023,7 +1142,7 @@ def build_adaptive_session_plan(
             variant_spec=variant_spec,
             seed=int(seed) + (block_index * 17),
             recent_session=recent_session,
-            previous_target_area=previous_target_area,
+            previous_target_area=previous_area,
             retention_repeat=candidate_retention_repeat,
         )
         drill_code = resolved_canonical_drill_code(candidate.drill_code, for_adaptive=True) or candidate.drill_code
@@ -1033,6 +1152,7 @@ def build_adaptive_session_plan(
             target_confidence=float(target.confidence if role != "adjacent_cross_train" else min(target.confidence, block_item.confidence)),
             fatigue_dominant=_pressure_is_fatigue_dominant(target),
             retention_repeat=candidate_retention_repeat,
+            fatigue_snapshot=fatigue_snapshot,
         )
         blocks.append(
             AdaptiveSessionBlock(
@@ -1053,31 +1173,99 @@ def build_adaptive_session_plan(
                 comparable_level=comparable_level,
             )
         )
-        previous_target_area = block_target_area
+        previous_area = block_target_area
 
     title = variant_spec.title
     description = (
         "Built from recent benchmark and training history. "
-        "This session uses a fixed six-block sequence: target anchor, target tempo, adjacent cross-train, "
-        "reassessment probe, target under pressure or fatigue, and a late repeat or mixed transfer."
+        "The scheduler re-evaluates the remaining blocks after each completion using recent evidence, "
+        "difficulty weighting, mode weighting, and fatigue load. "
+        "Each launch still follows the same six-block role structure: target anchor, target tempo, "
+        "adjacent cross-train, reassessment probe, target under pressure or fatigue, and a late repeat or mixed transfer."
     )
     if fixed_mode:
         description += " This launch is using fixed mode."
-    notes = tuple(
+    note_lines = [
+        *(
         f"{item.label}: priority {item.priority:.2f} [{', '.join(item.reason_tags)}]"
         for item in ranked[:3]
-    )
+        ),
+        (
+            "Fatigue load: "
+            f"{fatigue_snapshot.fatigue_load:.2f} "
+            f"(runtime {fatigue_snapshot.runtime_load:.2f}, degradation {fatigue_snapshot.degradation_load:.2f})"
+        ),
+    ]
     return AdaptiveSessionPlan(
         code=variant_spec.code,
         title=title,
         version=_SCHEDULER_VERSION,
         generated_at_utc=now_token,
         description=description,
-        notes=notes,
+        notes=tuple(note_lines),
         ranked_primitives=tuple(ranked),
         variant=variant_spec.variant,
         domain_summaries=tuple(ranking.domain_summaries),
         blocks=tuple(blocks),
+        replan_enabled=True,
+    )
+
+
+def build_adaptive_session_plan(
+    *,
+    history: list[AttemptHistoryEntry],
+    seed: int,
+    now_utc: str | None = None,
+    recommended_level: int | None = None,
+    fixed_mode: bool = False,
+    variant: str = "full",
+) -> AdaptiveSessionPlan | None:
+    now_token = now_utc or _utc_now_iso()
+    variant_spec = _variant_spec(variant)
+    return _build_adaptive_session_plan_core(
+        history=history,
+        seed=seed,
+        now_token=now_token,
+        recommended_level=recommended_level,
+        fixed_mode=fixed_mode,
+        variant_spec=variant_spec,
+    )
+
+
+def _history_entry_from_block_result(
+    *,
+    block: AdaptiveSessionBlock,
+    result: AttemptResult,
+    completed_at_utc: str,
+    attempt_id: int,
+) -> AttemptHistoryEntry:
+    metrics = dict(result.metrics)
+    metrics.setdefault("training_mode", block.drill_mode.value)
+    metrics.setdefault("duration_s", f"{float(result.duration_s):.6f}")
+    metrics["adaptive.block_role"] = block.mode
+    return AttemptHistoryEntry(
+        attempt_id=int(attempt_id),
+        session_id=0,
+        activity_session_id=None,
+        activity_code=block.drill_code,
+        activity_kind="adaptive_session",
+        test_code=block.drill_code,
+        test_version=int(result.test_version),
+        rng_seed=int(result.seed),
+        difficulty=float(result.difficulty),
+        started_at_utc=str(completed_at_utc),
+        completed_at_utc=str(completed_at_utc),
+        difficulty_level_start=(
+            block.difficulty_level
+            if result.difficulty_level_start is None
+            else int(result.difficulty_level_start)
+        ),
+        difficulty_level_end=(
+            block.difficulty_level
+            if result.difficulty_level_end is None
+            else int(result.difficulty_level_end)
+        ),
+        metrics=metrics,
     )
 
 
@@ -1090,12 +1278,14 @@ class AdaptiveSession:
         clock: Clock,
         seed: int,
         plan: AdaptiveSessionPlan,
+        history: list[AttemptHistoryEntry] | None = None,
         difficulty_mode: LaunchDifficultyMode = "adaptive",
         difficulty_context: ResolvedDifficultyContext | None = None,
     ) -> None:
         self._clock = clock
         self._seed = int(seed)
         self._plan = plan
+        self._history = list(history or [])
         self._difficulty_mode = "adaptive" if difficulty_mode == "adaptive" else "fixed"
         baseline_level = 5 if not self._plan.blocks else int(self._plan.blocks[0].difficulty_level)
         self._difficulty_context = difficulty_context or build_resolved_difficulty_context(
@@ -1109,6 +1299,12 @@ class AdaptiveSession:
         self._current_block_index = 0
         self._current_engine: object | None = None
         self._completed_attempts: list[AttemptResult] = []
+        self._replan_count = 0
+        self._fatigue_snapshot = adaptive_fatigue_snapshot(
+            self._history,
+            now_utc=self._plan.generated_at_utc,
+            policy=ADAPTIVE_WORKOUT_EVIDENCE_POLICY,
+        )
 
     @property
     def seed(self) -> int:
@@ -1342,6 +1538,13 @@ class AdaptiveSession:
             "scheduler.generated_at_utc": self._plan.generated_at_utc,
             "scheduler.block_count": str(len(self._plan.blocks)),
             "scheduler.total_duration_s": f"{self._plan.scored_duration_s:.6f}",
+            "scheduler.replan_count": str(int(self._replan_count)),
+            "scheduler.fatigue.load": f"{self._fatigue_snapshot.fatigue_load:.6f}",
+            "scheduler.fatigue.runtime_load": f"{self._fatigue_snapshot.runtime_load:.6f}",
+            "scheduler.fatigue.degradation_load": f"{self._fatigue_snapshot.degradation_load:.6f}",
+            "scheduler.fatigue.accumulated_runtime_s": (
+                f"{self._fatigue_snapshot.accumulated_runtime_s:.6f}"
+            ),
             "adaptive_mode": str(self._difficulty_mode),
             "adaptive_start_level": str(int(self._difficulty_context.launch_level)),
             "adaptive_end_level": str(
@@ -1548,16 +1751,71 @@ class AdaptiveSession:
         engine = self._current_engine
         if block is None or engine is None:
             return
-        self._completed_attempts.append(
-            attempt_result_from_engine(engine, test_code=block.drill_code)
-        )
+        result = attempt_result_from_engine(engine, test_code=block.drill_code)
+        self._completed_attempts.append(result)
+        self._append_completed_block_history(block=block, result=result)
         next_index = self._current_block_index + 1
         self._current_engine = None
         if next_index >= len(self._plan.blocks):
             self._stage = AdaptiveStage.RESULTS
             self._current_block_index = len(self._plan.blocks)
             return
+        if self._plan.replan_enabled:
+            self._rebuild_remaining_plan(next_index)
+        if next_index >= len(self._plan.blocks):
+            self._stage = AdaptiveStage.RESULTS
+            self._current_block_index = len(self._plan.blocks)
+            return
         self._start_block(next_index)
+
+    def _append_completed_block_history(
+        self,
+        *,
+        block: AdaptiveSessionBlock,
+        result: AttemptResult,
+    ) -> None:
+        completed_at_utc = _utc_now_iso()
+        attempt_id = -1 - len(self._completed_attempts)
+        self._history.append(
+            _history_entry_from_block_result(
+                block=block,
+                result=result,
+                completed_at_utc=completed_at_utc,
+                attempt_id=attempt_id,
+            )
+        )
+        self._fatigue_snapshot = adaptive_fatigue_snapshot(
+            self._history,
+            now_utc=completed_at_utc,
+            policy=ADAPTIVE_WORKOUT_EVIDENCE_POLICY,
+        )
+
+    def _rebuild_remaining_plan(self, next_index: int) -> None:
+        if not self._plan.replan_enabled or next_index >= len(self._plan.blocks):
+            return
+        next_role_index = int(self._plan.blocks[next_index].block_index)
+        previous_blocks = tuple(self._plan.blocks[:next_index])
+        previous_area = None if not previous_blocks else previous_blocks[-1].target_area
+        rebuilt = _build_adaptive_session_plan_core(
+            history=list(self._history),
+            seed=self._seed,
+            now_token=_utc_now_iso(),
+            recommended_level=None,
+            fixed_mode=(self._difficulty_mode != "adaptive"),
+            variant_spec=_variant_spec(self._plan.variant),
+            start_block_index=next_role_index,
+            prior_blocks=previous_blocks,
+            previous_target_area=previous_area,
+        )
+        if rebuilt is None:
+            return
+        self._plan = rebuilt
+        self._replan_count += 1
+        self._fatigue_snapshot = adaptive_fatigue_snapshot(
+            self._history,
+            now_utc=self._plan.generated_at_utc,
+            policy=ADAPTIVE_WORKOUT_EVIDENCE_POLICY,
+        )
 
     def _block_attempts(
         self,
@@ -1680,7 +1938,7 @@ class AdaptiveSession:
 
     def _intro_note_lines(self) -> tuple[str, ...]:
         lines = [
-            "The scheduler recomputes on open from the last 28 days of mapped evidence.",
+            "The scheduler opens from the last 28 days of mapped evidence and then replans after each completed block.",
             "Block order: anchor -> tempo -> adjacent cross-train -> probe -> pressure/fatigue -> late repeat/transfer.",
             "",
             "Ranked primitives:",

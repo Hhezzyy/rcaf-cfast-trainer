@@ -42,6 +42,8 @@ TUNNEL_GEOMETRY_START_DISTANCE = 0.0
 TUNNEL_GEOMETRY_END_DISTANCE = TUNNEL_EXIT_DISTANCE + 4.0
 TUNNEL_CAMERA_DISTANCE = 1.2
 TUNNEL_CAMERA_LOOK_DISTANCE = TUNNEL_EXIT_DISTANCE - 0.8
+TUNNEL_CAMERA_FOLLOW_BACK_DISTANCE = 10.0
+TUNNEL_CAMERA_LOOK_AHEAD_DISTANCE = 14.0
 TUNNEL_CAMERA_UP_OFFSET = 0.10
 TUNNEL_CAMERA_TARGET_FORWARD_OFFSET = 0.45
 TUNNEL_CAMERA_TARGET_UP_OFFSET = 0.04
@@ -158,9 +160,27 @@ def slot_distance(slot_index: int) -> float:
     return forward_norm_to_distance(slot_forward_norm(slot_index))
 
 
-def fixed_camera_pose() -> tuple[Point3, Point3]:
-    cam_center, _cam_tangent, _cam_right, cam_up = tube_frame(TUNNEL_CAMERA_DISTANCE)
-    look_center, tangent, _look_right, look_up = tube_frame(TUNNEL_CAMERA_LOOK_DISTANCE)
+def fixed_camera_pose(
+    *,
+    forward_norm: float = BALL_FORWARD_IDLE_NORM,
+) -> tuple[Point3, Point3]:
+    ball_distance = forward_norm_to_distance(forward_norm)
+    cam_distance = max(
+        TUNNEL_CAMERA_DISTANCE,
+        min(
+            TUNNEL_GEOMETRY_END_DISTANCE - 6.0,
+            ball_distance - TUNNEL_CAMERA_FOLLOW_BACK_DISTANCE,
+        ),
+    )
+    look_distance = max(
+        cam_distance + 4.0,
+        min(
+            TUNNEL_GEOMETRY_END_DISTANCE - 0.4,
+            ball_distance + TUNNEL_CAMERA_LOOK_AHEAD_DISTANCE,
+        ),
+    )
+    cam_center, _cam_tangent, _cam_right, cam_up = tube_frame(cam_distance)
+    look_center, tangent, _look_right, look_up = tube_frame(look_distance)
     cam_pos = vec_add(cam_center, vec_scale(cam_up, TUNNEL_CAMERA_UP_OFFSET))
     look_target = vec_add(
         look_center,

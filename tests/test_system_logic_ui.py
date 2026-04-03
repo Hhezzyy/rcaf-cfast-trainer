@@ -245,6 +245,50 @@ def test_system_logic_mouse_click_changes_index_and_submits_answer() -> None:
         pygame.quit()
 
 
+def test_app_routes_scaled_mouse_clicks_to_system_logic_hitboxes() -> None:
+    engine = _FakeSystemLogicEngine(payload=_build_payload())
+    screen = _build_screen(engine)
+    try:
+        display_surface = pygame.display.get_surface()
+        assert display_surface is not None
+        app = screen._app
+        get_window_size = getattr(pygame.display, "get_window_size", None)
+        window_size = (
+            tuple(int(v) for v in get_window_size())
+            if callable(get_window_size)
+            else display_surface.get_size()
+        )
+        app_surface = pygame.Surface(
+            (display_surface.get_width() * 2, display_surface.get_height() * 2),
+            pygame.SRCALPHA,
+        )
+        app.set_surface(app_surface)
+        screen.render(app_surface)
+
+        index_rect = screen._system_logic_index_hitboxes[3]
+        index_click = (
+            int(round(index_rect.centerx * window_size[0] / app_surface.get_width())),
+            int(round(index_rect.centery * window_size[1] / app_surface.get_height())),
+        )
+        app.handle_event(
+            pygame.event.Event(pygame.MOUSEBUTTONDOWN, {"button": 1, "pos": index_click})
+        )
+        assert screen._system_logic_index_index == 2
+
+        answer_rect = screen._choice_option_hitboxes[4]
+        answer_click = (
+            int(round(answer_rect.centerx * window_size[0] / app_surface.get_width())),
+            int(round(answer_rect.centery * window_size[1] / app_surface.get_height())),
+        )
+        app.handle_event(
+            pygame.event.Event(pygame.MOUSEBUTTONDOWN, {"button": 1, "pos": answer_click})
+        )
+
+        assert engine.submissions == ["4"]
+    finally:
+        pygame.quit()
+
+
 def test_system_logic_renderer_handles_facts_tables_graphs_equations_and_diagrams() -> None:
     engine = _FakeSystemLogicEngine(payload=_build_payload())
     screen = _build_screen(engine)

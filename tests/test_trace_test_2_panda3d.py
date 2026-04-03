@@ -1,7 +1,17 @@
 from __future__ import annotations
 
+import os
+import sys
+from importlib.machinery import ModuleSpec
+from types import ModuleType
+
 import pygame
 import pytest
+
+if "moderngl" not in sys.modules:
+    moderngl_stub = ModuleType("moderngl")
+    moderngl_stub.__spec__ = ModuleSpec("moderngl", loader=None)
+    sys.modules["moderngl"] = moderngl_stub
 
 from cfast_trainer.app import App, CognitiveTestScreen, MenuItem, MenuScreen
 from cfast_trainer.aircraft_art import fixed_wing_heading_from_screen_heading
@@ -55,6 +65,8 @@ def _turn_track(*, motion_kind: TraceTest2MotionKind) -> TraceTest2AircraftTrack
 
 
 def _run_probe() -> dict[str, object]:
+    previous_driver = os.environ.get("SDL_VIDEODRIVER")
+    os.environ["SDL_VIDEODRIVER"] = "dummy"
     pygame.init()
     screen: CognitiveTestScreen | None = None
     try:
@@ -93,6 +105,10 @@ def _run_probe() -> dict[str, object]:
             if callable(close):
                 close()
         pygame.quit()
+        if previous_driver is None:
+            os.environ.pop("SDL_VIDEODRIVER", None)
+        else:
+            os.environ["SDL_VIDEODRIVER"] = previous_driver
 
 
 def _project_world_point(
@@ -132,6 +148,20 @@ def test_panda3d_trace_test_2_rendering_ignores_non_panda_preference(monkeypatch
     assert panda3d_trace_test_2_rendering_available() is True
 
 
+def test_panda3d_trace_test_2_rendering_returns_false_when_direct_is_missing(monkeypatch) -> None:
+    monkeypatch.delenv("SDL_VIDEODRIVER", raising=False)
+
+    def _missing(_name: str):
+        raise ModuleNotFoundError("direct")
+
+    monkeypatch.setattr(
+        "cfast_trainer.trace_test_2_panda3d.importlib.util.find_spec",
+        _missing,
+    )
+
+    assert panda3d_trace_test_2_rendering_available() is False
+
+
 def test_trace_test_2_aircraft_hpr_points_nose_along_motion_tangent() -> None:
     east = TraceTest2Panda3DRenderer._aircraft_hpr_from_tangent(tangent=(1.0, 0.0, 0.0))
     north = TraceTest2Panda3DRenderer._aircraft_hpr_from_tangent(tangent=(0.0, 1.0, 0.0))
@@ -147,7 +177,7 @@ def test_trace_test_2_aircraft_hpr_rejects_zero_motion() -> None:
         TraceTest2Panda3DRenderer._aircraft_hpr_from_tangent(tangent=(0.0, 0.0, 0.0))
 
 
-def test_trace_test_2_panda_hpr_uses_world_tangent_not_screen_heading() -> None:
+def test_trace_test_2_panda_hpr_uses_trace_screen_heading_contract() -> None:
     track = _turn_track(motion_kind=TraceTest2MotionKind.RIGHT)
     progress = 0.5
     size = (960, 540)
@@ -163,8 +193,9 @@ def test_trace_test_2_panda_hpr_uses_world_tangent_not_screen_heading() -> None:
         screen_heading_deg(track=track, progress=progress, size=size)
     )
 
-    assert hpr == pytest.approx(world_hpr)
-    assert abs(hpr[0] - expected_heading) >= 1.0
+    assert hpr[0] == pytest.approx(expected_heading)
+    assert abs(hpr[0] - world_hpr[0]) >= 1.0
+    assert hpr[1] == pytest.approx(world_hpr[1])
     assert hpr[2] == pytest.approx(world_hpr[2])
 
 
@@ -258,16 +289,19 @@ def test_trace_test_2_panda_multi_aircraft_orientation_matches_lattice_motion_ki
 
     for track in payload.aircraft:
         tangent = trace_test_2_track_tangent(track=track, progress=0.5)
+        world_hpr = TraceTest2Panda3DRenderer._aircraft_hpr_from_tangent(tangent=tangent)
         hpr = TraceTest2Panda3DRenderer._aircraft_hpr_for_track(
             track=track,
             progress=0.5,
             size=(960, 540),
             tangent=tangent,
         )
-
-        assert hpr == pytest.approx(
-            TraceTest2Panda3DRenderer._aircraft_hpr_from_tangent(tangent=tangent)
+        expected_heading = fixed_wing_heading_from_screen_heading(
+            screen_heading_deg(track=track, progress=0.5, size=(960, 540))
         )
+
+        assert hpr[0] == pytest.approx(expected_heading)
+        assert hpr[1] == pytest.approx(world_hpr[1])
         assert hpr[2] == pytest.approx(0.0, abs=0.01)
         if track.motion_kind is TraceTest2MotionKind.LEFT:
             assert hpr[0] == pytest.approx(270.0)

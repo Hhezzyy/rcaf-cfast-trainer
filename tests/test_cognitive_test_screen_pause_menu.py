@@ -9,20 +9,22 @@ os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 import pygame
 import pytest
 
+from cfast_trainer.ac_drills import AcDrillConfig, build_ac_gate_anchor_drill
+from cfast_trainer.airborne_numerical import build_airborne_numerical_test
 from cfast_trainer.app import (
     AnalogBinding,
     App,
-    _AuditoryPandaRequirementState,
     AxisCalibrationSettings,
     CognitiveTestScreen,
-    DigitalBinding,
     DifficultySettingsStore,
+    DigitalBinding,
     InputProfilesStore,
     JoystickBindingsScreen,
     MenuItem,
     MenuScreen,
+    _AuditoryPandaRequirementState,
 )
-from cfast_trainer.ac_drills import AcDrillConfig, build_ac_gate_anchor_drill
+from cfast_trainer.clock import Clock
 from cfast_trainer.cognitive_core import Phase
 from cfast_trainer.cognitive_core import TestSnapshot as SnapshotModel
 from cfast_trainer.numerical_operations import build_numerical_operations_test
@@ -190,6 +192,29 @@ def _build_app_and_screen(
     return app, screen, created
 
 
+def _build_airborne_screen() -> tuple[App, CognitiveTestScreen, Clock]:
+    pygame.init()
+    surface = pygame.display.set_mode((960, 540))
+    font = pygame.font.Font(None, 36)
+    app = App(surface=surface, font=font)
+    root = MenuScreen(app, "Main Menu", [MenuItem("Quit", app.quit)], is_root=True)
+    app.push(root)
+    clock = _FakeClock()
+
+    def factory():
+        engine = build_airborne_numerical_test(clock, seed=12345, practice=True)
+        engine.start()
+        return engine
+
+    screen = CognitiveTestScreen(
+        app,
+        engine_factory=factory,
+        test_code="airborne_numerical",
+    )
+    app.push(screen)
+    return app, screen, clock
+
+
 def _mark_auditory_panda_ready(screen: CognitiveTestScreen) -> None:
     screen._auditory_panda_requirement = _AuditoryPandaRequirementState(
         checked=True,
@@ -208,6 +233,46 @@ def _mark_scene_panda_ready(screen: CognitiveTestScreen, scene_key: str) -> None
         ),
     )
     setattr(screen, f"_{scene_key}_panda_failed", False)
+
+
+def test_airborne_distance_reveal_tracks_current_held_a_key(monkeypatch) -> None:
+    app, screen, _clock = _build_airborne_screen()
+    try:
+        monkeypatch.setattr(pygame.key, "get_pressed", lambda: _PressedKeys({pygame.K_a}))
+
+        screen.render(app.surface)
+        screen.render(app.surface)
+
+        assert screen._air_show_distances is True
+
+        monkeypatch.setattr(pygame.key, "get_pressed", lambda: _PressedKeys(set()))
+        screen.render(app.surface)
+
+        assert screen._air_show_distances is False
+    finally:
+        pygame.quit()
+
+
+def test_airborne_reference_overlays_follow_held_reference_keys(monkeypatch) -> None:
+    app, screen, _clock = _build_airborne_screen()
+    try:
+        monkeypatch.setattr(pygame.key, "get_pressed", lambda: _PressedKeys({pygame.K_d}))
+        screen.render(app.surface)
+        assert screen._air_overlay == "fuel"
+
+        monkeypatch.setattr(pygame.key, "get_pressed", lambda: _PressedKeys({pygame.K_f}))
+        screen.render(app.surface)
+        assert screen._air_overlay == "parcel"
+
+        monkeypatch.setattr(pygame.key, "get_pressed", lambda: _PressedKeys({pygame.K_s}))
+        screen.render(app.surface)
+        assert screen._air_overlay == "intro"
+
+        monkeypatch.setattr(pygame.key, "get_pressed", lambda: _PressedKeys(set()))
+        screen.render(app.surface)
+        assert screen._air_overlay is None
+    finally:
+        pygame.quit()
 
 
 def test_pause_menu_escape_then_resume_resumes_test() -> None:
@@ -1027,6 +1092,50 @@ def test_keyboard_vertical_controls_override_connected_joystick(monkeypatch) -> 
         pygame.quit()
 
 
+def test_app_escape_opens_pause_for_sensory_motor_apparatus_screen() -> None:
+    app, screen, _engines = _build_app_and_screen(
+        phase=Phase.PRACTICE,
+        title="Sensory Motor Apparatus",
+        test_code="sensory_motor_apparatus",
+    )
+    try:
+        app.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_ESCAPE, "mod": 0, "unicode": ""})
+        )
+
+        assert app.shell_pause_overlay_active() is True
+        assert screen._pause_menu_active is True
+        assert app._current_screen() is screen
+    finally:
+        pygame.quit()
+
+
+def test_sensory_motor_intro_footer_mentions_pause_not_back() -> None:
+    _app, screen, _engines = _build_app_and_screen(
+        phase=Phase.INSTRUCTIONS,
+        title="Sensory Motor Apparatus",
+        test_code="sensory_motor_apparatus",
+    )
+    try:
+        surface = pygame.display.get_surface()
+        assert surface is not None
+
+        tiny_font = _SpyFont()
+        small_font = _SpyFont()
+        app_font = _SpyFont()
+        screen._tiny_font = tiny_font
+        screen._small_font = small_font
+        screen._app._font = app_font
+
+        screen.render(surface)
+        rendered_text = "\n".join(app_font.rendered + small_font.rendered + tiny_font.rendered)
+
+        assert "Esc/Backspace: Pause" in rendered_text
+        assert "Esc/Backspace: Back" not in rendered_text
+    finally:
+        pygame.quit()
+
+
 def test_sensory_motor_joystick_only_uses_stick_x_and_ignores_rudder(monkeypatch) -> None:
     _app, screen, _engines = _build_app_and_screen(
         phase=Phase.PRACTICE,
@@ -1078,6 +1187,70 @@ def test_sensory_motor_joystick_only_uses_stick_x_and_ignores_rudder(monkeypatch
         assert joystick_only_vertical == pytest.approx(0.25)
         assert split_horizontal == pytest.approx(-0.80)
         assert split_vertical == pytest.approx(0.25)
+    finally:
+        pygame.quit()
+
+
+def test_sensory_motor_fallback_vertical_axis_respects_profile_inversion(
+    monkeypatch, tmp_path
+) -> None:
+    profile_store = InputProfilesStore(tmp_path / "input-profiles.json")
+    profile_id = profile_store.active_profile().profile_id
+    neutral = AxisCalibrationSettings(deadzone=0.0, curve=1.0)
+    profile_store.set_axis_calibration(
+        profile_id=profile_id,
+        axis_key="primary stick|guid-1::axis0",
+        settings=neutral,
+    )
+    profile_store.set_axis_calibration(
+        profile_id=profile_id,
+        axis_key="primary stick|guid-1::axis1",
+        settings=AxisCalibrationSettings(deadzone=0.0, invert=True, curve=1.0),
+    )
+    profile_store.set_axis_calibration(
+        profile_id=profile_id,
+        axis_key="primary stick|guid-1::axis3",
+        settings=neutral,
+    )
+
+    _app, screen, _engines = _build_app_and_screen(
+        phase=Phase.PRACTICE,
+        title="Sensory Motor Apparatus",
+        test_code="sensory_motor_apparatus",
+        input_profiles_store=profile_store,
+    )
+    try:
+        class _PrimaryStick:
+            def get_name(self) -> str:
+                return "primary stick"
+
+            def get_guid(self) -> str:
+                return "guid-1"
+
+            def get_numaxes(self) -> int:
+                return 4
+
+            def get_axis(self, idx: int) -> float:
+                return {
+                    0: 0.15,
+                    1: 0.60,
+                    3: -0.25,
+                }.get(idx, 0.0)
+
+        monkeypatch.setattr("cfast_trainer.app._iter_connected_joysticks", lambda: [_PrimaryStick()])
+        monkeypatch.setattr(pygame.key, "get_pressed", lambda: _PressedKeys(set()))
+
+        joystick_only_horizontal, joystick_only_vertical = screen._read_sensory_motor_control(
+            control_mode="joystick_only"
+        )
+        split_horizontal, split_vertical = screen._read_sensory_motor_control(
+            control_mode="split"
+        )
+
+        assert joystick_only_horizontal == pytest.approx(0.15)
+        assert joystick_only_vertical == pytest.approx(-0.60)
+        assert split_horizontal == pytest.approx(-0.25)
+        assert split_vertical == pytest.approx(-0.60)
     finally:
         pygame.quit()
 
@@ -1261,6 +1434,94 @@ def test_explicit_rapid_tracking_capture_binding_disables_legacy_joystick_button
         after_bound_payload = engine.snapshot().payload
         assert after_bound_payload is not None
         assert after_bound_payload.capture_attempts == 1
+    finally:
+        pygame.quit()
+
+
+def test_explicit_rapid_tracking_capture_binding_supports_hold_zoom_and_capture(
+    monkeypatch, tmp_path
+) -> None:
+    pygame.init()
+    try:
+        surface = pygame.display.set_mode((960, 540))
+        font = pygame.font.Font(None, 36)
+        profile_store = InputProfilesStore(tmp_path / "input-profiles.json")
+        profile_id = profile_store.active_profile().profile_id
+        profile_store.set_action_binding(
+            profile_id=profile_id,
+            action="rapid_tracking_capture",
+            slot_index=0,
+            binding=DigitalBinding(kind="button", device_key="capture stick|guid-1", control_index=4),
+        )
+
+        app = App(surface=surface, font=font, input_profiles_store=profile_store)
+        app.push(MenuScreen(app, "Main Menu", [MenuItem("Quit", app.quit)], is_root=True))
+        clock = _FakeClock()
+        screen = CognitiveTestScreen(
+            app,
+            engine_factory=lambda: build_rapid_tracking_test(
+                clock=clock,
+                seed=9876,
+                difficulty=0.5,
+            ),
+            test_code="rapid_tracking",
+        )
+        app.push(screen)
+
+        class _FakeJoystick:
+            def __init__(self) -> None:
+                self.buttons = [0] * 8
+
+            def get_name(self) -> str:
+                return "capture stick"
+
+            def get_guid(self) -> str:
+                return "guid-1"
+
+            def get_numaxes(self) -> int:
+                return 4
+
+            def get_axis(self, idx: int) -> float:
+                return 0.0
+
+            def get_numbuttons(self) -> int:
+                return len(self.buttons)
+
+            def get_button(self, idx: int) -> int:
+                return int(self.buttons[idx])
+
+            def get_numhats(self) -> int:
+                return 0
+
+        fake = _FakeJoystick()
+        monkeypatch.setattr("cfast_trainer.app._iter_connected_joysticks", lambda: [fake])
+        monkeypatch.setattr(pygame.key, "get_pressed", lambda: _PressedKeys(set()))
+        engine = cast(object, screen._engine)
+        engine.start_practice()
+        engine._target_x = 0.0
+        engine._target_y = 0.0
+        engine._target_terrain_occluded = False
+        engine._reset_camera_pose_to_target()
+
+        fake.buttons[4] = 1
+        app.render()
+        first = engine.snapshot().payload
+        assert first is not None
+        assert first.capture_attempts == 1
+
+        clock.advance(0.30)
+        app.render()
+        held = engine.snapshot().payload
+        assert held is not None
+        assert held.capture_zoom > 0.8
+        assert held.capture_points >= 2
+
+        fake.buttons[4] = 0
+        clock.advance(0.30)
+        app.render()
+        released = engine.snapshot().payload
+        assert released is not None
+        assert released.capture_zoom < 0.2
     finally:
         pygame.quit()
 
