@@ -7,6 +7,7 @@ from typing import Any
 import pygame
 
 from ..cognitive_core import Phase, TestSnapshot
+from ..runtime_ui_policy import runtime_visible_timers_enabled
 from .camera import TARGET_VIEW_LIMIT
 from .debug import rapid_tracking_debug_lines
 from .entities import RapidTrackingPayload
@@ -18,6 +19,81 @@ class RapidTrackingUiContext:
     app: Any
     small_font: pygame.font.Font
     tiny_font: pygame.font.Font
+
+
+def _rapid_tracking_control_scheme(payload: RapidTrackingPayload | None, engine: object | None) -> str:
+    if payload is not None:
+        token = str(payload.control_scheme).strip().lower()
+        if token in {"joystick_only", "rudder_horizontal"}:
+            return token
+    token = str(getattr(engine, "control_scheme", "")).strip().lower()
+    if token in {"joystick_only", "rudder_horizontal"}:
+        return token
+    return "joystick_only"
+
+
+def _rapid_tracking_footer_text(
+    *,
+    snap: TestSnapshot,
+    payload: RapidTrackingPayload | None,
+    engine: object | None,
+) -> str:
+    is_dual_task_bridge = str(snap.title).startswith("Dual-Task Bridge")
+    if snap.phase in (Phase.INSTRUCTIONS, Phase.PRACTICE_DONE):
+        base = "Enter: Continue  |  Esc/Backspace: Back"
+    elif snap.phase in (Phase.PRACTICE, Phase.SCORED):
+        if is_dual_task_bridge:
+            base = (
+                "Hold the configured capture binding to zoom and capture | "
+                "Q/W/E/R command filter | digits + Enter delayed report."
+            )
+        else:
+            control_scheme = _rapid_tracking_control_scheme(payload, engine)
+            if control_scheme == "rudder_horizontal":
+                control_text = "Rudder controls left/right; joystick Y controls up/down."
+            else:
+                control_text = "Joystick X controls left/right; joystick Y controls up/down."
+            base = (
+                f"{control_text} Hold the configured capture binding to zoom and capture "
+                "in the center box."
+            )
+    else:
+        base = "Enter: Return to Tests"
+    if RapidTrackingExerciseRenderer._dev_tools_enabled(engine):
+        base = f"{base}  |  F2 Debug  F3 Camera  F5 Reset  F6 Reseed  Shift+F5 Instructions"
+    return base
+
+
+def _rapid_tracking_fallback_notice_lines(*, app: Any, diagnostic_code: str | None) -> tuple[str, ...]:
+    failure = None
+    failure_getter = getattr(app, "renderer_bootstrap_failure", None)
+    if callable(failure_getter):
+        failure = failure_getter()
+    requested = bool(getattr(app, "renderer_gl_requested", lambda: getattr(app, "opengl_enabled", False))())
+    attempted = bool(getattr(app, "renderer_gl_attempted", lambda: requested)())
+
+    if not requested:
+        detail = (
+            "Modern GL / OpenGL rendering is turned off for this run, so Rapid Tracking is "
+            "using the 2D fallback scene."
+        )
+    elif failure is not None:
+        detail = (
+            "Modern GL / OpenGL rendering could not start, so Rapid Tracking is using the "
+            "2D fallback scene."
+        )
+    elif attempted:
+        detail = "Modern GL / OpenGL fell back to the 2D scene for this run."
+    else:
+        detail = (
+            "Modern GL / OpenGL is unavailable in this environment, so Rapid Tracking is "
+            "using the 2D fallback scene."
+        )
+
+    lines = ["2D fallback active", detail]
+    if diagnostic_code:
+        lines.append(f"Report code {diagnostic_code}")
+    return tuple(lines)
 
 
 def _render_wrapped_text(
@@ -75,6 +151,15 @@ class RapidTrackingExerciseRenderer:
         text_muted = (168, 210, 190)
         accent = (90, 214, 166)
         warning = (240, 192, 94)
+        diagnostic_code: str | None = None
+        if context.app.opengl_enabled:
+            diagnostic_code = context.app.renderer_diagnostic_code("rapid_tracking")
+        else:
+            diagnostic_code = context.app.note_renderer_fallback(
+                scene="rapid_tracking",
+                stage="runtime",
+                path="fallback_2d",
+            )
 
         surface.fill(bg)
         frame = pygame.Rect(10, 10, w - 20, h - 20)
@@ -102,7 +187,7 @@ class RapidTrackingExerciseRenderer:
         )
         surface.blit(stats, stats.get_rect(midright=(header.right - 12, header.centery)))
 
-        if snap.time_remaining_s is not None:
+        if runtime_visible_timers_enabled() and snap.time_remaining_s is not None:
             rem = int(round(snap.time_remaining_s))
             mm = rem // 60
             ss = rem % 60
@@ -114,9 +199,8 @@ class RapidTrackingExerciseRenderer:
             focus_text = context.tiny_font.render(f"Focus: {payload.focus_label}", True, text_main)
             target_label = rapid_tracking_target_label(kind=payload.target_kind, variant=payload.target_variant)
             target_text = context.tiny_font.render(f"Target: {target_label}", True, text_muted)
-            segment_seconds = max(0, int(round(float(payload.segment_time_remaining_s))))
             segment_text = context.tiny_font.render(
-                f"{payload.segment_label} {int(payload.segment_index)}/{int(payload.segment_total)}  {segment_seconds}s",
+                f"{payload.segment_label} {int(payload.segment_index)}/{int(payload.segment_total)}",
                 True,
                 text_muted,
             )
@@ -211,6 +295,16 @@ class RapidTrackingExerciseRenderer:
                     text_muted,
                 )
                 surface.blit(seed_text, seed_text.get_rect(topright=(prompt_bg.right - 10, prompt_bg.y + 8)))
+            if diagnostic_code:
+                code_text = context.tiny_font.render(
+                    f"Report code {diagnostic_code}",
+                    True,
+                    text_muted,
+                )
+                surface.blit(
+                    code_text,
+                    code_text.get_rect(midbottom=(prompt_bg.centerx, prompt_bg.bottom - 8)),
+                )
 
         if self._debug_overlay_enabled(engine):
             self._draw_debug_overlay(
@@ -223,24 +317,34 @@ class RapidTrackingExerciseRenderer:
                 font=context.tiny_font,
             )
 
-        footer = self._footer_text(snap=snap, engine=engine)
+        if not context.app.opengl_enabled and snap.phase in (Phase.INSTRUCTIONS, Phase.PRACTICE_DONE):
+            notice = pygame.Rect(
+                0,
+                0,
+                max(260, min(track.w - 36, 640)),
+                max(104, min(track.h - 36, 132)),
+            )
+            notice.center = track.center
+            pygame.draw.rect(surface, (10, 24, 22), notice, border_radius=12)
+            pygame.draw.rect(surface, (120, 176, 154), notice, 2, border_radius=12)
+            title = context.small_font.render("2D Fallback Active", True, warning)
+            surface.blit(title, title.get_rect(midtop=(notice.centerx, notice.y + 12)))
+            lines = _rapid_tracking_fallback_notice_lines(
+                app=context.app,
+                diagnostic_code=diagnostic_code,
+            )
+            _render_wrapped_text(
+                surface=surface,
+                font=context.tiny_font,
+                rect=pygame.Rect(notice.x + 18, notice.y + 48, notice.w - 36, notice.h - 58),
+                text=" ".join(lines[1:]),
+                color=text_muted,
+                max_lines=4,
+            )
+
+        footer = _rapid_tracking_footer_text(snap=snap, payload=payload, engine=engine)
         foot = context.tiny_font.render(footer, True, text_muted)
         surface.blit(foot, foot.get_rect(midbottom=(frame.centerx, frame.bottom - 10)))
-
-    @staticmethod
-    def _footer_text(*, snap: TestSnapshot, engine: object | None) -> str:
-        if snap.phase in (Phase.INSTRUCTIONS, Phase.PRACTICE_DONE):
-            base = "Enter: Continue  |  Esc/Backspace: Back"
-        elif snap.phase in (Phase.PRACTICE, Phase.SCORED):
-            base = (
-                "Configured HOTAS movement axes control the camera. "
-                "Hold the configured capture binding to zoom and capture in the center box."
-            )
-        else:
-            base = "Enter: Return to Tests"
-        if RapidTrackingExerciseRenderer._dev_tools_enabled(engine):
-            base = f"{base}  |  F2 Debug  F3 Camera  F5 Reset  F6 Reseed  Shift+F5 Instructions"
-        return base
 
     @staticmethod
     def _dev_tools_enabled(engine: object | None) -> bool:
@@ -321,8 +425,6 @@ class RapidTrackingExerciseRenderer:
 
         center = track.center
         if payload is None:
-            label = context.tiny_font.render("OpenGL disabled: using schematic fallback", True, text_muted)
-            surface.blit(label, label.get_rect(center=center))
             return
 
         # Draw a simple moving world cue so the fallback still reads in world-space.

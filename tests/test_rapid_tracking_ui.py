@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import cast
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
@@ -12,11 +13,25 @@ import pytest
 
 from cfast_trainer.ant_drills import AntDrillMode
 from cfast_trainer.ant_workouts import AntWorkoutBlockPlan, AntWorkoutPlan, AntWorkoutSession
-from cfast_trainer.app import AntWorkoutScreen, App, CognitiveTestScreen, MenuItem, MenuScreen
+from cfast_trainer.app import (
+    AnalogBinding,
+    AntWorkoutScreen,
+    App,
+    AxisCalibrationSettings,
+    CognitiveTestScreen,
+    InputProfilesStore,
+    MenuItem,
+    MenuScreen,
+)
 from cfast_trainer.cognitive_core import Phase
 from cfast_trainer.cognitive_core import TestSnapshot as SnapshotModel
 from cfast_trainer.rapid_tracking import RapidTrackingPayload, build_rapid_tracking_test
-from cfast_trainer.rt_drills import build_rt_mixed_tempo_drill
+from cfast_trainer.rapid_tracking.renderer import _rapid_tracking_fallback_notice_lines
+from cfast_trainer.rt_drills import (
+    build_rt_ground_tempo_run_drill,
+    build_rt_mixed_tempo_drill,
+    build_rt_rudder_horizontal_prime_drill,
+)
 
 
 @dataclass
@@ -43,6 +58,7 @@ class _FakeRapidTrackingEngine:
         self._payload = payload
         self._title = title
         self.submissions: list[str] = []
+        self.last_control: tuple[float, float] | None = None
 
     def snapshot(self) -> SnapshotModel:
         return SnapshotModel(
@@ -64,6 +80,9 @@ class _FakeRapidTrackingEngine:
 
     def start_scored(self) -> None:
         pass
+
+    def set_control(self, *, horizontal: float, vertical: float) -> None:
+        self.last_control = (float(horizontal), float(vertical))
 
     def submit_answer(self, raw: str) -> bool:
         self.submissions.append(str(raw))
@@ -108,6 +127,25 @@ def _build_live_rt_screen(*, clock: _FakeClock) -> CognitiveTestScreen:
     screen._engine._target_terrain_occluded = False
     screen._engine._reset_camera_pose_to_target()
     return screen
+
+
+class _AxisJoystick:
+    def __init__(self, *, name: str, axes: dict[int, float], guid: str) -> None:
+        self._name = name
+        self._axes = dict(axes)
+        self._guid = guid
+
+    def get_name(self) -> str:
+        return self._name
+
+    def get_guid(self) -> str:
+        return self._guid
+
+    def get_numaxes(self) -> int:
+        return (max(self._axes) + 1) if self._axes else 0
+
+    def get_axis(self, idx: int) -> float:
+        return float(self._axes.get(idx, 0.0))
 
 
 def test_rapid_tracking_title_prefix_routes_to_real_renderer(monkeypatch) -> None:
@@ -201,6 +239,192 @@ def test_rapid_tracking_real_drill_engine_exposes_focus_metadata_on_live_screen(
         assert isinstance(payload, RapidTrackingPayload)
         assert payload.focus_label == "Stable lock quality"
         assert payload.active_target_kinds == ("soldier", "truck")
+        assert payload.control_scheme == "joystick_only"
+    finally:
+        pygame.quit()
+
+
+def test_rapid_tracking_main_runtime_uses_joystick_x_and_y(monkeypatch) -> None:
+    clock = _FakeClock()
+    screen = _build_live_rt_screen(clock=clock)
+    try:
+        surface = pygame.display.get_surface()
+        assert surface is not None
+        monkeypatch.setattr(
+            "cfast_trainer.app._iter_connected_joysticks",
+            lambda: [
+                _AxisJoystick(
+                    name="primary stick",
+                    guid="primary-guid",
+                    axes={0: 0.46, 1: -0.28, 3: 0.91},
+                ),
+                _AxisJoystick(
+                    name="rudder pedals",
+                    guid="rudder-guid",
+                    axes={3: -0.83},
+                ),
+            ],
+        )
+        monkeypatch.setattr(pygame.key, "get_pressed", lambda: _PressedKeys(set()))
+
+        screen.render(surface)
+
+        assert screen._engine.control_scheme == "joystick_only"
+        assert screen._engine._control_x == pytest.approx(0.46)
+        assert screen._engine._control_y == pytest.approx(-0.28)
+    finally:
+        pygame.quit()
+
+
+def test_existing_rt_drill_runtime_uses_joystick_horizontal_control(monkeypatch) -> None:
+    clock = _FakeClock()
+    drill = build_rt_ground_tempo_run_drill(
+        clock=clock,
+        seed=771,
+        difficulty=0.5,
+        mode=AntDrillMode.BUILD,
+    )
+    drill.start_scored()
+    _app, screen = _build_screen(drill)
+    try:
+        surface = pygame.display.get_surface()
+        assert surface is not None
+        monkeypatch.setattr(
+            "cfast_trainer.app._iter_connected_joysticks",
+            lambda: [
+                _AxisJoystick(
+                    name="primary stick",
+                    guid="primary-guid",
+                    axes={0: -0.35, 1: 0.22, 3: 0.77},
+                ),
+                _AxisJoystick(
+                    name="rudder pedals",
+                    guid="rudder-guid",
+                    axes={3: -0.66},
+                ),
+            ],
+        )
+        monkeypatch.setattr(pygame.key, "get_pressed", lambda: _PressedKeys(set()))
+
+        screen.render(surface)
+        payload = drill.snapshot().payload
+
+        assert isinstance(payload, RapidTrackingPayload)
+        assert payload.control_scheme == "joystick_only"
+        assert drill._control_x == pytest.approx(-0.35)
+        assert drill._control_y == pytest.approx(0.22)
+    finally:
+        pygame.quit()
+
+
+def test_rapid_tracking_wrapper_payload_routes_controls_without_direct_rt_engine(monkeypatch) -> None:
+    payload = _sample_payload()
+    engine = _FakeRapidTrackingEngine(payload, title="Wrapper Runtime")
+    _app, screen = _build_screen(engine)
+    try:
+        surface = pygame.display.get_surface()
+        assert surface is not None
+        monkeypatch.setattr(
+            "cfast_trainer.app._iter_connected_joysticks",
+            lambda: [_AxisJoystick(name="primary stick", guid="primary-guid", axes={0: 0.31, 1: -0.44})],
+        )
+        monkeypatch.setattr(pygame.key, "get_pressed", lambda: _PressedKeys(set()))
+
+        screen.render(surface)
+
+        assert engine.last_control is not None
+        assert engine.last_control[0] == pytest.approx(0.31)
+        assert engine.last_control[1] == pytest.approx(-0.44)
+    finally:
+        pygame.quit()
+
+
+def test_rapid_tracking_missing_explicit_primary_binding_falls_back_to_joystick(monkeypatch, tmp_path) -> None:
+    profiles = InputProfilesStore(tmp_path / "input-profiles.json")
+    profile_id = profiles.active_profile().profile_id
+    profiles.set_axis_role_binding(
+        profile_id=profile_id,
+        role="primary_horizontal",
+        binding=AnalogBinding(device_key="missing stick|guid-missing", axis_index=2),
+    )
+    neutral = AxisCalibrationSettings(deadzone=0.0, curve=1.0)
+    profiles.set_axis_calibration(
+        profile_id=profile_id,
+        axis_key="primary stick|primary-guid::axis0",
+        settings=neutral,
+    )
+    profiles.set_axis_calibration(
+        profile_id=profile_id,
+        axis_key="primary stick|primary-guid::axis1",
+        settings=neutral,
+    )
+
+    pygame.init()
+    try:
+        surface = pygame.display.set_mode((960, 540))
+        font = pygame.font.Font(None, 36)
+        app = App(surface=surface, font=font, input_profiles_store=profiles)
+        app.push(MenuScreen(app, "Main Menu", [MenuItem("Quit", app.quit)], is_root=True))
+        clock = _FakeClock()
+        screen = CognitiveTestScreen(
+            app,
+            engine_factory=lambda: build_rapid_tracking_test(clock=clock, seed=654, difficulty=0.5),
+            test_code="rapid_tracking",
+        )
+        app.push(screen)
+        screen._engine.start_scored()
+        monkeypatch.setattr(
+            "cfast_trainer.app._iter_connected_joysticks",
+            lambda: [_AxisJoystick(name="primary stick", guid="primary-guid", axes={0: 0.42, 1: -0.18})],
+        )
+        monkeypatch.setattr(pygame.key, "get_pressed", lambda: _PressedKeys(set()))
+
+        app._joystick_binding_router.poll()
+        screen.render(surface)
+
+        assert screen._engine._control_x == pytest.approx(0.42)
+        assert screen._engine._control_y == pytest.approx(-0.18)
+    finally:
+        pygame.quit()
+
+
+def test_rt_rudder_horizontal_prime_uses_rudder_left_right_and_joystick_y(monkeypatch) -> None:
+    clock = _FakeClock()
+    drill = build_rt_rudder_horizontal_prime_drill(
+        clock=clock,
+        seed=909,
+        difficulty=0.5,
+        mode=AntDrillMode.BUILD,
+    )
+    drill.start_scored()
+    _app, screen = _build_screen(drill)
+    try:
+        surface = pygame.display.get_surface()
+        assert surface is not None
+        monkeypatch.setattr(
+            "cfast_trainer.app._iter_connected_joysticks",
+            lambda: [
+                _AxisJoystick(
+                    name="primary stick",
+                    guid="primary-guid",
+                    axes={0: 0.55, 1: 0.24, 3: 0.81},
+                ),
+                _AxisJoystick(
+                    name="rudder pedals",
+                    guid="rudder-guid",
+                    axes={3: -0.72},
+                ),
+            ],
+        )
+        monkeypatch.setattr(pygame.key, "get_pressed", lambda: _PressedKeys(set()))
+
+        screen.render(surface)
+        payload = drill.snapshot().payload
+
+        assert isinstance(payload, RapidTrackingPayload)
+        assert payload.control_scheme == "rudder_horizontal"
+        assert drill._control_x == pytest.approx(-0.72)
+        assert drill._control_y == pytest.approx(0.24)
     finally:
         pygame.quit()
 
@@ -284,3 +508,23 @@ def test_rapid_tracking_render_ignores_keyboard_camera_fallback(monkeypatch) -> 
         assert after.camera_pitch_deg == pytest.approx(before.camera_pitch_deg)
     finally:
         pygame.quit()
+
+
+def test_rapid_tracking_fallback_notice_uses_opengl_wording_not_panda() -> None:
+    app = SimpleNamespace(
+        opengl_enabled=False,
+        renderer_gl_requested=lambda: True,
+        renderer_gl_attempted=lambda: True,
+        renderer_bootstrap_failure=lambda: None,
+    )
+
+    lines = _rapid_tracking_fallback_notice_lines(
+        app=app,
+        diagnostic_code="RT-RUNT-FALL",
+    )
+    text = " ".join(lines)
+
+    assert "OpenGL" in text
+    assert "2D fallback" in text
+    assert "RT-RUNT-FALL" in text
+    assert "Panda" not in text

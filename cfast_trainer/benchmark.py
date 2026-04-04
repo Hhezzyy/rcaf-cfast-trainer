@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import random
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 
 from .adaptive_difficulty import build_resolved_difficulty_context, difficulty_ratio_for_level
@@ -49,7 +50,7 @@ from .visual_search import VisualSearchConfig, build_visual_search_test
 class BenchmarkProbePlan:
     probe_code: str
     label: str
-    builder: Callable[[], object]
+    builder: Callable[[int], object]
     seed: int
     difficulty_level: int
     duration_s: float
@@ -72,6 +73,7 @@ class BenchmarkPlan:
 class BenchmarkStage(StrEnum):
     INTRO = "intro"
     PROBE = "probe"
+    PROBE_RESULTS = "probe_results"
     RESULTS = "results"
 
 
@@ -113,6 +115,7 @@ class BenchmarkSnapshot:
     attempted_total: int
     correct_total: int
     completed_probe_results: tuple[BenchmarkProbeResult, ...]
+    latest_probe_result: BenchmarkProbeResult | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,7 +136,7 @@ class BenchmarkSummary:
     probe_count: int = 0
     completed_probes: int = 0
     benchmark_code: str = "benchmark_battery"
-    benchmark_version: int = 1
+    benchmark_version: int = 3
     difficulty_policy: str = "fixed_per_probe"
 
 
@@ -148,6 +151,14 @@ class _PreparedBenchmarkProbeRuntime:
 
     def __getattr__(self, name: str) -> object:
         return getattr(self._engine, name)
+
+    @property
+    def _clock(self) -> object:
+        return getattr(self._engine, "_clock")
+
+    @_clock.setter
+    def _clock(self, value: object) -> None:
+        setattr(self._engine, "_clock", value)
 
     @property
     def phase(self) -> Phase:
@@ -169,9 +180,23 @@ class _PreparedBenchmarkProbeRuntime:
         return self.phase is not Phase.SCORED
 
     def start_practice(self) -> None:
+        if self._forced_results:
+            return
+        if self._launched:
+            starter = getattr(self._engine, "start_practice", None)
+            if callable(starter):
+                starter()
+            return
         self._launch_into_scored()
 
     def start_scored(self) -> None:
+        if self._forced_results:
+            return
+        if self._launched:
+            starter = getattr(self._engine, "start_scored", None)
+            if callable(starter):
+                starter()
+            return
         self._launch_into_scored()
 
     def submit_answer(self, raw: str) -> bool:
@@ -244,13 +269,16 @@ class BenchmarkSession:
     def __init__(self, *, plan: BenchmarkPlan) -> None:
         self._plan = plan
         self._stage = BenchmarkStage.INTRO
+        self._run_seed = _random_seed()
         self._current_probe_index = 0
         self._current_engine: object | None = None
         self._completed_attempts: list[AttemptResult] = []
+        self._probe_seeds = [int(probe.seed) for probe in self._plan.probes]
+        self._latest_probe_result: BenchmarkProbeResult | None = None
 
     @property
     def seed(self) -> int:
-        return int(self._plan.version)
+        return int(self._run_seed)
 
     @property
     def difficulty(self) -> float:
@@ -273,6 +301,8 @@ class BenchmarkSession:
             if isinstance(current_phase, Phase):
                 return current_phase
             return Phase.SCORED
+        if self._stage is BenchmarkStage.PROBE_RESULTS:
+            return Phase.PRACTICE_DONE
         return Phase.INSTRUCTIONS
 
     @property
@@ -280,7 +310,7 @@ class BenchmarkSession:
         return self._stage
 
     def can_exit(self) -> bool:
-        if self._stage in (BenchmarkStage.INTRO, BenchmarkStage.RESULTS):
+        if self._stage in (BenchmarkStage.INTRO, BenchmarkStage.PROBE_RESULTS, BenchmarkStage.RESULTS):
             return True
         current_engine = self._current_engine
         if current_engine is None:
@@ -294,11 +324,32 @@ class BenchmarkSession:
         return self._current_engine
 
     def current_probe_plan(self) -> BenchmarkProbePlan | None:
-        if self._stage is not BenchmarkStage.PROBE:
+        if self._stage not in (BenchmarkStage.PROBE, BenchmarkStage.PROBE_RESULTS):
             return None
         if not (0 <= self._current_probe_index < len(self._plan.probes)):
             return None
-        return self._plan.probes[self._current_probe_index]
+        return replace(
+            self._plan.probes[self._current_probe_index],
+            seed=int(self._probe_seeds[self._current_probe_index]),
+        )
+
+    def latest_completed_attempt(self) -> AttemptResult | None:
+        if not self._completed_attempts:
+            return None
+        return self._completed_attempts[-1]
+
+    def latest_completed_probe(self) -> BenchmarkProbePlan | None:
+        if not self._completed_attempts:
+            return None
+        index = len(self._completed_attempts) - 1
+        if not (0 <= index < len(self._plan.probes)):
+            return None
+        return replace(self._plan.probes[index], seed=int(self._probe_seeds[index]))
+
+    def latest_completed_probe_index(self) -> int | None:
+        if not self._completed_attempts:
+            return None
+        return len(self._completed_attempts) - 1
 
     def activate(self) -> None:
         if self._stage is not BenchmarkStage.INTRO:
@@ -308,11 +359,34 @@ class BenchmarkSession:
             return
         self._start_probe(0)
 
+    def continue_after_probe_results(self) -> None:
+        if self._stage is not BenchmarkStage.PROBE_RESULTS:
+            return
+        next_index = self._current_probe_index + 1
+        self._latest_probe_result = None
+        if next_index >= len(self._plan.probes):
+            self._stage = BenchmarkStage.RESULTS
+            self._current_probe_index = len(self._plan.probes)
+            return
+        self._start_probe(next_index)
+
     def start_practice(self) -> None:
         self.activate()
 
     def start_scored(self) -> None:
         self.activate()
+
+    def restart_current_probe(self, *, seed_override: int | None = None) -> None:
+        if self._stage is not BenchmarkStage.PROBE:
+            return
+        if not (0 <= self._current_probe_index < len(self._probe_seeds)):
+            return
+        self._probe_seeds[self._current_probe_index] = (
+            _random_seed() if seed_override is None else _clamp_seed(seed_override)
+        )
+        self._current_engine = None
+        self._latest_probe_result = None
+        self._start_probe(self._current_probe_index)
 
     def submit_answer(self, raw: str) -> bool:
         engine = self._current_engine
@@ -377,7 +451,7 @@ class BenchmarkSession:
             return BenchmarkSnapshot(
                 stage=self._stage,
                 title=self._plan.title,
-                subtitle="Fixed Benchmark Battery",
+                subtitle="Benchmark Battery",
                 prompt=self._plan.description,
                 note_lines=self._intro_note_lines(),
                 probe_index=0,
@@ -391,6 +465,51 @@ class BenchmarkSession:
                 attempted_total=summary.attempted,
                 correct_total=summary.correct,
                 completed_probe_results=completed_probe_results,
+            )
+
+        if self._stage is BenchmarkStage.PROBE_RESULTS:
+            probe = self.current_probe_plan()
+            result = self._latest_probe_result
+            label = "Current Probe" if probe is None else probe.label
+            accuracy = 0.0 if result is None else result.accuracy * 100.0
+            score_text = "n/a"
+            if result is not None and result.score_ratio is not None:
+                score_text = f"{result.score_ratio * 100.0:.1f}%"
+            note_lines = (
+                ()
+                if result is None
+                else (
+                    f"Probe {self._current_probe_index + 1}/{probe_total}",
+                    f"Seed: {result.seed}",
+                    f"Attempted: {result.attempted}",
+                    f"Correct: {result.correct}",
+                    f"Accuracy: {accuracy:.1f}%",
+                    f"Score ratio: {score_text}",
+                )
+            )
+            return BenchmarkSnapshot(
+                stage=self._stage,
+                title=label,
+                subtitle="Probe Results",
+                prompt=(
+                    "This probe is complete.\n"
+                    "Press Enter to continue to the next probe."
+                ),
+                note_lines=note_lines,
+                probe_index=self._current_probe_index + 1,
+                probe_total=probe_total,
+                current_probe_code=None if probe is None else probe.probe_code,
+                current_probe_label=None if probe is None else probe.label,
+                current_probe_seed=None if probe is None else probe.seed,
+                current_probe_difficulty_level=(
+                    None if probe is None else probe.difficulty_level
+                ),
+                probe_time_remaining_s=0.0,
+                battery_time_remaining_s=self._battery_time_remaining_s(),
+                attempted_total=summary.attempted,
+                correct_total=summary.correct,
+                completed_probe_results=completed_probe_results,
+                latest_probe_result=result,
             )
 
         if self._stage is BenchmarkStage.RESULTS:
@@ -429,8 +548,9 @@ class BenchmarkSession:
             ),
             prompt="",
             note_lines=(
-                "Fixed order, fixed seeds, fixed difficulty.",
-                "Pause menu controls the whole battery, not the current probe.",
+                "Locked order and fixed level-5 difficulty.",
+                "Probe seeds are randomized each benchmark run.",
+                "Pause menu restart resets only the active probe.",
             ),
             probe_index=self._current_probe_index + 1,
             probe_total=probe_total,
@@ -445,6 +565,7 @@ class BenchmarkSession:
             attempted_total=summary.attempted,
             correct_total=summary.correct,
             completed_probe_results=completed_probe_results,
+            latest_probe_result=self._latest_probe_result,
         )
 
     def scored_summary(self) -> BenchmarkSummary:
@@ -503,6 +624,7 @@ class BenchmarkSession:
     def result_metrics(self) -> dict[str, str]:
         metrics = {
             "benchmark.version": str(int(self._plan.version)),
+            "benchmark.run_seed": str(int(self._run_seed)),
             "benchmark.probe_count": str(len(self._plan.probes)),
             "benchmark.completed_probes": str(len(self._completed_attempts)),
             "benchmark.total_duration_s": f"{self._plan.scored_duration_s:.6f}",
@@ -636,7 +758,8 @@ class BenchmarkSession:
     def _start_probe(self, index: int) -> None:
         self._current_probe_index = int(index)
         probe = self._plan.probes[self._current_probe_index]
-        engine = probe.builder()
+        seed = int(self._probe_seeds[self._current_probe_index])
+        engine = probe.builder(seed)
         engine._difficulty_code = str(probe.probe_code)
         engine._resolved_difficulty_context = build_resolved_difficulty_context(
             probe.probe_code,
@@ -649,6 +772,7 @@ class BenchmarkSession:
             engine=engine,
             probe_label=probe.label,
         )
+        self._latest_probe_result = None
         self._stage = BenchmarkStage.PROBE
 
     def _complete_current_probe(self) -> None:
@@ -656,16 +780,28 @@ class BenchmarkSession:
         engine = self._current_engine
         if probe is None or engine is None:
             return
-        self._completed_attempts.append(
-            attempt_result_from_engine(engine, test_code=probe.probe_code)
+        attempt = attempt_result_from_engine(engine, test_code=probe.probe_code)
+        self._completed_attempts.append(attempt)
+        self._latest_probe_result = BenchmarkProbeResult(
+            probe_code=probe.probe_code,
+            label=probe.label,
+            seed=probe.seed,
+            difficulty_level=probe.difficulty_level,
+            duration_s=probe.duration_s,
+            attempted=attempt.attempted,
+            correct=attempt.correct,
+            accuracy=attempt.accuracy,
+            throughput_per_min=attempt.throughput_per_min,
+            mean_rt_ms=attempt.mean_rt_ms,
+            total_score=attempt.total_score,
+            max_score=attempt.max_score,
+            score_ratio=attempt.score_ratio,
+            difficulty_level_start=attempt.difficulty_level_start,
+            difficulty_level_end=attempt.difficulty_level_end,
+            completed=True,
         )
-        next_index = self._current_probe_index + 1
         self._current_engine = None
-        if next_index >= len(self._plan.probes):
-            self._stage = BenchmarkStage.RESULTS
-            self._current_probe_index = len(self._plan.probes)
-            return
-        self._start_probe(next_index)
+        self._stage = BenchmarkStage.PROBE_RESULTS
 
     def _current_probe_snapshot(self) -> object | None:
         engine = self._current_engine
@@ -695,6 +831,10 @@ class BenchmarkSession:
             return self._plan.scored_duration_s
         if self._stage is BenchmarkStage.RESULTS:
             return 0.0
+        if self._stage is BenchmarkStage.PROBE_RESULTS:
+            return float(
+                sum(probe.duration_s for probe in self._plan.probes[self._current_probe_index + 1 :])
+            )
         current_remaining = self._current_probe_time_remaining_s() or 0.0
         future = sum(
             probe.duration_s for probe in self._plan.probes[self._current_probe_index + 1 :]
@@ -801,9 +941,10 @@ class BenchmarkSession:
 
     def _intro_note_lines(self) -> tuple[str, ...]:
         lines = [
-            "Approximate scored time: 13 minutes.",
-            "Fixed order, fixed seeds, and fixed per-probe difficulty.",
-            "No practice blocks, no adaptive difficulty, and no benchmark-time overrides.",
+            "Approximate scored time: 28 minutes.",
+            f"Benchmark run seed: {self._run_seed}",
+            "Probe order is fixed and per-probe difficulty stays locked at level 5.",
+            "Probe seeds are randomized each run. Practice and adaptive difficulty stay disabled.",
         ]
         for idx, probe in enumerate(self._plan.probes, start=1):
             lines.append(
@@ -837,6 +978,230 @@ class BenchmarkSession:
         return tuple(lines)
 
 
+def _clamp_seed(value: int) -> int:
+    return max(1, min((2**31) - 1, int(value)))
+
+
+def _random_seed() -> int:
+    return _clamp_seed(random.SystemRandom().randint(1, (2**31) - 1))
+
+
+def _build_benchmark_probe_engine(
+    *,
+    clock: Clock,
+    probe_code: str,
+    seed: int,
+    duration_s: float,
+) -> object:
+    difficulty = difficulty_ratio_for_level(probe_code, 5)
+    if probe_code == "numerical_operations":
+        return build_numerical_operations_test(
+            clock=clock,
+            seed=seed,
+            difficulty=difficulty,
+            config=NumericalOperationsConfig(
+                scored_duration_s=duration_s,
+                practice_questions=0,
+            ),
+        )
+    if probe_code == "visual_search":
+        return build_visual_search_test(
+            clock=clock,
+            seed=seed,
+            difficulty=difficulty,
+            config=VisualSearchConfig(
+                scored_duration_s=duration_s,
+                practice_questions=0,
+            ),
+        )
+    if probe_code == "digit_recognition":
+        return build_digit_recognition_test(
+            clock=clock,
+            seed=seed,
+            difficulty=difficulty,
+            practice=False,
+            scored_duration_s=duration_s,
+        )
+    if probe_code == "angles_bearings_degrees":
+        return build_angles_bearings_degrees_test(
+            clock=clock,
+            seed=seed,
+            difficulty=difficulty,
+            config=AnglesBearingsDegreesConfig(
+                scored_duration_s=duration_s,
+                practice_questions=0,
+            ),
+        )
+    if probe_code == "sensory_motor_apparatus":
+        return build_sensory_motor_apparatus_test(
+            clock=clock,
+            seed=seed,
+            difficulty=difficulty,
+            config=SensoryMotorApparatusConfig(
+                practice_duration_s=0.0,
+                scored_duration_s=duration_s,
+            ),
+        )
+    if probe_code == "math_reasoning":
+        return build_math_reasoning_test(
+            clock=clock,
+            seed=seed,
+            difficulty=difficulty,
+            config=MathReasoningConfig(
+                scored_duration_s=duration_s,
+                practice_questions=0,
+            ),
+        )
+    if probe_code == "target_recognition":
+        return build_target_recognition_test(
+            clock=clock,
+            seed=seed,
+            difficulty=difficulty,
+            config=TargetRecognitionConfig(
+                scored_duration_s=duration_s,
+                practice_questions=0,
+            ),
+        )
+    if probe_code == "colours_letters_numbers":
+        return build_colours_letters_numbers_test(
+            clock=clock,
+            seed=seed,
+            difficulty=difficulty,
+            practice=False,
+            scored_duration_s=duration_s,
+            config=ColoursLettersNumbersConfig(
+                scored_duration_s=duration_s,
+                practice_rounds=0,
+            ),
+        )
+    if probe_code == "instrument_comprehension":
+        return build_instrument_comprehension_test(
+            clock=clock,
+            seed=seed,
+            difficulty=difficulty,
+            config=InstrumentComprehensionConfig(
+                scored_duration_s=duration_s,
+                practice_questions=0,
+            ),
+        )
+    if probe_code == "rapid_tracking":
+        return build_rapid_tracking_test(
+            clock=clock,
+            seed=seed,
+            difficulty=difficulty,
+            config=RapidTrackingConfig(
+                practice_duration_s=0.0,
+                scored_duration_s=duration_s,
+            ),
+        )
+    if probe_code == "airborne_numerical":
+        return build_airborne_numerical_test(
+            clock=clock,
+            seed=seed,
+            practice=False,
+            difficulty=difficulty,
+            scored_duration_s=duration_s,
+        )
+    if probe_code == "vigilance":
+        return build_vigilance_test(
+            clock=clock,
+            seed=seed,
+            difficulty=difficulty,
+            config=VigilanceConfig(
+                practice_duration_s=0.0,
+                scored_duration_s=duration_s,
+            ),
+        )
+    if probe_code == "auditory_capacity":
+        return build_auditory_capacity_test(
+            clock=clock,
+            seed=seed,
+            difficulty=difficulty,
+            config=AuditoryCapacityConfig(
+                seed=seed,
+                practice_duration_s=0.0,
+                scored_duration_s=duration_s,
+                practice_enabled=False,
+            ),
+        )
+    if probe_code == "spatial_integration":
+        half = duration_s / 2.0
+        return build_spatial_integration_test(
+            clock=clock,
+            seed=seed,
+            difficulty=difficulty,
+            config=SpatialIntegrationConfig(
+                practice_scenes_per_part=0,
+                static_scored_duration_s=half,
+                aircraft_scored_duration_s=half,
+                skip_practice_for_testing=True,
+            ),
+        )
+    if probe_code == "table_reading":
+        return build_table_reading_test(
+            clock=clock,
+            seed=seed,
+            difficulty=difficulty,
+            config=TableReadingConfig(
+                scored_duration_s=duration_s,
+                practice_questions=0,
+            ),
+        )
+    if probe_code == "cognitive_updating":
+        return build_cognitive_updating_test(
+            clock=clock,
+            seed=seed,
+            difficulty=difficulty,
+            config=CognitiveUpdatingConfig(
+                scored_duration_s=duration_s,
+                practice_questions=0,
+            ),
+        )
+    if probe_code == "trace_test_1":
+        return build_trace_test_1_test(
+            clock=clock,
+            seed=seed,
+            difficulty=difficulty,
+            config=TraceTest1Config(
+                scored_duration_s=duration_s,
+                practice_questions=0,
+            ),
+        )
+    if probe_code == "system_logic":
+        return build_system_logic_test(
+            clock=clock,
+            seed=seed,
+            difficulty=difficulty,
+            config=SystemLogicConfig(
+                scored_duration_s=duration_s,
+                practice_questions=0,
+            ),
+        )
+    if probe_code == "situational_awareness":
+        return build_situational_awareness_test(
+            clock=clock,
+            seed=seed,
+            difficulty=difficulty,
+            config=SituationalAwarenessConfig(
+                scored_duration_s=duration_s,
+                practice_scenarios=0,
+                practice_scenario_duration_s=0.0,
+                scored_scenario_duration_s=40.0,
+            ),
+        )
+    if probe_code == "trace_test_2":
+        return build_trace_test_2_test(
+            clock=clock,
+            seed=seed,
+            difficulty=difficulty,
+            config=TraceTest2Config(
+                scored_duration_s=duration_s,
+                practice_questions=0,
+            ),
+        )
+    raise KeyError(f"unsupported benchmark probe: {probe_code}")
+
+
 def build_benchmark_plan(*, clock: Clock) -> BenchmarkPlan:
     official_codes = tuple(test.test_code for test in OFFICIAL_GUIDE_TESTS)
     probe_order = (
@@ -867,14 +1232,18 @@ def build_benchmark_plan(*, clock: Clock) -> BenchmarkPlan:
         *,
         probe_code: str,
         label: str,
-        seed: int,
         duration_s: float,
-        builder: Callable[[], object],
     ) -> BenchmarkProbePlan:
+        seed = _random_seed()
         return BenchmarkProbePlan(
             probe_code=probe_code,
             label=label,
-            builder=builder,
+            builder=lambda resolved_seed, probe_code=probe_code, duration_s=duration_s: _build_benchmark_probe_engine(
+                clock=clock,
+                probe_code=probe_code,
+                seed=int(resolved_seed),
+                duration_s=float(duration_s),
+            ),
             seed=seed,
             difficulty_level=5,
             duration_s=float(duration_s),
@@ -882,321 +1251,117 @@ def build_benchmark_plan(*, clock: Clock) -> BenchmarkPlan:
 
     return BenchmarkPlan(
         code="benchmark_battery",
-        title="Benchmark Battery (~60m)",
-        version=2,
+        title="Benchmark Battery (~28m)",
+        version=3,
         description=(
-            "A fixed 20-probe benchmark battery covering every official guide test once with "
+            "A 20-probe benchmark battery covering every official guide test once with "
             "balanced domain time and locked level-5 runtime settings."
         ),
         notes=(
-            "The benchmark uses a locked probe order and fixed seeds.",
-            "Difficulty and test-seed overrides do not apply here.",
+            "The benchmark keeps a locked probe order and level-5 difficulty.",
+            "Fresh randomized seeds are generated for every new benchmark run.",
             "Practice is disabled on every probe.",
         ),
         probes=(
             _probe(
                 probe_code="numerical_operations",
                 label="Numerical Operations",
-                seed=1101,
-                duration_s=90.0,
-                builder=lambda: build_numerical_operations_test(
-                    clock=clock,
-                    seed=1101,
-                    difficulty=difficulty_ratio_for_level("numerical_operations", 5),
-                    config=NumericalOperationsConfig(
-                        scored_duration_s=90.0,
-                        practice_questions=0,
-                    ),
-                ),
+                duration_s=45.0,
             ),
             _probe(
                 probe_code="visual_search",
                 label="Visual Search",
-                seed=1201,
-                duration_s=135.0,
-                builder=lambda: build_visual_search_test(
-                    clock=clock,
-                    seed=1201,
-                    difficulty=difficulty_ratio_for_level("visual_search", 5),
-                    config=VisualSearchConfig(
-                        scored_duration_s=135.0,
-                        practice_questions=0,
-                    ),
-                ),
+                duration_s=60.0,
             ),
             _probe(
                 probe_code="digit_recognition",
                 label="Digit Recognition",
-                seed=1301,
-                duration_s=90.0,
-                builder=lambda: build_digit_recognition_test(
-                    clock=clock,
-                    seed=1301,
-                    difficulty=difficulty_ratio_for_level("digit_recognition", 5),
-                    practice=False,
-                    scored_duration_s=90.0,
-                ),
+                duration_s=45.0,
             ),
             _probe(
                 probe_code="angles_bearings_degrees",
                 label="Angles, Bearings and Degrees",
-                seed=1401,
-                duration_s=105.0,
-                builder=lambda: build_angles_bearings_degrees_test(
-                    clock=clock,
-                    seed=1401,
-                    difficulty=difficulty_ratio_for_level("angles_bearings_degrees", 5),
-                    config=AnglesBearingsDegreesConfig(
-                        scored_duration_s=105.0,
-                        practice_questions=0,
-                    ),
-                ),
+                duration_s=45.0,
             ),
             _probe(
                 probe_code="sensory_motor_apparatus",
                 label="Sensory Motor Apparatus",
-                seed=1501,
-                duration_s=420.0,
-                builder=lambda: build_sensory_motor_apparatus_test(
-                    clock=clock,
-                    seed=1501,
-                    difficulty=difficulty_ratio_for_level("sensory_motor_apparatus", 5),
-                    config=SensoryMotorApparatusConfig(
-                        practice_duration_s=0.0,
-                        scored_duration_s=420.0,
-                    ),
-                ),
+                duration_s=195.0,
             ),
             _probe(
                 probe_code="math_reasoning",
                 label="Mathematics Reasoning",
-                seed=1601,
-                duration_s=150.0,
-                builder=lambda: build_math_reasoning_test(
-                    clock=clock,
-                    seed=1601,
-                    difficulty=difficulty_ratio_for_level("math_reasoning", 5),
-                    config=MathReasoningConfig(
-                        scored_duration_s=150.0,
-                        practice_questions=0,
-                    ),
-                ),
+                duration_s=75.0,
             ),
             _probe(
                 probe_code="target_recognition",
                 label="Target Recognition",
-                seed=1701,
-                duration_s=255.0,
-                builder=lambda: build_target_recognition_test(
-                    clock=clock,
-                    seed=1701,
-                    difficulty=difficulty_ratio_for_level("target_recognition", 5),
-                    config=TargetRecognitionConfig(
-                        scored_duration_s=255.0,
-                        practice_questions=0,
-                    ),
-                ),
+                duration_s=120.0,
             ),
             _probe(
                 probe_code="colours_letters_numbers",
                 label="Colours, Letters and Numbers",
-                seed=1801,
-                duration_s=120.0,
-                builder=lambda: build_colours_letters_numbers_test(
-                    clock=clock,
-                    seed=1801,
-                    difficulty=difficulty_ratio_for_level("colours_letters_numbers", 5),
-                    practice=False,
-                    scored_duration_s=120.0,
-                    config=ColoursLettersNumbersConfig(
-                        scored_duration_s=120.0,
-                        practice_rounds=0,
-                    ),
-                ),
+                duration_s=60.0,
             ),
             _probe(
                 probe_code="instrument_comprehension",
                 label="Instrument Comprehension",
-                seed=1901,
-                duration_s=210.0,
-                builder=lambda: build_instrument_comprehension_test(
-                    clock=clock,
-                    seed=1901,
-                    difficulty=difficulty_ratio_for_level("instrument_comprehension", 5),
-                    config=InstrumentComprehensionConfig(
-                        scored_duration_s=210.0,
-                        practice_questions=0,
-                    ),
-                ),
+                duration_s=90.0,
             ),
             _probe(
                 probe_code="rapid_tracking",
                 label="Rapid Tracking",
-                seed=2001,
-                duration_s=300.0,
-                builder=lambda: build_rapid_tracking_test(
-                    clock=clock,
-                    seed=2001,
-                    difficulty=difficulty_ratio_for_level("rapid_tracking", 5),
-                    config=RapidTrackingConfig(
-                        practice_duration_s=0.0,
-                        scored_duration_s=300.0,
-                    ),
-                ),
+                duration_s=135.0,
             ),
             _probe(
                 probe_code="airborne_numerical",
                 label="Airborne Numerical",
-                seed=2101,
-                duration_s=300.0,
-                builder=lambda: build_airborne_numerical_test(
-                    clock=clock,
-                    seed=2101,
-                    practice=False,
-                    difficulty=difficulty_ratio_for_level("airborne_numerical", 5),
-                    scored_duration_s=300.0,
-                ),
+                duration_s=135.0,
             ),
             _probe(
                 probe_code="vigilance",
                 label="Vigilance",
-                seed=2201,
-                duration_s=330.0,
-                builder=lambda: build_vigilance_test(
-                    clock=clock,
-                    seed=2201,
-                    difficulty=difficulty_ratio_for_level("vigilance", 5),
-                    config=VigilanceConfig(
-                        practice_duration_s=0.0,
-                        scored_duration_s=330.0,
-                    ),
-                ),
+                duration_s=150.0,
             ),
             _probe(
                 probe_code="auditory_capacity",
                 label="Auditory Capacity",
-                seed=2301,
-                duration_s=120.0,
-                builder=lambda: build_auditory_capacity_test(
-                    clock=clock,
-                    seed=2301,
-                    difficulty=difficulty_ratio_for_level("auditory_capacity", 5),
-                    config=AuditoryCapacityConfig(
-                        seed=2301,
-                        practice_duration_s=0.0,
-                        scored_duration_s=120.0,
-                        practice_enabled=False,
-                    ),
-                ),
+                duration_s=60.0,
             ),
             _probe(
                 probe_code="spatial_integration",
                 label="Spatial Integration",
-                seed=2401,
-                duration_s=210.0,
-                builder=lambda: build_spatial_integration_test(
-                    clock=clock,
-                    seed=2401,
-                    difficulty=difficulty_ratio_for_level("spatial_integration", 5),
-                    config=SpatialIntegrationConfig(
-                        practice_scenes_per_part=0,
-                        static_scored_duration_s=105.0,
-                        aircraft_scored_duration_s=105.0,
-                        skip_practice_for_testing=True,
-                    ),
-                ),
+                duration_s=90.0,
             ),
             _probe(
                 probe_code="table_reading",
                 label="Table Reading",
-                seed=2501,
-                duration_s=90.0,
-                builder=lambda: build_table_reading_test(
-                    clock=clock,
-                    seed=2501,
-                    difficulty=difficulty_ratio_for_level("table_reading", 5),
-                    config=TableReadingConfig(
-                        scored_duration_s=90.0,
-                        practice_questions=0,
-                    ),
-                ),
+                duration_s=45.0,
             ),
             _probe(
                 probe_code="cognitive_updating",
                 label="Cognitive Updating",
-                seed=2601,
-                duration_s=120.0,
-                builder=lambda: build_cognitive_updating_test(
-                    clock=clock,
-                    seed=2601,
-                    difficulty=difficulty_ratio_for_level("cognitive_updating", 5),
-                    config=CognitiveUpdatingConfig(
-                        scored_duration_s=120.0,
-                        practice_questions=0,
-                    ),
-                ),
+                duration_s=60.0,
             ),
             _probe(
                 probe_code="trace_test_1",
                 label="Trace Test 1",
-                seed=2701,
-                duration_s=105.0,
-                builder=lambda: build_trace_test_1_test(
-                    clock=clock,
-                    seed=2701,
-                    difficulty=difficulty_ratio_for_level("trace_test_1", 5),
-                    config=TraceTest1Config(
-                        scored_duration_s=105.0,
-                        practice_questions=0,
-                    ),
-                ),
+                duration_s=45.0,
             ),
             _probe(
                 probe_code="system_logic",
                 label="System Logic",
-                seed=2801,
-                duration_s=90.0,
-                builder=lambda: build_system_logic_test(
-                    clock=clock,
-                    seed=2801,
-                    difficulty=difficulty_ratio_for_level("system_logic", 5),
-                    config=SystemLogicConfig(
-                        scored_duration_s=90.0,
-                        practice_questions=0,
-                    ),
-                ),
+                duration_s=45.0,
             ),
             _probe(
                 probe_code="situational_awareness",
                 label="Situational Awareness",
-                seed=2901,
-                duration_s=270.0,
-                builder=lambda: build_situational_awareness_test(
-                    clock=clock,
-                    seed=2901,
-                    difficulty=difficulty_ratio_for_level("situational_awareness", 5),
-                    config=SituationalAwarenessConfig(
-                        scored_duration_s=270.0,
-                        practice_scenarios=0,
-                        practice_scenario_duration_s=0.0,
-                        scored_scenario_duration_s=90.0,
-                    ),
-                ),
+                duration_s=120.0,
             ),
             _probe(
                 probe_code="trace_test_2",
                 label="Trace Test 2",
-                seed=3001,
-                duration_s=90.0,
-                builder=lambda: build_trace_test_2_test(
-                    clock=clock,
-                    seed=3001,
-                    difficulty=difficulty_ratio_for_level("trace_test_2", 5),
-                    config=TraceTest2Config(
-                        scored_duration_s=90.0,
-                        practice_questions=0,
-                    ),
-                ),
+                duration_s=45.0,
             ),
         ),
     )

@@ -16,6 +16,7 @@ from cfast_trainer.rt_drills import (
     build_rt_mixed_tempo_drill,
     build_rt_obscured_target_prediction_drill,
     build_rt_pressure_run_drill,
+    build_rt_rudder_horizontal_prime_drill,
     build_rt_terrain_recovery_run_drill,
 )
 from cfast_trainer.rapid_tracking import RapidTrackingPayload
@@ -78,6 +79,7 @@ def _run_drill(drill, clock: FakeClock, *, duration_s: float) -> tuple[list[tupl
         build_rt_terrain_recovery_run_drill,
         build_rt_capture_timing_prime_drill,
         build_rt_ground_tempo_run_drill,
+        build_rt_rudder_horizontal_prime_drill,
         build_rt_air_speed_run_drill,
         build_rt_mixed_tempo_drill,
         build_rt_pressure_run_drill,
@@ -121,6 +123,7 @@ def test_rt_drills_are_deterministic_for_same_seed_and_controls(builder) -> None
         ),
         (build_rt_capture_timing_prime_drill, ("soldier", "truck", "helicopter"), ("capture_timing",)),
         (build_rt_ground_tempo_run_drill, ("soldier", "truck"), ("ground_tempo", "lock_quality")),
+        (build_rt_rudder_horizontal_prime_drill, ("soldier", "truck"), ("ground_tempo", "capture_timing")),
         (build_rt_air_speed_run_drill, ("helicopter", "jet"), ("air_speed", "capture_timing")),
         (
             build_rt_obscured_target_prediction_drill,
@@ -281,3 +284,32 @@ def test_rt_obscured_target_prediction_levels_l2_l5_l8_are_materially_different(
     assert low_switch_time > mid_switch_time > high_switch_time
     assert low_preview == pytest.approx(mid_preview)
     assert mid_preview == pytest.approx(high_preview)
+
+
+def test_rt_control_schemes_match_default_and_rudder_prime() -> None:
+    clock = FakeClock()
+    default_drill = build_rt_lock_anchor_drill(
+        clock=clock,
+        seed=123,
+        difficulty=0.5,
+        mode=AntDrillMode.BUILD,
+        config=RtDrillConfig(scored_duration_s=18.0),
+    )
+    rudder_drill = build_rt_rudder_horizontal_prime_drill(
+        clock=clock,
+        seed=123,
+        difficulty=0.5,
+        mode=AntDrillMode.BUILD,
+        config=RtDrillConfig(scored_duration_s=18.0),
+    )
+
+    default_drill.start_practice()
+    rudder_drill.start_practice()
+
+    default_payload = default_drill.snapshot().payload
+    rudder_payload = rudder_drill.snapshot().payload
+
+    assert isinstance(default_payload, RapidTrackingPayload)
+    assert isinstance(rudder_payload, RapidTrackingPayload)
+    assert default_payload.control_scheme == "joystick_only"
+    assert rudder_payload.control_scheme == "rudder_horizontal"

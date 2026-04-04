@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
@@ -69,6 +70,19 @@ class _FakeTREngine:
         pass
 
 
+class _RecordingFont:
+    def __init__(self, base: pygame.font.Font, sink: list[str]) -> None:
+        self._base = base
+        self._sink = sink
+
+    def render(self, text: str, antialias: bool, color: object) -> pygame.Surface:
+        self._sink.append(str(text))
+        return self._base.render(text, antialias, color)
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._base, name)
+
+
 @dataclass
 class _FakeClock:
     t: float = 0.0
@@ -133,6 +147,17 @@ def _build_screen(engine: object) -> tuple[App, CognitiveTestScreen]:
     screen = CognitiveTestScreen(app, engine_factory=lambda: engine)
     app.push(screen)
     return app, screen
+
+
+def _install_recording_fonts(*fonts: object) -> list[str]:
+    captured: list[str] = []
+    for obj in fonts:
+        for attr in ("_small_font", "_tiny_font", "_mid_font", "_big_font"):
+            font = getattr(obj, attr, None)
+            if isinstance(font, _RecordingFont) or font is None:
+                continue
+            setattr(obj, attr, _RecordingFont(font, captured))
+    return captured
 
 
 def test_target_recognition_drill_title_still_routes_to_real_renderer(monkeypatch) -> None:
@@ -240,6 +265,89 @@ def test_target_recognition_workout_block_uses_real_runtime_screen() -> None:
         assert runtime is not None
         assert runtime._tr_selector_hitboxes
         assert set(runtime._tr_selector_hitboxes) == {"scene"}
+    finally:
+        pygame.quit()
+
+
+def test_target_recognition_workout_overlay_hides_timer_text() -> None:
+    pygame.init()
+    try:
+        surface = pygame.display.set_mode((960, 540))
+        font = pygame.font.Font(None, 36)
+        app = App(surface=surface, font=font)
+        root = MenuScreen(app, "Main Menu", [MenuItem("Quit", app.quit)], is_root=True)
+        app.push(root)
+
+        clock = _FakeClock()
+        plan = AntWorkoutPlan(
+            code="target_recognition_workout",
+            title="TR Workout UI",
+            description="UI regression workout.",
+            notes=("Untimed reflections.",),
+            blocks=(
+                AntWorkoutBlockPlan(
+                    block_id="scene",
+                    label="Scene Anchor",
+                    description="Warm-up.",
+                    focus_skills=("Map discrimination",),
+                    drill_code="tr_scene_anchor",
+                    mode=AntDrillMode.BUILD,
+                    duration_min=0.25,
+                ),
+            ),
+        )
+        session = AntWorkoutSession(
+            clock=clock,
+            seed=606,
+            plan=plan,
+            starting_level=5,
+        )
+        session.activate()
+        session.append_text("focus")
+        session.activate()
+        session.append_text("reset")
+        session.activate()
+        session.activate()
+
+        screen = AntWorkoutScreen(app, session=session, test_code="target_recognition_workout")
+        captured = _install_recording_fonts(screen)
+
+        screen._render_block_status_overlay(surface, session.snapshot())
+
+        assert not any("Workout time" in text for text in captured)
+        assert not any(re.search(r"\b\d{2}:\d{2}\b", text) for text in captured)
+    finally:
+        pygame.quit()
+
+
+def test_target_recognition_symbols_use_plain_truck_and_tank_shapes() -> None:
+    _app, screen = _build_screen(_FakeTREngine(_build_payload(active_panels=("scene",)), title="Target Recognition"))
+    try:
+        truck_surface = pygame.Surface((48, 48), pygame.SRCALPHA)
+        truck = TargetRecognitionSceneEntity("truck", "friendly", False, False)
+        screen._draw_target_recognition_symbol(
+            truck_surface,
+            entity=truck,
+            cx=20,
+            cy=20,
+            size=8,
+            color=(255, 255, 255, 255),
+            heading=0.0,
+        )
+        assert truck_surface.get_at((35, 20)).a == 0
+
+        tank_surface = pygame.Surface((48, 48), pygame.SRCALPHA)
+        tank = TargetRecognitionSceneEntity("tank", "friendly", False, False)
+        screen._draw_target_recognition_symbol(
+            tank_surface,
+            entity=tank,
+            cx=20,
+            cy=20,
+            size=8,
+            color=(255, 255, 255, 255),
+            heading=0.0,
+        )
+        assert tank_surface.get_at((20, 20)).a == 0
     finally:
         pygame.quit()
 

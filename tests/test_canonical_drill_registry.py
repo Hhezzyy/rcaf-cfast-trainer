@@ -66,6 +66,7 @@ def test_wave2_registry_contains_expected_spatial_psychomotor_codes() -> None:
         "sma_split_axis_control",
         "sma_overshoot_recovery",
         "rt_obscured_target_prediction",
+        "rt_rudder_horizontal_prime",
     } <= codes
 
 
@@ -77,6 +78,7 @@ def test_registry_resolves_new_wave2_builders() -> None:
         "sma_split_axis_control",
         "sma_overshoot_recovery",
         "rt_obscured_target_prediction",
+        "rt_rudder_horizontal_prime",
     ):
         spec = canonical_drill_spec(code)
         assert spec is not None

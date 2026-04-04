@@ -55,7 +55,7 @@ def test_loading_screen_defers_target_construction_until_second_render() -> None
         pygame.quit()
 
 
-def test_loading_screen_escape_cancels_back_to_previous_screen() -> None:
+def test_loading_screen_escape_is_ignored_while_loading() -> None:
     pygame.init()
     try:
         surface = pygame.display.set_mode((960, 540))
@@ -79,7 +79,7 @@ def test_loading_screen_escape_cancels_back_to_previous_screen() -> None:
             )
         )
 
-        assert len(app._screens) == 1
-        assert app._screens[-1] is root
+        assert len(app._screens) == 2
+        assert app._screens[-1] is not root
     finally:
         pygame.quit()

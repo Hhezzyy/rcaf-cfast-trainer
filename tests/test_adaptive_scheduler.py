@@ -21,7 +21,6 @@ if "moderngl" not in sys.modules:
 
 import cfast_trainer.adaptive_scheduler as adaptive_scheduler
 from cfast_trainer.adaptive_scheduler import (
-    ADAPTIVE_SKILL_GRAPH,
     AdaptiveSession,
     AdaptiveSessionBlock,
     AdaptiveSessionPlan,
@@ -576,7 +575,7 @@ def test_build_adaptive_session_plan_is_deterministic_for_same_history_seed_and_
         for block in second.blocks
     ]
 
-def test_build_adaptive_session_plan_uses_fixed_six_role_sequence() -> None:
+def test_build_adaptive_session_plan_returns_single_live_block_and_top5_pool() -> None:
     entries = [
         _history_entry(
             test_code="numerical_operations",
@@ -595,18 +594,32 @@ def test_build_adaptive_session_plan_uses_fixed_six_role_sequence() -> None:
     plan = build_adaptive_session_plan(history=entries, seed=321)
 
     assert plan is not None
-    assert [block.mode for block in plan.blocks] == [
-        "target_anchor",
-        "target_tempo",
-        "adjacent_cross_train",
-        "reassessment_probe",
-        "target_pressure_fatigue",
-        "late_repeat_transfer",
-    ]
+    assert plan.code == "adaptive_session"
+    assert len(plan.blocks) == 1
+    assert plan.blocks[0].mode == "adaptive_live"
+    assert plan.blocks[0].duration_s == pytest.approx(150.0)
+    assert plan.last_selected_primitive_id == "mental_arithmetic_automaticity"
+    eligible = [item for item in plan.ranked_primitives if item.eligible]
+    assert len(eligible) == 5
+    assert sum(item.selected_weight for item in eligible) == pytest.approx(1.0)
+    assert plan.blocks[0].primitive_id != plan.last_selected_primitive_id
+    assert plan.blocks[0].primitive_id in {item.primitive_id for item in eligible}
 
 
-def test_build_adaptive_session_plan_returns_none_on_cold_start() -> None:
-    assert build_adaptive_session_plan(history=[], seed=123) is None
+def test_build_adaptive_session_plan_uses_unmeasured_pool_on_cold_start() -> None:
+    plan = build_adaptive_session_plan(history=[], seed=123)
+
+    assert plan is not None
+    assert plan.code == "adaptive_session"
+    assert len(plan.blocks) == 1
+    assert plan.blocks[0].duration_s == pytest.approx(150.0)
+    assert plan.blocks[0].form_factor in {"micro", "short"}
+    selected = next(
+        item for item in plan.ranked_primitives if item.primitive_id == plan.blocks[0].primitive_id
+    )
+    assert selected.unmeasured is True
+    assert selected.eligible is True
+    assert "latest 5 completed attempts per drill" in plan.notes[1]
 
 
 def test_build_adaptive_session_plan_can_target_tracking_from_official_benchmark_history() -> None:
@@ -634,37 +647,39 @@ def test_build_adaptive_session_plan_can_target_tracking_from_official_benchmark
     assert any(block.drill_code.startswith(("rt_", "sma_")) for block in plan.blocks)
 
 
-def test_adjacent_cross_training_selection_is_linked_in_skill_graph() -> None:
+def test_build_adaptive_session_plan_does_not_repeat_exact_same_drill_when_alternative_exists(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mental_only_catalog = tuple(
+        candidate
+        for candidate in adaptive_scheduler.ADAPTIVE_DRILL_CATALOG
+        if candidate.primitive_id == "mental_arithmetic_automaticity"
+    )
+    monkeypatch.setattr(adaptive_scheduler, "ADAPTIVE_DRILL_CATALOG", mental_only_catalog)
+
     entries = [
         _history_entry(
-            test_code="visual_search",
+            test_code="numerical_operations",
             hours_ago=12,
-            metrics=_base_metrics(
-                score_ratio=0.42,
-                first_half_accuracy=0.92,
-                second_half_accuracy=0.48,
-            ),
+            metrics=_base_metrics(score_ratio=0.42),
             attempt_id=11,
+        ),
+        _adaptive_history_entry(
+            hours_ago=2,
+            blocks=(("mental_arithmetic_automaticity", "ma_percentage_snap", "quantitative_core"),),
+            attempt_id=12,
         ),
     ]
 
     plan = build_adaptive_session_plan(history=entries, seed=444, variant="full")
 
     assert plan is not None
-    target_block = plan.blocks[0]
-    cross_train = plan.blocks[2]
-    links = {link.linked_primitive_id: link for link in ADAPTIVE_SKILL_GRAPH[target_block.primitive_id]}
-
-    assert cross_train.mode == "adjacent_cross_train"
-    assert cross_train.linked_primitive_id == target_block.primitive_id
-    assert cross_train.primitive_id in links
-    assert cross_train.target_area in {
-        candidate_area
-        for _source_area, candidate_area in links[cross_train.primitive_id].linked_target_areas
-    }
+    assert len(plan.blocks) == 1
+    assert plan.blocks[0].primitive_id == "mental_arithmetic_automaticity"
+    assert plan.blocks[0].drill_code != "ma_percentage_snap"
 
 
-def test_late_session_weakness_changes_pressure_block_and_retention_repeat() -> None:
+def test_build_adaptive_session_plan_marks_only_top5_primitives_as_eligible() -> None:
     entries = [
         _history_entry(
             test_code="visual_search",
@@ -686,14 +701,16 @@ def test_late_session_weakness_changes_pressure_block_and_retention_repeat() -> 
     plan = build_adaptive_session_plan(history=entries, seed=446, variant="full")
 
     assert plan is not None
-    assert plan.blocks[4].mode == "target_pressure_fatigue"
-    assert plan.blocks[4].drill_mode is AntDrillMode.FATIGUE_PROBE
-    assert plan.blocks[5].mode == "late_repeat_transfer"
-    assert plan.blocks[5].primitive_id == plan.blocks[0].primitive_id
-    assert plan.blocks[5].drill_mode is AntDrillMode.BUILD
+    eligible = [item for item in plan.ranked_primitives if item.eligible]
+    ineligible = [item for item in plan.ranked_primitives if not item.eligible]
+    assert len(eligible) == 5
+    assert all(item.selected_weight > 0.0 for item in eligible)
+    assert all(item.selected_weight == 0.0 for item in ineligible)
+    assert eligible[0].priority >= eligible[-1].priority
+    assert plan.blocks[0].primitive_id in {item.primitive_id for item in eligible}
 
 
-def test_global_fatigue_load_softens_pressure_block_after_long_recent_runtime() -> None:
+def test_rank_adaptive_primitives_increases_priority_for_high_fatigue_history() -> None:
     low_fatigue_entries = [
         _history_entry(
             test_code="numerical_operations",
@@ -727,24 +744,17 @@ def test_global_fatigue_load_softens_pressure_block_after_long_recent_runtime() 
         for index in range(5)
     ]
 
-    low_plan = build_adaptive_session_plan(history=low_fatigue_entries, seed=818, variant="full")
-    high_plan = build_adaptive_session_plan(history=high_fatigue_entries, seed=818, variant="full")
+    low_ranked = _rank_map(low_fatigue_entries)
+    high_ranked = _rank_map(high_fatigue_entries)
 
-    assert low_plan is not None
-    assert high_plan is not None
-
-    low_pressure = next(block for block in low_plan.blocks if block.mode == "target_pressure_fatigue")
-    high_pressure = next(block for block in high_plan.blocks if block.mode == "target_pressure_fatigue")
-
-    assert low_plan.blocks[0].primitive_id == "mental_arithmetic_automaticity"
-    assert high_plan.blocks[0].primitive_id == "mental_arithmetic_automaticity"
-    assert high_pressure.difficulty_level <= low_pressure.difficulty_level
-    assert high_pressure.primitive_id == low_pressure.primitive_id
-    assert high_pressure.drill_mode in {
-        AntDrillMode.FATIGUE_PROBE,
-        AntDrillMode.TEMPO,
-        AntDrillMode.BUILD,
-    }
+    assert (
+        high_ranked["mental_arithmetic_automaticity"].fatigue
+        > low_ranked["mental_arithmetic_automaticity"].fatigue
+    )
+    assert (
+        high_ranked["mental_arithmetic_automaticity"].priority
+        > low_ranked["mental_arithmetic_automaticity"].priority
+    )
 
 
 def test_recent_same_domain_history_prevents_one_domain_spam() -> None:
@@ -786,7 +796,7 @@ def test_recent_same_domain_history_prevents_one_domain_spam() -> None:
     assert plan.blocks[0].primitive_id == "table_cross_reference_speed"
 
 
-def test_scheduler_changes_level_and_drill_selection_from_history() -> None:
+def test_scheduler_changes_priority_from_history() -> None:
     low_confidence_entries = [
         _history_entry(
             test_code="numerical_operations",
@@ -823,15 +833,19 @@ def test_scheduler_changes_level_and_drill_selection_from_history() -> None:
 
     assert low_confidence is not None
     assert stable is not None
-    assert [block.difficulty_level for block in low_confidence.blocks] != [
-        block.difficulty_level for block in stable.blocks
-    ]
-    assert [block.drill_code for block in low_confidence.blocks] != [
-        block.drill_code for block in stable.blocks
-    ]
+    low_ranked = {item.primitive_id: item for item in low_confidence.ranked_primitives}
+    stable_ranked = {item.primitive_id: item for item in stable.ranked_primitives}
+    assert (
+        low_ranked["mental_arithmetic_automaticity"].priority
+        > stable_ranked["mental_arithmetic_automaticity"].priority
+    )
+    assert (
+        low_ranked["mental_arithmetic_automaticity"].recommended_level
+        != stable_ranked["mental_arithmetic_automaticity"].recommended_level
+    )
 
 
-def test_variant_selection_changes_duration_and_allowed_form_factors() -> None:
+def test_variant_selection_uses_single_adaptive_session_shape() -> None:
     entries = [
         _history_entry(
             test_code="numerical_operations",
@@ -853,16 +867,16 @@ def test_variant_selection_changes_duration_and_allowed_form_factors() -> None:
     assert micro is not None
     assert short is not None
     assert full is not None
-    assert micro.code == "adaptive_session_micro"
-    assert short.code == "adaptive_session_short"
+    assert micro.code == "adaptive_session"
+    assert short.code == "adaptive_session"
     assert full.code == "adaptive_session"
     assert {block.duration_s for block in micro.blocks} == {150.0}
-    assert {block.duration_s for block in short.blocks} == {300.0}
-    assert {block.duration_s for block in full.blocks} == {600.0}
+    assert {block.duration_s for block in short.blocks} == {150.0}
+    assert {block.duration_s for block in full.blocks} == {150.0}
     assert {block.form_factor for block in micro.blocks} <= {"micro"}
     assert {block.form_factor for block in short.blocks} <= {"micro", "short"}
-    assert {block.form_factor for block in full.blocks} <= {"micro", "short", "block_component"}
-    assert any(block.form_factor == "block_component" for block in full.blocks)
+    assert {block.form_factor for block in full.blocks} <= {"micro", "short"}
+    assert all(block.mode == "adaptive_live" for block in full.blocks)
 
 
 def test_build_adaptive_session_plan_filters_to_available_catalog_primitives(monkeypatch) -> None:
@@ -1139,6 +1153,17 @@ def _small_adaptive_plan(clock: _FakeClock) -> AdaptiveSessionPlan:
     )
 
 
+def _complete_adaptive_session(session: AdaptiveSession, clock: _FakeClock) -> None:
+    session.activate()
+    if session.stage is not AdaptiveStage.BLOCK:
+        raise AssertionError(f"unexpected stage {session.stage}")
+    clock.advance(1.2)
+    session.update()
+    assert session.stage is AdaptiveStage.BLOCK_RESULTS
+    session.finish_session()
+    assert session.stage is AdaptiveStage.RESULTS
+
+
 def test_adaptive_session_persists_one_attempt_with_block_metrics_and_telemetry(tmp_path) -> None:
     store = ResultsStore(tmp_path / "results.sqlite3")
     store.start_app_session(app_version="test")
@@ -1152,10 +1177,7 @@ def test_adaptive_session_persists_one_attempt_with_block_metrics_and_telemetry(
         engine=session,
     )
 
-    session.activate()
-    while session.stage is AdaptiveStage.BLOCK:
-        clock.advance(1.2)
-        session.update()
+    _complete_adaptive_session(session, clock)
 
     saved = store.complete_activity_session(
         activity_session_id=activity_session_id,
@@ -1186,12 +1208,9 @@ def test_adaptive_session_persists_one_attempt_with_block_metrics_and_telemetry(
     assert activity_count == (1,)
     assert metric_rows["scheduler.version"] == "1"
     assert metric_rows["block.01.primitive_id"] == "mental_arithmetic_automaticity"
-    assert metric_rows["block.02.drill_code"] == "tbl_two_table_xref"
     assert metric_rows["block.01.attempted"] == "2"
-    assert metric_rows["block.02.score_ratio"] == "1.000000"
     assert metric_rows["block.01.form_factor"] == "micro"
-    assert metric_rows["block.02.target_area"] == "two_source_xref"
-    assert metric_rows["block.02.linked_primitive_id"] == "mental_arithmetic_automaticity"
+    assert metric_rows["block.01.target_area"] == "quantitative_core"
     assert "scheduler.recommended_level.mental_arithmetic_automaticity" in metric_rows
     assert "scheduler.level_confidence.mental_arithmetic_automaticity" in metric_rows
     assert "scheduler.domain.quantitative.weakest_primitive_id" in metric_rows
@@ -1201,29 +1220,21 @@ def test_adaptive_session_persists_one_attempt_with_block_metrics_and_telemetry(
         "question",
         "question",
         "block_completed",
-        "block_started",
-        "question",
-        "question",
-        "block_completed",
         "activity_completed",
     ]
     assert metric_rows["block.01.training_mode"] == AntDrillMode.BUILD.value
-    assert metric_rows["block.02.training_mode"] == AntDrillMode.TEMPO.value
 
 
 def test_adaptive_session_results_snapshot_includes_split_half_lines() -> None:
     clock = _FakeClock()
     session = AdaptiveSession(clock=clock, seed=444, plan=_small_adaptive_plan(clock))
 
-    session.activate()
-    while session.stage is AdaptiveStage.BLOCK:
-        clock.advance(1.2)
-        session.update()
+    _complete_adaptive_session(session, clock)
 
     snapshot = session.snapshot()
 
     assert snapshot.stage is AdaptiveStage.RESULTS
-    assert any("Block splits:" == line for line in snapshot.note_lines)
+    assert any("Drill splits:" == line for line in snapshot.note_lines)
     assert any("1H " in line and "2H " in line for line in snapshot.note_lines)
 
 
@@ -1248,7 +1259,7 @@ def test_adaptive_session_replans_remaining_blocks_after_completed_result() -> N
 
     assert base_plan is not None
     assert base_plan.replan_enabled
-    assert base_plan.blocks[0].primitive_id == "mental_arithmetic_automaticity"
+    assert len(base_plan.blocks) == 1
 
     clock = _FakeClock()
     first_block = base_plan.blocks[0]
@@ -1291,21 +1302,23 @@ def test_adaptive_session_replans_remaining_blocks_after_completed_result() -> N
         domain_summaries=base_plan.domain_summaries,
         replan_enabled=True,
     )
-    original_second = plan.blocks[1]
 
     session = AdaptiveSession(clock=clock, seed=602, plan=plan, history=entries)
     session.activate()
     clock.advance(1.2)
     session.update()
+    assert session.stage is AdaptiveStage.BLOCK_RESULTS
+    session.continue_after_block_results()
 
     current = session.current_block_plan()
 
     assert session.stage is AdaptiveStage.BLOCK
     assert session._replan_count == 1
     assert current is not None
-    assert current.block_index == original_second.block_index
-    assert current.primitive_id != original_second.primitive_id
+    assert current.block_index == 1
+    assert len(session._plan.blocks) == 2
     assert current.primitive_id != first_block.primitive_id
+    assert current.drill_code != first_block.drill_code
 
 
 def test_results_store_recent_attempt_history_returns_metrics_and_activity_kind(tmp_path) -> None:
@@ -1320,10 +1333,7 @@ def test_results_store_recent_attempt_history_returns_metrics_and_activity_kind(
         test_version=1,
         engine=session,
     )
-    session.activate()
-    while session.stage is AdaptiveStage.BLOCK:
-        clock.advance(1.2)
-        session.update()
+    _complete_adaptive_session(session, clock)
     saved = store.complete_activity_session(
         activity_session_id=activity_session_id,
         result=attempt_result_from_engine(session, test_code="adaptive_session", test_version=1),
@@ -1340,7 +1350,7 @@ def test_results_store_recent_attempt_history_returns_metrics_and_activity_kind(
     assert history[0].metrics["block.01.primitive_id"] == "mental_arithmetic_automaticity"
 
 
-def test_adaptive_session_bootstrap_enter_routes_to_benchmark(tmp_path) -> None:
+def test_adaptive_session_bootstrap_enter_routes_to_retry_factory(tmp_path) -> None:
     pygame.init()
     try:
         surface = pygame.display.set_mode((960, 540))
@@ -1352,8 +1362,8 @@ def test_adaptive_session_bootstrap_enter_routes_to_benchmark(tmp_path) -> None:
         screen = AdaptiveSessionScreen(
             app,
             session=None,
-            test_code="adaptive_session_micro",
-            benchmark_screen_factory=lambda: BenchmarkScreen(
+            test_code="adaptive_session",
+            screen_factory=lambda: BenchmarkScreen(
                 app,
                 session=BenchmarkSession(plan=build_benchmark_plan(clock=_FakeClock())),
             ),
@@ -1361,6 +1371,35 @@ def test_adaptive_session_bootstrap_enter_routes_to_benchmark(tmp_path) -> None:
         app.push(screen)
 
         screen.handle_event(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""}))
+
+        assert isinstance(app._screens[-1], BenchmarkScreen)
+    finally:
+        pygame.quit()
+
+
+def test_adaptive_session_bootstrap_keypad_enter_routes_to_retry_factory(tmp_path) -> None:
+    pygame.init()
+    try:
+        surface = pygame.display.set_mode((960, 540))
+        font = pygame.font.Font(None, 36)
+        store = ResultsStore(tmp_path / "bootstrap-kp.sqlite3")
+        app = App(surface=surface, font=font, results_store=store, app_version="test")
+        app.push(MenuScreen(app, "Main Menu", [MenuItem("Quit", app.quit)], is_root=True))
+
+        screen = AdaptiveSessionScreen(
+            app,
+            session=None,
+            test_code="adaptive_session",
+            screen_factory=lambda: BenchmarkScreen(
+                app,
+                session=BenchmarkSession(plan=build_benchmark_plan(clock=_FakeClock())),
+            ),
+        )
+        app.push(screen)
+
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_KP_ENTER, "unicode": ""})
+        )
 
         assert isinstance(app._screens[-1], BenchmarkScreen)
     finally:
@@ -1392,6 +1431,7 @@ def test_adaptive_pause_menu_shows_unified_actions_and_settings(tmp_path) -> Non
             "Skip Current Segment",
             "Restart Current",
             "Settings",
+            "End Session",
             "Main Menu",
         )
 
@@ -1401,8 +1441,11 @@ def test_adaptive_pause_menu_shows_unified_actions_and_settings(tmp_path) -> Non
         screen.handle_event(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""}))
 
         assert [key for key, _label, _value in screen._pause_settings_rows()] == [
+            "seed_mode",
+            "seed_value",
             "review_mode",
             "joystick_bindings",
+            "apply_restart",
             "back",
         ]
     finally:
@@ -1430,8 +1473,86 @@ def test_adaptive_pause_menu_skip_current_segment_advances_to_next_block() -> No
             screen.handle_event(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_DOWN, "unicode": ""}))
         screen.handle_event(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""}))
 
+        assert session.stage is AdaptiveStage.BLOCK_RESULTS
+        assert session.snapshot().block_index == 1
+    finally:
+        pygame.quit()
+
+
+def test_adaptive_keypad_enter_continues_after_block_results() -> None:
+    pygame.init()
+    try:
+        surface = pygame.display.set_mode((960, 540))
+        font = pygame.font.Font(None, 36)
+        app = App(surface=surface, font=font, app_version="test")
+        app.push(MenuScreen(app, "Main Menu", [MenuItem("Quit", app.quit)], is_root=True))
+        clock = _FakeClock()
+        session = AdaptiveSession(clock=clock, seed=555, plan=_small_adaptive_plan(clock))
+        screen = AdaptiveSessionScreen(app, session=session, test_code="adaptive_session")
+        app.push(screen)
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""})
+        )
+        screen.render(surface)
+
+        session.debug_skip_current_block()
+        assert session.stage is AdaptiveStage.BLOCK_RESULTS
+
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_KP_ENTER, "unicode": ""})
+        )
+
         assert session.stage is AdaptiveStage.BLOCK
         assert session.snapshot().block_index == 2
+    finally:
+        pygame.quit()
+
+
+def test_adaptive_escape_opens_pause_on_block_results_and_final_results() -> None:
+    pygame.init()
+    try:
+        surface = pygame.display.set_mode((960, 540))
+        font = pygame.font.Font(None, 36)
+        app = App(surface=surface, font=font, app_version="test")
+        app.push(MenuScreen(app, "Main Menu", [MenuItem("Quit", app.quit)], is_root=True))
+        clock = _FakeClock()
+        session = AdaptiveSession(clock=clock, seed=555, plan=_small_adaptive_plan(clock))
+        screen = AdaptiveSessionScreen(app, session=session, test_code="adaptive_session")
+        app.push(screen)
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""})
+        )
+        screen.render(surface)
+
+        session.debug_skip_current_block()
+        assert session.stage is AdaptiveStage.BLOCK_RESULTS
+
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_ESCAPE, "unicode": ""})
+        )
+
+        assert screen._pause_menu_active is True
+        screen._pause_menu_hitboxes = {}
+        screen.render(surface)
+        assert screen._pause_menu_hitboxes
+
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_ESCAPE, "unicode": ""})
+        )
+        assert screen._pause_menu_active is False
+
+        session.finish_session()
+        screen.render(surface)
+        assert session.stage is AdaptiveStage.RESULTS
+
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_ESCAPE, "unicode": ""})
+        )
+
+        assert screen._pause_menu_active is True
+        screen._pause_menu_hitboxes = {}
+        screen.render(surface)
+        assert screen._pause_menu_hitboxes
     finally:
         pygame.quit()
 
@@ -1451,31 +1572,38 @@ def test_adaptive_pause_menu_skip_does_not_persist_attempt(tmp_path) -> None:
         screen.handle_event(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""}))
         screen.render(surface)
 
-        for _ in range(2):
-            screen.handle_event(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_ESCAPE, "unicode": ""}))
-            skip_index = screen._pause_menu_options().index("Skip Current Segment")
-            for _ in range(skip_index):
-                screen.handle_event(
-                    pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_DOWN, "unicode": ""})
-                )
+        screen.handle_event(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_ESCAPE, "unicode": ""}))
+        skip_index = screen._pause_menu_options().index("Skip Current Segment")
+        for _ in range(skip_index):
             screen.handle_event(
-                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""})
+                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_DOWN, "unicode": ""})
             )
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""})
+        )
 
         screen.render(surface)
+
+        with sqlite3.connect(store.path) as conn:
+            attempt_count = conn.execute("SELECT COUNT(*) FROM attempt").fetchone()
+            activity_count = conn.execute("SELECT COUNT(*) FROM activity_session").fetchone()
 
         session_summary = store.session_summary()
         assert session_summary is not None
         assert session_summary.activity_count == 1
         assert session_summary.completed_activity_count == 0
-        assert session_summary.aborted_activity_count == 1
         assert session_summary.attempt_count == 0
+        assert attempt_count == (0,)
+        assert activity_count == (1,)
         assert screen._results_persistence_lines == ["Local save skipped in dev mode."]
     finally:
         pygame.quit()
 
 
-def test_ui_smoke_open_adaptive_session_from_main_menu_uses_variant_picker_then_bootstraps(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_ui_smoke_open_adaptive_session_from_main_menu_bootstraps_directly(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("SDL_VIDEODRIVER", "dummy")
     monkeypatch.setenv("SDL_AUDIODRIVER", "dummy")
     monkeypatch.setenv("CFAST_RESULTS_DB_PATH", str(tmp_path / "smoke.sqlite3"))
@@ -1484,16 +1612,8 @@ def test_ui_smoke_open_adaptive_session_from_main_menu_uses_variant_picker_then_
 
     def inject(frame: int) -> None:
         if frame == 1:
-            pygame.event.post(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_DOWN, "unicode": ""}))
+            pygame.event.post(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""}))
         elif frame == 2:
-            pygame.event.post(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_DOWN, "unicode": ""}))
-        elif frame == 3:
-            pygame.event.post(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_DOWN, "unicode": ""}))
-        elif frame == 4:
-            pygame.event.post(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""}))
-        elif frame == 8:
-            pygame.event.post(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""}))
-        elif frame == 12:
             pygame.event.post(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""}))
 
-    assert run(max_frames=40, event_injector=inject) == 0
+    assert run(max_frames=25, event_injector=inject) == 0

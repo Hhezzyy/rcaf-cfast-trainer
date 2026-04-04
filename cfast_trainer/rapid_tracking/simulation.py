@@ -30,12 +30,14 @@ class RapidTrackingSimulation(_LegacyRapidTrackingEngine):
         title: str = "Rapid Tracking",
         practice_segments: Sequence[RapidTrackingTrainingSegment] | None = None,
         scored_segments: Sequence[RapidTrackingTrainingSegment] | None = None,
+        control_scheme: str = "joystick_only",
         layout_policy: RapidTrackingLayoutPolicy | str = RapidTrackingLayoutPolicy.DEFAULT,
     ) -> None:
         self._simulation_seed = int(seed)
         self._simulation_difficulty = float(difficulty)
         self._simulation_config = RapidTrackingConfig() if config is None else config
         self._simulation_title = str(title)
+        self._simulation_control_scheme = str(control_scheme)
         self._simulation_practice_segments = (
             None if practice_segments is None else tuple(practice_segments)
         )
@@ -57,6 +59,7 @@ class RapidTrackingSimulation(_LegacyRapidTrackingEngine):
             title=str(title),
             practice_segments=practice_segments,
             scored_segments=scored_segments,
+            control_scheme=control_scheme,
             layout_policy=layout_policy,
         )
 
@@ -102,6 +105,7 @@ class RapidTrackingSimulation(_LegacyRapidTrackingEngine):
             "session_seed": int(self.seed),
             "scene_seed": int(self.scene_seed),
             "layout_policy": str(self.layout_policy.value),
+            "control_scheme": str(self.control_scheme),
             "entered": bool(self._entered),
             "viewport_size": tuple(self._viewport_size),
             "active_mode": str(self._debug_state.active_mode),
@@ -183,6 +187,7 @@ class RapidTrackingSimulation(_LegacyRapidTrackingEngine):
             title=self._simulation_title,
             practice_segments=self._simulation_practice_segments,
             scored_segments=self._simulation_scored_segments,
+            control_scheme=self._simulation_control_scheme,
             layout_policy=self._simulation_layout_policy,
         )
         if next_mode == "practice":

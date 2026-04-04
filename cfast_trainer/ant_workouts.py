@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import random
 from dataclasses import dataclass, replace
 from enum import Enum
 from typing import cast
@@ -288,6 +289,10 @@ def _difficulty_to_level(test_code: str | None, difficulty: float) -> int:
     return difficulty_level_for_ratio(test_code, float(difficulty))
 
 
+def _random_seed() -> int:
+    return random.SystemRandom().randint(1, (2**31) - 1)
+
+
 def build_workout_block_engine(
     *,
     clock: Clock,
@@ -330,6 +335,7 @@ def build_workout_block_engine(
     scratch._pending_block_level = int(difficulty_level)
     scratch._current_block_level = int(difficulty_level)
     scratch._current_engine = None
+    scratch._block_seeds = [int(block_seed)] * max(1, int(block_index) + 1)
     scratch._stage = AntWorkoutStage.BLOCK_SETUP
     scratch._difficulty_mode = "fixed"
     scratch._difficulty_context = build_resolved_difficulty_context(
@@ -353,6 +359,7 @@ class AntWorkoutStage(str, Enum):
     PRE_REFLECTION = "pre_reflection"
     BLOCK_SETUP = "block_setup"
     BLOCK = "block"
+    BLOCK_RESULTS = "block_results"
     POST_REFLECTION = "post_reflection"
     RESULTS = "results"
 
@@ -421,6 +428,7 @@ class AntWorkoutSnapshot:
     difficulty_level: int = 5
     block_default_level: int | None = None
     block_override_level: int | None = None
+    latest_block_result: "AntWorkoutBlockResult | None" = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -429,6 +437,7 @@ class AntWorkoutBlockResult:
     label: str
     drill_code: str
     mode: str
+    seed: int
     duration_s: float
     attempted: int
     correct: int
@@ -788,6 +797,10 @@ class AntWorkoutSession:
         self._pending_block_level = self._starting_level
         self._block_results: list[AntWorkoutBlockResult] = []
         self._block_attempt_results: list[AttemptResult] = []
+        self._block_seeds = [
+            self._seed + ((index + 1) * 101) for index in range(len(self._plan.blocks))
+        ]
+        self._latest_block_result: AntWorkoutBlockResult | None = None
         self._events: list[QuestionEvent] = []
         self._last_finished_block_level = self._starting_level
         self._result_metrics_overrides: dict[str, str] = {}
@@ -823,8 +836,16 @@ class AntWorkoutSession:
     def current_block_plan(self) -> AntWorkoutBlockPlan | None:
         return self._current_block_plan
 
+    def latest_completed_attempt(self) -> AttemptResult | None:
+        if not self._block_attempt_results:
+            return None
+        return self._block_attempt_results[-1]
+
+    def latest_completed_block_result(self) -> AntWorkoutBlockResult | None:
+        return self._latest_block_result
+
     def can_exit(self) -> bool:
-        return self._stage in (AntWorkoutStage.INTRO, AntWorkoutStage.RESULTS)
+        return self._stage in (AntWorkoutStage.INTRO, AntWorkoutStage.BLOCK_RESULTS, AntWorkoutStage.RESULTS)
 
     def adjust_starting_level(self, delta: int) -> None:
         if self._stage is not AntWorkoutStage.INTRO:
@@ -895,6 +916,11 @@ class AntWorkoutSession:
 
         if self._stage is AntWorkoutStage.BLOCK_SETUP:
             self._start_current_block()
+            return
+
+        if self._stage is AntWorkoutStage.BLOCK_RESULTS:
+            self._latest_block_result = None
+            self._prepare_next_block()
             return
 
         if self._stage is AntWorkoutStage.POST_REFLECTION:
@@ -1046,6 +1072,46 @@ class AntWorkoutSession:
                 block_override_level=self._pending_block_level,
             )
 
+        if self._stage is AntWorkoutStage.BLOCK_RESULTS:
+            result = self._latest_block_result
+            current_label = "" if result is None else result.label
+            score_text = "n/a"
+            if result is not None:
+                score_text = f"{result.score_ratio * 100.0:.1f}%"
+            return AntWorkoutSnapshot(
+                stage=self._stage,
+                title=self._plan.title,
+                subtitle=f"Block Results {self._current_block_index + 1}/{len(self._plan.blocks)}",
+                prompt=(
+                    "This block is complete.\n"
+                    "Press Enter to continue."
+                ),
+                options=(),
+                selected_index=0,
+                current_block_label=current_label,
+                block_index=self._current_block_index + 1,
+                block_total=len(self._plan.blocks),
+                block_time_remaining_s=0.0,
+                workout_time_remaining_s=self._workout_time_remaining(0.0),
+                attempted_total=attempted_total,
+                correct_total=correct_total,
+                fixation_rate=fixation_rate,
+                note_lines=(
+                    ()
+                    if result is None
+                    else (
+                        f"Block label: {result.label}",
+                        f"Drill: {result.drill_code}",
+                        f"Seed: {result.seed}",
+                        f"Attempted: {result.attempted}",
+                        f"Correct: {result.correct}",
+                        f"Score ratio: {score_text}",
+                    )
+                ),
+                difficulty_level=self._current_block_level,
+                latest_block_result=result,
+            )
+
         if self._stage is AntWorkoutStage.POST_REFLECTION:
             prompt = _CLOSING_REFLECTIONS[self._reflection_index].prompt
             return AntWorkoutSnapshot(
@@ -1132,6 +1198,7 @@ class AntWorkoutSession:
     def result_metrics(self) -> dict[str, str]:
         metrics = {
             "workout_code": self._plan.code,
+            "workout.run_seed": str(int(self._seed)),
             "workout.block_count": str(len(self._plan.blocks)),
             "adaptive_mode": str(self._difficulty_mode),
             "adaptive_start_level": str(int(self._difficulty_context.launch_level)),
@@ -1146,6 +1213,7 @@ class AntWorkoutSession:
             prefix = f"block.{index:02d}."
             metrics[f"{prefix}drill_code"] = block.drill_code
             metrics[f"{prefix}mode"] = block.mode.value
+            metrics[f"{prefix}seed"] = str(int(self._block_seeds[index - 1]))
             metrics[f"{prefix}level_offset"] = str(int(block.level_offset))
         return metrics
 
@@ -1235,6 +1303,10 @@ class AntWorkoutSession:
         self._current_block_index = -1
         self._block_results.clear()
         self._block_attempt_results.clear()
+        self._block_seeds = [
+            self._seed + ((index + 1) * 101) for index in range(len(self._plan.blocks))
+        ]
+        self._latest_block_result = None
         self._events.clear()
         self._last_finished_block_level = self._starting_level
         self._refresh_metric_overrides()
@@ -1252,14 +1324,29 @@ class AntWorkoutSession:
         self._current_block_plan = self._plan.blocks[self._current_block_index]
         self._pending_block_level = self._default_level_for_block(self._current_block_plan)
         self._current_engine = None
+        self._latest_block_result = None
         self._stage = AntWorkoutStage.BLOCK_SETUP
+
+    def restart_current_block(self, *, seed_override: int | None = None) -> None:
+        if self._stage is AntWorkoutStage.BLOCK_SETUP:
+            next_seed = _random_seed() if seed_override is None else int(seed_override)
+            self._block_seeds[self._current_block_index] = next_seed
+            self._latest_block_result = None
+            return
+        if self._stage is not AntWorkoutStage.BLOCK:
+            return
+        next_seed = _random_seed() if seed_override is None else int(seed_override)
+        self._block_seeds[self._current_block_index] = next_seed
+        self._current_engine = None
+        self._latest_block_result = None
+        self._start_current_block()
 
     def _start_current_block(self) -> None:
         block = self._current_block_plan
         assert block is not None
         self._stage = AntWorkoutStage.BLOCK
         self._current_block_level = self._pending_block_level
-        block_seed = self._seed + ((self._current_block_index + 1) * 101)
+        block_seed = int(self._block_seeds[self._current_block_index])
         self._current_engine = build_workout_block_engine(
             clock=self._clock,
             block_seed=block_seed,
@@ -1283,7 +1370,7 @@ class AntWorkoutSession:
         self._stage = AntWorkoutStage.BLOCK
         self._current_block_level = self._pending_block_level
         difficulty = _level_to_difficulty(block.drill_code, self._current_block_level)
-        block_seed = self._seed + ((self._current_block_index + 1) * 101)
+        block_seed = int(self._block_seeds[self._current_block_index])
         if block.drill_code == "ant_snap_facts_sprint":
             engine = build_ant_snap_facts_sprint_drill(
                 clock=self._clock,
@@ -3224,7 +3311,7 @@ class AntWorkoutSession:
         self._record_current_block_result()
         self._current_engine = None
         self._current_block_plan = None
-        self._prepare_next_block()
+        self._stage = AntWorkoutStage.BLOCK_RESULTS
 
     def _record_current_block_result(self) -> None:
         if self._current_engine is None or self._current_block_plan is None:
@@ -3257,6 +3344,7 @@ class AntWorkoutSession:
                 label=block_plan.label,
                 drill_code=block_plan.drill_code,
                 mode=block_plan.mode.value,
+                seed=int(self._block_seeds[self._current_block_index]),
                 duration_s=summary.duration_s,
                 attempted=summary.attempted,
                 correct=summary.correct,
@@ -3270,6 +3358,7 @@ class AntWorkoutSession:
                 difficulty_change_count=summary.difficulty_change_count,
             )
         )
+        self._latest_block_result = self._block_results[-1]
         self._block_attempt_results.append(attempt_result)
         self._last_finished_block_level = self._current_block_level
         self._refresh_metric_overrides()

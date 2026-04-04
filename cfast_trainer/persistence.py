@@ -19,7 +19,7 @@ from .results import AttemptResult
 from .telemetry import TelemetryEvent, lifecycle_event
 
 RESULTS_DB_ENV = "CFAST_RESULTS_DB_PATH"
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 def open_db(path: Path) -> sqlite3.Connection:
@@ -67,6 +67,10 @@ class AttemptHistoryEntry:
     difficulty_level_start: int | None
     difficulty_level_end: int | None
     metrics: dict[str, str]
+    parent_activity_session_id: int | None = None
+    origin_activity_code: str | None = None
+    origin_activity_kind: str | None = None
+    origin_item_index: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -176,6 +180,10 @@ class ResultsStore:
         test_version: int,
         engine: object,
         input_profile_id: str | None = None,
+        parent_activity_session_id: int | None = None,
+        origin_activity_code: str | None = None,
+        origin_activity_kind: str | None = None,
+        origin_item_index: int | None = None,
     ) -> int:
         conn = open_db(self._path)
         try:
@@ -193,6 +201,10 @@ class ResultsStore:
                 test_version=test_version,
                 engine=engine,
                 input_profile_id=input_profile_id,
+                parent_activity_session_id=parent_activity_session_id,
+                origin_activity_code=origin_activity_code,
+                origin_activity_kind=origin_activity_kind,
+                origin_item_index=origin_item_index,
             )
             _refresh_session_materializations(conn=conn, session_id=self._session_id)
             return activity_session_id
@@ -319,14 +331,25 @@ class ResultsStore:
         result: AttemptResult,
         app_version: str,
         input_profile_id: str | None = None,
+        activity_code: str | None = None,
+        activity_kind: str = "legacy_attempt",
+        test_version: int | None = None,
+        parent_activity_session_id: int | None = None,
+        origin_activity_code: str | None = None,
+        origin_activity_kind: str | None = None,
+        origin_item_index: int | None = None,
     ) -> SavedAttempt:
         activity_session_id = self.start_activity_session(
-            activity_code=result.test_code,
-            activity_kind="legacy_attempt",
+            activity_code=str(activity_code or result.test_code),
+            activity_kind=str(activity_kind),
             app_version=app_version,
-            test_version=result.test_version,
+            test_version=result.test_version if test_version is None else int(test_version),
             engine=_AttemptResultEngineShim(result),
             input_profile_id=input_profile_id,
+            parent_activity_session_id=parent_activity_session_id,
+            origin_activity_code=origin_activity_code,
+            origin_activity_kind=origin_activity_kind,
+            origin_item_index=origin_item_index,
         )
         saved = self.complete_activity_session(
             activity_session_id=activity_session_id,
@@ -356,13 +379,15 @@ class ResultsStore:
     def recent_attempt_history(
         self,
         *,
-        since_days: int = 28,
+        since_days: int | None = 28,
         limit: int | None = None,
+        child_item_preferred: bool = False,
     ) -> list[AttemptHistoryEntry]:
         return load_recent_attempt_history(
             db_path=self._path,
             since_days=since_days,
             limit=limit,
+            child_item_preferred=child_item_preferred,
         )
 
     def difficulty_state(
@@ -429,6 +454,13 @@ def record_attempt(
     app_version: str,
     session_id: int | None = None,
     input_profile_id: str | None = None,
+    activity_code: str | None = None,
+    activity_kind: str = "legacy_attempt",
+    test_version: int | None = None,
+    parent_activity_session_id: int | None = None,
+    origin_activity_code: str | None = None,
+    origin_activity_kind: str | None = None,
+    origin_item_index: int | None = None,
 ) -> SavedAttempt:
     store = ResultsStore(db_path)
     if session_id is not None:
@@ -437,6 +469,13 @@ def record_attempt(
         result=result,
         app_version=app_version,
         input_profile_id=input_profile_id,
+        activity_code=activity_code,
+        activity_kind=activity_kind,
+        test_version=test_version,
+        parent_activity_session_id=parent_activity_session_id,
+        origin_activity_code=origin_activity_code,
+        origin_activity_kind=origin_activity_kind,
+        origin_item_index=origin_item_index,
     )
 
 
@@ -477,8 +516,9 @@ def load_test_session_summary(
 def load_recent_attempt_history(
     *,
     db_path: Path,
-    since_days: int = 28,
+    since_days: int | None = 28,
     limit: int | None = None,
+    child_item_preferred: bool = False,
 ) -> list[AttemptHistoryEntry]:
     conn = open_db(db_path)
     try:
@@ -486,6 +526,7 @@ def load_recent_attempt_history(
             conn=conn,
             since_days=since_days,
             limit=limit,
+            child_item_preferred=child_item_preferred,
         )
     finally:
         conn.close()
@@ -494,10 +535,10 @@ def load_recent_attempt_history(
 def _load_recent_attempt_history(
     *,
     conn: sqlite3.Connection,
-    since_days: int,
+    since_days: int | None,
     limit: int | None,
+    child_item_preferred: bool,
 ) -> list[AttemptHistoryEntry]:
-    cutoff_utc = _utc_iso_from_epoch(_utc_now_epoch() - (max(0, int(since_days)) * 86400.0))
     query = """
         SELECT
             attempt.id,
@@ -512,13 +553,20 @@ def _load_recent_attempt_history(
             attempt.started_at_utc,
             attempt.completed_at_utc,
             attempt.difficulty_level_start,
-            attempt.difficulty_level_end
+            attempt.difficulty_level_end,
+            activity_session.parent_activity_session_id,
+            activity_session.origin_activity_code,
+            activity_session.origin_activity_kind,
+            activity_session.origin_item_index
         FROM attempt
         LEFT JOIN activity_session ON activity_session.id = attempt.activity_session_id
-        WHERE attempt.completed_at_utc >= ?
-        ORDER BY attempt.completed_at_utc DESC, attempt.id DESC
     """
-    params: list[object] = [cutoff_utc]
+    params: list[object] = []
+    if since_days is not None:
+        cutoff_utc = _utc_iso_from_epoch(_utc_now_epoch() - (max(0, int(since_days)) * 86400.0))
+        query += " WHERE attempt.completed_at_utc >= ?"
+        params.append(cutoff_utc)
+    query += " ORDER BY attempt.completed_at_utc DESC, attempt.id DESC"
     if limit is not None:
         query += " LIMIT ?"
         params.append(max(0, int(limit)))
@@ -560,9 +608,13 @@ def _load_recent_attempt_history(
                 difficulty_level_start=None if row[11] is None else int(row[11]),
                 difficulty_level_end=None if row[12] is None else int(row[12]),
                 metrics=dict(metrics.get(int(row[0]), {})),
+                parent_activity_session_id=None if row[13] is None else int(row[13]),
+                origin_activity_code=None if row[14] is None else str(row[14]),
+                origin_activity_kind=None if row[15] is None else str(row[15]),
+                origin_item_index=None if row[16] is None else int(row[16]),
             )
         )
-    return out
+    return _prefer_child_items(out) if child_item_preferred else out
 
 
 def _load_difficulty_state(
@@ -629,6 +681,23 @@ def _load_difficulty_state(
     )
 
 
+def _prefer_child_items(entries: list[AttemptHistoryEntry]) -> list[AttemptHistoryEntry]:
+    parent_ids_with_children = {
+        int(entry.parent_activity_session_id)
+        for entry in entries
+        if entry.parent_activity_session_id is not None
+    }
+    if not parent_ids_with_children:
+        return list(entries)
+    return [
+        entry
+        for entry in entries
+        if entry.parent_activity_session_id is not None
+        or entry.activity_session_id is None
+        or int(entry.activity_session_id) not in parent_ids_with_children
+    ]
+
+
 def _update_difficulty_states(
     *,
     conn: sqlite3.Connection,
@@ -637,8 +706,9 @@ def _update_difficulty_states(
     updated_at_utc = _utc_now_iso()
     recent_history = _load_recent_attempt_history(
         conn=conn,
-        since_days=28,
+        since_days=None,
         limit=None,
+        child_item_preferred=True,
     )
     ranking = rank_primitives(recent_history, now_utc=updated_at_utc)
     ranked_states = {state.primitive_id: state for state in ranking.primitive_states}
@@ -981,8 +1051,12 @@ def _migrate(conn: sqlite3.Connection) -> None:
             CREATE TABLE IF NOT EXISTS activity_session (
                 id INTEGER PRIMARY KEY,
                 session_id INTEGER NOT NULL REFERENCES session(id) ON DELETE CASCADE,
+                parent_activity_session_id INTEGER REFERENCES activity_session(id) ON DELETE SET NULL,
                 activity_code TEXT NOT NULL,
                 activity_kind TEXT NOT NULL,
+                origin_activity_code TEXT,
+                origin_activity_kind TEXT,
+                origin_item_index INTEGER,
                 app_version TEXT NOT NULL,
                 test_version INTEGER NOT NULL,
                 input_profile_id TEXT,
@@ -996,9 +1070,21 @@ def _migrate(conn: sqlite3.Connection) -> None:
             );
             """
         )
+        _add_column_if_missing(
+            conn,
+            "activity_session",
+            "parent_activity_session_id INTEGER REFERENCES activity_session(id) ON DELETE SET NULL",
+        )
+        _add_column_if_missing(conn, "activity_session", "origin_activity_code TEXT")
+        _add_column_if_missing(conn, "activity_session", "origin_activity_kind TEXT")
+        _add_column_if_missing(conn, "activity_session", "origin_item_index INTEGER")
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_activity_session_session "
             "ON activity_session(session_id, id);"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_activity_session_parent "
+            "ON activity_session(parent_activity_session_id, origin_item_index);"
         )
         conn.execute(
             """
@@ -1174,11 +1260,13 @@ def _migrate(conn: sqlite3.Connection) -> None:
             cur = conn.execute(
                 """
                 INSERT INTO activity_session(
-                    session_id, activity_code, activity_kind, app_version, test_version,
+                    session_id, parent_activity_session_id, activity_code, activity_kind,
+                    origin_activity_code, origin_activity_kind, origin_item_index,
+                    app_version, test_version,
                     input_profile_id, rng_seed, difficulty, practice_questions, scored_duration_s,
                     started_at_utc, ended_at_utc, completion_reason
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, NULL, ?, ?, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     int(row[1]),
@@ -1252,6 +1340,10 @@ def _insert_activity_session(
     test_version: int,
     engine: object,
     input_profile_id: str | None,
+    parent_activity_session_id: int | None,
+    origin_activity_code: str | None,
+    origin_activity_kind: str | None,
+    origin_item_index: int | None,
 ) -> int:
     now_utc = _utc_now_iso()
     seed = getattr(engine, "seed", getattr(engine, "_seed", None))
@@ -1271,16 +1363,22 @@ def _insert_activity_session(
         cur = conn.execute(
             """
             INSERT INTO activity_session(
-                session_id, activity_code, activity_kind, app_version, test_version,
+                session_id, parent_activity_session_id, activity_code, activity_kind,
+                origin_activity_code, origin_activity_kind, origin_item_index,
+                app_version, test_version,
                 input_profile_id, rng_seed, difficulty, practice_questions, scored_duration_s,
                 started_at_utc, ended_at_utc, completion_reason
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)
             """,
             (
                 int(session_id),
+                None if parent_activity_session_id is None else int(parent_activity_session_id),
                 str(activity_code),
                 str(activity_kind),
+                None if origin_activity_code is None else str(origin_activity_code),
+                None if origin_activity_kind is None else str(origin_activity_kind),
+                None if origin_item_index is None else int(origin_item_index),
                 str(app_version),
                 int(test_version),
                 input_profile_id,

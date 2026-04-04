@@ -106,6 +106,8 @@ def _complete_small_workout(clock: FakeClock) -> AntWorkoutSession:
 
     assert session.stage is AntWorkoutStage.BLOCK
     _finish_current_block_with_one_correct_answer(session, clock)
+    assert session.stage is AntWorkoutStage.BLOCK_RESULTS
+    session.activate()
 
     assert session.stage is AntWorkoutStage.BLOCK_SETUP
     second_setup = session.snapshot()
@@ -115,6 +117,8 @@ def _complete_small_workout(clock: FakeClock) -> AntWorkoutSession:
 
     assert session.stage is AntWorkoutStage.BLOCK
     _finish_current_block_with_one_correct_answer(session, clock)
+    assert session.stage is AntWorkoutStage.BLOCK_RESULTS
+    session.activate()
 
     assert session.stage is AntWorkoutStage.POST_REFLECTION
     session.append_text("Got slow on the scenario transition")
@@ -340,18 +344,18 @@ def test_workout_dev_skip_hotkeys_advance_shell_skip_block_and_finish(
         screen.handle_event(
             pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_F11, "unicode": ""})
         )
-        assert session.stage is AntWorkoutStage.BLOCK_SETUP
+        assert session.stage is AntWorkoutStage.BLOCK_RESULTS
 
         screen.handle_event(
             pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_F10, "unicode": ""})
         )
-        assert session.stage is AntWorkoutStage.BLOCK
+        assert session.stage is AntWorkoutStage.BLOCK_SETUP
 
         screen.handle_event(
             pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_F8, "unicode": ""})
         )
         assert session.stage is AntWorkoutStage.RESULTS
-        assert session.scored_summary().completed_blocks == 2
+        assert session.scored_summary().completed_blocks == 1
     finally:
         pygame.quit()
 
@@ -373,7 +377,6 @@ def test_workout_pause_menu_shows_unified_actions() -> None:
         assert screen._pause_menu_options() == (
             "Resume",
             "Skip Current Segment",
-            "Restart Current",
             "Settings",
             "Main Menu",
         )
@@ -397,6 +400,7 @@ def test_workout_pause_menu_skip_current_segment_advances_current_block() -> Non
         session.append_text("Move on after misses")
         session.activate()
         session.activate()
+        session.activate()
         assert session.stage is AntWorkoutStage.BLOCK
 
         screen.handle_event(
@@ -411,7 +415,7 @@ def test_workout_pause_menu_skip_current_segment_advances_current_block() -> Non
             pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""})
         )
 
-        assert session.stage is AntWorkoutStage.BLOCK_SETUP
+        assert session.stage is AntWorkoutStage.BLOCK_RESULTS
         assert screen._pause_menu_active is False
     finally:
         pygame.quit()
@@ -432,6 +436,7 @@ def test_workout_pause_freezes_block_timer() -> None:
         session.append_text("Need better tempo")
         session.activate()
         session.append_text("Move on after misses")
+        session.activate()
         session.activate()
         session.activate()
 
@@ -461,6 +466,85 @@ def test_workout_pause_freezes_block_timer() -> None:
         pygame.quit()
 
 
+def test_workout_keypad_enter_advances_from_block_results() -> None:
+    clock = FakeClock()
+    session = AntWorkoutSession(
+        clock=clock,
+        seed=123,
+        plan=_build_small_workout_plan(),
+        starting_level=5,
+    )
+    _app, screen = _build_app_and_workout_screen(clock=clock, session=session)
+    try:
+        session.activate()
+        session.append_text("Need better tempo")
+        session.activate()
+        session.append_text("Move on after misses")
+        session.activate()
+        session.activate()
+        session.activate()
+        assert session.stage is AntWorkoutStage.BLOCK
+
+        _finish_current_block_with_one_correct_answer(session, clock)
+        assert session.stage is AntWorkoutStage.BLOCK_RESULTS
+
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_KP_ENTER, "unicode": ""})
+        )
+
+        assert session.stage is AntWorkoutStage.BLOCK_SETUP
+        assert session.snapshot().block_index == 2
+    finally:
+        pygame.quit()
+
+
+def test_workout_escape_opens_pause_during_reflection_and_results() -> None:
+    clock = FakeClock()
+    session = AntWorkoutSession(
+        clock=clock,
+        seed=123,
+        plan=_build_small_workout_plan(),
+        starting_level=5,
+    )
+    app, screen = _build_app_and_workout_screen(clock=clock, session=session)
+    try:
+        session.activate()
+        assert session.stage is AntWorkoutStage.PRE_REFLECTION
+
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_ESCAPE, "unicode": ""})
+        )
+
+        assert screen._pause_menu_active is True
+        screen._pause_menu_hitboxes = {}
+        screen.render(app.surface)
+        assert screen._pause_menu_hitboxes
+
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_ESCAPE, "unicode": ""})
+        )
+        assert screen._pause_menu_active is False
+    finally:
+        pygame.quit()
+
+    clock = FakeClock()
+    session = _complete_small_workout(clock)
+    app, screen = _build_app_and_workout_screen(clock=clock, session=session)
+    try:
+        assert session.stage is AntWorkoutStage.RESULTS
+
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_ESCAPE, "unicode": ""})
+        )
+
+        assert screen._pause_menu_active is True
+        screen._pause_menu_hitboxes = {}
+        screen.render(app.surface)
+        assert screen._pause_menu_hitboxes
+    finally:
+        pygame.quit()
+
+
 def test_workout_pause_menu_skip_does_not_persist_attempt(
     tmp_path,
 ) -> None:
@@ -484,6 +568,7 @@ def test_workout_pause_menu_skip_does_not_persist_attempt(
         session.append_text("Need better tempo")
         session.activate()
         session.append_text("Move on after misses")
+        session.activate()
         session.activate()
         session.activate()
         assert session.stage is AntWorkoutStage.BLOCK
@@ -534,6 +619,7 @@ def test_workout_screen_uses_single_activity_session_while_running_block(tmp_pat
         session.append_text("Need better tempo")
         session.activate()
         session.append_text("Move on after misses")
+        session.activate()
         session.activate()
         session.activate()
         assert session.stage is AntWorkoutStage.BLOCK

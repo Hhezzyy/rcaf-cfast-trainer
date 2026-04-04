@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sqlite3
 from dataclasses import dataclass
 
@@ -33,6 +34,15 @@ from cfast_trainer.cognitive_core import Phase
 from cfast_trainer.cognitive_core import TestSnapshot as SnapshotModel
 from cfast_trainer.persistence import ResultsStore
 from cfast_trainer.results import attempt_result_from_engine
+from cfast_trainer.sensory_motor_apparatus import (
+    SensoryMotorApparatusConfig,
+    build_sensory_motor_apparatus_test,
+)
+from cfast_trainer.target_recognition import (
+    TargetRecognitionPayload,
+    TargetRecognitionSceneEntity,
+    TargetRecognitionSystemCycle,
+)
 from cfast_trainer.telemetry import TelemetryEvent
 
 
@@ -45,6 +55,19 @@ class _FakeClock:
 
     def advance(self, dt: float) -> None:
         self.t += float(dt)
+
+
+class _RecordingFont:
+    def __init__(self, base: pygame.font.Font, sink: list[str]) -> None:
+        self._base = base
+        self._sink = sink
+
+    def render(self, text: str, antialias: bool, color: object) -> pygame.Surface:
+        self._sink.append(str(text))
+        return self._base.render(text, antialias, color)
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._base, name)
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,6 +98,7 @@ class _FakeProbeEngine:
         scored_duration_s: float,
         attempted: int,
         correct: int,
+        payload: object | None = None,
     ) -> None:
         self._clock = clock
         self._title = str(title)
@@ -86,10 +110,12 @@ class _FakeProbeEngine:
         self._started_at_s: float | None = None
         self._attempted = int(attempted)
         self._correct = int(correct)
+        self._payload = payload
         self._difficulty_level = int(difficulty_level)
         self._events = self._build_events()
         self.start_practice_calls = 0
         self.start_scored_calls = 0
+        self.submit_calls: list[str] = []
 
     def _build_events(self) -> list[TelemetryEvent]:
         events: list[TelemetryEvent] = []
@@ -135,10 +161,11 @@ class _FakeProbeEngine:
 
     def submit_answer(self, raw: str) -> bool:
         token = str(raw).strip().lower()
+        self.submit_calls.append(str(raw))
         if token in {"__skip_section__", "skip_section", "__skip_all__", "skip_all"}:
             self.phase = Phase.RESULTS
             return True
-        return False
+        return True
 
     def finish(self) -> None:
         self.phase = Phase.RESULTS
@@ -158,7 +185,7 @@ class _FakeProbeEngine:
             time_remaining_s=remaining,
             attempted_scored=attempted,
             correct_scored=correct,
-            payload=None,
+            payload=self._payload,
         )
 
     def scored_summary(self) -> _FakeProbeSummary:
@@ -203,11 +230,11 @@ def _build_small_plan(
         attempted: int,
         correct: int,
     ) -> BenchmarkProbePlan:
-        def _builder() -> _FakeProbeEngine:
+        def _builder(resolved_seed: int) -> _FakeProbeEngine:
             engine = _FakeProbeEngine(
                 clock=clock,
                 title=label,
-                seed=seed,
+                seed=resolved_seed,
                 difficulty_level=difficulty_level,
                 scored_duration_s=duration_s,
                 attempted=attempted,
@@ -255,12 +282,146 @@ def _build_small_plan(
     )
 
 
-def test_build_benchmark_plan_is_fixed_and_totals_3600_seconds() -> None:
+def _build_sma_benchmark_plan(*, clock: _FakeClock) -> BenchmarkPlan:
+    return BenchmarkPlan(
+        code="benchmark_battery",
+        title="Benchmark Battery",
+        version=1,
+        description="Small SMA benchmark plan for runtime handoff tests.",
+        notes=(),
+        probes=(
+            BenchmarkProbePlan(
+                probe_code="sensory_motor_apparatus",
+                label="Sensory Motor Apparatus",
+                builder=lambda resolved_seed: build_sensory_motor_apparatus_test(
+                    clock=clock,
+                    seed=resolved_seed,
+                    difficulty=0.5,
+                    config=SensoryMotorApparatusConfig(
+                        practice_duration_s=0.0,
+                        scored_duration_s=2.0,
+                        tick_hz=120.0,
+                    ),
+                ),
+                seed=1501,
+                difficulty_level=5,
+                duration_s=2.0,
+            ),
+        ),
+    )
+
+
+def _build_target_recognition_payload(*, active_panels: tuple[str, ...]) -> TargetRecognitionPayload:
+    return TargetRecognitionPayload(
+        scene_rows=2,
+        scene_cols=2,
+        scene_cells=("TRK:F", "BLD:N", "TRK:H", "TNK:F"),
+        scene_entities=(
+            TargetRecognitionSceneEntity("truck", "friendly", False, False),
+            TargetRecognitionSceneEntity("building", "neutral", False, False),
+            TargetRecognitionSceneEntity("truck", "hostile", False, False),
+            TargetRecognitionSceneEntity("tank", "friendly", False, False),
+        ),
+        scene_target="Friendly Truck",
+        scene_has_target=True,
+        scene_target_options=("Friendly Truck", "Hostile Truck", "Neutral Building", "Friendly Tank"),
+        light_pattern=("G", "B", "R"),
+        light_target_pattern=("G", "B", "R"),
+        light_has_target=True,
+        scan_tokens=("<>", "[]", "/\\", "()"),
+        scan_target="<>",
+        scan_has_target=True,
+        system_rows=("A1B2", "C3D4", "E5F6"),
+        system_target="A1B2",
+        system_has_target=True,
+        system_cycles=(
+            TargetRecognitionSystemCycle(
+                target="A1B2",
+                columns=(
+                    ("C3D4", "E5F6", "G7H8"),
+                    ("A1B2", "J9K1", "L2M3"),
+                    ("N4P5", "Q6R7", "S8T9"),
+                ),
+            ),
+        ),
+        system_step_interval_s=1.4,
+        full_credit_error=0,
+        zero_credit_error=3,
+        active_panels=active_panels,
+        light_interval_range_s=(4.5, 6.5),
+        scan_interval_range_s=(4.2, 6.2),
+        scan_repeat_range=(2, 3),
+    )
+
+
+def _build_target_recognition_benchmark_plan(
+    *,
+    clock: _FakeClock,
+    payload: TargetRecognitionPayload,
+    created: list[_FakeProbeEngine] | None = None,
+) -> BenchmarkPlan:
+    def _builder(resolved_seed: int) -> _FakeProbeEngine:
+        engine = _FakeProbeEngine(
+            clock=clock,
+            title="Target Recognition",
+            seed=resolved_seed,
+            difficulty_level=5,
+            scored_duration_s=30.0,
+            attempted=0,
+            correct=0,
+            payload=payload,
+        )
+        if created is not None:
+            created.append(engine)
+        return engine
+
+    return BenchmarkPlan(
+        code="benchmark_battery",
+        title="Benchmark Battery",
+        version=1,
+        description="Target Recognition benchmark plan for UI regressions.",
+        notes=(),
+        probes=(
+            BenchmarkProbePlan(
+                probe_code="target_recognition",
+                label="Target Recognition",
+                builder=_builder,
+                seed=1701,
+                difficulty_level=5,
+                duration_s=30.0,
+            ),
+        ),
+    )
+
+
+def _install_recording_fonts(*fonts: object) -> list[str]:
+    captured: list[str] = []
+    for obj in fonts:
+        for attr in ("_small_font", "_tiny_font", "_mid_font", "_big_font", "_num_header_font"):
+            font = getattr(obj, attr, None)
+            if isinstance(font, _RecordingFont) or font is None:
+                continue
+            setattr(obj, attr, _RecordingFont(font, captured))
+    return captured
+
+
+def _start_benchmark_probe(screen: BenchmarkScreen, surface: pygame.Surface) -> None:
+    screen.handle_event(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""}))
+    screen.render(surface)
+    for _ in range(INTRO_LOADING_MIN_FRAMES):
+        screen.render(surface)
+    screen.handle_event(
+        pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "mod": 0, "unicode": ""})
+    )
+
+
+def test_build_benchmark_plan_is_randomized_and_totals_1665_seconds() -> None:
     plan = build_benchmark_plan(clock=_FakeClock())
+    second_plan = build_benchmark_plan(clock=_FakeClock())
 
     assert plan.code == "benchmark_battery"
-    assert plan.title == "Benchmark Battery (~60m)"
-    assert plan.version == 2
+    assert plan.title == "Benchmark Battery (~28m)"
+    assert plan.version == 3
     assert tuple(probe.probe_code for probe in plan.probes) == (
         "numerical_operations",
         "visual_search",
@@ -283,52 +444,32 @@ def test_build_benchmark_plan_is_fixed_and_totals_3600_seconds() -> None:
         "situational_awareness",
         "trace_test_2",
     )
-    assert tuple(probe.seed for probe in plan.probes) == (
-        1101,
-        1201,
-        1301,
-        1401,
-        1501,
-        1601,
-        1701,
-        1801,
-        1901,
-        2001,
-        2101,
-        2201,
-        2301,
-        2401,
-        2501,
-        2601,
-        2701,
-        2801,
-        2901,
-        3001,
-    )
+    assert tuple(probe.seed for probe in plan.probes) != tuple(probe.seed for probe in second_plan.probes)
+    assert all(1 <= int(probe.seed) <= (2**31) - 1 for probe in plan.probes)
     assert tuple(probe.difficulty_level for probe in plan.probes) == (5,) * 20
     assert tuple(int(probe.duration_s) for probe in plan.probes) == (
+        45,
+        60,
+        45,
+        45,
+        195,
+        75,
+        120,
+        60,
         90,
         135,
-        90,
-        105,
-        420,
+        135,
         150,
-        255,
-        120,
-        210,
-        300,
-        300,
-        330,
-        120,
-        210,
+        60,
         90,
+        45,
+        60,
+        45,
+        45,
         120,
-        105,
-        90,
-        270,
-        90,
+        45,
     )
-    assert plan.scored_duration_s == pytest.approx(3600.0)
+    assert plan.scored_duration_s == pytest.approx(1665.0)
 
 
 def test_benchmark_session_advances_probe_by_probe_and_accumulates_results() -> None:
@@ -351,6 +492,15 @@ def test_benchmark_session_advances_probe_by_probe_and_accumulates_results() -> 
 
     created[0].finish()
     session.sync_runtime()
+    assert session.stage is BenchmarkStage.PROBE_RESULTS
+    assert len(created) == 1
+
+    mid = session.snapshot()
+    assert mid.probe_index == 1
+    assert len(mid.completed_probe_results) == 1
+    assert mid.completed_probe_results[0].probe_code == "alpha"
+
+    session.continue_after_probe_results()
     assert session.stage is BenchmarkStage.PROBE
     assert len(created) == 2
     assert session.current_engine() is not None
@@ -359,13 +509,10 @@ def test_benchmark_session_advances_probe_by_probe_and_accumulates_results() -> 
     assert created[1].start_practice_calls == 0
     assert created[1].start_scored_calls == 0
 
-    mid = session.snapshot()
-    assert mid.probe_index == 2
-    assert len(mid.completed_probe_results) == 1
-    assert mid.completed_probe_results[0].probe_code == "alpha"
-
     created[1].finish()
     session.sync_runtime()
+    assert session.stage is BenchmarkStage.PROBE_RESULTS
+    session.continue_after_probe_results()
     assert session.stage is BenchmarkStage.RESULTS
     assert session.current_engine() is None
 
@@ -389,8 +536,10 @@ def test_benchmark_attempt_persists_as_one_activity_with_prefixed_probe_metrics(
     session.activate()
     created[0].finish()
     session.sync_runtime()
+    session.continue_after_probe_results()
     created[1].finish()
     session.sync_runtime()
+    session.continue_after_probe_results()
 
     result = attempt_result_from_engine(session, test_code="benchmark_battery")
     store = ResultsStore(tmp_path / "results.sqlite3")
@@ -470,7 +619,8 @@ def test_benchmark_launch_ignores_difficulty_and_seed_overrides(tmp_path) -> Non
 
         engine = session.current_engine()
         assert engine is not None
-        assert getattr(engine, "seed", None) == 1101
+        assert getattr(engine, "seed", None) != 9999
+        assert 1 <= int(getattr(engine, "seed", 0) or 0) <= (2**31) - 1
         assert getattr(engine, "difficulty", None) == pytest.approx(
             difficulty_ratio_for_level("numerical_operations", 5)
         )
@@ -480,7 +630,7 @@ def test_benchmark_launch_ignores_difficulty_and_seed_overrides(tmp_path) -> Non
         pygame.quit()
 
 
-def test_benchmark_screen_uses_nested_runtime_and_restart_is_battery_wide(tmp_path) -> None:
+def test_benchmark_screen_uses_nested_runtime_and_restart_resets_only_current_probe(tmp_path) -> None:
     pygame.init()
     try:
         surface = pygame.display.set_mode((960, 540))
@@ -494,16 +644,16 @@ def test_benchmark_screen_uses_nested_runtime_and_restart_is_battery_wide(tmp_pa
         def build_session() -> BenchmarkSession:
             return BenchmarkSession(plan=_build_small_plan(clock=clock))
 
-        screen = BenchmarkScreen(app, session=build_session(), session_factory=build_session)
+        session = build_session()
+        screen = BenchmarkScreen(app, session=session, session_factory=build_session)
         app.push(screen)
 
-        screen.handle_event(
-            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""})
-        )
-        screen.render(surface)
+        _start_benchmark_probe(screen, surface)
 
         assert isinstance(screen._runtime_screen, CognitiveTestScreen)
         assert len(app._screens) == 2
+
+        original_seed = session.current_probe_plan().seed
 
         screen.handle_event(
             pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_ESCAPE, "unicode": ""})
@@ -519,15 +669,15 @@ def test_benchmark_screen_uses_nested_runtime_and_restart_is_battery_wide(tmp_pa
             pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""})
         )
 
-        new_screen = app._screens[-1]
-        assert isinstance(new_screen, BenchmarkScreen)
-        assert new_screen is not screen
-        assert new_screen._session.stage is BenchmarkStage.INTRO
+        assert app._screens[-1] is screen
+        assert screen._session.stage is BenchmarkStage.PROBE
+        assert screen._session.snapshot().current_probe_code == "alpha"
+        assert screen._session.current_probe_plan().seed != original_seed
 
         session = store.session_summary()
         assert session is not None
-        assert session.activity_count == 2
-        assert session.aborted_activity_count == 1
+        assert session.activity_count == 1
+        assert session.aborted_activity_count == 0
         assert session.attempt_count == 0
     finally:
         pygame.quit()
@@ -549,10 +699,7 @@ def test_benchmark_pause_menu_shows_unified_actions_and_settings(tmp_path) -> No
             session_factory=lambda: BenchmarkSession(plan=_build_small_plan(clock=clock)),
         )
         app.push(screen)
-        screen.handle_event(
-            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""})
-        )
-        screen.render(surface)
+        _start_benchmark_probe(screen, surface)
 
         screen.handle_event(
             pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_ESCAPE, "unicode": ""})
@@ -576,10 +723,43 @@ def test_benchmark_pause_menu_shows_unified_actions_and_settings(tmp_path) -> No
         )
 
         assert [key for key, _label, _value in screen._pause_settings_rows()] == [
+            "seed_mode",
+            "seed_value",
             "review_mode",
             "joystick_bindings",
+            "apply_restart",
             "back",
         ]
+    finally:
+        pygame.quit()
+
+
+def test_benchmark_pause_menu_backspace_matches_escape() -> None:
+    pygame.init()
+    try:
+        surface = pygame.display.set_mode((960, 540))
+        font = pygame.font.Font(None, 36)
+        app = App(surface=surface, font=font)
+        app.push(MenuScreen(app, "Main Menu", [MenuItem("Quit", app.quit)], is_root=True))
+        clock = _FakeClock()
+        session = BenchmarkSession(plan=_build_small_plan(clock=clock))
+        screen = BenchmarkScreen(
+            app,
+            session=session,
+            session_factory=lambda: BenchmarkSession(plan=_build_small_plan(clock=clock)),
+        )
+        app.push(screen)
+        _start_benchmark_probe(screen, surface)
+
+        runtime = screen._runtime_screen
+        assert isinstance(runtime, CognitiveTestScreen)
+
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_BACKSPACE, "unicode": ""})
+        )
+
+        assert screen._pause_menu_active is True
+        assert runtime._pause_menu_active is False
     finally:
         pygame.quit()
 
@@ -599,10 +779,7 @@ def test_benchmark_pause_menu_skip_current_segment_advances_to_next_probe() -> N
             session_factory=lambda: BenchmarkSession(plan=_build_small_plan(clock=clock)),
         )
         app.push(screen)
-        screen.handle_event(
-            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""})
-        )
-        screen.render(surface)
+        _start_benchmark_probe(screen, surface)
 
         assert session.snapshot().current_probe_code == "alpha"
         screen.handle_event(
@@ -617,8 +794,138 @@ def test_benchmark_pause_menu_skip_current_segment_advances_to_next_probe() -> N
             pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""})
         )
 
+        assert session.stage is BenchmarkStage.PROBE_RESULTS
+        assert session.snapshot().current_probe_code == "alpha"
+    finally:
+        pygame.quit()
+
+
+def test_benchmark_keypad_enter_starts_intro_and_continues_probe_results() -> None:
+    pygame.init()
+    try:
+        surface = pygame.display.set_mode((960, 540))
+        font = pygame.font.Font(None, 36)
+        app = App(surface=surface, font=font)
+        app.push(MenuScreen(app, "Main Menu", [MenuItem("Quit", app.quit)], is_root=True))
+        clock = _FakeClock()
+        session = BenchmarkSession(plan=_build_small_plan(clock=clock))
+        screen = BenchmarkScreen(app, session=session)
+        app.push(screen)
+
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_KP_ENTER, "unicode": ""})
+        )
+
         assert session.stage is BenchmarkStage.PROBE
-        assert session.snapshot().current_probe_code == "beta"
+
+        engine = session.current_engine()
+        assert engine is not None
+        engine.finish()
+        screen.render(surface)
+        assert session.stage is BenchmarkStage.PROBE_RESULTS
+
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_KP_ENTER, "unicode": ""})
+        )
+
+        assert session.stage is BenchmarkStage.PROBE
+        assert session.snapshot().probe_index == 2
+    finally:
+        pygame.quit()
+
+
+def test_benchmark_escape_opens_pause_on_probe_results_and_final_results() -> None:
+    pygame.init()
+    try:
+        surface = pygame.display.set_mode((960, 540))
+        font = pygame.font.Font(None, 36)
+        app = App(surface=surface, font=font)
+        app.push(MenuScreen(app, "Main Menu", [MenuItem("Quit", app.quit)], is_root=True))
+        clock = _FakeClock()
+        session = BenchmarkSession(plan=_build_small_plan(clock=clock))
+        screen = BenchmarkScreen(app, session=session)
+        app.push(screen)
+
+        _start_benchmark_probe(screen, surface)
+        engine = session.current_engine()
+        assert engine is not None
+        engine.finish()
+        screen.render(surface)
+        assert session.stage is BenchmarkStage.PROBE_RESULTS
+
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_ESCAPE, "unicode": ""})
+        )
+
+        assert screen._pause_menu_active is True
+        screen._pause_menu_hitboxes = {}
+        screen.render(surface)
+        assert screen._pause_menu_hitboxes
+
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_ESCAPE, "unicode": ""})
+        )
+        assert screen._pause_menu_active is False
+
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""})
+        )
+        engine = session.current_engine()
+        assert engine is not None
+        engine.finish()
+        screen.render(surface)
+        assert session.stage is BenchmarkStage.PROBE_RESULTS
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""})
+        )
+        screen.render(surface)
+        assert session.stage is BenchmarkStage.RESULTS
+
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_ESCAPE, "unicode": ""})
+        )
+
+        assert screen._pause_menu_active is True
+        screen._pause_menu_hitboxes = {}
+        screen.render(surface)
+        assert screen._pause_menu_hitboxes
+    finally:
+        pygame.quit()
+
+
+def test_benchmark_pause_freezes_wrapped_probe_timer() -> None:
+    pygame.init()
+    try:
+        surface = pygame.display.set_mode((960, 540))
+        font = pygame.font.Font(None, 36)
+        app = App(surface=surface, font=font)
+        app.push(MenuScreen(app, "Main Menu", [MenuItem("Quit", app.quit)], is_root=True))
+        clock = _FakeClock()
+        created: list[_FakeProbeEngine] = []
+        session = BenchmarkSession(plan=_build_small_plan(clock=clock, created=created))
+        screen = BenchmarkScreen(app, session=session)
+        app.push(screen)
+
+        _start_benchmark_probe(screen, surface)
+        screen.render(surface)
+
+        clock.advance(5.0)
+        screen.render(surface)
+        before_pause = session.current_engine().snapshot().time_remaining_s
+        assert before_pause is not None
+
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_ESCAPE, "unicode": ""})
+        )
+        paused_before = session.current_engine().snapshot().time_remaining_s
+
+        clock.advance(15.0)
+        screen.render(surface)
+        paused_after = session.current_engine().snapshot().time_remaining_s
+
+        assert screen._pause_menu_active is True
+        assert paused_before == pytest.approx(before_pause)
+        assert paused_after == pytest.approx(paused_before)
     finally:
         pygame.quit()
 
@@ -688,6 +995,56 @@ def test_benchmark_screen_shows_probe_overlay_in_dev_mode() -> None:
         pygame.quit()
 
 
+def test_benchmark_probe_overlay_hides_timer_text() -> None:
+    pygame.init()
+    try:
+        surface = pygame.display.set_mode((960, 540))
+        font = pygame.font.Font(None, 36)
+        app = App(surface=surface, font=font)
+        app.push(MenuScreen(app, "Main Menu", [MenuItem("Quit", app.quit)], is_root=True))
+        clock = _FakeClock()
+        session = BenchmarkSession(plan=_build_small_plan(clock=clock))
+        screen = BenchmarkScreen(app, session=session)
+        captured = _install_recording_fonts(screen)
+
+        screen._render_probe_overlay(surface, session.snapshot())
+
+        assert not any("Probe time" in text or "Battery remaining" in text for text in captured)
+        assert not any(re.search(r"\b\d{2}:\d{2}\b", text) for text in captured)
+    finally:
+        pygame.quit()
+
+
+def test_standard_runtime_screen_hides_timer_text() -> None:
+    pygame.init()
+    try:
+        surface = pygame.display.set_mode((960, 540))
+        font = pygame.font.Font(None, 36)
+        app = App(surface=surface, font=font)
+        app.push(MenuScreen(app, "Main Menu", [MenuItem("Quit", app.quit)], is_root=True))
+        clock = _FakeClock()
+        engine = _FakeProbeEngine(
+            clock=clock,
+            title="Mathematics Reasoning",
+            seed=1601,
+            difficulty_level=5,
+            scored_duration_s=75.0,
+            attempted=0,
+            correct=0,
+        )
+        engine.phase = Phase.SCORED
+        engine._started_at_s = clock.now()
+        screen = CognitiveTestScreen(app, engine_factory=lambda: engine)
+        captured = _install_recording_fonts(screen)
+
+        screen.render(surface)
+
+        assert not any("Time remaining" in text for text in captured)
+        assert not any(re.search(r"\b\d{2}:\d{2}\b", text) for text in captured)
+    finally:
+        pygame.quit()
+
+
 def test_benchmark_probe_waits_on_buffer_before_starting_timed_block(tmp_path) -> None:
     pygame.init()
     try:
@@ -739,6 +1096,166 @@ def test_benchmark_probe_waits_on_buffer_before_starting_timed_block(tmp_path) -
         pygame.quit()
 
 
+def test_benchmark_sma_probe_can_resume_second_timed_segment() -> None:
+    pygame.init()
+    try:
+        surface = pygame.display.set_mode((960, 540))
+        font = pygame.font.Font(None, 36)
+        app = App(surface=surface, font=font)
+        app.push(MenuScreen(app, "Main Menu", [MenuItem("Quit", app.quit)], is_root=True))
+        clock = _FakeClock()
+        session = BenchmarkSession(plan=_build_sma_benchmark_plan(clock=clock))
+        screen = BenchmarkScreen(
+            app,
+            session=session,
+            session_factory=lambda: BenchmarkSession(plan=_build_sma_benchmark_plan(clock=clock)),
+        )
+        app.push(screen)
+
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""})
+        )
+        screen.render(surface)
+        for _ in range(INTRO_LOADING_MIN_FRAMES):
+            screen.render(surface)
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "mod": 0, "unicode": ""})
+        )
+        assert getattr(session.current_engine(), "phase", None) is Phase.SCORED
+
+        for _ in range(11):
+            clock.advance(0.1)
+            screen.render(surface)
+
+        runtime = screen._runtime_screen
+        assert isinstance(runtime, CognitiveTestScreen)
+        assert getattr(session.current_engine(), "phase", None) is Phase.PRACTICE_DONE
+        for _ in range(INTRO_LOADING_MIN_FRAMES):
+            screen.render(surface)
+        assert runtime._intro_loading_complete(Phase.PRACTICE_DONE) is True
+
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "mod": 0, "unicode": ""})
+        )
+
+        engine = session.current_engine()
+        assert engine is not None
+        assert getattr(engine, "phase", None) is Phase.SCORED
+        snap = engine.snapshot()
+        assert snap.payload is not None
+        assert snap.payload.block_index == 2
+        assert snap.payload.block_kind == "scored"
+    finally:
+        pygame.quit()
+
+
+def test_benchmark_target_recognition_mouse_clicks_reach_runtime() -> None:
+    pygame.init()
+    try:
+        surface = pygame.display.set_mode((960, 540))
+        font = pygame.font.Font(None, 36)
+        app = App(surface=surface, font=font)
+        app.push(MenuScreen(app, "Main Menu", [MenuItem("Quit", app.quit)], is_root=True))
+        clock = _FakeClock()
+        payload = _build_target_recognition_payload(active_panels=("scene",))
+        created: list[_FakeProbeEngine] = []
+        session = BenchmarkSession(
+            plan=_build_target_recognition_benchmark_plan(
+                clock=clock,
+                payload=payload,
+                created=created,
+            )
+        )
+        screen = BenchmarkScreen(app, session=session)
+        app.push(screen)
+
+        _start_benchmark_probe(screen, surface)
+        screen.render(surface)
+        clock.advance(2.0)
+        screen.render(surface)
+
+        runtime = screen._runtime_screen
+        assert isinstance(runtime, CognitiveTestScreen)
+        assert "Friendly Truck" in runtime._tr_scene_active_targets
+        target_center = None
+        for hit_rect, glyph_id in runtime._tr_scene_symbol_hitboxes:
+            glyph = runtime._tr_scene_glyphs[glyph_id]
+            if "Friendly Truck" in glyph.matching_labels:
+                target_center = hit_rect.center
+                break
+        assert target_center is not None
+
+        screen.handle_event(
+            pygame.event.Event(
+                pygame.MOUSEBUTTONDOWN,
+                {"button": 1, "pos": target_center},
+            )
+        )
+
+        assert created[0].submit_calls == ["1"]
+    finally:
+        pygame.quit()
+
+
+def test_benchmark_target_recognition_streams_freeze_while_paused() -> None:
+    pygame.init()
+    try:
+        surface = pygame.display.set_mode((960, 540))
+        font = pygame.font.Font(None, 36)
+        app = App(surface=surface, font=font)
+        app.push(MenuScreen(app, "Main Menu", [MenuItem("Quit", app.quit)], is_root=True))
+        clock = _FakeClock()
+        payload = _build_target_recognition_payload(active_panels=("scene", "light", "scan", "system"))
+        session = BenchmarkSession(
+            plan=_build_target_recognition_benchmark_plan(
+                clock=clock,
+                payload=payload,
+            )
+        )
+        screen = BenchmarkScreen(app, session=session)
+        app.push(screen)
+
+        _start_benchmark_probe(screen, surface)
+        clock.advance(4.0)
+        screen.render(surface)
+
+        runtime = screen._runtime_screen
+        assert isinstance(runtime, CognitiveTestScreen)
+        before = {
+            "scene_anim": float(runtime._tr_scene_anim_frame),
+            "light_pattern": runtime._tr_light_current_pattern,
+            "scan_pattern": runtime._tr_scan_current_pattern,
+            "scan_reveal": int(runtime._tr_scan_reveal_index),
+            "system_offset": int(runtime._tr_system_row_offset),
+            "system_frac": float(runtime._tr_system_row_frac),
+        }
+
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_ESCAPE, "unicode": ""})
+        )
+        clock.advance(12.0)
+        screen.render(surface)
+
+        after = {
+            "scene_anim": float(runtime._tr_scene_anim_frame),
+            "light_pattern": runtime._tr_light_current_pattern,
+            "scan_pattern": runtime._tr_scan_current_pattern,
+            "scan_reveal": int(runtime._tr_scan_reveal_index),
+            "system_offset": int(runtime._tr_system_row_offset),
+            "system_frac": float(runtime._tr_system_row_frac),
+        }
+
+        assert screen._pause_menu_active is True
+        assert after["scene_anim"] == pytest.approx(before["scene_anim"], abs=1e-6)
+        assert after["system_frac"] == pytest.approx(before["system_frac"], abs=1e-6)
+        assert after["light_pattern"] == before["light_pattern"]
+        assert after["scan_pattern"] == before["scan_pattern"]
+        assert after["scan_reveal"] == before["scan_reveal"]
+        assert after["system_offset"] == before["system_offset"]
+    finally:
+        pygame.quit()
+
+
 def test_benchmark_segment_handoff_swaps_to_next_probe_buffer_in_same_frame() -> None:
     pygame.init()
     try:
@@ -770,6 +1287,15 @@ def test_benchmark_segment_handoff_swaps_to_next_probe_buffer_in_same_frame() ->
         created[0].finish()
         screen.render(surface)
 
+        assert session.stage is BenchmarkStage.PROBE_RESULTS
+        assert session.snapshot().current_probe_code == "alpha"
+        assert screen._runtime_engine_id is None
+
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""})
+        )
+        screen.render(surface)
+
         assert session.stage is BenchmarkStage.PROBE
         assert session.snapshot().current_probe_code == "beta"
         assert session.current_engine() is not None
@@ -796,10 +1322,7 @@ def test_benchmark_pause_menu_skip_does_not_persist_attempt(tmp_path) -> None:
             session_factory=lambda: BenchmarkSession(plan=_build_small_plan(clock=clock)),
         )
         app.push(screen)
-        screen.handle_event(
-            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""})
-        )
-        screen.render(surface)
+        _start_benchmark_probe(screen, surface)
 
         for _ in range(2):
             screen.handle_event(
@@ -813,6 +1336,10 @@ def test_benchmark_pause_menu_skip_does_not_persist_attempt(tmp_path) -> None:
             screen.handle_event(
                 pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""})
             )
+            if session.stage is BenchmarkStage.PROBE_RESULTS:
+                screen.handle_event(
+                    pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""})
+                )
 
         screen.render(surface)
 

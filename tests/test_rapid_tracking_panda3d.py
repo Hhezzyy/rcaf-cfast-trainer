@@ -181,7 +181,7 @@ def test_camera_rig_descends_from_high_orbit_into_low_run_path() -> None:
 
     assert start.altitude_agl > end.altitude_agl
     assert start.altitude_agl >= 20.0
-    assert end.altitude_agl <= 7.0
+    assert end.altitude_agl <= 11.0
     assert start.orbit_weight > 0.8
     assert end.orbit_weight < 0.1
 

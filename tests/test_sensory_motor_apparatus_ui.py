@@ -166,6 +166,27 @@ def test_sma_renderer_draws_guide_band_and_segment_metadata(monkeypatch) -> None
 
         assert band_draws
         assert any("Tempo - Split Pulse 2/4" == text for text in spy_tiny.rendered)
-        assert any("Segment 00:29" == text for text in spy_tiny.rendered)
+        assert not any(text.startswith("Segment 00:") for text in spy_tiny.rendered)
+    finally:
+        pygame.quit()
+
+
+def test_sma_renderer_labels_scored_handoff_as_timed_segment_complete() -> None:
+    engine = _FakeSensoryMotorEngine(payload=_build_payload(), phase=Phase.PRACTICE_DONE)
+    _app, screen = _build_screen(engine)
+    try:
+        surface = pygame.display.get_surface()
+        assert surface is not None
+
+        spy_small = _SpyFont()
+        spy_tiny = _SpyFont()
+        screen._small_font = spy_small  # type: ignore[assignment]
+        screen._tiny_font = spy_tiny  # type: ignore[assignment]
+
+        screen.render(surface)
+
+        rendered = spy_small.rendered + spy_tiny.rendered
+        assert "Sensory Motor Apparatus - Timed Segment Complete" in rendered
+        assert "Enter: Continue Timed Test  |  Esc/Backspace: Pause" in rendered
     finally:
         pygame.quit()

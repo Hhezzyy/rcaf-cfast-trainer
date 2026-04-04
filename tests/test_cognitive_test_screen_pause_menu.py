@@ -295,11 +295,29 @@ def test_pause_menu_escape_then_resume_resumes_test() -> None:
 def test_pause_menu_escape_opens_from_instructions() -> None:
     app, screen, _engines = _build_app_and_screen(phase=Phase.INSTRUCTIONS)
     try:
+        surface = pygame.display.get_surface()
+        assert surface is not None
+        for _ in range(8):
+            screen.render(surface)
         screen.handle_event(
             pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_ESCAPE, "mod": 0, "unicode": ""})
         )
         assert screen._pause_menu_active is True
         assert len(app._screens) == 2
+    finally:
+        pygame.quit()
+
+
+def test_pause_menu_escape_opens_from_results() -> None:
+    app, screen, _engines = _build_app_and_screen(phase=Phase.RESULTS)
+    try:
+        assert screen.shell_pause_available() is True
+
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_ESCAPE, "mod": 0, "unicode": ""})
+        )
+
+        assert screen._pause_menu_active is True
     finally:
         pygame.quit()
 
@@ -352,6 +370,8 @@ def test_pause_menu_mouse_click_activates_main_menu_row() -> None:
     try:
         surface = pygame.display.get_surface()
         assert surface is not None
+        for _ in range(8):
+            screen.render(surface)
 
         screen.handle_event(
             pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_ESCAPE, "mod": 0, "unicode": ""})
@@ -462,6 +482,71 @@ def test_pause_settings_include_review_mode_row(tmp_path) -> None:
 
         rows = screen._pause_settings_rows()
         assert any(key == "review_mode" for key, _label, _value in rows)
+    finally:
+        pygame.quit()
+
+
+def test_pause_settings_seed_value_uses_enter_for_manual_input(tmp_path) -> None:
+    store = DifficultySettingsStore(tmp_path / "difficulty-settings.json")
+    _app, screen, _engines = _build_app_and_screen(
+        phase=Phase.PRACTICE,
+        test_code="numerical_operations",
+        difficulty_settings_store=store,
+    )
+    try:
+        surface = pygame.display.get_surface()
+        assert surface is not None
+
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_ESCAPE, "mod": 0, "unicode": ""})
+        )
+        settings_index = screen._pause_menu_options().index("Settings")
+        for _ in range(settings_index):
+            screen.handle_event(
+                pygame.event.Event(
+                    pygame.KEYDOWN,
+                    {"key": pygame.K_DOWN, "mod": 0, "unicode": ""},
+                )
+            )
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "mod": 0, "unicode": ""})
+        )
+
+        rows = screen._pause_settings_rows()
+        seed_index = next(idx for idx, (key, _label, _value) in enumerate(rows) if key == "seed_value")
+        screen._pause_settings_selected = seed_index
+        screen.render(surface)
+
+        assert (seed_index, "dec") not in screen._pause_settings_control_hitboxes
+        assert (seed_index, "inc") not in screen._pause_settings_control_hitboxes
+
+        original = screen._pause_settings_rows()[seed_index][2]
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RIGHT, "mod": 0, "unicode": ""})
+        )
+        assert screen._pause_settings_rows()[seed_index][2] == original
+        assert screen._pause_seed_editing is False
+
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "mod": 0, "unicode": ""})
+        )
+
+        assert screen._pause_seed_editing is True
+        assert screen._pause_seed_manual_enabled is True
+
+        for digit in "4242":
+            screen.handle_event(
+                pygame.event.Event(
+                    pygame.KEYDOWN,
+                    {"key": ord(digit), "mod": 0, "unicode": digit},
+                )
+            )
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "mod": 0, "unicode": ""})
+        )
+
+        assert screen._pause_seed_editing is False
+        assert screen._pause_settings_rows()[seed_index][2] == "4242"
     finally:
         pygame.quit()
 
@@ -739,7 +824,8 @@ def test_intro_difficulty_is_staged_until_enter_starts_practice(tmp_path) -> Non
         assert surface is not None
         first_engine = engines[-1]
 
-        screen.render(surface)
+        for _ in range(8):
+            screen.render(surface)
         assert screen._get_intro_difficulty_level() == 5
         screen.handle_event(
             pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RIGHT, "mod": 0, "unicode": ""})
@@ -747,9 +833,6 @@ def test_intro_difficulty_is_staged_until_enter_starts_practice(tmp_path) -> Non
 
         assert store.test_level("rapid_tracking") == 5
         assert first_engine._difficulty == pytest.approx((5 - 1) / 9.0)
-
-        for _ in range(8):
-            screen.render(surface)
 
         screen.handle_event(
             pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "mod": 0, "unicode": ""})

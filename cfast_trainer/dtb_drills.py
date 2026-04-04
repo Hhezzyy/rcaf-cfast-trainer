@@ -462,6 +462,7 @@ class DualTaskBridgeDrill:
             1 for cue in self._resolved_cues if cue.cue.recovery_active and cue.is_correct
         )
         return {
+            "control_scheme": str(getattr(self._engine, "control_scheme", "rudder_horizontal")),
             "bridge.command_attempted": str(int(command_attempted)),
             "bridge.command_correct": str(int(command_correct)),
             "bridge.recall_attempted": str(int(recall_attempted)),
@@ -726,6 +727,7 @@ def _build_dual_task_bridge(
             active_challenges=active_challenges,
             profile=profile,
         ),
+        control_scheme="rudder_horizontal",
     )
     rng = SeededRng(seed + 701)
     schedule = cue_schedule_builder(rng=rng, scored_duration_s=scored_duration_s, difficulty=difficulty)

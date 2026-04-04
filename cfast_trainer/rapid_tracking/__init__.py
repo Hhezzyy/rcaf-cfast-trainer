@@ -12,12 +12,14 @@ from .config import (
 from .debug import RapidTrackingDebugState, rapid_tracking_debug_lines
 from .entities import RapidTrackingCompoundLayout, RapidTrackingPayload, RapidTrackingSummary
 from .legacy import (
+    RAPID_TRACKING_CONTROL_SCHEMES,
     RapidTrackingDriftGenerator,
     _ellipse_contains_point,
     _repair_layout_for_visual_stability,
     _readable_layout_evaluation,
     _visual_stability_layout_summary,
     build_rapid_tracking_compound_layout,
+    normalize_rapid_tracking_control_scheme,
     rapid_tracking_target_cue,
     rapid_tracking_target_description,
     rapid_tracking_target_label,
@@ -44,6 +46,7 @@ def build_rapid_tracking_test(
     title: str = "Rapid Tracking",
     practice_segments=None,
     scored_segments=None,
+    control_scheme: str = "joystick_only",
     layout_policy=RapidTrackingLayoutPolicy.DEFAULT,
 ) -> RapidTrackingEngine:
     return RapidTrackingEngine(
@@ -54,12 +57,14 @@ def build_rapid_tracking_test(
         title=str(title),
         practice_segments=practice_segments,
         scored_segments=scored_segments,
+        control_scheme=control_scheme,
         layout_policy=layout_policy,
     )
 
 
 __all__ = [
     "RAPID_TRACKING_CHALLENGE_ORDER",
+    "RAPID_TRACKING_CONTROL_SCHEMES",
     "RAPID_TRACKING_TARGET_KIND_ORDER",
     "RapidTrackingConfig",
     "RapidTrackingDebugState",
@@ -86,6 +91,7 @@ __all__ = [
     "build_rapid_tracking_compound_layout",
     "build_distant_terrain_ring",
     "build_rapid_tracking_test",
+    "normalize_rapid_tracking_control_scheme",
     "rapid_tracking_debug_lines",
     "rapid_tracking_target_cue",
     "rapid_tracking_target_description",

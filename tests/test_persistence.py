@@ -725,6 +725,82 @@ def test_recent_attempt_history_preserves_block_metrics_for_adaptive_variants(tm
     assert history[0].metrics["block.01.form_factor"] == "micro"
 
 
+def test_recent_attempt_history_prefers_child_items_and_preserves_parent_origin_metadata(
+    tmp_path,
+) -> None:
+    store = ResultsStore(tmp_path / "results.sqlite3")
+    session_id = store.start_app_session(app_version="test")
+    parent_engine = _build_static_telemetry_engine()
+    parent_engine._result_metrics_overrides = {
+        "block.01.primitive_id": "mental_arithmetic_automaticity",
+        "block.01.drill_code": "ma_percentage_snap",
+        "block.01.target_area": "quantitative_core",
+        "block.01.form_factor": "micro",
+    }
+    parent_activity_session_id = store.start_activity_session(
+        activity_code="adaptive_session",
+        activity_kind="adaptive_session",
+        app_version="test",
+        test_version=1,
+        engine=parent_engine,
+        input_profile_id="default",
+    )
+
+    child_saved = store.record_attempt(
+        result=attempt_result_from_engine(
+            _build_static_telemetry_engine(),
+            test_code="ma_percentage_snap",
+        ),
+        app_version="test",
+        input_profile_id="default",
+        activity_code="ma_percentage_snap",
+        activity_kind="adaptive_item",
+        parent_activity_session_id=parent_activity_session_id,
+        origin_activity_code="adaptive_session",
+        origin_activity_kind="adaptive_session",
+        origin_item_index=1,
+    )
+    store.complete_activity_session(
+        activity_session_id=parent_activity_session_id,
+        result=attempt_result_from_engine(parent_engine, test_code="adaptive_session"),
+        app_version="test",
+        completion_reason="completed",
+        input_profile_id="default",
+    )
+
+    history_all = store.recent_attempt_history(since_days=28)
+    history_child_first = store.recent_attempt_history(
+        since_days=28,
+        child_item_preferred=True,
+    )
+
+    with sqlite3.connect(store.path) as conn:
+        child_row = conn.execute(
+            """
+            SELECT session_id, parent_activity_session_id, origin_activity_code, origin_activity_kind, origin_item_index
+            FROM activity_session
+            WHERE id=?
+            """,
+            (child_saved.activity_session_id,),
+        ).fetchone()
+
+    assert child_row == (
+        session_id,
+        parent_activity_session_id,
+        "adaptive_session",
+        "adaptive_session",
+        1,
+    )
+    assert {entry.test_code for entry in history_all} == {"adaptive_session", "ma_percentage_snap"}
+    assert len(history_child_first) == 1
+    assert history_child_first[0].test_code == "ma_percentage_snap"
+    assert history_child_first[0].activity_kind == "adaptive_item"
+    assert history_child_first[0].parent_activity_session_id == parent_activity_session_id
+    assert history_child_first[0].origin_activity_code == "adaptive_session"
+    assert history_child_first[0].origin_activity_kind == "adaptive_session"
+    assert history_child_first[0].origin_item_index == 1
+
+
 def test_results_store_aborts_activity_sessions_without_attempt_rows(tmp_path) -> None:
     store = ResultsStore(tmp_path / "results.sqlite3")
     store.start_app_session(app_version="test")

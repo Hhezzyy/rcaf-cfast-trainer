@@ -549,6 +549,16 @@ _CANONICAL_KEEP_SPECS: tuple[CanonicalDrillSpec, ...] = (
         coverage="new",
         modes=_BUILD_PRESSURE_MODES,
     ),
+    _builder_spec(
+        code="rt_rudder_horizontal_prime",
+        title="Rudder Horizontal Prime",
+        granularity="micro",
+        family_id="psychomotor_tracking",
+        builder_module="cfast_trainer.rt_drills",
+        builder_name="build_rt_rudder_horizontal_prime_drill",
+        wave=2,
+        coverage="new",
+    ),
 )
 
 

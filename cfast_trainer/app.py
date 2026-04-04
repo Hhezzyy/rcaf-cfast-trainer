@@ -288,6 +288,7 @@ from .rapid_tracking import (
     RapidTrackingPayload,
     RapidTrackingUiContext,
     build_rapid_tracking_test,
+    normalize_rapid_tracking_control_scheme,
     rapid_tracking_target_cue,
     rapid_tracking_target_description,
     rapid_tracking_target_label,
@@ -301,6 +302,7 @@ from .rt_drills import (
     build_rt_lock_anchor_drill,
     build_rt_mixed_tempo_drill,
     build_rt_pressure_run_drill,
+    build_rt_rudder_horizontal_prime_drill,
     build_rt_terrain_recovery_run_drill,
 )
 from .rapid_tracking_gl import (
@@ -310,6 +312,7 @@ from .rapid_tracking_gl import (
 )
 from .rt_workouts import build_rt_workout_plan, rt_workout_menu_entries
 from .results import attempt_result_from_engine
+from .runtime_ui_policy import runtime_visible_timers_enabled
 from .runtime_defaults import RuntimeDefaultsStore
 from .training_modes import maybe_build_fatigue_probe_drill, supported_manual_modes
 from .sensory_motor_apparatus import (
@@ -616,10 +619,18 @@ class _SharedPauseMenuMixin:
     def _shared_pause_supports_settings(self) -> bool:
         return bool(self._pause_settings_rows())
 
+    def _shared_pause_supports_seed_override(self) -> bool:
+        return self._shared_pause_supports_restart_current()
+
     def _shared_pause_skip_current_segment(self) -> None:
         return
 
     def _shared_pause_restart_current(self) -> None:
+        seed_override = self._shared_pause_seed_override()
+        restart_with_seed = getattr(self, "shell_pause_restart_with_seed", None)
+        if callable(restart_with_seed):
+            restart_with_seed(seed_override)
+            return
         restart = getattr(self, "shell_pause_restart", None)
         if callable(restart):
             restart()
@@ -633,13 +644,148 @@ class _SharedPauseMenuMixin:
         return "Pause Settings"
 
     def _shared_pause_settings_subtitle(self) -> str:
+        if self._shared_pause_seed_editing():
+            return "Type digits for the seed. Enter: Save seed  Esc: Cancel"
         return (
-            "Left/Right or A/D adjusts the selected setting. "
-            "Enter: Apply row  Esc: Back to Pause Menu"
+            "Left/Right or A/D adjusts supported settings. "
+            "Enter toggles, edits, or applies the selected row. Esc: Back to Pause Menu"
         )
 
     def _shared_pause_settings_adjustable_keys(self) -> frozenset[str]:
         return frozenset()
+
+    def _shared_pause_status_note(self) -> str | None:
+        return None
+
+    def _shared_pause_seed_manual_enabled(self) -> bool:
+        return bool(getattr(self, "_pause_seed_manual_enabled", False))
+
+    def _shared_pause_seed_editing(self) -> bool:
+        return bool(getattr(self, "_pause_seed_editing", False))
+
+    def _shared_pause_seed_input(self) -> str:
+        return str(getattr(self, "_pause_seed_input", "") or "")
+
+    def _shared_pause_seed_value_display(self) -> str:
+        if not self._shared_pause_seed_manual_enabled():
+            return "Auto on restart"
+        if self._shared_pause_seed_editing():
+            token = self._shared_pause_seed_input()
+            return f"{token or '_'}_"
+        token = self._shared_pause_seed_input().strip()
+        return token or str(_new_seed())
+
+    def _shared_pause_seed_override(self) -> int | None:
+        if not self._shared_pause_supports_seed_override():
+            return None
+        if not self._shared_pause_seed_manual_enabled():
+            return None
+        token = self._shared_pause_seed_input().strip()
+        if token == "":
+            return None
+        try:
+            return max(1, min((2**31) - 1, int(token)))
+        except Exception:
+            return None
+
+    def _shared_pause_seed_rows(self) -> list[tuple[str, str, str]]:
+        if not self._shared_pause_supports_seed_override():
+            return []
+        return [
+            (
+                "seed_mode",
+                "Seed Mode",
+                "Manual" if self._shared_pause_seed_manual_enabled() else "Random",
+            ),
+            (
+                "seed_value",
+                "Seed Value",
+                self._shared_pause_seed_value_display(),
+            ),
+        ]
+
+    def _shared_pause_reset_seed_state(self) -> None:
+        if not self._shared_pause_supports_seed_override():
+            return
+        setattr(self, "_pause_seed_manual_enabled", False)
+        setattr(self, "_pause_seed_editing", False)
+        setattr(self, "_pause_seed_input", str(_new_seed()))
+
+    def _shared_pause_begin_seed_edit(self) -> None:
+        if not self._shared_pause_supports_seed_override():
+            return
+        setattr(self, "_pause_seed_manual_enabled", True)
+        current = self._shared_pause_seed_input().strip()
+        setattr(self, "_pause_seed_input", current)
+        setattr(self, "_pause_seed_editing", True)
+
+    def _shared_pause_finish_seed_edit(self) -> None:
+        if not self._shared_pause_supports_seed_override():
+            return
+        token = self._shared_pause_seed_input().strip()
+        if token == "":
+            token = str(_new_seed())
+        try:
+            normalized = str(max(1, min((2**31) - 1, int(token))))
+        except Exception:
+            normalized = str(_new_seed())
+        setattr(self, "_pause_seed_input", normalized)
+        setattr(self, "_pause_seed_manual_enabled", True)
+        setattr(self, "_pause_seed_editing", False)
+
+    def _shared_pause_cancel_seed_edit(self) -> None:
+        if not self._shared_pause_supports_seed_override():
+            return
+        setattr(self, "_pause_seed_editing", False)
+        if not self._shared_pause_seed_manual_enabled():
+            setattr(self, "_pause_seed_input", str(_new_seed()))
+
+    def _shared_pause_handle_seed_edit_event(self, event: pygame.event.Event) -> bool:
+        if not self._shared_pause_seed_editing():
+            return False
+        if event.type != pygame.KEYDOWN:
+            return True
+        key = int(event.key)
+        if key == pygame.K_ESCAPE:
+            self._shared_pause_cancel_seed_edit()
+            return True
+        if key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+            self._shared_pause_finish_seed_edit()
+            return True
+        if key == pygame.K_BACKSPACE:
+            setattr(self, "_pause_seed_input", self._shared_pause_seed_input()[:-1])
+            return True
+        if key == pygame.K_r:
+            setattr(self, "_pause_seed_input", str(_new_seed()))
+            return True
+        ch = str(getattr(event, "unicode", "") or "")
+        if ch.isdigit():
+            token = (self._shared_pause_seed_input() + ch)[:10]
+            setattr(self, "_pause_seed_input", token.lstrip("0") or "0")
+            return True
+        return True
+
+    def _shared_pause_activate_seed_setting(self, key: str) -> bool:
+        if key == "seed_mode":
+            manual = not self._shared_pause_seed_manual_enabled()
+            setattr(self, "_pause_seed_manual_enabled", manual)
+            setattr(self, "_pause_seed_editing", False)
+            if manual and self._shared_pause_seed_input().strip() == "":
+                setattr(self, "_pause_seed_input", str(_new_seed()))
+            return True
+        if key == "seed_value":
+            if not self._shared_pause_seed_manual_enabled():
+                setattr(self, "_pause_seed_manual_enabled", True)
+                setattr(self, "_pause_seed_input", "")
+            self._shared_pause_begin_seed_edit()
+            return True
+        return False
+
+    def _shared_pause_adjust_seed_setting(self, key: str, direction: int) -> bool:
+        _ = direction
+        if key not in {"seed_mode", "seed_value"}:
+            return False
+        return True
 
     def _open_pause_joystick_bindings_screen(self) -> None:
         profiles = self._app.input_profiles_store()
@@ -724,6 +870,8 @@ class _SharedPauseMenuMixin:
         self._shared_pause_main_menu()
 
     def _handle_pause_settings_event(self, event: pygame.event.Event) -> None:
+        if self._shared_pause_handle_seed_edit_event(event):
+            return
         rows = self._pause_settings_rows()
         if not rows:
             self._pause_menu_mode = "menu"
@@ -825,12 +973,20 @@ class _SharedPauseMenuMixin:
             surface.blit(text, text.get_rect(center=row.center))
             y += row_h + gap
 
+        note = self._shared_pause_status_note()
+        help_bottom = panel.bottom - 14
+        if note:
+            note_text = self._tiny_font.render(note, True, (188, 204, 228))
+            note_rect = note_text.get_rect(midbottom=(panel.centerx, panel.bottom - 34))
+            surface.blit(note_text, note_rect)
+            help_bottom = note_rect.y - 8
+
         help_text = self._tiny_font.render(
             "Up/Down: Select  Enter: Confirm  Esc/Backspace: Back",
             True,
             (188, 204, 228),
         )
-        surface.blit(help_text, help_text.get_rect(midbottom=(panel.centerx, panel.bottom - 14)))
+        surface.blit(help_text, help_text.get_rect(midbottom=(panel.centerx, help_bottom)))
 
     def _render_pause_settings_overlay(self, surface: pygame.Surface) -> None:
         panel_w = min(680, max(380, surface.get_width() - 64))
@@ -3306,53 +3462,54 @@ class _OpenGLSceneRenderer:
         gl.glVertex2f(0.0, float(vh))
         gl.glEnd()
 
-        gl.glColor4f(0.46, 0.50, 0.62, 0.70)
-        bar_w = 132.0
-        bar_h = 15.0
-        bar_x = float(vw) - bar_w - 16.0
-        bar_y = 12.0
-        gl.glBegin(gl.GL_QUADS)
-        gl.glVertex2f(bar_x, bar_y)
-        gl.glVertex2f(bar_x + bar_w, bar_y)
-        gl.glVertex2f(bar_x + bar_w, bar_y + bar_h)
-        gl.glVertex2f(bar_x, bar_y + bar_h)
-        gl.glEnd()
+        if runtime_visible_timers_enabled():
+            gl.glColor4f(0.46, 0.50, 0.62, 0.70)
+            bar_w = 132.0
+            bar_h = 15.0
+            bar_x = float(vw) - bar_w - 16.0
+            bar_y = 12.0
+            gl.glBegin(gl.GL_QUADS)
+            gl.glVertex2f(bar_x, bar_y)
+            gl.glVertex2f(bar_x + bar_w, bar_y)
+            gl.glVertex2f(bar_x + bar_w, bar_y + bar_h)
+            gl.glVertex2f(bar_x, bar_y + bar_h)
+            gl.glEnd()
 
-        gl.glColor4f(0.16, 0.18, 0.22, 0.78)
-        gl.glBegin(gl.GL_LINE_LOOP)
-        gl.glVertex2f(bar_x, bar_y)
-        gl.glVertex2f(bar_x + bar_w, bar_y)
-        gl.glVertex2f(bar_x + bar_w, bar_y + bar_h)
-        gl.glVertex2f(bar_x, bar_y + bar_h)
-        gl.glEnd()
+            gl.glColor4f(0.16, 0.18, 0.22, 0.78)
+            gl.glBegin(gl.GL_LINE_LOOP)
+            gl.glVertex2f(bar_x, bar_y)
+            gl.glVertex2f(bar_x + bar_w, bar_y)
+            gl.glVertex2f(bar_x + bar_w, bar_y + bar_h)
+            gl.glVertex2f(bar_x, bar_y + bar_h)
+            gl.glEnd()
 
-        inner_x = bar_x + 4.0
-        inner_y = bar_y + 4.0
-        inner_w = bar_w - 8.0
-        inner_h = bar_h - 8.0
-        gl.glColor4f(0.12, 0.14, 0.18, 0.84)
-        gl.glBegin(gl.GL_QUADS)
-        gl.glVertex2f(inner_x, inner_y)
-        gl.glVertex2f(inner_x + inner_w, inner_y)
-        gl.glVertex2f(inner_x + inner_w, inner_y + inner_h)
-        gl.glVertex2f(inner_x, inner_y + inner_h)
-        gl.glEnd()
-
-        fill_ratio = 0.72 if time_fill_ratio is None else max(0.0, min(1.0, time_fill_ratio))
-        fill_w = max(0.0, inner_w * fill_ratio)
-        gl.glColor4f(0.76, 0.80, 0.86, 0.90)
-        if fill_w > 0.0:
+            inner_x = bar_x + 4.0
+            inner_y = bar_y + 4.0
+            inner_w = bar_w - 8.0
+            inner_h = bar_h - 8.0
+            gl.glColor4f(0.12, 0.14, 0.18, 0.84)
             gl.glBegin(gl.GL_QUADS)
             gl.glVertex2f(inner_x, inner_y)
-            gl.glVertex2f(inner_x + fill_w, inner_y)
-            gl.glVertex2f(inner_x + fill_w, inner_y + inner_h)
+            gl.glVertex2f(inner_x + inner_w, inner_y)
+            gl.glVertex2f(inner_x + inner_w, inner_y + inner_h)
             gl.glVertex2f(inner_x, inner_y + inner_h)
             gl.glEnd()
-            gl.glColor4f(0.94, 0.96, 0.98, 0.70)
-            gl.glBegin(gl.GL_LINES)
-            gl.glVertex2f(inner_x + 1.0, inner_y + 1.0)
-            gl.glVertex2f(inner_x + max(2.0, fill_w - 1.0), inner_y + 1.0)
-            gl.glEnd()
+
+            fill_ratio = 0.72 if time_fill_ratio is None else max(0.0, min(1.0, time_fill_ratio))
+            fill_w = max(0.0, inner_w * fill_ratio)
+            gl.glColor4f(0.76, 0.80, 0.86, 0.90)
+            if fill_w > 0.0:
+                gl.glBegin(gl.GL_QUADS)
+                gl.glVertex2f(inner_x, inner_y)
+                gl.glVertex2f(inner_x + fill_w, inner_y)
+                gl.glVertex2f(inner_x + fill_w, inner_y + inner_h)
+                gl.glVertex2f(inner_x, inner_y + inner_h)
+                gl.glEnd()
+                gl.glColor4f(0.94, 0.96, 0.98, 0.70)
+                gl.glBegin(gl.GL_LINES)
+                gl.glVertex2f(inner_x + 1.0, inner_y + 1.0)
+                gl.glVertex2f(inner_x + max(2.0, fill_w - 1.0), inner_y + 1.0)
+                gl.glEnd()
 
         gl.glColor4f(0.16, 0.34, 0.84, 0.90)
         gl.glBegin(gl.GL_LINE_LOOP)
@@ -4010,8 +4167,14 @@ class App:
         self._runtime_defaults_store = runtime_defaults_store
         self._app_version = str(app_version).strip() or "dev"
         self._activity_sessions: dict[int, _ActiveActivitySession] = {}
-        self._renderer_path = "MODERN_GL" if self._opengl_enabled else "HEADLESS"
+        self._renderer_path = (
+            "MODERN_GL" if self._opengl_enabled else ("HEADLESS" if self._headless_mode else "FALLBACK_2D")
+        )
         self._renderer_fallback_used = False
+        self._renderer_diagnostic_codes: dict[str, str] = {}
+        self._renderer_gl_requested = not self._headless_mode
+        self._renderer_gl_attempted = bool(opengl_enabled)
+        self._renderer_bootstrap_failure: OpenGLFailureInfo | None = None
         self._failure_recovery_used = False
         self._pending_renderer_action: str | None = None
         self._menu_banner_message: str | None = None
@@ -4137,7 +4300,9 @@ class App:
         self._opengl_enabled = bool(enabled)
         if not self._opengl_enabled:
             self._gl_scene = None
-        self._renderer_path = "MODERN_GL" if self._opengl_enabled else "HEADLESS"
+        self._renderer_path = (
+            "MODERN_GL" if self._opengl_enabled else ("HEADLESS" if self._headless_mode else "FALLBACK_2D")
+        )
 
     def push(self, screen: Screen) -> None:
         self._screens.append(screen)
@@ -4235,19 +4400,46 @@ class App:
         self._window_mode = token if token in {"windowed", "fullscreen", "borderless"} else "windowed"
 
     def stored_use_opengl(self) -> bool | None:
-        return True
+        if self._runtime_defaults_store is None:
+            return None
+        return self._runtime_defaults_store.stored_use_opengl()
 
     def set_stored_use_opengl(self, value: bool | None) -> None:
-        _ = value
+        if self._runtime_defaults_store is None:
+            return
+        self._runtime_defaults_store.set_use_opengl(value)
 
     @staticmethod
     def use_opengl_env_override() -> str | None:
-        return None
+        raw = os.environ.get("CFAST_USE_OPENGL")
+        if raw is None:
+            return None
+        token = str(raw).strip()
+        return token or None
 
     @classmethod
     def use_opengl_env_forces_enabled(cls) -> bool:
-        _ = cls
-        return False
+        return _parse_optional_env_bool(cls.use_opengl_env_override()) is True
+
+    def set_renderer_bootstrap_state(
+        self,
+        *,
+        requested: bool,
+        attempted: bool,
+        failure: OpenGLFailureInfo | None = None,
+    ) -> None:
+        self._renderer_gl_requested = bool(requested)
+        self._renderer_gl_attempted = bool(attempted)
+        self._renderer_bootstrap_failure = failure
+
+    def renderer_gl_requested(self) -> bool:
+        return bool(self._renderer_gl_requested)
+
+    def renderer_gl_attempted(self) -> bool:
+        return bool(self._renderer_gl_attempted)
+
+    def renderer_bootstrap_failure(self) -> OpenGLFailureInfo | None:
+        return self._renderer_bootstrap_failure
 
     def request_renderer_action(self, action: str) -> None:
         token = str(action).strip().lower()
@@ -4259,8 +4451,31 @@ class App:
         self._pending_renderer_action = None
         return action
 
-    def note_renderer_fallback(self) -> None:
+    def note_renderer_fallback(
+        self,
+        *,
+        scene: str | None = None,
+        stage: str | None = None,
+        path: str | None = None,
+    ) -> str | None:
         self._renderer_fallback_used = True
+        if scene is None:
+            return None
+        code = _renderer_diagnostic_code(scene=scene, stage=stage, path=path)
+        self._renderer_diagnostic_codes[str(scene).strip().lower()] = code
+        return code
+
+    def set_renderer_diagnostic_code(self, scene: str, code: str | None) -> None:
+        key = str(scene).strip().lower()
+        token = "" if code is None else str(code).strip().upper()
+        if token == "":
+            self._renderer_diagnostic_codes.pop(key, None)
+            return
+        self._renderer_diagnostic_codes[key] = token
+
+    def renderer_diagnostic_code(self, scene: str) -> str | None:
+        token = self._renderer_diagnostic_codes.get(str(scene).strip().lower())
+        return None if token is None or token.strip() == "" else token
 
     def _should_render_run_state_indicator(self) -> bool:
         state = self.current_run_state()
@@ -4742,6 +4957,7 @@ class App:
         engine: object,
         test_code: str,
         test_version: int = 1,
+        completion_reason: str = "completed",
     ) -> list[str]:
         if self._results_store is None:
             return []
@@ -4764,11 +4980,49 @@ class App:
                     result=result,
                     app_version=self._app_version,
                     input_profile_id=self.active_input_profile_id(),
-                    completion_reason="completed",
+                    completion_reason=str(completion_reason),
                 )
             return self._build_persistence_summary_lines(test_code=test_code)
         except Exception:
             return ["Local save failed."]
+
+    def record_child_attempt(
+        self,
+        *,
+        parent_owner: object,
+        result: AttemptResult,
+        activity_code: str | None = None,
+        activity_kind: str,
+        origin_item_index: int | None = None,
+        origin_activity_code: str | None = None,
+        origin_activity_kind: str | None = None,
+        test_version: int | None = None,
+    ) -> None:
+        if self._results_store is None:
+            return
+        parent_handle = self._activity_sessions.get(id(parent_owner))
+        parent_activity_session_id = (
+            None if parent_handle is None else int(parent_handle.activity_session_id)
+        )
+        if origin_activity_code is None and parent_handle is not None:
+            origin_activity_code = parent_handle.activity_code
+        if origin_activity_kind is None and parent_handle is not None:
+            origin_activity_kind = parent_handle.activity_kind
+        try:
+            self._results_store.record_attempt(
+                result=result,
+                app_version=self._app_version,
+                input_profile_id=self.active_input_profile_id(),
+                activity_code=str(activity_code or result.test_code),
+                activity_kind=str(activity_kind),
+                test_version=result.test_version if test_version is None else int(test_version),
+                parent_activity_session_id=parent_activity_session_id,
+                origin_activity_code=origin_activity_code,
+                origin_activity_kind=origin_activity_kind,
+                origin_item_index=origin_item_index,
+            )
+        except Exception:
+            return
 
     def abort_activity_session(
         self,
@@ -5164,6 +5418,8 @@ class LoadingScreen:
         self._hint_font = pygame.font.Font(None, 22)
 
     def handle_event(self, event: pygame.event.Event) -> None:
+        if self._error_message is None:
+            return
         if event.type != pygame.KEYDOWN:
             return
         if event.key in (pygame.K_ESCAPE, pygame.K_BACKSPACE):
@@ -5205,7 +5461,7 @@ class LoadingScreen:
         surface.blit(detail, detail.get_rect(midtop=(panel.centerx, panel.y + 128)))
 
         hint_text = (
-            "Esc/Backspace: Cancel"
+            "Inputs locked until loading finishes"
             if self._error_message is None
             else "Esc/Backspace: Back"
         )
@@ -5256,8 +5512,12 @@ class AntWorkoutScreen(_SharedPauseMenuMixin):
         self._pause_settings_hitboxes: dict[int, pygame.Rect] = {}
         self._pause_settings_control_hitboxes: dict[tuple[int, str], pygame.Rect] = {}
         self._pause_staged_level: int | None = None
+        self._pause_seed_manual_enabled = False
+        self._pause_seed_editing = False
+        self._pause_seed_input = str(_new_seed())
         self._activity_finalized = False
         self._activity_close_reason: str | None = None
+        self._saved_child_block_indices: set[int] = set()
 
         self._title_font = pygame.font.Font(None, 44)
         self._subtitle_font = pygame.font.Font(None, 28)
@@ -5279,9 +5539,11 @@ class AntWorkoutScreen(_SharedPauseMenuMixin):
             self._pause_menu_selected = 0
             self._pause_settings_selected = 0
             self._pause_staged_level = self._app.effective_difficulty_level(self._test_code)
+            self._shared_pause_reset_seed_state()
         else:
             self._pause_menu_mode = "menu"
             self._pause_staged_level = None
+            self._shared_pause_reset_seed_state()
         runtime = cast(CognitiveTestScreen | None, self._runtime_screen)
         if runtime is not None:
             runtime._set_external_pause_state(self._pause_menu_active)
@@ -5290,31 +5552,29 @@ class AntWorkoutScreen(_SharedPauseMenuMixin):
         return True
 
     def shell_pause_available(self) -> bool:
-        return self._session.snapshot().stage is not AntWorkoutStage.RESULTS
+        stage = self._session.snapshot().stage
+        if stage is AntWorkoutStage.BLOCK:
+            return not self._runtime_loading_modal_active()
+        return stage in (
+            AntWorkoutStage.INTRO,
+            AntWorkoutStage.PRE_REFLECTION,
+            AntWorkoutStage.POST_REFLECTION,
+            AntWorkoutStage.BLOCK_SETUP,
+            AntWorkoutStage.BLOCK_RESULTS,
+            AntWorkoutStage.RESULTS,
+        )
 
     def shell_pause_set_active(self, active: bool) -> None:
         self._set_pause_menu_state(active)
 
-    def shell_pause_restart(self) -> None:
+    def shell_pause_restart_with_seed(self, seed_override: int | None = None) -> None:
         self._set_pause_menu_state(False)
-        self._activity_close_reason = "back_abort"
-        if self._session_factory is not None:
-            next_session = self._session_factory(self._app.effective_difficulty_level(self._test_code))
-        else:
-            next_session = AntWorkoutSession(
-                clock=self._session._clock,
-                seed=self._session.seed,
-                plan=self._session._plan,
-                starting_level=self._app.effective_difficulty_level(self._test_code),
-            )
-        self._app.replace_top(
-            AntWorkoutScreen(
-                self._app,
-                session=next_session,
-                test_code=self._test_code,
-                session_factory=self._session_factory,
-            )
-        )
+        self._session.restart_current_block(seed_override=seed_override)
+        self._runtime_screen = None
+        self._runtime_engine_id = None
+
+    def shell_pause_restart(self) -> None:
+        self.shell_pause_restart_with_seed(None)
 
     def shell_pause_main_menu(self) -> None:
         self._set_pause_menu_state(False)
@@ -5330,6 +5590,12 @@ class AntWorkoutScreen(_SharedPauseMenuMixin):
         snap = self._session.snapshot()
         return str(getattr(snap, "current_block_label", "") or snap.title)
 
+    def _shared_pause_supports_restart_current(self) -> bool:
+        return self._session.snapshot().stage in (
+            AntWorkoutStage.BLOCK_SETUP,
+            AntWorkoutStage.BLOCK,
+        )
+
     def handle_event(self, event: pygame.event.Event) -> None:
         if event.type != pygame.KEYDOWN:
             if self._pause_menu_active:
@@ -5343,12 +5609,34 @@ class AntWorkoutScreen(_SharedPauseMenuMixin):
         if self._handle_dev_skip_hotkey(key):
             return
 
-        if key == pygame.K_ESCAPE:
+        if self._pause_menu_active:
+            self._handle_pause_event(event)
+            return
+
+        if key == pygame.K_ESCAPE and stage in (
+            AntWorkoutStage.INTRO,
+            AntWorkoutStage.PRE_REFLECTION,
+            AntWorkoutStage.POST_REFLECTION,
+            AntWorkoutStage.BLOCK_SETUP,
+            AntWorkoutStage.BLOCK,
+            AntWorkoutStage.BLOCK_RESULTS,
+            AntWorkoutStage.RESULTS,
+        ):
+            if stage is AntWorkoutStage.BLOCK and self._runtime_loading_modal_active():
+                runtime = cast(CognitiveTestScreen | None, self._runtime_screen)
+                if runtime is not None:
+                    runtime.handle_event(event)
+                return
             self._set_pause_menu_state(not self._pause_menu_active)
             return
 
-        if self._pause_menu_active:
-            self._handle_pause_event(event)
+        if key == pygame.K_BACKSPACE and stage is AntWorkoutStage.BLOCK:
+            if self._runtime_loading_modal_active():
+                runtime = cast(CognitiveTestScreen | None, self._runtime_screen)
+                if runtime is not None:
+                    runtime.handle_event(event)
+                return
+            self._set_pause_menu_state(not self._pause_menu_active)
             return
 
         if stage is AntWorkoutStage.BLOCK:
@@ -5359,6 +5647,11 @@ class AntWorkoutScreen(_SharedPauseMenuMixin):
             runtime = cast(CognitiveTestScreen | None, self._runtime_screen)
             if runtime is not None:
                 runtime.handle_event(event)
+            return
+
+        if stage is AntWorkoutStage.BLOCK_RESULTS:
+            if _is_enter_key(key):
+                self._session.activate()
             return
 
         if stage is AntWorkoutStage.INTRO:
@@ -5372,7 +5665,7 @@ class AntWorkoutScreen(_SharedPauseMenuMixin):
             if key == pygame.K_RIGHT:
                 self._session.adjust_starting_level(1)
                 return
-            if key == pygame.K_RETURN:
+            if _is_enter_key(key):
                 self._session.activate()
             return
 
@@ -5380,7 +5673,7 @@ class AntWorkoutScreen(_SharedPauseMenuMixin):
             if key == pygame.K_BACKSPACE:
                 self._session.backspace_text()
                 return
-            if key == pygame.K_RETURN:
+            if _is_enter_key(key):
                 self._session.activate()
                 return
             raw = getattr(event, "unicode", "") or ""
@@ -5395,11 +5688,11 @@ class AntWorkoutScreen(_SharedPauseMenuMixin):
             if key == pygame.K_RIGHT:
                 self._session.adjust_block_level(1)
                 return
-            if key == pygame.K_RETURN:
+            if _is_enter_key(key):
                 self._session.activate()
             return
 
-        if stage is AntWorkoutStage.RESULTS and key == pygame.K_RETURN:
+        if stage is AntWorkoutStage.RESULTS and _is_enter_key(key):
             self._app.pop()
             return
         if stage is AntWorkoutStage.RESULTS and key == pygame.K_BACKSPACE:
@@ -5451,6 +5744,7 @@ class AntWorkoutScreen(_SharedPauseMenuMixin):
 
     def render(self, surface: pygame.Surface) -> None:
         snap = self._session.snapshot()
+        self._persist_latest_block_if_needed()
         self._persist_results_if_needed(snap)
 
         if snap.stage is AntWorkoutStage.BLOCK:
@@ -5514,9 +5808,9 @@ class AntWorkoutScreen(_SharedPauseMenuMixin):
             status_lines.append(f"Workout level {snap.difficulty_level}/10")
         if snap.stage is AntWorkoutStage.BLOCK_SETUP and snap.block_override_level is not None:
             status_lines.append(f"Block level {snap.block_override_level}/10")
-        if snap.block_time_remaining_s is not None:
+        if runtime_visible_timers_enabled() and snap.block_time_remaining_s is not None:
             status_lines.append(f"Block time {self._format_time(snap.block_time_remaining_s)}")
-        if snap.workout_time_remaining_s is not None:
+        if runtime_visible_timers_enabled() and snap.workout_time_remaining_s is not None:
             status_lines.append(f"Workout time {self._format_time(snap.workout_time_remaining_s)}")
         if snap.current_block_label:
             status_lines.append(snap.current_block_label)
@@ -5650,6 +5944,19 @@ class AntWorkoutScreen(_SharedPauseMenuMixin):
         runtime._set_external_pause_state(self._pause_menu_active)
         self._runtime_screen = runtime
 
+    def _runtime_loading_modal_active(self) -> bool:
+        runtime = cast(CognitiveTestScreen | None, self._runtime_screen)
+        if runtime is None:
+            return False
+        engine = getattr(runtime, "_engine", None)
+        if engine is None or not hasattr(engine, "snapshot"):
+            return False
+        try:
+            snap = engine.snapshot()
+        except Exception:
+            return False
+        return bool(runtime._loading_modal_active(snap.phase))
+
     def _persist_results_if_needed(self, snap: AntWorkoutSnapshot) -> None:
         if snap.stage is not AntWorkoutStage.RESULTS or self._results_persisted:
             return
@@ -5671,6 +5978,28 @@ class AntWorkoutScreen(_SharedPauseMenuMixin):
             test_code=self._test_code,
         )
         self._activity_finalized = True
+
+    def _persist_latest_block_if_needed(self) -> None:
+        snap = self._session.snapshot()
+        if self._suppress_persistence:
+            return
+        if snap.stage not in (AntWorkoutStage.BLOCK_RESULTS, AntWorkoutStage.RESULTS):
+            return
+        result = self._session.latest_completed_attempt()
+        block_result = self._session.latest_completed_block_result()
+        if result is None or block_result is None:
+            return
+        index = int(snap.block_index)
+        if index in self._saved_child_block_indices:
+            return
+        self._app.record_child_attempt(
+            parent_owner=self,
+            result=result,
+            activity_code=block_result.drill_code,
+            activity_kind="workout_block",
+            origin_item_index=index,
+        )
+        self._saved_child_block_indices.add(index)
 
     @staticmethod
     def _format_time(value_s: float | None) -> str:
@@ -5837,6 +6166,8 @@ class AntWorkoutScreen(_SharedPauseMenuMixin):
             return "Type response  Enter: Confirm  Esc: Pause"
         if stage is AntWorkoutStage.BLOCK_SETUP:
             return "Left/Right: Block level  Enter: Start block  Esc: Pause"
+        if stage is AntWorkoutStage.BLOCK_RESULTS:
+            return "Enter: Continue  Esc: Pause"
         return "Enter: Back  Esc: Pause  Backspace: Back"
 
     def _render_block_status_overlay(self, surface: pygame.Surface, snap: AntWorkoutSnapshot) -> None:
@@ -5847,14 +6178,13 @@ class AntWorkoutScreen(_SharedPauseMenuMixin):
         surface.blit(panel, bar.topleft)
         pygame.draw.rect(surface, (226, 236, 255), bar, 1, border_radius=10)
 
-        lines = (
-            f"{snap.title}",
-            (
-                f"Block {snap.block_index}/{snap.block_total}: {snap.current_block_label}  "
-                f"Level {snap.difficulty_level}/10  "
-                f"Workout time {self._format_time(snap.workout_time_remaining_s)}"
-            ),
+        summary_line = (
+            f"Block {snap.block_index}/{snap.block_total}: {snap.current_block_label}  "
+            f"Level {snap.difficulty_level}/10"
         )
+        if runtime_visible_timers_enabled():
+            summary_line += f"  Workout time {self._format_time(snap.workout_time_remaining_s)}"
+        lines = (f"{snap.title}", summary_line)
         surface.blit(self._small_font.render(lines[0], True, (238, 245, 255)), (bar.x + 12, bar.y + 10))
         surface.blit(self._tiny_font.render(lines[1], True, (188, 204, 228)), (bar.x + 12, bar.y + 34))
 
@@ -5885,6 +6215,7 @@ class AntWorkoutScreen(_SharedPauseMenuMixin):
         level = self._pause_staged_level or self._app.effective_difficulty_level(self._test_code)
         return [
             ("difficulty", "Workout Difficulty", f"{level} / 10"),
+            *self._shared_pause_seed_rows(),
             (
                 "review_mode",
                 "Dev Answer Review",
@@ -5895,7 +6226,11 @@ class AntWorkoutScreen(_SharedPauseMenuMixin):
                 "Joystick Bindings",
                 "Edit active profile bindings",
             ),
-            ("apply_restart", "Apply & Restart", "Restart from the beginning at this difficulty"),
+            (
+                "apply_restart",
+                "Apply & Restart",
+                "Restart this block with the current difficulty and seed mode",
+            ),
             ("back", "Back", "Return to Pause Menu"),
         ]
 
@@ -5903,6 +6238,8 @@ class AntWorkoutScreen(_SharedPauseMenuMixin):
         super()._handle_pause_settings_event(event)
 
     def _activate_pause_setting(self, key: str) -> None:
+        if self._shared_pause_activate_seed_setting(key):
+            return
         if key == "apply_restart":
             self._apply_pause_restart()
             return
@@ -5918,8 +6255,13 @@ class AntWorkoutScreen(_SharedPauseMenuMixin):
     def _adjust_pause_setting(self, *, index: int, direction: int) -> None:
         rows = self._pause_settings_rows()
         key = rows[index % len(rows)][0]
+        if self._shared_pause_adjust_seed_setting(key, direction):
+            return
         if key == "review_mode":
             self._app.set_review_mode_enabled(not self._app.review_mode_enabled())
+            return
+        if key == "apply_restart":
+            self._apply_pause_restart()
             return
         if key != "difficulty":
             return
@@ -5935,25 +6277,7 @@ class AntWorkoutScreen(_SharedPauseMenuMixin):
     def _apply_pause_restart(self) -> None:
         level = self._pause_staged_level or self._app.effective_difficulty_level(self._test_code)
         self._app.set_persistent_difficulty_level(test_code=self._test_code, level=level)
-        self._set_pause_menu_state(False)
-        self._activity_close_reason = "back_abort"
-        if self._session_factory is not None:
-            next_session = self._session_factory(self._app.effective_difficulty_level(self._test_code))
-        else:
-            next_session = AntWorkoutSession(
-                clock=self._session._clock,
-                seed=self._session.seed,
-                plan=build_ant_workout_plan(self._test_code),
-                starting_level=self._app.effective_difficulty_level(self._test_code),
-            )
-        self._app.replace_top(
-            AntWorkoutScreen(
-                self._app,
-                session=next_session,
-                test_code=self._test_code,
-                session_factory=self._session_factory,
-            )
-        )
+        self.shell_pause_restart_with_seed(self._shared_pause_seed_override())
 
     def _render_pause_overlay(self, surface: pygame.Surface) -> None:
         super()._render_pause_overlay(surface)
@@ -5974,7 +6298,7 @@ class BenchmarkScreen(_SharedPauseMenuMixin):
         self._session = session
         self._session_factory = session_factory
         self._test_code = "benchmark_battery"
-        self._test_version = 1
+        self._test_version = int(getattr(getattr(session, "_plan", None), "version", 1))
         self._results_persisted = False
         self._results_persistence_lines: list[str] = []
         self._suppress_persistence = False
@@ -5987,8 +6311,12 @@ class BenchmarkScreen(_SharedPauseMenuMixin):
         self._pause_settings_selected = 0
         self._pause_settings_hitboxes: dict[int, pygame.Rect] = {}
         self._pause_settings_control_hitboxes: dict[tuple[int, str], pygame.Rect] = {}
+        self._pause_seed_manual_enabled = False
+        self._pause_seed_editing = False
+        self._pause_seed_input = str(_new_seed())
         self._activity_finalized = False
         self._activity_close_reason: str | None = None
+        self._saved_child_probe_indices: set[int] = set()
 
         self._title_font = pygame.font.Font(None, 44)
         self._subtitle_font = pygame.font.Font(None, 28)
@@ -6008,25 +6336,21 @@ class BenchmarkScreen(_SharedPauseMenuMixin):
         return True
 
     def shell_pause_available(self) -> bool:
-        return self._session.stage is BenchmarkStage.PROBE
+        stage = self._session.stage
+        if stage is BenchmarkStage.PROBE:
+            return not self._runtime_loading_modal_active()
+        return stage in (BenchmarkStage.INTRO, BenchmarkStage.PROBE_RESULTS, BenchmarkStage.RESULTS)
 
     def shell_pause_set_active(self, active: bool) -> None:
         self._set_pause_menu_state(active)
 
-    def shell_pause_restart(self) -> None:
+    def shell_pause_restart_with_seed(self, seed_override: int | None = None) -> None:
         self._set_pause_menu_state(False)
-        self._activity_close_reason = "back_abort"
-        if self._session_factory is not None:
-            next_session = self._session_factory()
-        else:
-            next_session = BenchmarkSession(plan=self._session._plan)
-        self._app.replace_top(
-            BenchmarkScreen(
-                self._app,
-                session=next_session,
-                session_factory=self._session_factory,
-            )
-        )
+        self._session.restart_current_probe(seed_override=seed_override)
+        self._clear_runtime_screen()
+
+    def shell_pause_restart(self) -> None:
+        self.shell_pause_restart_with_seed(None)
 
     def shell_pause_main_menu(self) -> None:
         self._set_pause_menu_state(False)
@@ -6042,35 +6366,66 @@ class BenchmarkScreen(_SharedPauseMenuMixin):
         snap = self._session.snapshot()
         return str(getattr(snap, "current_probe_label", "") or snap.title)
 
+    def _shared_pause_supports_restart_current(self) -> bool:
+        return self._session.stage is BenchmarkStage.PROBE
+
     def handle_event(self, event: pygame.event.Event) -> None:
-        if event.type != pygame.KEYDOWN:
-            if self._pause_menu_active:
-                self._handle_pause_event(event)
-            return
-
         stage = self._session.stage
-        key = event.key
-
-        if stage is BenchmarkStage.PROBE and key == pygame.K_ESCAPE:
-            self._set_pause_menu_state(not self._pause_menu_active)
-            return
 
         if self._pause_menu_active:
             self._handle_pause_event(event)
             return
 
-        if stage is BenchmarkStage.INTRO:
-            if key in (pygame.K_BACKSPACE, pygame.K_ESCAPE):
-                self._activity_close_reason = "back_abort"
-                self._app.pop()
-                return
-            if key == pygame.K_RETURN:
-                self._session.activate()
-            return
+        if event.type == pygame.KEYDOWN:
+            key = event.key
 
-        if stage is BenchmarkStage.RESULTS:
-            if key in (pygame.K_RETURN, pygame.K_BACKSPACE, pygame.K_ESCAPE):
-                self._app.pop()
+            if key == pygame.K_ESCAPE and stage in (
+                BenchmarkStage.INTRO,
+                BenchmarkStage.PROBE,
+                BenchmarkStage.PROBE_RESULTS,
+                BenchmarkStage.RESULTS,
+            ):
+                if stage is BenchmarkStage.PROBE and self._runtime_loading_modal_active():
+                    self._ensure_runtime_screen()
+                    runtime = cast(CognitiveTestScreen | None, self._runtime_screen)
+                    if runtime is not None:
+                        runtime.handle_event(event)
+                    return
+                self._set_pause_menu_state(True)
+                return
+
+            if stage is BenchmarkStage.PROBE and key == pygame.K_BACKSPACE:
+                if self._runtime_loading_modal_active():
+                    self._ensure_runtime_screen()
+                    runtime = cast(CognitiveTestScreen | None, self._runtime_screen)
+                    if runtime is not None:
+                        runtime.handle_event(event)
+                    return
+                self._set_pause_menu_state(True)
+                return
+
+            if stage is BenchmarkStage.INTRO:
+                if key == pygame.K_BACKSPACE:
+                    self._activity_close_reason = "back_abort"
+                    self._app.pop()
+                    return
+                if _is_enter_key(key):
+                    self._session.activate()
+                return
+
+            if stage is BenchmarkStage.PROBE_RESULTS:
+                if _is_enter_key(key):
+                    self._session.continue_after_probe_results()
+                elif key == pygame.K_BACKSPACE:
+                    self._activity_close_reason = "back_abort"
+                    self._app.pop()
+                return
+
+            if stage is BenchmarkStage.RESULTS:
+                if key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_BACKSPACE):
+                    self._app.pop()
+                return
+        elif stage is not BenchmarkStage.PROBE:
             return
 
         engine = self._session.current_engine()
@@ -6083,6 +6438,7 @@ class BenchmarkScreen(_SharedPauseMenuMixin):
 
     def render(self, surface: pygame.Surface) -> None:
         snap = self._session.snapshot()
+        self._persist_latest_probe_if_needed()
         self._persist_results_if_needed()
 
         if snap.stage is BenchmarkStage.PROBE:
@@ -6113,6 +6469,8 @@ class BenchmarkScreen(_SharedPauseMenuMixin):
 
         self._clear_runtime_screen()
         self._render_panel(surface, snap)
+        if self._pause_menu_active:
+            self._render_pause_overlay(surface)
 
     def close(self) -> None:
         self._clear_runtime_screen()
@@ -6158,6 +6516,27 @@ class BenchmarkScreen(_SharedPauseMenuMixin):
         self._results_persisted = True
         self._activity_finalized = True
 
+    def _persist_latest_probe_if_needed(self) -> None:
+        if self._suppress_persistence:
+            return
+        if self._session.stage not in (BenchmarkStage.PROBE_RESULTS, BenchmarkStage.RESULTS):
+            return
+        result = self._session.latest_completed_attempt()
+        probe = self._session.latest_completed_probe()
+        probe_index = self._session.latest_completed_probe_index()
+        if result is None or probe is None or probe_index is None:
+            return
+        if probe_index in self._saved_child_probe_indices:
+            return
+        self._app.record_child_attempt(
+            parent_owner=self,
+            result=result,
+            activity_code=probe.probe_code,
+            activity_kind="benchmark_probe",
+            origin_item_index=int(probe_index),
+        )
+        self._saved_child_probe_indices.add(int(probe_index))
+
     def _clear_runtime_screen(self) -> None:
         if self._runtime_screen is not None:
             close = getattr(self._runtime_screen, "close", None)
@@ -6182,14 +6561,29 @@ class BenchmarkScreen(_SharedPauseMenuMixin):
         )
         self._runtime_engine_id = engine_id
 
+    def _runtime_loading_modal_active(self) -> bool:
+        runtime = cast(CognitiveTestScreen | None, self._runtime_screen)
+        if runtime is None:
+            return False
+        engine = getattr(runtime, "_engine", None)
+        if engine is None or not hasattr(engine, "snapshot"):
+            return False
+        try:
+            snap = engine.snapshot()
+        except Exception:
+            return False
+        return bool(runtime._loading_modal_active(snap.phase))
+
     def _set_pause_menu_state(self, active: bool) -> None:
         self._pause_menu_active = bool(active)
         if self._pause_menu_active:
             self._pause_menu_mode = "menu"
             self._pause_settings_selected = 0
+            self._shared_pause_reset_seed_state()
         else:
             self._pause_menu_selected = 0
             self._pause_menu_mode = "menu"
+            self._shared_pause_reset_seed_state()
         runtime = cast(CognitiveTestScreen | None, self._runtime_screen)
         if runtime is not None:
             runtime._set_external_pause_state(self._pause_menu_active)
@@ -6204,6 +6598,7 @@ class BenchmarkScreen(_SharedPauseMenuMixin):
 
     def _pause_settings_rows(self) -> list[tuple[str, str, str]]:
         return [
+            *self._shared_pause_seed_rows(),
             (
                 "review_mode",
                 "Dev Answer Review",
@@ -6214,27 +6609,41 @@ class BenchmarkScreen(_SharedPauseMenuMixin):
                 "Joystick Bindings",
                 "Edit active profile bindings",
             ),
+            (
+                "apply_restart",
+                "Apply & Restart",
+                "Restart this probe with the current seed mode",
+            ),
             ("back", "Back", "Return to Pause Menu"),
         ]
 
     def _activate_pause_setting(self, key: str) -> None:
+        if self._shared_pause_activate_seed_setting(key):
+            return
         if key == "review_mode":
             self._app.set_review_mode_enabled(not self._app.review_mode_enabled())
             return
         if key == "joystick_bindings":
             self._open_pause_joystick_bindings_screen()
             return
+        if key == "apply_restart":
+            self.shell_pause_restart_with_seed(self._shared_pause_seed_override())
+            return
         if key == "back":
             self._pause_menu_mode = "menu"
 
     def _adjust_pause_setting(self, *, index: int, direction: int) -> None:
-        _ = direction
         rows = self._pause_settings_rows()
         if not rows:
             return
         key = rows[index % len(rows)][0]
+        if self._shared_pause_adjust_seed_setting(key, direction):
+            return
         if key == "review_mode":
             self._app.set_review_mode_enabled(not self._app.review_mode_enabled())
+            return
+        if key == "apply_restart":
+            self.shell_pause_restart_with_seed(self._shared_pause_seed_override())
 
     def _shared_pause_settings_adjustable_keys(self) -> frozenset[str]:
         return frozenset({"review_mode"})
@@ -6328,10 +6737,13 @@ class BenchmarkScreen(_SharedPauseMenuMixin):
             if y > notes_rect.bottom - 28:
                 break
 
-        if getattr(snap, "stage", None) is BenchmarkStage.INTRO:
-            hint_text = "Enter: Start Benchmark Battery    Backspace: Back"
+        stage = getattr(snap, "stage", None)
+        if stage is BenchmarkStage.INTRO:
+            hint_text = "Enter: Start Benchmark Battery    Esc: Pause    Backspace: Back"
+        elif stage is BenchmarkStage.PROBE_RESULTS:
+            hint_text = "Enter: Continue    Esc: Pause    Backspace: Back"
         else:
-            hint_text = "Enter or Backspace: Exit"
+            hint_text = "Enter or Backspace: Exit    Esc: Pause"
         hint = self._tiny_font.render(hint_text, True, (188, 204, 228))
         surface.blit(hint, hint.get_rect(midbottom=(panel.centerx, panel.bottom - 18)))
 
@@ -6355,13 +6767,15 @@ class BenchmarkScreen(_SharedPauseMenuMixin):
             True,
             (198, 212, 242),
         )
-        probe_time = getattr(snap, "probe_time_remaining_s", None)
-        battery_time = getattr(snap, "battery_time_remaining_s", None)
-        status = self._tiny_font.render(
-            f"Probe time {self._format_time(probe_time)}   Battery remaining {self._format_time(battery_time)}",
-            True,
-            (188, 204, 228),
-        )
+        status_text = "Timers hidden for runtime sessions."
+        if runtime_visible_timers_enabled():
+            probe_time = getattr(snap, "probe_time_remaining_s", None)
+            battery_time = getattr(snap, "battery_time_remaining_s", None)
+            status_text = (
+                f"Probe time {self._format_time(probe_time)}   "
+                f"Battery remaining {self._format_time(battery_time)}"
+            )
+        status = self._tiny_font.render(status_text, True, (188, 204, 228))
         summary = self._tiny_font.render(
             f"Attempted {getattr(snap, 'attempted_total', 0)}   Correct {getattr(snap, 'correct_total', 0)}",
             True,
@@ -6392,12 +6806,10 @@ class AdaptiveSessionScreen(_SharedPauseMenuMixin):
         session: AdaptiveSession | None,
         test_code: str = "adaptive_session",
         screen_factory: Callable[[], Screen] | None = None,
-        benchmark_screen_factory: Callable[[], Screen] | None = None,
     ) -> None:
         self._app = app
         self._session = session
         self._screen_factory = screen_factory
-        self._benchmark_screen_factory = benchmark_screen_factory
         self._test_code = str(test_code).strip() or "adaptive_session"
         self._test_version = 1
         self._results_persisted = False
@@ -6412,8 +6824,13 @@ class AdaptiveSessionScreen(_SharedPauseMenuMixin):
         self._pause_settings_selected = 0
         self._pause_settings_hitboxes: dict[int, pygame.Rect] = {}
         self._pause_settings_control_hitboxes: dict[tuple[int, str], pygame.Rect] = {}
+        self._pause_seed_manual_enabled = False
+        self._pause_seed_editing = False
+        self._pause_seed_input = str(_new_seed())
         self._activity_finalized = False
         self._activity_close_reason: str | None = None
+        self._results_completion_reason = "completed"
+        self._saved_child_block_indices: set[int] = set()
 
         self._title_font = pygame.font.Font(None, 44)
         self._subtitle_font = pygame.font.Font(None, 28)
@@ -6434,16 +6851,29 @@ class AdaptiveSessionScreen(_SharedPauseMenuMixin):
         return self._session is not None
 
     def shell_pause_available(self) -> bool:
-        return self._session is not None and self._session.stage is AdaptiveStage.BLOCK
+        if self._session is None:
+            return False
+        stage = self._session.stage
+        if stage is AdaptiveStage.BLOCK:
+            return not self._runtime_loading_modal_active()
+        return stage in (
+            AdaptiveStage.INTRO,
+            AdaptiveStage.BLOCK_RESULTS,
+            AdaptiveStage.RESULTS,
+        )
 
     def shell_pause_set_active(self, active: bool) -> None:
         self._set_pause_menu_state(active)
 
-    def shell_pause_restart(self) -> None:
+    def shell_pause_restart_with_seed(self, seed_override: int | None = None) -> None:
         self._set_pause_menu_state(False)
-        self._activity_close_reason = "back_abort"
-        if self._screen_factory is not None:
-            self._app.replace_top(self._screen_factory())
+        if self._session is None:
+            return
+        self._session.restart_current_block(seed_override=seed_override)
+        self._clear_runtime_screen()
+
+    def shell_pause_restart(self) -> None:
+        self.shell_pause_restart_with_seed(None)
 
     def shell_pause_main_menu(self) -> None:
         self._set_pause_menu_state(False)
@@ -6462,6 +6892,19 @@ class AdaptiveSessionScreen(_SharedPauseMenuMixin):
         snap = self._session.snapshot()
         return str(getattr(snap, "current_block_label", "") or snap.title)
 
+    def _shared_pause_supports_restart_current(self) -> bool:
+        return self._session is not None and self._session.stage is AdaptiveStage.BLOCK
+
+    def _pause_menu_items(self) -> tuple[tuple[str, str], ...]:
+        items = list(super()._pause_menu_items())
+        if self._session is not None and self._session.stage in (
+            AdaptiveStage.INTRO,
+            AdaptiveStage.BLOCK,
+            AdaptiveStage.BLOCK_RESULTS,
+        ):
+            items.insert(max(1, len(items) - 1), ("end_session", "End Session"))
+        return tuple(items)
+
     def handle_event(self, event: pygame.event.Event) -> None:
         if event.type != pygame.KEYDOWN:
             if self._pause_menu_active:
@@ -6472,32 +6915,61 @@ class AdaptiveSessionScreen(_SharedPauseMenuMixin):
             if event.key in (pygame.K_BACKSPACE, pygame.K_ESCAPE):
                 self._app.pop()
                 return
-            if event.key == pygame.K_RETURN and self._benchmark_screen_factory is not None:
-                self._app.replace_top(self._benchmark_screen_factory())
+            if _is_enter_key(event.key) and self._screen_factory is not None:
+                self._app.replace_top(self._screen_factory())
             return
 
         stage = self._session.stage
         key = event.key
 
-        if stage is AdaptiveStage.BLOCK and key == pygame.K_ESCAPE:
-            self._set_pause_menu_state(not self._pause_menu_active)
-            return
-
         if self._pause_menu_active:
             self._handle_pause_event(event)
             return
 
+        if key == pygame.K_ESCAPE and stage in (
+            AdaptiveStage.INTRO,
+            AdaptiveStage.BLOCK,
+            AdaptiveStage.BLOCK_RESULTS,
+            AdaptiveStage.RESULTS,
+        ):
+            if stage is AdaptiveStage.BLOCK and self._runtime_loading_modal_active():
+                self._ensure_runtime_screen()
+                runtime = cast(CognitiveTestScreen | None, self._runtime_screen)
+                if runtime is not None:
+                    runtime.handle_event(event)
+                return
+            self._set_pause_menu_state(not self._pause_menu_active)
+            return
+
+        if stage is AdaptiveStage.BLOCK and key == pygame.K_BACKSPACE:
+            if self._runtime_loading_modal_active():
+                self._ensure_runtime_screen()
+                runtime = cast(CognitiveTestScreen | None, self._runtime_screen)
+                if runtime is not None:
+                    runtime.handle_event(event)
+                return
+            self._set_pause_menu_state(not self._pause_menu_active)
+            return
+
         if stage is AdaptiveStage.INTRO:
-            if key in (pygame.K_BACKSPACE, pygame.K_ESCAPE):
+            if key == pygame.K_BACKSPACE:
                 self._activity_close_reason = "back_abort"
                 self._app.pop()
                 return
-            if key == pygame.K_RETURN:
+            if _is_enter_key(key):
                 self._session.activate()
             return
 
         if stage is AdaptiveStage.RESULTS:
-            if key in (pygame.K_RETURN, pygame.K_BACKSPACE, pygame.K_ESCAPE):
+            if key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_BACKSPACE):
+                self._app.pop()
+            return
+
+        if stage is AdaptiveStage.BLOCK_RESULTS:
+            if _is_enter_key(key):
+                self._session.continue_after_block_results()
+            elif key == pygame.K_BACKSPACE:
+                self._activity_close_reason = "back_abort"
                 self._app.pop()
             return
 
@@ -6514,21 +6986,20 @@ class AdaptiveSessionScreen(_SharedPauseMenuMixin):
             self._render_panel(
                 surface,
                 title="Adaptive Session",
-                subtitle="Benchmark Required",
+                subtitle="Unavailable",
                 prompt=(
-                    "The scheduler needs mapped benchmark or drill history before it can rank weak "
-                    "primitives. Run the fixed benchmark battery first."
+                    "The adaptive session could not be started."
                 ),
                 note_lines=(
-                    "Enter: Launch Benchmark Battery (~60m)",
+                    "Enter: Retry",
                     "Backspace: Back",
-                    "No adaptive session is persisted from this bootstrap screen.",
                 ),
-                hint_text="Enter: Benchmark Battery (~60m)    Backspace: Back",
+                hint_text="Enter: Retry    Backspace: Back",
             )
             return
 
         snap = self._session.snapshot()
+        self._persist_latest_block_if_needed()
         self._persist_results_if_needed()
 
         if snap.stage is AdaptiveStage.BLOCK:
@@ -6552,9 +7023,11 @@ class AdaptiveSessionScreen(_SharedPauseMenuMixin):
         if snap.stage is AdaptiveStage.RESULTS and self._results_persistence_lines:
             note_lines = note_lines + tuple(self._results_persistence_lines)
         hint = (
-            "Enter: Start Session    Backspace: Back"
+            "Enter: Start Session    Esc: Pause    Backspace: Back"
             if snap.stage is AdaptiveStage.INTRO
-            else "Enter or Backspace: Exit"
+            else "Enter: Continue    Esc: Pause    Backspace: Back"
+            if snap.stage is AdaptiveStage.BLOCK_RESULTS
+            else "Enter or Backspace: Exit    Esc: Pause"
         )
         self._render_panel(
             surface,
@@ -6564,6 +7037,8 @@ class AdaptiveSessionScreen(_SharedPauseMenuMixin):
             note_lines=note_lines,
             hint_text=hint,
         )
+        if self._pause_menu_active:
+            self._render_pause_overlay(surface)
 
     def close(self) -> None:
         self._clear_runtime_screen()
@@ -6609,9 +7084,35 @@ class AdaptiveSessionScreen(_SharedPauseMenuMixin):
             engine=self._session,
             test_code=self._test_code,
             test_version=self._test_version,
+            completion_reason=self._results_completion_reason,
         )
         self._results_persisted = True
         self._activity_finalized = True
+
+    def _persist_latest_block_if_needed(self) -> None:
+        if (
+            self._session is None
+            or self._suppress_persistence
+            or self._session.stage not in (
+            AdaptiveStage.BLOCK_RESULTS,
+            AdaptiveStage.RESULTS,
+            )
+        ):
+            return
+        result = self._session.latest_completed_attempt()
+        block = self._session.latest_completed_block()
+        if result is None or block is None:
+            return
+        if int(block.block_index) in self._saved_child_block_indices:
+            return
+        self._app.record_child_attempt(
+            parent_owner=self,
+            result=result,
+            activity_code=block.drill_code,
+            activity_kind="adaptive_item",
+            origin_item_index=int(block.block_index),
+        )
+        self._saved_child_block_indices.add(int(block.block_index))
 
     def _clear_runtime_screen(self) -> None:
         if self._runtime_screen is not None:
@@ -6640,14 +7141,29 @@ class AdaptiveSessionScreen(_SharedPauseMenuMixin):
         )
         self._runtime_engine_id = engine_id
 
+    def _runtime_loading_modal_active(self) -> bool:
+        runtime = cast(CognitiveTestScreen | None, self._runtime_screen)
+        if runtime is None:
+            return False
+        engine = getattr(runtime, "_engine", None)
+        if engine is None or not hasattr(engine, "snapshot"):
+            return False
+        try:
+            snap = engine.snapshot()
+        except Exception:
+            return False
+        return bool(runtime._loading_modal_active(snap.phase))
+
     def _set_pause_menu_state(self, active: bool) -> None:
         self._pause_menu_active = bool(active)
         if self._pause_menu_active:
             self._pause_menu_mode = "menu"
             self._pause_settings_selected = 0
+            self._shared_pause_reset_seed_state()
         else:
             self._pause_menu_selected = 0
             self._pause_menu_mode = "menu"
+            self._shared_pause_reset_seed_state()
         runtime = cast(CognitiveTestScreen | None, self._runtime_screen)
         if runtime is not None:
             runtime._set_external_pause_state(self._pause_menu_active)
@@ -6662,8 +7178,32 @@ class AdaptiveSessionScreen(_SharedPauseMenuMixin):
         self._results_persistence_lines = ["Local save skipped in dev mode."]
         self._session.debug_skip_current_block()
 
+    def _activate_pause_selection(self) -> None:
+        self._activate_pause_menu_selection()
+
+    def _activate_pause_menu_selection(self) -> None:
+        items = self._pause_menu_items()
+        action = items[self._pause_menu_selected % len(items)][0]
+        if action == "end_session":
+            self._set_pause_menu_state(False)
+            self._end_session_from_pause()
+            return
+        super()._activate_pause_menu_selection()
+
+    def _end_session_from_pause(self) -> None:
+        if self._session is None:
+            return
+        if not self._session.has_completed_blocks():
+            self._activity_close_reason = "user_stopped"
+            self.abort_activity("user_stopped")
+            self._app.pop()
+            return
+        self._results_completion_reason = "user_stopped"
+        self._session.finish_session()
+
     def _pause_settings_rows(self) -> list[tuple[str, str, str]]:
         return [
+            *self._shared_pause_seed_rows(),
             (
                 "review_mode",
                 "Dev Answer Review",
@@ -6674,27 +7214,41 @@ class AdaptiveSessionScreen(_SharedPauseMenuMixin):
                 "Joystick Bindings",
                 "Edit active profile bindings",
             ),
+            (
+                "apply_restart",
+                "Apply & Restart",
+                "Restart this block with the current seed mode",
+            ),
             ("back", "Back", "Return to Pause Menu"),
         ]
 
     def _activate_pause_setting(self, key: str) -> None:
+        if self._shared_pause_activate_seed_setting(key):
+            return
         if key == "review_mode":
             self._app.set_review_mode_enabled(not self._app.review_mode_enabled())
             return
         if key == "joystick_bindings":
             self._open_pause_joystick_bindings_screen()
             return
+        if key == "apply_restart":
+            self.shell_pause_restart_with_seed(self._shared_pause_seed_override())
+            return
         if key == "back":
             self._pause_menu_mode = "menu"
 
     def _adjust_pause_setting(self, *, index: int, direction: int) -> None:
-        _ = direction
         rows = self._pause_settings_rows()
         if not rows:
             return
         key = rows[index % len(rows)][0]
+        if self._shared_pause_adjust_seed_setting(key, direction):
+            return
         if key == "review_mode":
             self._app.set_review_mode_enabled(not self._app.review_mode_enabled())
+            return
+        if key == "apply_restart":
+            self.shell_pause_restart_with_seed(self._shared_pause_seed_override())
 
     def _shared_pause_settings_adjustable_keys(self) -> frozenset[str]:
         return frozenset({"review_mode"})
@@ -6785,11 +7339,13 @@ class AdaptiveSessionScreen(_SharedPauseMenuMixin):
         )
         block_time = getattr(snap, "block_time_remaining_s", None)
         session_time = getattr(snap, "session_time_remaining_s", None)
-        status = self._tiny_font.render(
-            f"Block time {self._format_time(block_time)}   Session remaining {self._format_time(session_time)}",
-            True,
-            (188, 204, 228),
-        )
+        status_text = "Timers hidden for runtime sessions."
+        if runtime_visible_timers_enabled():
+            status_text = (
+                f"Block time {self._format_time(block_time)}   "
+                f"Session remaining {self._format_time(session_time)}"
+            )
+        status = self._tiny_font.render(status_text, True, (188, 204, 228))
         summary = self._tiny_font.render(
             f"Attempted {getattr(snap, 'attempted_total', 0)}   Correct {getattr(snap, 'correct_total', 0)}",
             True,
@@ -7785,7 +8341,10 @@ class JoystickBindingRouter:
         binding = self._profiles.get_axis_role_binding(profile_id=profile.profile_id, role=role)
         if binding is None:
             return None
-        return float(self._axis_values.get((binding.device_key, binding.axis_index), 0.0))
+        axis_key = (binding.device_key, binding.axis_index)
+        if axis_key not in self._axis_values:
+            return None
+        return float(self._axis_values[axis_key])
 
     def has_explicit_axis_binding(self, *, role: str) -> bool:
         if self._profiles is None:
@@ -10106,11 +10665,13 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         app: App,
         *,
         engine_factory: Callable[[], CognitiveEngine],
+        restart_factory: Callable[[int | None], Screen] | None = None,
         test_code: str | None = None,
         test_version: int = 1,
     ) -> None:
         self._app = app
         self._engine_factory = engine_factory
+        self._restart_factory = restart_factory
         self._engine: CognitiveEngine = engine_factory()
         self._app.apply_runtime_defaults_to_engine(self._engine)
         self._review_clock = self._install_pausable_clock(self._engine)
@@ -10238,7 +10799,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         self._tr_scene_misses = 0
         self._tr_scene_beacon_hits = 0
         self._tr_scene_unknown_hits = 0
-        self._tr_scene_anim_frame = 0
+        self._tr_scene_anim_frame = 0.0
         self._tr_scene_last_update_ms = 0
         self._tr_scene_base_cache: pygame.Surface | None = None
         self._tr_scene_base_cache_size: tuple[int, int] = (0, 0)
@@ -10303,6 +10864,9 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         self._pause_settings_selected = 0
         self._pause_settings_hitboxes: dict[int, pygame.Rect] = {}
         self._pause_settings_control_hitboxes: dict[tuple[int, str], pygame.Rect] = {}
+        self._pause_seed_manual_enabled = False
+        self._pause_seed_editing = False
+        self._pause_seed_input = str(_new_seed())
         self._intro_difficulty_control_hitboxes: dict[str, pygame.Rect] = {}
         self._staged_difficulty_level: int | None = None
         self._intro_loading_token: str | None = None
@@ -10342,6 +10906,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         enter_engine = getattr(self._engine, "enter", None)
         if callable(enter_engine):
             enter_engine()
+        self._refresh_runtime_seed_metrics()
         self._sync_intro_loading_state(self._engine.snapshot().phase)
         if self._test_code is not None:
             self._app.start_activity_session(
@@ -10419,15 +10984,69 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         if self._intro_loading_complete(snap.phase):
             return
 
+        w, h = surface.get_size()
+        dim = pygame.Surface((w, h), pygame.SRCALPHA)
+        dim.fill((4, 8, 22, 208))
+        surface.blit(dim, (0, 0))
+
+        panel = pygame.Rect(
+            max(36, w // 7),
+            max(32, h // 6),
+            min(max(520, int(w * 0.62)), w - 72),
+            min(max(240, int(h * 0.40)), h - 64),
+        )
+        panel.center = (w // 2, h // 2)
+        pygame.draw.rect(surface, (8, 18, 104), panel, border_radius=16)
+        pygame.draw.rect(surface, (226, 236, 255), panel, 2, border_radius=16)
+
+        title = self._app.font.render("Loading", True, (238, 245, 255))
+        surface.blit(title, title.get_rect(midtop=(panel.centerx, panel.y + 26)))
+
+        stage_label = "Preparing Practice Block" if snap.phase is Phase.INSTRUCTIONS else "Preparing Timed Block"
+        stage = self._small_font.render(stage_label, True, (188, 204, 228))
+        surface.blit(stage, stage.get_rect(midtop=(panel.centerx, panel.y + 74)))
+
+        diagnostic_code: str | None = None
+        if self._is_rapid_tracking_snapshot(snap) and not self._app.opengl_enabled:
+            diagnostic_code = self._app.note_renderer_fallback(
+                scene="rapid_tracking",
+                stage="loading",
+                path="fallback_2d",
+            )
+            self._set_runtime_diagnostic_code(diagnostic_code)
+
         dot_count = (pygame.time.get_ticks() // 220) % 4
-        label = f"Loading{'.' * dot_count}"
-        text = self._tiny_font.render(label, True, (238, 245, 255))
-        pill = text.get_rect()
-        pill.inflate_ip(18, 10)
-        pill.bottomright = (surface.get_width() - 18, surface.get_height() - 18)
-        pygame.draw.rect(surface, (8, 18, 104), pill, border_radius=8)
-        pygame.draw.rect(surface, (226, 236, 255), pill, 1, border_radius=8)
-        surface.blit(text, text.get_rect(center=pill.center))
+        detail = self._small_font.render(
+            f"Please wait{'.' * dot_count}",
+            True,
+            (238, 245, 255),
+        )
+        surface.blit(detail, detail.get_rect(midtop=(panel.centerx, panel.y + 116)))
+
+        body = pygame.Rect(panel.x + 28, panel.y + 150, panel.w - 56, panel.h - 198)
+        self._draw_wrapped_text(
+            surface,
+            "Loading is still in progress. Input stays locked until this screen clears.",
+            body,
+            color=(188, 204, 228),
+            font=self._small_font,
+            max_lines=4,
+        )
+
+        if diagnostic_code:
+            code_surf = self._tiny_font.render(
+                f"Rapid Tracking report code: {diagnostic_code}",
+                True,
+                (188, 204, 228),
+            )
+            surface.blit(code_surf, code_surf.get_rect(midtop=(panel.centerx, panel.y + 146)))
+
+        footer = self._tiny_font.render(
+            "Keyboard, mouse, joystick, and pause inputs are temporarily disabled.",
+            True,
+            (188, 204, 228),
+        )
+        surface.blit(footer, footer.get_rect(midbottom=(panel.centerx, panel.bottom - 18)))
 
     @staticmethod
     def _wrap_text_lines(text: str, font: pygame.font.Font, max_width: int) -> list[str]:
@@ -10649,17 +11268,87 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
     def _restart_activity(self, *, auto_start_practice: bool = False) -> None:
         self._stop_auditory_audio()
         self._stop_situational_awareness_audio()
-        replacement = CognitiveTestScreen(
-            self._app,
-            engine_factory=self._engine_factory,
-            test_code=self._test_code,
-            test_version=self._test_version,
-        )
+        replacement = self._build_restart_screen()
         if auto_start_practice:
             replacement._engine.start_practice()
             replacement._input = ""
             replacement._math_choice = 1
         self._app.replace_top(replacement)
+
+    def _build_restart_screen(self, seed_override: int | None = None) -> "CognitiveTestScreen":
+        if self._restart_factory is not None:
+            replacement = self._restart_factory(seed_override)
+            if isinstance(replacement, CognitiveTestScreen):
+                return replacement
+            raise TypeError("restart_factory must return a CognitiveTestScreen")
+        return CognitiveTestScreen(
+            self._app,
+            engine_factory=self._engine_factory,
+            restart_factory=self._restart_factory,
+            test_code=self._test_code,
+            test_version=self._test_version,
+        )
+
+    def _loading_modal_active(self, phase: Phase) -> bool:
+        return not self._intro_loading_complete(phase)
+
+    def _refresh_runtime_seed_metrics(self) -> None:
+        raw_seed = getattr(self._engine, "seed", getattr(self._engine, "_seed", None))
+        if raw_seed is None:
+            return
+        try:
+            launch_seed = int(raw_seed)
+        except Exception:
+            return
+        overrides = self._runtime_result_overrides()
+        overrides.setdefault("launch_seed", str(launch_seed))
+        overrides.setdefault("run_seed", str(launch_seed))
+
+    def _runtime_result_overrides(self) -> dict[str, str]:
+        overrides = getattr(self._engine, "_result_metrics_overrides", None)
+        if not isinstance(overrides, dict):
+            overrides = {}
+            setattr(self._engine, "_result_metrics_overrides", overrides)
+        return overrides
+
+    def _set_runtime_diagnostic_code(self, code: str | None) -> None:
+        token = "" if code is None else str(code).strip().upper()
+        overrides = self._runtime_result_overrides()
+        overrides["renderer_diagnostic_code"] = token
+
+    def _set_rapid_tracking_runtime_metrics(
+        self,
+        *,
+        payload: RapidTrackingPayload | None,
+        diagnostic_code: str | None,
+    ) -> None:
+        overrides = self._runtime_result_overrides()
+        overrides["renderer_diagnostic_code"] = (
+            "" if diagnostic_code is None else str(diagnostic_code).strip().upper()
+        )
+        overrides["renderer_backend"] = "modern_gl" if self._app.opengl_enabled else "fallback_2d"
+        overrides["renderer_gl_requested"] = (
+            "true" if self._app.renderer_gl_requested() else "false"
+        )
+        overrides["renderer_gl_attempted"] = (
+            "true" if self._app.renderer_gl_attempted() else "false"
+        )
+        if payload is not None:
+            overrides["control_scheme"] = str(payload.control_scheme)
+
+    def _runtime_diagnostic_code(self) -> str | None:
+        code = self._app.renderer_diagnostic_code("rapid_tracking")
+        token = "" if code is None else str(code).strip().upper()
+        return token or None
+
+    def _shared_pause_status_note(self) -> str | None:
+        snap = self._engine.snapshot()
+        if not self._is_rapid_tracking_snapshot(snap):
+            return None
+        code = self._runtime_diagnostic_code()
+        if code is None:
+            return None
+        return f"Rapid Tracking report code: {code}"
 
     def _persist_staged_difficulty_level(self) -> int:
         level = self._staged_difficulty_level
@@ -10780,6 +11469,9 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 pass
         return pygame.time.get_ticks() / 1000.0
 
+    def _runtime_now_ms(self) -> int:
+        return int(round(self._review_now_s() * 1000.0))
+
     def _set_pause_menu_state(self, active: bool) -> None:
         self._pause_menu_active = bool(active)
         if self._pause_menu_active:
@@ -10787,6 +11479,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             self._pause_menu_mode = "menu"
             self._pause_settings_selected = 0
             self._staged_difficulty_level = self._current_engine_difficulty_level()
+            self._shared_pause_reset_seed_state()
             self._clear_camera_keyboard_state()
             self._clear_airborne_overlay_state()
             self._stop_auditory_audio()
@@ -10796,6 +11489,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             self._clear_airborne_overlay_state()
             self._pause_menu_mode = "menu"
             self._staged_difficulty_level = None
+            self._shared_pause_reset_seed_state()
         self._sync_pausable_clock_state()
 
     def _set_external_pause_state(self, active: bool) -> None:
@@ -10808,6 +11502,8 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
     def poll_bound_input(self) -> None:
         snap = self._engine.snapshot()
         if self._review_state_active():
+            return
+        if self._loading_modal_active(snap.phase):
             return
         if self._is_auditory_capacity_snapshot(snap) and self._auditory_panda_requirement_failed():
             self._stop_auditory_audio()
@@ -10947,7 +11643,8 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 self._stop_situational_awareness_audio()
                 self._app.pop()
                 return
-            if event.key == pygame.K_ESCAPE and (event.mod & pygame.KMOD_SHIFT):
+            mod = int(getattr(event, "mod", 0))
+            if event.key == pygame.K_ESCAPE and (mod & pygame.KMOD_SHIFT):
                 self.abort_activity("emergency_abort")
                 self._stop_auditory_audio()
                 self._stop_situational_awareness_audio()
@@ -10985,7 +11682,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 Phase.PRACTICE_DONE,
                 Phase.SCORED,
                 Phase.RESULTS,
-            ):
+            ) and not self._loading_modal_active(snap.phase):
                 self._set_pause_menu_state(not self._pause_menu_active)
                 return
 
@@ -11001,6 +11698,9 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                     return
             if blocking_review:
                 return
+
+        if self._loading_modal_active(snap.phase):
+            return
 
         if self._handle_intro_difficulty_event(event, phase=snap.phase):
             return
@@ -11745,7 +12445,8 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             runtime = self._cognitive_updating_runtime
 
             if key == pygame.K_TAB:
-                delta = -1 if (event.mod & pygame.KMOD_SHIFT) else 1
+                mod = int(getattr(event, "mod", 0))
+                delta = -1 if (mod & pygame.KMOD_SHIFT) else 1
                 self._cognitive_updating_shift_upper_tab(delta)
                 return
             if key in (pygame.K_q, pygame.K_LEFT):
@@ -12138,6 +12839,8 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         super()._handle_pause_settings_event(event)
 
     def _activate_pause_setting(self, key: str) -> None:
+        if self._shared_pause_activate_seed_setting(key):
+            return
         if key == "apply_restart":
             self._apply_pause_restart()
             return
@@ -12157,6 +12860,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 "Difficulty",
                 f"{self._get_pause_difficulty_level()} / 10",
             ),
+            *self._shared_pause_seed_rows(),
             (
                 "review_mode",
                 "Dev Answer Review",
@@ -12207,6 +12911,8 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         if not rows:
             return
         key = rows[index % len(rows)][0]
+        if self._shared_pause_adjust_seed_setting(key, direction):
+            return
         if key == "difficulty":
             level = self._get_pause_difficulty_level()
             self._set_pause_difficulty_level(level + direction)
@@ -12261,9 +12967,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
 
     def _apply_pause_restart(self) -> None:
         self._persist_staged_difficulty_level()
-        self._set_pause_menu_state(False)
-        self._activity_close_reason = "back_abort"
-        self._restart_activity(auto_start_practice=False)
+        self.shell_pause_restart_with_seed(self._shared_pause_seed_override())
 
     def _get_intro_difficulty_level(self) -> int:
         if self._staged_difficulty_level is not None:
@@ -12848,6 +13552,9 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             sensory_payload = (
                 live_snap.payload if isinstance(live_snap.payload, SensoryMotorApparatusPayload) else None
             )
+            rapid_tracking_payload = (
+                live_snap.payload if isinstance(live_snap.payload, RapidTrackingPayload) else None
+            )
             set_control = getattr(self._engine, "set_control", None)
             if sensory_payload is not None and callable(set_control):
                 control_mode = str(sensory_payload.control_mode)
@@ -12857,15 +13564,11 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                     axis_focus=axis_focus,
                 )
                 set_control(horizontal=control_x, vertical=control_y)
-            elif isinstance(self._engine, RapidTrackingEngine) or str(
-                getattr(self._engine, "_title", "")
-            ).startswith("Dual-Task Bridge"):
-                control_x, control_y = self._read_sensory_motor_control(
-                    allow_keyboard_fallback=False
+            elif rapid_tracking_payload is not None and callable(set_control):
+                control_x, control_y = self._read_rapid_tracking_control(
+                    control_scheme=str(rapid_tracking_payload.control_scheme),
                 )
-                set_control = getattr(self._engine, "set_control", None)
-                if callable(set_control):
-                    set_control(horizontal=control_x, vertical=control_y)
+                set_control(horizontal=control_x, vertical=control_y)
             elif isinstance(self._engine, AuditoryCapacityEngine):
                 control_x, control_y = self._read_sensory_motor_control()
                 self._engine.set_control(horizontal=control_x, vertical=control_y)
@@ -13109,7 +13812,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             surface.blit(title, (40, 30))
 
             y_info = 80
-            if snap.time_remaining_s is not None:
+            if runtime_visible_timers_enabled() and snap.time_remaining_s is not None:
                 rem = int(round(snap.time_remaining_s))
                 mm = rem // 60
                 ss = rem % 60
@@ -13333,7 +14036,11 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             surface.blit(text, text.get_rect(midtop=(panel.centerx, y)))
             y += line_h
 
-        hint = hint_font.render("Enter: Return to Tests", True, (188, 204, 228))
+        hint = hint_font.render(
+            "Enter: Return to Tests  Esc/Backspace: Pause",
+            True,
+            (188, 204, 228),
+        )
         surface.blit(hint, hint.get_rect(midbottom=(panel.centerx, panel.bottom - 12)))
 
     def _fit_results_text(
@@ -14477,20 +15184,28 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
 
     def shell_pause_available(self) -> bool:
         snap = self._engine.snapshot()
-        return snap.phase in (
-            Phase.INSTRUCTIONS,
-            Phase.PRACTICE,
-            Phase.PRACTICE_DONE,
-            Phase.SCORED,
+        return (
+            snap.phase in (
+                Phase.INSTRUCTIONS,
+                Phase.PRACTICE,
+                Phase.PRACTICE_DONE,
+                Phase.SCORED,
+                Phase.RESULTS,
+            )
+            and not self._loading_modal_active(snap.phase)
         )
 
     def shell_pause_set_active(self, active: bool) -> None:
         self._set_pause_menu_state(active)
 
-    def shell_pause_restart(self) -> None:
+    def shell_pause_restart_with_seed(self, seed_override: int | None = None) -> None:
         self._set_pause_menu_state(False)
         self._activity_close_reason = "back_abort"
-        self._restart_activity(auto_start_practice=False)
+        replacement = self._build_restart_screen(seed_override)
+        self._app.replace_top(replacement)
+
+    def shell_pause_restart(self) -> None:
+        self.shell_pause_restart_with_seed(None)
 
     def shell_pause_main_menu(self) -> None:
         self._set_pause_menu_state(False)
@@ -14592,6 +15307,81 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
     ) -> tuple[str, ...]:
         return tuple(str(line) for line in payload.announcement_lines if str(line).strip() != "")
 
+    def _calibrated_joystick_axis_value(
+        self,
+        joystick: pygame.joystick.Joystick | None,
+        axis_index: int,
+    ) -> float | None:
+        if joystick is None:
+            return None
+        try:
+            axis_count = int(joystick.get_numaxes())
+        except Exception:
+            axis_count = 0
+        if axis_index < 0 or axis_index >= axis_count:
+            return None
+        raw = _axis_raw_value(joystick, axis_index)
+        profiles = self._app.input_profiles_store()
+        if profiles is None:
+            return raw
+        try:
+            profile = profiles.active_profile()
+        except Exception:
+            return raw
+        settings = profiles.get_axis_calibration(
+            profile_id=profile.profile_id,
+            axis_key=_axis_key(joystick, axis_index),
+        )
+        return _apply_axis_calibration(raw, settings)
+
+    def _read_rapid_tracking_control(
+        self,
+        *,
+        control_scheme: str,
+    ) -> tuple[float, float]:
+        joysticks = _iter_connected_joysticks()
+        primary = joysticks[0] if joysticks else None
+        scheme = normalize_rapid_tracking_control_scheme(control_scheme)
+        horizontal: float | None = None
+        vertical: float | None = None
+
+        if self._app.has_explicit_axis_role_binding("primary_vertical"):
+            vertical = self._app.bound_axis_role_value("primary_vertical")
+        if vertical is None:
+            vertical = self._calibrated_joystick_axis_value(primary, 1)
+
+        if scheme == "rudder_horizontal":
+            if self._app.has_explicit_axis_role_binding("rudder_horizontal"):
+                horizontal = self._app.bound_axis_role_value("rudder_horizontal")
+            if horizontal is None:
+                for device in joysticks:
+                    name = str(getattr(device, "get_name", lambda: "")()).lower()
+                    if "rudder" not in name and "pedal" not in name:
+                        continue
+                    for idx in (3, 2, 0, 1):
+                        value = self._calibrated_joystick_axis_value(device, idx)
+                        if value is not None:
+                            horizontal = value
+                            break
+                    if horizontal is not None:
+                        break
+            if horizontal is None:
+                for idx in (3, 4, 5, 2, 1, 0):
+                    value = self._calibrated_joystick_axis_value(primary, idx)
+                    if value is not None:
+                        horizontal = value
+                        break
+        else:
+            if self._app.has_explicit_axis_role_binding("primary_horizontal"):
+                horizontal = self._app.bound_axis_role_value("primary_horizontal")
+            if horizontal is None:
+                horizontal = self._calibrated_joystick_axis_value(primary, 0)
+
+        return (
+            max(-1.0, min(1.0, float(horizontal or 0.0))),
+            max(-1.0, min(1.0, float(vertical or 0.0))),
+        )
+
     def _read_sensory_motor_control(
         self,
         *,
@@ -14599,32 +15389,6 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         axis_focus: str = "both",
         allow_keyboard_fallback: bool = True,
     ) -> tuple[float, float]:
-        def _fallback_axis_value(
-            joystick: pygame.joystick.Joystick | None,
-            axis_index: int,
-        ) -> float:
-            if joystick is None:
-                return 0.0
-            try:
-                axis_count = int(joystick.get_numaxes())
-            except Exception:
-                axis_count = 0
-            if axis_index < 0 or axis_index >= axis_count:
-                return 0.0
-            profiles = self._app.input_profiles_store()
-            raw = _axis_raw_value(joystick, axis_index)
-            if profiles is None:
-                return raw
-            try:
-                profile = profiles.active_profile()
-            except Exception:
-                return raw
-            settings = profiles.get_axis_calibration(
-                profile_id=profile.profile_id,
-                axis_key=_axis_key(joystick, axis_index),
-            )
-            return _apply_axis_calibration(raw, settings)
-
         keys = pygame.key.get_pressed()
         keyboard_state = self._camera_keyboard_state
 
@@ -14655,13 +15419,13 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         if explicit_primary_vertical:
             vertical = float(self._app.bound_axis_role_value("primary_vertical") or 0.0)
         elif primary is not None and primary_axis_count > 1:
-            vertical = _fallback_axis_value(primary, 1)
+            vertical = float(self._calibrated_joystick_axis_value(primary, 1) or 0.0)
 
         if mode == "joystick_only":
             if explicit_primary_horizontal:
                 horizontal = float(self._app.bound_axis_role_value("primary_horizontal") or 0.0)
             elif primary is not None and primary_axis_count > 0:
-                horizontal = _fallback_axis_value(primary, 0)
+                horizontal = float(self._calibrated_joystick_axis_value(primary, 0) or 0.0)
         else:
             if explicit_rudder_horizontal:
                 horizontal = float(self._app.bound_axis_role_value("rudder_horizontal") or 0.0)
@@ -14680,7 +15444,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                     preferred_indices = (3, 2, 0, 1)
                     for idx in preferred_indices:
                         if idx < device_axis_count:
-                            rudder_value = _fallback_axis_value(device, idx)
+                            rudder_value = self._calibrated_joystick_axis_value(device, idx)
                             break
                     if rudder_value is not None:
                         break
@@ -14689,7 +15453,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 if rudder_value is None:
                     for idx in (3, 4, 5, 2, 1, 0):
                         if idx < primary_axis_count:
-                            rudder_value = _fallback_axis_value(primary, idx)
+                            rudder_value = self._calibrated_joystick_axis_value(primary, idx)
                             break
 
                 horizontal = 0.0 if rudder_value is None else rudder_value
@@ -14735,13 +15499,20 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             surface, border, (header.x, header.bottom), (header.right, header.bottom), 1
         )
 
-        phase_label = {
-            Phase.INSTRUCTIONS: "Instructions",
-            Phase.PRACTICE: "Practice",
-            Phase.PRACTICE_DONE: "Practice Complete",
-            Phase.SCORED: "Timed Test",
-            Phase.RESULTS: "Results",
-        }.get(snap.phase, "Task")
+        if snap.phase is Phase.PRACTICE_DONE:
+            if payload is None:
+                phase_label = "Timed Test Ready"
+            elif payload.block_kind == "scored" and snap.attempted_scored > 0:
+                phase_label = "Timed Segment Complete"
+            else:
+                phase_label = "Practice Complete"
+        else:
+            phase_label = {
+                Phase.INSTRUCTIONS: "Instructions",
+                Phase.PRACTICE: "Practice",
+                Phase.SCORED: "Timed Test",
+                Phase.RESULTS: "Results",
+            }.get(snap.phase, "Task")
         block_heading = ""
         if payload is not None and payload.block_index > 0 and payload.block_total > 0:
             block_kind_label = "Practice" if payload.block_kind == "practice" else "Timed Test"
@@ -14772,13 +15543,17 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         )
         surface.blit(stats, stats.get_rect(midright=(header.right - 12, header.centery)))
 
-        if snap.time_remaining_s is not None:
+        if runtime_visible_timers_enabled() and snap.time_remaining_s is not None:
             rem = int(round(snap.time_remaining_s))
             mm = rem // 60
             ss = rem % 60
             timer = self._small_font.render(f"{mm:02d}:{ss:02d}", True, text_main)
             surface.blit(timer, timer.get_rect(topright=(frame.right - 12, header.bottom + 6)))
-            if payload is not None and payload.segment_total > 1:
+            if (
+                runtime_visible_timers_enabled()
+                and payload is not None
+                and payload.segment_total > 1
+            ):
                 seg_rem = int(round(payload.segment_time_remaining_s))
                 seg_mm = seg_rem // 60
                 seg_ss = seg_rem % 60
@@ -14874,8 +15649,18 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 max_lines=6,
             )
 
-        if snap.phase in (Phase.INSTRUCTIONS, Phase.PRACTICE_DONE):
+        if snap.phase is Phase.INSTRUCTIONS:
             footer = "Enter: Continue  |  Esc/Backspace: Pause"
+        elif snap.phase is Phase.PRACTICE_DONE:
+            if payload is None:
+                footer = "Enter: Begin Timed Test  |  Esc/Backspace: Pause"
+            elif payload.block_kind == "scored":
+                if snap.attempted_scored > 0:
+                    footer = "Enter: Continue Timed Test  |  Esc/Backspace: Pause"
+                else:
+                    footer = "Enter: Begin Timed Test  |  Esc/Backspace: Pause"
+            else:
+                footer = "Enter: Continue  |  Esc/Backspace: Pause"
         elif snap.phase in (Phase.PRACTICE, Phase.SCORED):
             if payload is not None and payload.control_mode == "joystick_only":
                 footer = "Joystick X controls left/right; joystick axis 1 controls up/down."
@@ -15047,6 +15832,17 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         resize_rt = getattr(self._engine, "resize", None)
         if callable(resize_rt):
             resize_rt(*surface.get_size())
+        diagnostic_code = self._app.renderer_diagnostic_code("rapid_tracking")
+        if not self._app.opengl_enabled:
+            diagnostic_code = self._app.note_renderer_fallback(
+                scene="rapid_tracking",
+                stage="runtime",
+                path="fallback_2d",
+            )
+        self._set_rapid_tracking_runtime_metrics(
+            payload=payload,
+            diagnostic_code=diagnostic_code,
+        )
         render_rapid_tracking_screen(
             surface=surface,
             snap=snap,
@@ -15098,7 +15894,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         )
         surface.blit(stats, stats.get_rect(midright=(header.right - 12, header.centery)))
 
-        if snap.time_remaining_s is not None:
+        if runtime_visible_timers_enabled() and snap.time_remaining_s is not None:
             rem = int(round(snap.time_remaining_s))
             mm = rem // 60
             ss = rem % 60
@@ -15124,9 +15920,8 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 True,
                 text_muted,
             )
-            segment_seconds = max(0, int(round(float(payload.segment_time_remaining_s))))
             segment_text = self._tiny_font.render(
-                f"{payload.segment_label} {int(payload.segment_index)}/{int(payload.segment_total)}  {segment_seconds}s",
+                f"{payload.segment_label} {int(payload.segment_index)}/{int(payload.segment_total)}",
                 True,
                 text_muted,
             )
@@ -16133,7 +16928,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         )
         surface.blit(stats, stats.get_rect(midright=(header.right - 12, header.centery)))
 
-        if snap.time_remaining_s is not None:
+        if runtime_visible_timers_enabled() and snap.time_remaining_s is not None:
             rem = int(round(snap.time_remaining_s))
             timer = self._small_font.render(f"{rem // 60:02d}:{rem % 60:02d}", True, text_main)
             surface.blit(timer, timer.get_rect(topright=(frame.right - 12, header.bottom + 6)))
@@ -16234,7 +17029,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 text_main,
             )
             segment_subtitle = self._tiny_font.render(
-                f"Focus: {focus}  |  Trigger: configured binding or Space  |  {self._fmt_debug_seconds(payload.segment_time_remaining_s)} left",
+                f"Focus: {focus}  |  Trigger: configured binding or Space",
                 True,
                 text_muted,
             )
@@ -16638,7 +17433,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         strip_text = self._tiny_font.render("Auditory Capacity Test", True, (226, 236, 255))
         surface.blit(strip_text, strip_text.get_rect(center=top_strip.center))
 
-        if time_remaining_s is not None:
+        if runtime_visible_timers_enabled() and time_remaining_s is not None:
             rem = max(0, int(round(time_remaining_s)))
             timer = pygame.Rect(world.right - 148, world.y + 14, 136, 46)
             self._draw_auditory_glass_panel(
@@ -16655,33 +17450,34 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             surface.blit(t_label, t_label.get_rect(center=(timer.centerx, timer.y + 15)))
             surface.blit(t_val, t_val.get_rect(center=(timer.centerx, timer.y + 33)))
 
-        bar = pygame.Rect(world.right - 144, world.bottom - 26, 126, 14)
-        self._draw_auditory_glass_panel(
-            surface,
-            bar,
-            top_color=(116, 122, 136),
-            bottom_color=(64, 72, 90),
-            border_color=(146, 152, 170),
-            border_radius=7,
-            gloss_alpha=28,
-        )
-        fill_ratio = 0.72 if time_fill_ratio is None else max(0.0, min(1.0, time_fill_ratio))
-        fill = pygame.Rect(
-            bar.x + 5,
-            bar.y + 4,
-            int(round((bar.w - 10) * fill_ratio)),
-            bar.h - 8,
-        )
-        if fill.w > 0:
+        if runtime_visible_timers_enabled():
+            bar = pygame.Rect(world.right - 144, world.bottom - 26, 126, 14)
             self._draw_auditory_glass_panel(
                 surface,
-                fill,
-                top_color=(206, 212, 220),
-                bottom_color=(150, 158, 172),
-                border_color=(224, 228, 236),
-                border_radius=4,
-                gloss_alpha=20,
+                bar,
+                top_color=(116, 122, 136),
+                bottom_color=(64, 72, 90),
+                border_color=(146, 152, 170),
+                border_radius=7,
+                gloss_alpha=28,
             )
+            fill_ratio = 0.72 if time_fill_ratio is None else max(0.0, min(1.0, time_fill_ratio))
+            fill = pygame.Rect(
+                bar.x + 5,
+                bar.y + 4,
+                int(round((bar.w - 10) * fill_ratio)),
+                bar.h - 8,
+            )
+            if fill.w > 0:
+                self._draw_auditory_glass_panel(
+                    surface,
+                    fill,
+                    top_color=(206, 212, 220),
+                    bottom_color=(150, 158, 172),
+                    border_color=(224, 228, 236),
+                    border_radius=4,
+                    gloss_alpha=20,
+                )
 
         pygame.draw.rect(surface, (20, 42, 140), world, 2)
         pygame.draw.rect(surface, (78, 104, 178), world.inflate(-4, -4), 1)
@@ -17357,7 +18153,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             stats_label, stats_label.get_rect(midright=(stats_rect.left - 6, header.centery))
         )
 
-        if snap.time_remaining_s is not None:
+        if runtime_visible_timers_enabled() and snap.time_remaining_s is not None:
             rem = int(round(snap.time_remaining_s))
             mm = rem // 60
             ss = rem % 60
@@ -17531,7 +18327,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         )
         surface.blit(stats, stats.get_rect(midright=(header.right - 12, header.centery)))
 
-        if snap.time_remaining_s is not None:
+        if runtime_visible_timers_enabled() and snap.time_remaining_s is not None:
             rem = int(round(snap.time_remaining_s))
             mm = rem // 60
             ss = rem % 60
@@ -18071,7 +18867,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         )
         surface.blit(stats_text, stats_text.get_rect(midright=(header.right - 12, header.centery)))
 
-        if snap.time_remaining_s is not None:
+        if runtime_visible_timers_enabled() and snap.time_remaining_s is not None:
             rem = int(round(snap.time_remaining_s))
             mm = rem // 60
             ss = rem % 60
@@ -18452,7 +19248,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         if clock_txt.get_width() > clock.w - 16:
             clock_txt = self._mid_font.render(runtime_snap.clock_hms, True, text_main)
         surface.blit(clock_txt, clock_txt.get_rect(center=(clock.centerx, clock.centery + 8)))
-        if snap.time_remaining_s is not None:
+        if runtime_visible_timers_enabled() and snap.time_remaining_s is not None:
             rem = int(max(0, round(snap.time_remaining_s)))
             rem_txt = self._tiny_font.render(f"{rem // 60:02d}:{rem % 60:02d}", True, text_muted)
             surface.blit(rem_txt, rem_txt.get_rect(midbottom=(clock.centerx, clock.bottom - 4)))
@@ -18768,8 +19564,11 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 )
                 pygame.draw.rect(surface, submit_color, submit, border_radius=4)
                 _set_hitbox(scope, "comms_submit", submit)
-                time_txt = self._small_font.render(f"Time remaining: {comms_left}", True, text_main)
-                surface.blit(time_txt, (box.x, box.bottom + 8))
+                if runtime_visible_timers_enabled():
+                    time_txt = self._small_font.render(
+                        f"Time remaining: {comms_left}", True, text_main
+                    )
+                    surface.blit(time_txt, (box.x, box.bottom + 8))
 
                 key_y = comms_rect.bottom - 44
                 key_w = max(26, min(72, (comms_rect.w - 28) // 4))
@@ -18880,18 +19679,25 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 surface.blit(air_txt, (sensors.x + 18, air_row))
                 surface.blit(ground_txt, (sensors.x + 18, ground_row))
 
-                air_time_label = f"Time Left: {_mmss(air_left)}"
-                ground_time_label = f"Time Left: {_mmss(ground_left)}"
-                air_time_txt = self._app.font.render(air_time_label, True, text_muted)
-                ground_time_txt = self._app.font.render(ground_time_label, True, text_muted)
-                if air_time_txt.get_width() > sensors.w // 3:
-                    air_time_txt = self._small_font.render(air_time_label, True, text_muted)
-                if ground_time_txt.get_width() > sensors.w // 3:
-                    ground_time_txt = self._small_font.render(ground_time_label, True, text_muted)
-
                 time_right = sensors.right - 14
-                air_time_x = time_right - air_time_txt.get_width()
-                ground_time_x = time_right - ground_time_txt.get_width()
+                if runtime_visible_timers_enabled():
+                    air_time_label = f"Time Left: {_mmss(air_left)}"
+                    ground_time_label = f"Time Left: {_mmss(ground_left)}"
+                    air_time_txt = self._app.font.render(air_time_label, True, text_muted)
+                    ground_time_txt = self._app.font.render(ground_time_label, True, text_muted)
+                    if air_time_txt.get_width() > sensors.w // 3:
+                        air_time_txt = self._small_font.render(air_time_label, True, text_muted)
+                    if ground_time_txt.get_width() > sensors.w // 3:
+                        ground_time_txt = self._small_font.render(
+                            ground_time_label, True, text_muted
+                        )
+                    air_time_x = time_right - air_time_txt.get_width()
+                    ground_time_x = time_right - ground_time_txt.get_width()
+                else:
+                    air_time_txt = None
+                    ground_time_txt = None
+                    air_time_x = time_right
+                    ground_time_x = time_right
 
                 base_btn_w = max(88, min(126, sensors.w // 5))
                 min_btn_x = sensors.x + 18 + max(air_txt.get_width(), ground_txt.get_width()) + 24
@@ -18923,8 +19729,9 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 ground_btn_txt = self._small_font.render("Activate", True, text_main)
                 surface.blit(air_btn_txt, air_btn_txt.get_rect(center=air_btn.center))
                 surface.blit(ground_btn_txt, ground_btn_txt.get_rect(center=ground_btn.center))
-                surface.blit(air_time_txt, (air_time_x, air_row + 2))
-                surface.blit(ground_time_txt, (ground_time_x, ground_row + 2))
+                if air_time_txt is not None and ground_time_txt is not None:
+                    surface.blit(air_time_txt, (air_time_x, air_row + 2))
+                    surface.blit(ground_time_txt, (ground_time_x, ground_row + 2))
                 _set_hitbox(scope, "sensor_air", air_btn)
                 _set_hitbox(scope, "sensor_ground", ground_btn)
                 return
@@ -19071,7 +19878,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         title = self._num_header_font.render("Numerical Operations Test", True, text_main)
         surface.blit(title, title.get_rect(midtop=(frame.centerx, frame.y + 10)))
 
-        if snap.time_remaining_s is not None:
+        if runtime_visible_timers_enabled() and snap.time_remaining_s is not None:
             rem = int(round(snap.time_remaining_s))
             mm = rem // 60
             ss = rem % 60
@@ -19198,7 +20005,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             stats_label, stats_label.get_rect(midright=(stats_rect.left - 6, header.centery))
         )
 
-        if snap.time_remaining_s is not None:
+        if runtime_visible_timers_enabled() and snap.time_remaining_s is not None:
             rem = int(round(snap.time_remaining_s))
             mm = rem // 60
             ss = rem % 60
@@ -19454,7 +20261,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         )
         surface.blit(stats, stats.get_rect(midright=(header.right - 10, header.centery)))
 
-        if snap.time_remaining_s is not None:
+        if runtime_visible_timers_enabled() and snap.time_remaining_s is not None:
             rem = int(round(snap.time_remaining_s))
             timer = self._small_font.render(f"{rem // 60:02d}:{rem % 60:02d}", True, text_main)
             surface.blit(timer, timer.get_rect(topright=(frame.right - 12, header.bottom + 6)))
@@ -20047,29 +20854,9 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
 
         if entity.shape == "truck":
             pygame.draw.circle(surface, color, (cx, cy), s, line_w)
-            dx = math.cos(heading)
-            dy = math.sin(heading)
-            ex = int(cx + dx * (s + 7))
-            ey = int(cy + dy * (s + 7))
-            pygame.draw.line(surface, color, (cx, cy), (ex, ey), line_w)
-            px = -dy
-            py = dx
-            p1 = (ex, ey)
-            p2 = (int(ex - dx * 5 + px * 3), int(ey - dy * 5 + py * 3))
-            p3 = (int(ex - dx * 5 - px * 3), int(ey - dy * 5 - py * 3))
-            pygame.draw.polygon(surface, color, (p1, p2, p3), line_w)
         elif entity.shape == "tank":
             box = pygame.Rect(cx - s, cy - s, s * 2, s * 2)
             pygame.draw.rect(surface, color, box, line_w)
-            dx = math.cos(heading)
-            dy = math.sin(heading)
-            pygame.draw.line(
-                surface,
-                color,
-                (int(cx - dx * (s + 3)), int(cy - dy * (s + 3))),
-                (int(cx + dx * (s + 3)), int(cy + dy * (s + 3))),
-                line_w,
-            )
         elif entity.shape == "building":
             a0 = heading - (math.pi / 2.0)
             pts = (
@@ -20234,14 +21021,14 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         self._tr_scene_misses = 0
         self._tr_scene_beacon_hits = 0
         self._tr_scene_unknown_hits = 0
-        self._tr_scene_anim_frame = 0
+        self._tr_scene_anim_frame = 0.0
         self._tr_scene_last_update_ms = 0
         self._tr_scene_base_cache = None
         self._tr_scene_base_cache_size = (0, 0)
         self._tr_scene_base_cache_seed = 0
 
     def _target_recognition_sync_scene_stream(self, payload: TargetRecognitionPayload) -> None:
-        now_ms = pygame.time.get_ticks()
+        now_ms = self._runtime_now_ms()
         pid = id(payload)
         clear_all_targets = bool(getattr(payload, "scene_clear_all_targets", False))
         if self._tr_scene_payload_id != pid:
@@ -20264,7 +21051,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 self._tr_scene_next_target_add_ms = now_ms + 1200
             else:
                 self._tr_scene_next_target_add_ms = 0
-            self._tr_scene_anim_frame = 0
+            self._tr_scene_anim_frame = 0.0
             self._tr_scene_last_update_ms = now_ms
             self._tr_scene_base_cache = None
             self._tr_scene_base_cache_size = (0, 0)
@@ -20320,8 +21107,8 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             return
         dt_ms = max(0, min(120, now_ms - self._tr_scene_last_update_ms))
         self._tr_scene_last_update_ms = now_ms
-        self._tr_scene_anim_frame += 1
         if dt_ms > 0:
+            self._tr_scene_anim_frame += float(dt_ms) / (1000.0 / 60.0)
             fade = float(dt_ms) * 0.040
             for glyph in self._tr_scene_glyphs.values():
                 if glyph.alpha < glyph.max_alpha:
@@ -20658,7 +21445,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         self._tr_scan_passes_left = 0
 
     def _target_recognition_sync_light_stream(self, payload: TargetRecognitionPayload) -> None:
-        now_ms = pygame.time.get_ticks()
+        now_ms = self._runtime_now_ms()
         pid = id(payload)
         if self._tr_light_payload_id != pid:
             self._tr_light_payload_id = pid
@@ -20698,7 +21485,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         return False
 
     def _target_recognition_sync_scan_stream(self, payload: TargetRecognitionPayload) -> None:
-        now_ms = pygame.time.get_ticks()
+        now_ms = self._runtime_now_ms()
         pid = id(payload)
         if self._tr_scan_payload_id != pid:
             self._tr_scan_payload_id = pid
@@ -20941,7 +21728,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         self._tr_system_string_hitboxes = []
 
     def _target_recognition_sync_system_stream(self, payload: TargetRecognitionPayload) -> None:
-        now_ms = pygame.time.get_ticks()
+        now_ms = self._runtime_now_ms()
         pid = id(payload)
         if self._tr_system_payload_id != pid:
             self._tr_system_payload_id = pid
@@ -21208,7 +21995,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
 
         title = self._tiny_font.render("Situational Awareness Test", True, text_main)
         surface.blit(title, title.get_rect(midleft=(header.x + 10, header.centery)))
-        if snap.time_remaining_s is not None:
+        if runtime_visible_timers_enabled() and snap.time_remaining_s is not None:
             rem = int(round(snap.time_remaining_s))
             timer = self._tiny_font.render(f"{rem // 60:02d}:{rem % 60:02d}", True, text_main)
             surface.blit(timer, timer.get_rect(midright=(header.right - 10, header.centery)))
@@ -21477,7 +22264,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         title = self._tiny_font.render(title_text, True, text_main)
         surface.blit(title, title.get_rect(center=header.center))
 
-        if snap.time_remaining_s is not None:
+        if runtime_visible_timers_enabled() and snap.time_remaining_s is not None:
             rem = int(round(snap.time_remaining_s))
             mm = rem // 60
             ss = rem % 60
@@ -21869,7 +22656,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         title = self._tiny_font.render(f"Vigilance - {phase_label}", True, text_main)
         surface.blit(title, title.get_rect(center=header.center))
 
-        if snap.time_remaining_s is not None:
+        if runtime_visible_timers_enabled() and snap.time_remaining_s is not None:
             rem = int(round(snap.time_remaining_s))
             timer = self._tiny_font.render(f"{rem // 60:02d}:{rem % 60:02d}", True, text_main)
             surface.blit(timer, timer.get_rect(midright=(header.right - 10, header.centery)))
@@ -22140,7 +22927,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             (236, 236, 186),
         )
         surface.blit(status_left, (bar.x + 8, bar.y + 3))
-        if snap.time_remaining_s is not None:
+        if runtime_visible_timers_enabled() and snap.time_remaining_s is not None:
             rem = int(round(snap.time_remaining_s))
             status_right = self._tiny_font.render(
                 f"Time Left {rem // 60:02d}:{rem % 60:02d}",
@@ -22374,9 +23161,8 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             render_scene(scene, payload)
             watch = self._small_font.render("Watch the aircraft scene.", True, text_main)
             surface.blit(watch, watch.get_rect(midbottom=(scene.centerx, scene.y - 10)))
-            rem = 0.0 if payload.stage_time_remaining_s is None else float(payload.stage_time_remaining_s)
             observe_label = self._tiny_font.render(
-                f"Observe  |  Clip {payload.trial_index_in_block}/{payload.trials_in_block}  |  {rem:0.1f}s",
+                f"Observe  |  Clip {payload.trial_index_in_block}/{payload.trials_in_block}",
                 True,
                 (236, 236, 186),
             )
@@ -22422,7 +23208,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             surface.blit(bottom_left, (bar.x + 8, bar.y + 3))
             surface.blit(bottom_mid, bottom_mid.get_rect(center=bar.center))
 
-        if snap.time_remaining_s is not None:
+        if runtime_visible_timers_enabled() and snap.time_remaining_s is not None:
             rem = int(round(snap.time_remaining_s))
             time_text = self._tiny_font.render(
                 f"Time Left {rem // 60:02d}:{rem % 60:02d}",
@@ -22482,7 +23268,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         )
         surface.blit(stats, stats.get_rect(midright=(header.right - 10, header.centery)))
 
-        if snap.time_remaining_s is not None:
+        if runtime_visible_timers_enabled() and snap.time_remaining_s is not None:
             rem = int(round(snap.time_remaining_s))
             timer = self._small_font.render(f"{rem // 60:02d}:{rem % 60:02d}", True, text_main)
             surface.blit(timer, timer.get_rect(topright=(frame.right - 12, header.bottom + 8)))
@@ -22548,9 +23334,6 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         pygame.draw.rect(surface, accent, banner, border_radius=6)
         pygame.draw.rect(surface, (18, 18, 22), banner, 1, border_radius=6)
         stage_text = "Study the scene" if payload.trial_stage is SpatialIntegrationTrialStage.STUDY else "Answer from memory / integration"
-        rem_text = "--"
-        if payload.stage_time_remaining_s is not None:
-            rem_text = f"{max(0.0, payload.stage_time_remaining_s):.1f}s"
         scene_counter = f"Scene {payload.scene_index_in_block}"
         if payload.scenes_in_block:
             scene_counter += f"/{payload.scenes_in_block}"
@@ -22561,7 +23344,10 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         )
         surface.blit(self._tiny_font.render(f"{part_name}  {part_desc}", True, (20, 20, 22)), (banner.x + 8, banner.y + 8))
         surface.blit(self._tiny_font.render(f"{scene_counter}  |  {question_counter}", True, (20, 20, 22)), (banner.x + 8, banner.y + 24))
-        surface.blit(self._tiny_font.render(f"{stage_text}  |  Stage {rem_text}", True, (20, 20, 22)), (banner.x + 8, banner.y + 40))
+        surface.blit(
+            self._tiny_font.render(stage_text, True, (20, 20, 22)),
+            (banner.x + 8, banner.y + 40),
+        )
 
         body = pygame.Rect(panel.x, banner.bottom + 10, panel.w, panel.h - banner.h - 10)
 
@@ -24002,7 +24788,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             scored_label, scored_label.get_rect(midright=(stats_rect.left - 6, header.centery))
         )
 
-        if snap.time_remaining_s is not None:
+        if runtime_visible_timers_enabled() and snap.time_remaining_s is not None:
             rem = int(round(snap.time_remaining_s))
             timer = self._small_font.render(f"{rem // 60:02d}:{rem % 60:02d}", True, text_main)
             surface.blit(timer, timer.get_rect(topright=(frame.right - 14, header.bottom + 8)))
@@ -24139,7 +24925,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         )
         surface.blit(left_text, (rect.x + 8, rect.y + 3))
 
-        if snap.time_remaining_s is not None:
+        if runtime_visible_timers_enabled() and snap.time_remaining_s is not None:
             rem = int(round(snap.time_remaining_s))
             time_text = self._tiny_font.render(f"{rem // 60:02d}:{rem % 60:02d}", True, text_muted)
             surface.blit(time_text, time_text.get_rect(midright=(rect.right - 8, rect.centery)))
@@ -26137,11 +26923,11 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
     ) -> None:
         pygame.draw.rect(surface, dark_panel, rect)
 
-        if snap.time_remaining_s is not None:
+        if runtime_visible_timers_enabled() and snap.time_remaining_s is not None:
             rem = int(round(snap.time_remaining_s))
             rem_txt = f"{rem // 60:02d}:{rem % 60:02d}"
         else:
-            rem_txt = "--:--"
+            rem_txt = ""
 
         practice_total = int(getattr(self._engine, "_practice_questions", 0))
         practice_answered = int(getattr(self._engine, "_practice_answered", 0))
@@ -26201,7 +26987,8 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                     1,
                 )
 
-        right = self._tiny_font.render(f"Time Left: {rem_txt}", True, text_main)
+        right_label = "Controls ready" if rem_txt == "" else f"Time Left: {rem_txt}"
+        right = self._tiny_font.render(right_label, True, text_main)
         surface.blit(right, right.get_rect(topright=(rect.right - 8, rect.y + 7)))
 
     def _render_colours_letters_numbers_screen(
@@ -26229,8 +27016,8 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             Phase.RESULTS: "Results",
         }.get(snap.phase, "Task")
 
-        rem_txt = "--:--"
-        if snap.time_remaining_s is not None:
+        rem_txt = ""
+        if runtime_visible_timers_enabled() and snap.time_remaining_s is not None:
             rem = int(round(snap.time_remaining_s))
             rem_txt = f"{rem // 60:02d}:{rem % 60:02d}"
 
@@ -26639,12 +27426,13 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
 
         left = self._tiny_font.render(control_text, True, text_light)
         center = self._small_font.render(f"{input_label}: {answer_value}", True, text_light)
-        right = self._tiny_font.render(
+        right_label = (
             f"Scored {correct}/{attempted} ({accuracy:.1f}%)  "
-            f"Clear {cleared}  Miss {misses}  Pts {points:.1f}  T {rem_txt}",
-            True,
-            text_light,
+            f"Clear {cleared}  Miss {misses}  Pts {points:.1f}"
         )
+        if rem_txt != "":
+            right_label += f"  T {rem_txt}"
+        right = self._tiny_font.render(right_label, True, text_light)
         surface.blit(left, (footer.x + 8, footer.y + 3))
         surface.blit(center, center.get_rect(midleft=(footer.x + 10, footer.bottom - 10)))
         surface.blit(right, right.get_rect(midright=(footer.right - 8, footer.y + 9)))
@@ -26691,8 +27479,8 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         title = self._tiny_font.render(f"Digit Recognition - {phase_label}", True, text_main)
         surface.blit(title, title.get_rect(center=header.center))
 
-        rem_txt = "--:--"
-        if snap.time_remaining_s is not None:
+        rem_txt = ""
+        if runtime_visible_timers_enabled() and snap.time_remaining_s is not None:
             rem = int(round(snap.time_remaining_s))
             rem_txt = f"{rem // 60:02d}:{rem % 60:02d}"
 
@@ -26780,11 +27568,10 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 min_size=max(20, min(32, h // 22)),
             )
 
-        info = self._tiny_font.render(
-            f"Scored {snap.correct_scored}/{snap.attempted_scored}  |  Time Left: {rem_txt}",
-            True,
-            text_main,
-        )
+        info_label = f"Scored {snap.correct_scored}/{snap.attempted_scored}"
+        if rem_txt != "":
+            info_label += f"  |  Time Left: {rem_txt}"
+        info = self._tiny_font.render(info_label, True, text_main)
         surface.blit(info, (footer.x + 12, footer.y + (footer.h - info.get_height()) // 2))
 
     def _render_digit_recognition_answer_box(
@@ -27089,6 +27876,23 @@ def _new_seed() -> int:
     return random.SystemRandom().randint(1, 2**31 - 1)
 
 
+def _is_enter_key(key: int) -> bool:
+    return key in (pygame.K_RETURN, pygame.K_KP_ENTER)
+
+
+def _parse_optional_env_bool(raw: str | None) -> bool | None:
+    if raw is None:
+        return None
+    token = str(raw).strip().lower()
+    if token == "":
+        return None
+    if token in {"1", "true", "on", "yes"}:
+        return True
+    if token in {"0", "false", "off", "no"}:
+        return False
+    return None
+
+
 def _resolve_window_mode(
     *,
     video_driver: str,
@@ -27120,7 +27924,11 @@ def _resolve_window_mode(
 
 
 def _resolve_use_opengl(*, stored_default: bool | None) -> bool:
-    _ = stored_default
+    env_value = _parse_optional_env_bool(os.environ.get("CFAST_USE_OPENGL"))
+    if env_value is not None:
+        return bool(env_value)
+    if stored_default is not None:
+        return bool(stored_default)
     return True
 
 
@@ -27145,8 +27953,21 @@ def _build_opengl_failure_info(
         detail=f"The app could not continue while {stage_detail}. {type(exc).__name__}{suffix}",
         requested=bool(requested),
         attempted=bool(attempted),
-        env_forced=False,
+        env_forced=_parse_optional_env_bool(os.environ.get("CFAST_USE_OPENGL")) is True,
     )
+
+
+def _renderer_diagnostic_code(*, scene: str, stage: str | None, path: str | None) -> str:
+    scene_token = {
+        "rapid_tracking": "RT",
+    }.get(str(scene).strip().lower(), "GL")
+    stage_token = (
+        "".join(ch for ch in str(stage or "runtime").upper() if ch.isalnum())[:4] or "RUNT"
+    )
+    path_token = (
+        "".join(ch for ch in str(path or "fallback").upper() if ch.isalnum())[:4] or "FB"
+    )
+    return f"{scene_token}-{stage_token}-{path_token}"
 
 
 def _window_flags_for_mode(window_mode: str) -> int:
@@ -27353,6 +28174,11 @@ def _apply_display_bootstrap_to_app(
 ) -> None:
     app.set_window_mode(window_mode)
     app.set_opengl_enabled(bootstrap.gl_renderer is not None)
+    app.set_renderer_bootstrap_state(
+        requested=bootstrap.gl_requested,
+        attempted=bootstrap.gl_attempted,
+        failure=bootstrap.gl_failure,
+    )
     app.set_surface(bootstrap.app_surface)
 
 
@@ -27460,7 +28286,9 @@ def run(
     window_size = _window_size_for_mode(window_mode=window_mode)
     window_flags = _window_flags_for_mode(window_mode)
 
-    want_gl = not headless
+    want_gl = (not headless) and _resolve_use_opengl(
+        stored_default=runtime_defaults_store.stored_use_opengl()
+    )
     bootstrap = _initialize_display_surfaces(
         window_size=window_size,
         window_flags=window_flags,
@@ -27519,7 +28347,6 @@ def run(
         "Settings",
         [
             MenuItem("Difficulty Settings", lambda: app.push(difficulty_settings)),
-            MenuItem("Test Seeds", lambda: app.push(test_seed_settings)),
             MenuItem("HOTAS & Input", lambda: app.push(hotas_menu)),
             MenuItem("Back", app.pop),
         ],
@@ -27546,16 +28373,22 @@ def run(
         *,
         test_code: str,
         title: str,
-        engine_factory: Callable[[float], CognitiveEngine],
+        engine_factory: Callable[[float, int], CognitiveEngine],
     ) -> None:
         _ = title
-        app.push(
-            CognitiveTestScreen(
+        def _build_screen(seed_override: int | None = None) -> CognitiveTestScreen:
+            launch_seed = _new_seed() if seed_override is None else int(seed_override)
+            return CognitiveTestScreen(
                 app,
-                engine_factory=lambda: engine_factory(app.effective_difficulty_ratio(test_code)),
+                engine_factory=lambda launch_seed=launch_seed: engine_factory(
+                    app.effective_difficulty_ratio(test_code),
+                    launch_seed,
+                ),
+                restart_factory=_build_screen,
                 test_code=test_code,
             )
-        )
+
+        app.push(_build_screen())
 
     def _open_mode_wrapped_drill(
         *,
@@ -27564,11 +28397,10 @@ def run(
         mode: AntDrillMode,
         engine_builder: Callable[[int, float, AntDrillMode, float | None], CognitiveEngine],
     ) -> None:
-        seed = _new_seed()
         open_test(
             test_code=test_code,
             title=title,
-            engine_factory=lambda difficulty: cast(
+            engine_factory=lambda difficulty, seed: cast(
                 CognitiveEngine,
                 (
                     maybe_build_fatigue_probe_drill(
@@ -27784,11 +28616,10 @@ def run(
         return items
 
     def open_numerical_ops() -> None:
-        seed = _new_seed()
         open_test(
             test_code="numerical_operations",
             title="Numerical Operations",
-            engine_factory=lambda difficulty: build_numerical_operations_test(
+            engine_factory=lambda difficulty, seed: build_numerical_operations_test(
                 clock=real_clock, seed=seed, difficulty=difficulty
             ),
         )
@@ -27901,11 +28732,10 @@ def run(
         )
 
     def open_airborne_numerical() -> None:
-        seed = _new_seed()
         open_test(
             test_code="airborne_numerical",
             title="Airborne Numerical Test",
-            engine_factory=lambda difficulty: build_airborne_numerical_test(
+            engine_factory=lambda difficulty, seed: build_airborne_numerical_test(
                 clock=real_clock, seed=seed, difficulty=difficulty
             ),
         )
@@ -28105,12 +28935,10 @@ def run(
         return "Building Airborne Numerical workout"
 
     def open_workout(workout_code: str) -> None:
-        seed = _new_seed()
-
         def _build_session(level: int) -> AntWorkoutSession:
             return AntWorkoutSession(
                 clock=real_clock,
-                seed=seed,
+                seed=_new_seed(),
                 plan=_build_workout_plan_for_code(workout_code),
                 starting_level=level,
             )
@@ -28130,11 +28958,10 @@ def run(
         )
 
     def open_math_reasoning() -> None:
-        seed = _new_seed()
         open_test(
             test_code="math_reasoning",
             title="Mathematics Reasoning",
-            engine_factory=lambda difficulty: build_math_reasoning_test(
+            engine_factory=lambda difficulty, seed: build_math_reasoning_test(
                 clock=real_clock, seed=seed, difficulty=difficulty
             ),
         )
@@ -28348,21 +29175,19 @@ def run(
         )
 
     def open_digit_recognition() -> None:
-        seed = _new_seed()
         open_test(
             test_code="digit_recognition",
             title="Digit Recognition",
-            engine_factory=lambda difficulty: build_digit_recognition_test(
+            engine_factory=lambda difficulty, seed: build_digit_recognition_test(
                 clock=real_clock, seed=seed, difficulty=difficulty
             ),
         )
 
     def open_colours_letters_numbers() -> None:
-        seed = _new_seed()
         open_test(
             test_code="colours_letters_numbers",
             title="Colours, Letters and Numbers",
-            engine_factory=lambda difficulty: build_colours_letters_numbers_test(
+            engine_factory=lambda difficulty, seed: build_colours_letters_numbers_test(
                 clock=real_clock,
                 seed=seed,
                 difficulty=difficulty,
@@ -28370,11 +29195,10 @@ def run(
         )
 
     def open_angles_bearings_degrees() -> None:
-        seed = _new_seed()
         open_test(
             test_code="angles_bearings_degrees",
             title="Angles, Bearings and Degrees",
-            engine_factory=lambda difficulty: build_angles_bearings_degrees_test(
+            engine_factory=lambda difficulty, seed: build_angles_bearings_degrees_test(
                 clock=real_clock,
                 seed=seed,
                 difficulty=difficulty,
@@ -28438,11 +29262,10 @@ def run(
         )
 
     def open_visual_search() -> None:
-        seed = _new_seed()
         open_test(
             test_code="visual_search",
             title="Visual Search",
-            engine_factory=lambda difficulty: build_visual_search_test(
+            engine_factory=lambda difficulty, seed: build_visual_search_test(
                 clock=real_clock,
                 seed=seed,
                 difficulty=difficulty,
@@ -28613,33 +29436,24 @@ def run(
             return _build_benchmark_screen()
 
         open_loading_screen(
-            title="Benchmark Battery (~60m)",
-            detail="Building fixed benchmark battery",
+            title="Benchmark Battery (~28m)",
+            detail="Building randomized benchmark battery",
             target_factory=_build_screen,
         )
 
-    def open_adaptive_session_variant(variant: str) -> None:
-        resolved_variant = str(variant or "full").strip().lower()
-        variant_title = {
-            "micro": "Adaptive Micro",
-            "short": "Adaptive Short",
-            "full": "Adaptive Session",
-        }.get(resolved_variant, "Adaptive Session")
-        variant_code = {
-            "micro": "adaptive_session_micro",
-            "short": "adaptive_session_short",
-            "full": "adaptive_session",
-        }.get(resolved_variant, "adaptive_session")
-
+    def open_adaptive_session() -> None:
         def _build_screen() -> Screen:
             history = []
             try:
-                history = results_store.recent_attempt_history(since_days=28)
+                history = results_store.recent_attempt_history(
+                    since_days=None,
+                    child_item_preferred=True,
+                )
             except Exception:
                 history = []
             session_seed = _new_seed()
-            plan = build_adaptive_session_plan(history=history, seed=session_seed, variant=resolved_variant)
-            session = None if plan is None else AdaptiveSession(
+            plan = build_adaptive_session_plan(history=history, seed=session_seed, variant="adaptive")
+            session = AdaptiveSession(
                 clock=real_clock,
                 seed=session_seed,
                 plan=plan,
@@ -28648,37 +29462,21 @@ def run(
             return AdaptiveSessionScreen(
                 app,
                 session=session,
-                test_code=variant_code if plan is None else plan.code,
+                test_code=plan.code,
                 screen_factory=_build_screen,
-                benchmark_screen_factory=_build_benchmark_screen,
             )
 
         open_loading_screen(
-            title=variant_title,
-            detail="Ranking recent primitive evidence",
+            title="Adaptive Session",
+            detail="Selecting the next weakest eligible drill",
             target_factory=_build_screen,
         )
 
-    def open_adaptive_session() -> None:
-        app.push(
-            MenuScreen(
-                app,
-                "Adaptive Session",
-                [
-                    MenuItem("Adaptive Micro", lambda: open_adaptive_session_variant("micro")),
-                    MenuItem("Adaptive Short", lambda: open_adaptive_session_variant("short")),
-                    MenuItem("Adaptive Full", lambda: open_adaptive_session_variant("full")),
-                    MenuItem("Back", app.pop),
-                ],
-            )
-        )
-
     def open_vigilance() -> None:
-        seed = _new_seed()
         open_test(
             test_code="vigilance",
             title="Vigilance",
-            engine_factory=lambda difficulty: build_vigilance_test(
+            engine_factory=lambda difficulty, seed: build_vigilance_test(
                 clock=real_clock,
                 seed=seed,
                 difficulty=difficulty,
@@ -28760,11 +29558,10 @@ def run(
         )
 
     def open_instrument_comprehension() -> None:
-        seed = _new_seed()
         open_test(
             test_code="instrument_comprehension",
             title="Instrument Comprehension",
-            engine_factory=lambda difficulty: build_instrument_comprehension_test(
+            engine_factory=lambda difficulty, seed: build_instrument_comprehension_test(
                 clock=real_clock,
                 seed=seed,
                 difficulty=difficulty,
@@ -28772,11 +29569,10 @@ def run(
         )
 
     def open_target_recognition() -> None:
-        seed = _new_seed()
         open_test(
             test_code="target_recognition",
             title="Target Recognition",
-            engine_factory=lambda difficulty: build_target_recognition_test(
+            engine_factory=lambda difficulty, seed: build_target_recognition_test(
                 clock=real_clock,
                 seed=seed,
                 difficulty=difficulty,
@@ -29161,11 +29957,10 @@ def run(
         )
 
     def open_system_logic() -> None:
-        seed = _new_seed()
         open_test(
             test_code="system_logic",
             title="System Logic",
-            engine_factory=lambda difficulty: build_system_logic_test(
+            engine_factory=lambda difficulty, seed: build_system_logic_test(
                 clock=real_clock,
                 seed=seed,
                 difficulty=difficulty,
@@ -29173,11 +29968,10 @@ def run(
         )
 
     def open_table_reading() -> None:
-        seed = _new_seed()
         open_test(
             test_code="table_reading",
             title="Table Reading",
-            engine_factory=lambda difficulty: build_table_reading_test(
+            engine_factory=lambda difficulty, seed: build_table_reading_test(
                 clock=real_clock,
                 seed=seed,
                 difficulty=difficulty,
@@ -29185,11 +29979,10 @@ def run(
         )
 
     def open_sensory_motor_apparatus() -> None:
-        seed = _new_seed()
         open_test(
             test_code="sensory_motor_apparatus",
             title="Sensory Motor Apparatus",
-            engine_factory=lambda difficulty: build_sensory_motor_apparatus_test(
+            engine_factory=lambda difficulty, seed: build_sensory_motor_apparatus_test(
                 clock=real_clock,
                 seed=seed,
                 difficulty=difficulty,
@@ -29287,11 +30080,10 @@ def run(
         )
 
     def open_rapid_tracking() -> None:
-        seed = app.resolved_rapid_tracking_launch_seed()
         open_test(
             test_code="rapid_tracking",
             title="Rapid Tracking",
-            engine_factory=lambda difficulty: build_rapid_tracking_test(
+            engine_factory=lambda difficulty, seed: build_rapid_tracking_test(
                 clock=real_clock,
                 seed=seed,
                 difficulty=difficulty,
@@ -29361,6 +30153,14 @@ def run(
             test_code="rt_ground_tempo_run",
             title="Rapid Tracking: Ground Tempo Run",
             builder=build_rt_ground_tempo_run_drill,
+            mode=mode,
+        )
+
+    def open_rt_rudder_horizontal_prime(mode: AntDrillMode) -> None:
+        _open_rt_drill(
+            test_code="rt_rudder_horizontal_prime",
+            title="Rapid Tracking: Rudder Horizontal Prime",
+            builder=build_rt_rudder_horizontal_prime_drill,
             mode=mode,
         )
 
@@ -29447,11 +30247,10 @@ def run(
         )
 
     def open_spatial_integration() -> None:
-        seed = _new_seed()
         open_test(
             test_code="spatial_integration",
             title="Spatial Integration",
-            engine_factory=lambda difficulty: build_spatial_integration_test(
+            engine_factory=lambda difficulty, seed: build_spatial_integration_test(
                 clock=real_clock,
                 seed=seed,
                 difficulty=difficulty,
@@ -29550,11 +30349,10 @@ def run(
         )
 
     def open_trace_test_1() -> None:
-        seed = _new_seed()
         open_test(
             test_code="trace_test_1",
             title="Trace Test 1",
-            engine_factory=lambda difficulty: build_trace_test_1_test(
+            engine_factory=lambda difficulty, seed: build_trace_test_1_test(
                 clock=real_clock,
                 seed=seed,
                 difficulty=difficulty,
@@ -29562,11 +30360,10 @@ def run(
         )
 
     def open_trace_test_2() -> None:
-        seed = _new_seed()
         open_test(
             test_code="trace_test_2",
             title="Trace Test 2",
-            engine_factory=lambda difficulty: build_trace_test_2_test(
+            engine_factory=lambda difficulty, seed: build_trace_test_2_test(
                 clock=real_clock,
                 seed=seed,
                 difficulty=difficulty,
@@ -29755,11 +30552,10 @@ def run(
         )
 
     def open_auditory_capacity() -> None:
-        seed = _new_seed()
         open_test(
             test_code="auditory_capacity",
             title="Auditory Capacity",
-            engine_factory=lambda difficulty: build_auditory_capacity_test(
+            engine_factory=lambda difficulty, seed: build_auditory_capacity_test(
                 clock=real_clock,
                 seed=seed,
                 difficulty=difficulty,
@@ -29858,11 +30654,10 @@ def run(
         )
 
     def open_cognitive_updating() -> None:
-        seed = _new_seed()
         open_test(
             test_code="cognitive_updating",
             title="Cognitive Updating",
-            engine_factory=lambda difficulty: build_cognitive_updating_test(
+            engine_factory=lambda difficulty, seed: build_cognitive_updating_test(
                 clock=real_clock,
                 seed=seed,
                 difficulty=difficulty,
@@ -29960,11 +30755,10 @@ def run(
         )
 
     def open_situational_awareness() -> None:
-        seed = _new_seed()
         open_test(
             test_code="situational_awareness",
             title="Situational Awareness",
-            engine_factory=lambda difficulty: build_situational_awareness_test(
+            engine_factory=lambda difficulty, seed: build_situational_awareness_test(
                 clock=real_clock,
                 seed=seed,
                 difficulty=difficulty,
@@ -29975,7 +30769,7 @@ def run(
         app,
         "Tests",
         [
-            MenuItem("Benchmark Battery (~60m)", open_benchmark_battery),
+            MenuItem("Benchmark Battery (~28m)", open_benchmark_battery),
             MenuItem("Numerical Operations", open_numerical_ops),
             MenuItem("Mathematics Reasoning", open_math_reasoning),
             MenuItem("Airborne Numerical Test", open_airborne_numerical),
@@ -30308,6 +31102,7 @@ def run(
                 ("rt_terrain_recovery_run", "Terrain Recovery Run", open_rt_terrain_recovery_run),
                 ("rt_capture_timing_prime", "Capture Timing Prime", open_rt_capture_timing_prime),
                 ("rt_ground_tempo_run", "Ground Tempo Run", open_rt_ground_tempo_run),
+                ("rt_rudder_horizontal_prime", "Rudder Horizontal Prime", open_rt_rudder_horizontal_prime),
                 ("rt_air_speed_run", "Air Speed Run", open_rt_air_speed_run),
                 ("rt_mixed_tempo", "Mixed Tempo", open_rt_mixed_tempo),
                 ("rt_pressure_run", "Pressure Run", open_rt_pressure_run),
@@ -30450,7 +31245,7 @@ def run(
 
     main_items = [
         MenuItem("Adaptive Session", open_adaptive_session),
-        MenuItem("Benchmark Battery (~60m)", open_benchmark_battery),
+        MenuItem("Benchmark Battery (~28m)", open_benchmark_battery),
         MenuItem("Tests", lambda: app.push(tests_menu)),
         MenuItem("90-minute workouts", lambda: app.push(ant_workouts_menu)),
         MenuItem(
@@ -30476,6 +31271,11 @@ def run(
         gl_renderer = None
         active_window_flags = window_flags
         app.set_opengl_enabled(False)
+        app.set_renderer_bootstrap_state(
+            requested=bool(failure.requested),
+            attempted=bool(failure.attempted),
+            failure=failure,
+        )
         app.set_surface(display_surface)
         app.present_renderer_failure(failure)
 

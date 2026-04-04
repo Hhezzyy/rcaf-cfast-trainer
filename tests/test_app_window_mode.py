@@ -53,10 +53,16 @@ def test_window_mode_ignores_stored_fullscreen_default_when_env_is_absent(monkey
     )
 
 
-def test_use_opengl_is_always_enabled_for_interactive_runtime(monkeypatch) -> None:
+def test_use_opengl_honors_env_override_and_stored_default(monkeypatch) -> None:
     monkeypatch.setenv("CFAST_USE_OPENGL", "0")
-    assert _resolve_use_opengl(stored_default=True) is True
+    assert _resolve_use_opengl(stored_default=True) is False
+
+    monkeypatch.setenv("CFAST_USE_OPENGL", "1")
     assert _resolve_use_opengl(stored_default=False) is True
+
+    monkeypatch.delenv("CFAST_USE_OPENGL", raising=False)
+    assert _resolve_use_opengl(stored_default=False) is False
+    assert _resolve_use_opengl(stored_default=None) is True
 
 
 def test_display_rebootstrap_detects_stale_native_fullscreen_transition() -> None:

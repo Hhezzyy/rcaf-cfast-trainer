@@ -455,7 +455,7 @@ def test_app_applies_and_saves_runtime_defaults(tmp_path) -> None:
         pygame.quit()
 
 
-def test_app_ignores_stored_opengl_preference(tmp_path) -> None:
+def test_app_uses_stored_opengl_preference(tmp_path, monkeypatch) -> None:
     pygame.init()
     try:
         surface = pygame.display.set_mode((960, 540))
@@ -465,10 +465,18 @@ def test_app_ignores_stored_opengl_preference(tmp_path) -> None:
         app = App(surface=surface, font=font, runtime_defaults_store=runtime_defaults)
 
         assert runtime_defaults.stored_use_opengl() is False
+        assert app.stored_use_opengl() is False
+        app.set_stored_use_opengl(True)
         assert app.stored_use_opengl() is True
-        app.set_stored_use_opengl(False)
-        assert app.stored_use_opengl() is True
-        assert runtime_defaults.stored_use_opengl() is False
+        assert runtime_defaults.stored_use_opengl() is True
+
+        monkeypatch.setenv("CFAST_USE_OPENGL", "0")
+        assert app.use_opengl_env_override() == "0"
+        assert app.use_opengl_env_forces_enabled() is False
+
+        monkeypatch.setenv("CFAST_USE_OPENGL", "1")
+        assert app.use_opengl_env_override() == "1"
+        assert app.use_opengl_env_forces_enabled() is True
     finally:
         pygame.quit()
 

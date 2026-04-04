@@ -424,6 +424,9 @@ def _duration_s_for_history_entry(entry: AttemptHistoryEntry) -> float | None:
 
 def _source_kind_for_history_entry(entry: AttemptHistoryEntry) -> str:
     token = str(entry.test_code or "").strip().lower()
+    activity_kind = str(entry.activity_kind or "").strip().lower()
+    if activity_kind == "benchmark_probe":
+        return "benchmark_probe"
     if token == "benchmark_battery":
         return "benchmark_probe"
     if token in {"adaptive_session", "adaptive_session_short", "adaptive_session_micro"}:
@@ -1623,6 +1626,22 @@ def _evidence_from_attempt(
     *,
     policy: PrimitiveEvidencePolicy,
 ) -> list[PrimitiveEvidence]:
+    activity_kind = str(entry.activity_kind or "").strip().lower()
+    if activity_kind == "benchmark_probe":
+        primitive = _benchmark_probe_primitive(entry.test_code)
+        if primitive is None:
+            return []
+        evidence = _build_evidence(
+            primitive=primitive,
+            source_code=entry.test_code,
+            source_kind="benchmark_probe",
+            completed_at_utc=entry.completed_at_utc,
+            metrics=entry.metrics,
+            difficulty_level_start=entry.difficulty_level_start,
+            difficulty_level_end=entry.difficulty_level_end,
+            policy=policy,
+        )
+        return [] if evidence is None else [evidence]
     if entry.test_code == "benchmark_battery":
         return _benchmark_evidence_from_attempt(entry, policy=policy)
     if entry.test_code in {"adaptive_session", "adaptive_session_short", "adaptive_session_micro"}:

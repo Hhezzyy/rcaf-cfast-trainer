@@ -172,6 +172,7 @@ class RapidTrackingContinuousDrill:
         base = self._engine.scored_summary()
         return {
             "training_mode": self._mode.value,
+            "control_scheme": str(getattr(self._engine, "control_scheme", "joystick_only")),
             "mean_error": f"{float(base.mean_error):.6f}",
             "rms_error": f"{float(base.rms_error):.6f}",
             "on_target_s": f"{float(base.on_target_s):.6f}",
@@ -308,6 +309,7 @@ def _build_rt_drill(
     title: str,
     instructions: tuple[str, ...],
     segments: tuple[RapidTrackingTrainingSegment, ...],
+    control_scheme: str = "joystick_only",
     layout_policy: RapidTrackingLayoutPolicy | str = RapidTrackingLayoutPolicy.DEFAULT,
 ) -> RapidTrackingContinuousDrill:
     normalized_mode = _normalize_mode(mode)
@@ -322,6 +324,7 @@ def _build_rt_drill(
             scored_duration_s=scored_duration_s,
         ),
         scored_segments=segments,
+        control_scheme=control_scheme,
         layout_policy=layout_policy,
     )
     return RapidTrackingContinuousDrill(
@@ -633,6 +636,53 @@ def build_rt_ground_tempo_run_drill(
             ),
             duration_s=scored_duration_s,
         ),
+    )
+
+
+def build_rt_rudder_horizontal_prime_drill(
+    *,
+    clock: Clock,
+    seed: int,
+    difficulty: float,
+    mode: AntDrillMode | str = AntDrillMode.BUILD,
+    config: RtDrillConfig | None = None,
+) -> RapidTrackingContinuousDrill:
+    normalized_mode = _normalize_mode(mode)
+    _, scored_duration_s = _drill_config(normalized_mode, config)
+    return _build_rt_drill(
+        clock=clock,
+        seed=seed,
+        difficulty=difficulty,
+        mode=normalized_mode,
+        config=config,
+        test_code="rt_rudder_horizontal_prime",
+        title="Rapid Tracking: Rudder Horizontal Prime",
+        instructions=(
+            "Rapid Tracking: Rudder Horizontal Prime",
+            "",
+            "Ground-target block for rudder-led left/right control with joystick Y still handling up/down.",
+            "Keep the target centered, hold the lock steady, and capture cleanly once the center box is settled.",
+        ),
+        segments=_single_segment(
+            label="Rudder Horizontal",
+            focus_label="Steady ground tracking + capture timing",
+            active_target_kinds=("soldier", "truck"),
+            active_challenges=("ground_tempo", "capture_timing"),
+            profile=_profile_for_mode(
+                normalized_mode,
+                target_kinds=("soldier", "truck"),
+                cover_modes=("open", "terrain"),
+                handoff_modes=("smooth",),
+                turbulence_scale=0.82,
+                camera_assist=0.24,
+                preview_scale=0.96,
+                capture_box_scale=1.04,
+                capture_cooldown_scale=0.88,
+                segment_duration_scale=0.86,
+            ),
+            duration_s=scored_duration_s,
+        ),
+        control_scheme="rudder_horizontal",
     )
 
 

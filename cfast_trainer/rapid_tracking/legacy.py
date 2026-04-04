@@ -84,6 +84,17 @@ RAPID_TRACKING_CHALLENGE_ORDER: tuple[str, ...] = (
     "ground_tempo",
     "air_speed",
 )
+RAPID_TRACKING_CONTROL_SCHEMES: tuple[str, ...] = (
+    "joystick_only",
+    "rudder_horizontal",
+)
+
+
+def normalize_rapid_tracking_control_scheme(value: str | None) -> str:
+    token = str(value or "").strip().lower()
+    if token in RAPID_TRACKING_CONTROL_SCHEMES:
+        return token
+    return "joystick_only"
 
 
 @dataclass(frozen=True, slots=True)
@@ -306,6 +317,7 @@ class RapidTrackingPayload:
     capture_accuracy: float
     capture_feedback: str
     capture_flash_s: float
+    control_scheme: str
     active_target_kinds: tuple[str, ...] = RAPID_TRACKING_TARGET_KIND_ORDER
     active_challenges: tuple[str, ...] = RAPID_TRACKING_CHALLENGE_ORDER
     focus_label: str = ""
@@ -3503,6 +3515,7 @@ class RapidTrackingEngine:
         title: str = "Rapid Tracking",
         practice_segments: Sequence[RapidTrackingTrainingSegment] | None = None,
         scored_segments: Sequence[RapidTrackingTrainingSegment] | None = None,
+        control_scheme: str = "joystick_only",
         layout_policy: RapidTrackingLayoutPolicy | str = RapidTrackingLayoutPolicy.DEFAULT,
     ) -> None:
         cfg = config or RapidTrackingConfig()
@@ -3527,6 +3540,7 @@ class RapidTrackingEngine:
         self._scene_seed = select_scene_seed(self._seed, self._layout_policy)
         self._difficulty = clamp01(difficulty)
         self._cfg = cfg
+        self._control_scheme = normalize_rapid_tracking_control_scheme(control_scheme)
         self._tick_dt = 1.0 / float(cfg.tick_hz)
         self._rng = SeededRng(self._seed)
         self._drift_gen = RapidTrackingDriftGenerator(seed=self._seed + 41)
@@ -3743,6 +3757,10 @@ class RapidTrackingEngine:
     @property
     def layout_policy(self) -> RapidTrackingLayoutPolicy:
         return self._layout_policy
+
+    @property
+    def control_scheme(self) -> str:
+        return self._control_scheme
 
     def events(self) -> list[QuestionEvent]:
         return list(self._events)
@@ -4063,6 +4081,7 @@ class RapidTrackingEngine:
             capture_accuracy=float(capture_accuracy),
             capture_feedback=str(self._capture_feedback),
             capture_flash_s=float(capture_flash_s),
+            control_scheme=str(self._control_scheme),
             active_target_kinds=self._active_target_kinds(),
             active_challenges=self._active_challenges(),
             focus_label=self._focus_label(),
@@ -4076,17 +4095,27 @@ class RapidTrackingEngine:
             title=self._title,
             phase=self._phase,
             prompt=self.current_prompt(),
-            input_hint=(
-                "Pan freely with configured HOTAS movement, rudder or left-right input, "
-                "and joystick axis 1 or up-down input. Keep the target centered, then hold "
-                "the configured joystick capture binding when it is inside the center "
-                "camera box."
-            ),
+            input_hint=self._input_hint_text(),
             time_remaining_s=self.time_remaining_s(),
             attempted_scored=self._scored_attempted,
             correct_scored=self._scored_correct,
             payload=payload,
             practice_feedback=None,
+        )
+
+    def _control_guidance_text(self) -> str:
+        if self._control_scheme == "rudder_horizontal":
+            return "Use rudder for left/right camera movement and joystick Y for up/down."
+        return "Use joystick X for left/right camera movement and joystick Y for up/down."
+
+    def _input_hint_text(self) -> str:
+        if self._control_scheme == "rudder_horizontal":
+            control_text = "Rudder controls left/right and joystick Y controls up/down."
+        else:
+            control_text = "Joystick X controls left/right and joystick Y controls up/down."
+        return (
+            f"{control_text} Keep the target centered, then hold the configured capture "
+            "binding when it is inside the center camera box."
         )
 
     def current_prompt(self) -> str:
@@ -4101,10 +4130,10 @@ class RapidTrackingEngine:
                 "Targets may duck into buildings or disappear behind terrain; during "
                 "building handoffs "
                 "you track the structure until the next target emerges.\n"
-                "Pan the camera freely, keep the target centered, and keep it inside the "
-                "center camera box to bank box score. Hold the configured capture binding "
-                "when the target is inside the center camera box to zoom and "
-                "capture.\n"
+                f"{self._control_guidance_text()} Keep the target centered, and keep it "
+                "inside the center camera box to bank box score. Hold the configured "
+                "capture binding when the target is inside the center camera box to zoom "
+                "and capture.\n"
                 "Press Enter to begin practice."
             )
         if self._phase is Phase.PRACTICE_DONE:
@@ -5033,6 +5062,7 @@ def build_rapid_tracking_test(
     title: str = "Rapid Tracking",
     practice_segments: Sequence[RapidTrackingTrainingSegment] | None = None,
     scored_segments: Sequence[RapidTrackingTrainingSegment] | None = None,
+    control_scheme: str = "joystick_only",
     layout_policy: RapidTrackingLayoutPolicy | str = RapidTrackingLayoutPolicy.DEFAULT,
 ) -> RapidTrackingEngine:
     return RapidTrackingEngine(
@@ -5043,5 +5073,6 @@ def build_rapid_tracking_test(
         title=title,
         practice_segments=practice_segments,
         scored_segments=scored_segments,
+        control_scheme=control_scheme,
         layout_policy=layout_policy,
     )
