@@ -801,6 +801,89 @@ def test_recent_attempt_history_prefers_child_items_and_preserves_parent_origin_
     assert history_child_first[0].origin_item_index == 1
 
 
+def test_attempt_code_summaries_and_filtered_history_support_stats_history_backend(tmp_path) -> None:
+    store = ResultsStore(tmp_path / "results.sqlite3")
+
+    low_engine = _build_static_telemetry_engine()
+    low_engine.difficulty_changes_seq = ()
+    low_engine.summary = AttemptSummary(
+        attempted=4,
+        correct=1,
+        accuracy=0.25,
+        duration_s=120.0,
+        throughput_per_min=2.0,
+        mean_response_time_s=1.2,
+        total_score=1.0,
+        max_score=4.0,
+        score_ratio=0.25,
+    )
+    low_engine._resolved_difficulty_context = build_resolved_difficulty_context(
+        "numerical_operations",
+        mode="fixed",
+        launch_level=4,
+        fixed_level=4,
+        adaptive_enabled=False,
+    )
+    store.record_attempt(
+        result=attempt_result_from_engine(low_engine, test_code="numerical_operations"),
+        app_version="test",
+        input_profile_id="default",
+    )
+
+    high_engine = _build_static_telemetry_engine()
+    high_engine.difficulty_changes_seq = ()
+    high_engine.summary = AttemptSummary(
+        attempted=4,
+        correct=3,
+        accuracy=0.75,
+        duration_s=120.0,
+        throughput_per_min=2.0,
+        mean_response_time_s=1.2,
+        total_score=3.0,
+        max_score=4.0,
+        score_ratio=0.75,
+    )
+    high_engine._resolved_difficulty_context = build_resolved_difficulty_context(
+        "numerical_operations",
+        mode="fixed",
+        launch_level=6,
+        fixed_level=6,
+        adaptive_enabled=False,
+    )
+    store.record_attempt(
+        result=attempt_result_from_engine(high_engine, test_code="numerical_operations"),
+        app_version="test",
+        input_profile_id="default",
+    )
+
+    store.record_attempt(
+        result=attempt_result_from_engine(
+            _build_static_telemetry_engine(),
+            test_code="rapid_tracking",
+        ),
+        app_version="test",
+        input_profile_id="default",
+    )
+
+    summaries = store.attempt_code_summaries()
+    summary = next(item for item in summaries if item.test_code == "numerical_operations")
+    history = store.recent_attempt_history(since_days=28, test_code="numerical_operations")
+
+    assert summary.attempt_count == 2
+    assert summary.best_score_ratio == pytest.approx(0.75)
+    assert summary.worst_score_ratio == pytest.approx(0.25)
+    assert summary.best_accuracy == pytest.approx(0.75)
+    assert summary.worst_accuracy == pytest.approx(0.25)
+    assert summary.best_total_score == pytest.approx(3.0)
+    assert summary.worst_total_score == pytest.approx(1.0)
+    assert summary.observed_level_min == 4
+    assert summary.observed_level_max == 6
+    assert [entry.test_code for entry in history] == [
+        "numerical_operations",
+        "numerical_operations",
+    ]
+
+
 def test_results_store_aborts_activity_sessions_without_attempt_rows(tmp_path) -> None:
     store = ResultsStore(tmp_path / "results.sqlite3")
     store.start_app_session(app_version="test")

@@ -82,6 +82,8 @@ def _complete_small_cln_workout(clock: FakeClock) -> AntWorkoutSession:
     clock.advance(remaining + 0.1)
     session.update()
 
+    assert session.stage is AntWorkoutStage.BLOCK_RESULTS
+    session.activate()
     assert session.stage is AntWorkoutStage.BLOCK_SETUP
     session.activate()
     assert session.stage is AntWorkoutStage.BLOCK
@@ -93,6 +95,8 @@ def _complete_small_cln_workout(clock: FakeClock) -> AntWorkoutSession:
     assert second_payload.colour_active is True
     session.debug_skip_block()
 
+    assert session.stage is AntWorkoutStage.BLOCK_RESULTS
+    session.activate()
     assert session.stage is AntWorkoutStage.POST_REFLECTION
     session.append_text("Memory degraded first")
     session.activate()

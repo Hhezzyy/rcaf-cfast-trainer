@@ -89,10 +89,14 @@ def _complete_small_vig_workout(clock: FakeClock) -> AntWorkoutSession:
     session.activate()
     _run_current_block(session, clock)
 
+    assert session.stage is AntWorkoutStage.BLOCK_RESULTS
+    session.activate()
     assert session.stage is AntWorkoutStage.BLOCK_SETUP
     session.activate()
     _run_current_block(session, clock)
 
+    assert session.stage is AntWorkoutStage.BLOCK_RESULTS
+    session.activate()
     assert session.stage is AntWorkoutStage.POST_REFLECTION
     session.append_text("late block was denser")
     session.activate()

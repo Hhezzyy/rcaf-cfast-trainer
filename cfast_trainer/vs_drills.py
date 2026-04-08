@@ -22,14 +22,14 @@ from .visual_search import (
 _STANDARD_DRILL_GRID_BY_LEVEL: tuple[tuple[int, int], ...] = (
     (3, 4),
     (3, 4),
-    (3, 4),
-    (4, 4),
     (4, 4),
     (4, 4),
     (4, 5),
     (4, 5),
     (5, 5),
-    (5, 5),
+    (5, 6),
+    (6, 6),
+    (7, 6),
 )
 
 
@@ -340,8 +340,7 @@ class _Wave1SearchGenerator:
                 distractors.append(str(self._rng.choice(same_class if same_class else target_bank)))
             target_idx = int(self._rng.randint(0, cell_count - 1))
             distractors[target_idx] = target
-        code_pool = tuple(range(10, 10 + cell_count))
-        cell_codes = tuple(int(v) for v in self._rng.sample(code_pool, k=cell_count))
+        cell_codes = self._helper._build_cell_codes(count=cell_count, rng=self._rng)
         correct_code = int(cell_codes[target_idx])
         self._item_index += 1
         display_target = self._helper.token_base(target)

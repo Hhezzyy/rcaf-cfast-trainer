@@ -42,6 +42,42 @@ class AttemptResult:
     events: list[TelemetryEvent]
 
 
+@dataclass(frozen=True, slots=True)
+class MetricCalibrationBounds:
+    minimum: float
+    maximum: float | None
+    note: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TheoreticalScoreCalibration:
+    test_code: str
+    score_ratio: MetricCalibrationBounds
+    accuracy: MetricCalibrationBounds
+    total_score: MetricCalibrationBounds
+
+
+_DEFAULT_THEORETICAL_SCORE_RATIO_BOUNDS = MetricCalibrationBounds(
+    minimum=0.0,
+    maximum=1.0,
+    note="Normalized score ratio bounds for adaptive calibration.",
+)
+_DEFAULT_THEORETICAL_ACCURACY_BOUNDS = MetricCalibrationBounds(
+    minimum=0.0,
+    maximum=1.0,
+    note="Accuracy remains a normalized 0-1 metric across tests and drills.",
+)
+_OPEN_ENDED_TOTAL_SCORE_BOUNDS = MetricCalibrationBounds(
+    minimum=0.0,
+    maximum=None,
+    note=(
+        "Total score is duration- and content-dependent unless a fixed-max override is defined "
+        "for a specific activity."
+    ),
+)
+_THEORETICAL_SCORE_CALIBRATION_OVERRIDES: dict[str, TheoreticalScoreCalibration] = {}
+
+
 _DIFFICULTY_AXIS_NAMES = (
     "content_complexity",
     "time_pressure",
@@ -143,6 +179,19 @@ def _format_metric_value(value: object) -> str | None:
         token = value.strip()
         return token if token != "" else None
     return None
+
+
+def theoretical_score_calibration(test_code: str | None) -> TheoreticalScoreCalibration:
+    token = str(test_code or "").strip().lower() or "unknown"
+    override = _THEORETICAL_SCORE_CALIBRATION_OVERRIDES.get(token)
+    if override is not None:
+        return override
+    return TheoreticalScoreCalibration(
+        test_code=token,
+        score_ratio=_DEFAULT_THEORETICAL_SCORE_RATIO_BOUNDS,
+        accuracy=_DEFAULT_THEORETICAL_ACCURACY_BOUNDS,
+        total_score=_OPEN_ENDED_TOTAL_SCORE_BOUNDS,
+    )
 
 
 def _extra_summary_metrics(summary: object) -> dict[str, str]:

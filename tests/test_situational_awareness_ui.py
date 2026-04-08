@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass
+from importlib.machinery import ModuleSpec
+from types import ModuleType
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+
+if "moderngl" not in sys.modules:
+    moderngl_stub = ModuleType("moderngl")
+    moderngl_stub.__spec__ = ModuleSpec("moderngl", loader=None)
+    sys.modules["moderngl"] = moderngl_stub
 
 import pygame
 
@@ -20,6 +28,7 @@ from cfast_trainer.situational_awareness import (
     SituationalAwarenessQueryKind,
     SituationalAwarenessScenarioFamily,
     SituationalAwarenessVisibleContact,
+    SituationalAwarenessWaypoint,
 )
 
 
@@ -68,38 +77,39 @@ class _FakeSituationAwarenessEngine:
 
 def _sample_payload(*, answer_mode: SituationalAwarenessAnswerMode) -> SituationalAwarenessPayload:
     action_choices = (
-        SituationalAwarenessAnswerChoice(1, "Safe now."),
-        SituationalAwarenessAnswerChoice(2, "Wait one sweep, then go."),
-        SituationalAwarenessAnswerChoice(3, "Unsafe. Hold clear of traffic."),
-        SituationalAwarenessAnswerChoice(4, "Request a fresh picture first."),
+        SituationalAwarenessAnswerChoice(1, "Escort and hold"),
+        SituationalAwarenessAnswerChoice(2, "Shadow only"),
+        SituationalAwarenessAnswerChoice(3, "Break south"),
+        SituationalAwarenessAnswerChoice(4, "Intercept now"),
+        SituationalAwarenessAnswerChoice(5, "Hold position"),
     )
     active_query = SituationalAwarenessActiveQuery(
         query_id=101,
         kind=(
-            SituationalAwarenessQueryKind.SAFE_TO_MOVE
+            SituationalAwarenessQueryKind.RULE_ACTION
             if answer_mode is SituationalAwarenessAnswerMode.CHOICE
-            else SituationalAwarenessQueryKind.FUTURE_LOCATION
+            else SituationalAwarenessQueryKind.ACTUAL_DESTINATION
         ),
         answer_mode=answer_mode,
         prompt=(
-            "Where will LEEDS be in 12s?"
+            "Where is LEEDS actually heading?"
             if answer_mode is SituationalAwarenessAnswerMode.GRID_CELL
-            else "Is it safe for LEEDS to proceed to F5 now?"
+            else "Based on the chatter and rule call, what should LEEDS do?"
         ),
         correct_answer_token="E5" if answer_mode is SituationalAwarenessAnswerMode.GRID_CELL else "2",
         expires_in_s=9.0,
         subject_callsign="LEEDS",
-        future_offset_s=12 if answer_mode is SituationalAwarenessAnswerMode.GRID_CELL else None,
+        future_offset_s=None,
         answer_choices=action_choices if answer_mode is SituationalAwarenessAnswerMode.CHOICE else (),
     )
     return SituationalAwarenessPayload(
         scenario_family=SituationalAwarenessScenarioFamily.MERGE_CONFLICT,
-        scenario_label="Conflict / Safety 1/1",
+        scenario_label="Tactical Merge 1/1",
         scenario_index=1,
         scenario_total=1,
         active_channels=("pictorial", "coded", "numerical", "aural"),
-        active_query_kinds=("current_location", "future_location"),
-        focus_label="Current + future location",
+        active_query_kinds=("current_location", "actual_destination", "rule_action"),
+        focus_label="Full mixed picture",
         segment_label="Picture Anchor",
         segment_index=1,
         segment_total=1,
@@ -108,19 +118,41 @@ def _sample_payload(*, answer_mode: SituationalAwarenessAnswerMode) -> Situation
         scenario_time_remaining_s=42.0,
         next_query_in_s=None,
         visible_contacts=(
-            SituationalAwarenessVisibleContact("LEEDS", "friendly", 2.0, 4.0, "E2", "E", 0.95),
-            SituationalAwarenessVisibleContact("RAVEN", "hostile", 6.0, 4.0, "E6", "W", 0.65),
+            SituationalAwarenessVisibleContact("LEEDS", "Leeds", "friendly", "helicopter", 2.0, 4.0, "E2", "E", "E5", 0.95),
+            SituationalAwarenessVisibleContact("RAVEN TWO", "Raven Two", "enemy", "tank", 6.0, 4.0, "E6", "W", "D4", 0.65),
         ),
-        cue_card=SituationalAwarenessCueCard("LEEDS", "friendly", "F5", "11:00:35", "FL220", "CH 3", 0.82),
-        waypoints=(),
-        top_strip_text="LEEDS channel 3, direct F5.",
+        cue_card=SituationalAwarenessCueCard(
+            "LEEDS",
+            "Leeds",
+            "friendly",
+            "helicopter",
+            "C7",
+            "E5",
+            "RAVEN TWO at D4 | Variation 3 - shadow only",
+            "Shadow only",
+            "CH 3",
+            0.82,
+        ),
+        waypoints=(
+            SituationalAwarenessWaypoint("C7", 7, 2),
+            SituationalAwarenessWaypoint("E5", 5, 4),
+        ),
+        top_strip_text="LEEDS instructed C7, actually heading E5.",
         top_strip_fade=0.72,
         display_clock_text="11:00:16",
         active_query=active_query,
         answer_mode=answer_mode,
         correct_answer_token=active_query.correct_answer_token,
-        announcement_token=("sa", 1),
-        announcement_lines=("Conflict update.", active_query.prompt),
+        announcement_token=("sa", "radio", 1),
+        announcement_lines=("RAVEN TWO is enemy tank, trending D4.",),
+        radio_log=(
+            "LEEDS is friendly helicopter, check in channel 3.",
+            "RAVEN TWO is enemy tank, trending D4.",
+        ),
+        speech_prefetch_lines=(
+            "LEEDS is friendly helicopter, check in channel 3.",
+            "RAVEN TWO is enemy tank, trending D4.",
+        ),
     )
 
 
@@ -179,6 +211,7 @@ def test_situational_awareness_choice_click_submits_choice_code() -> None:
         assert surface is not None
         screen.render(surface)
 
+        assert len(screen._sa_option_hitboxes) == 5
         rect = screen._sa_option_hitboxes[2]
         screen.handle_event(
             pygame.event.Event(

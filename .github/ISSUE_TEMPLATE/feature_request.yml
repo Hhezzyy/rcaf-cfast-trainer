@@ -1,0 +1,49 @@
+name: Feature request
+description: Propose an improvement to a subsystem, workflow, test, or contributor experience.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Keep requests scoped. If the idea affects UI, screenshots or rough mockups help a lot.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+      description: What pain point, risk, or missing capability are you trying to address?
+      placeholder: It is hard to tell which renderer path was active after a fallback.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: Describe the smallest useful version of the change.
+      placeholder: Add a persistent renderer status line to the loading failure and fallback screens.
+    validations:
+      required: true
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: Likely subsystem / files
+      description: If you know the area, name it here.
+      placeholder: app shell, modern_gl_renderer, loading screen
+
+  - type: textarea
+    id: screenshots_mockups
+    attributes:
+      label: Screenshots / mockups
+      description: Optional, but very helpful for UI-facing work.
+
+  - type: textarea
+    id: validation
+    attributes:
+      label: How should this be validated?
+      description: Manual steps, test ideas, or expected acceptance criteria.
+      placeholder: Existing loading-screen tests should still pass, and a new screenshot should show the fallback reason clearly.
+

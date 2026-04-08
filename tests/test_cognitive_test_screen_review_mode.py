@@ -134,9 +134,9 @@ def _build_digit_recognition_screen(
 
 def _advance_digit_recognition_to_question(clock: FakeClock, screen: CognitiveTestScreen) -> None:
     screen._engine.start_practice()
-    clock.advance(1.3)
+    clock.advance(screen._engine._display_s + 0.05)
     screen._engine.update()
-    clock.advance(0.3)
+    clock.advance(screen._engine._mask_s + 0.05)
     screen._engine.update()
 
 

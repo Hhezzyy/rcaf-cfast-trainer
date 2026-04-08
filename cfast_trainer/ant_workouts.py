@@ -28,6 +28,7 @@ from .abd_drills import (
 from .dr_drills import (
     DigitRecognitionDrillConfig,
     build_dr_count_target_drill,
+    build_dr_difference_count_drill,
     build_dr_different_digit_drill,
     build_dr_grouped_family_run_drill,
     build_dr_mixed_pressure_drill,
@@ -1855,6 +1856,17 @@ class AntWorkoutSession:
             )
         elif block.drill_code == "dr_different_digit":
             engine = build_dr_different_digit_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=DigitRecognitionDrillConfig(
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                ),
+            )
+        elif block.drill_code == "dr_difference_count":
+            engine = build_dr_difference_count_drill(
                 clock=self._clock,
                 seed=block_seed,
                 difficulty=difficulty,

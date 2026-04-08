@@ -48,11 +48,11 @@ def build_dr_workout_plan(*, duration_scale: float = 1.0) -> AntWorkoutPlan:
         _block(
             "family_primer",
             "Visible Family Primer",
-            "Touch the count-target and different-digit families with visible support before hidden-memory pressure starts.",
+            "Touch the count-target, different-digit, and difference-count families with visible support before hidden-memory pressure starts.",
             ("Family familiarity", "Visible-supported extraction"),
             "dr_visible_family_primer",
             AntDrillMode.BUILD,
-            10 * scale,
+            8 * scale,
         ),
         _block(
             "recall_build",
@@ -61,7 +61,7 @@ def build_dr_workout_plan(*, duration_scale: float = 1.0) -> AntWorkoutPlan:
             ("Full-string recall", "Hidden-memory encoding"),
             "dr_recall_run",
             AntDrillMode.BUILD,
-            15 * scale,
+            14 * scale,
         ),
         _block(
             "count_target",
@@ -70,7 +70,7 @@ def build_dr_workout_plan(*, duration_scale: float = 1.0) -> AntWorkoutPlan:
             ("Target counting", "Dense-repeat handling"),
             "dr_count_target",
             AntDrillMode.TEMPO,
-            12 * scale,
+            10 * scale,
         ),
         _block(
             "different_digit",
@@ -79,7 +79,16 @@ def build_dr_workout_plan(*, duration_scale: float = 1.0) -> AntWorkoutPlan:
             ("Different-digit detection", "Similarity discrimination"),
             "dr_different_digit",
             AntDrillMode.TEMPO,
-            12 * scale,
+            10 * scale,
+        ),
+        _block(
+            "difference_count",
+            "Difference Count Tempo",
+            "Judge how many positions changed between the two strings without drifting into full-string re-read mode.",
+            ("Difference-count discrimination", "Fast comparison tally"),
+            "dr_difference_count",
+            AntDrillMode.TEMPO,
+            10 * scale,
         ),
         _block(
             "grouped_family_run",
@@ -88,16 +97,16 @@ def build_dr_workout_plan(*, duration_scale: float = 1.0) -> AntWorkoutPlan:
             ("Grouped family solving", "Family switching"),
             "dr_grouped_family_run",
             AntDrillMode.TEMPO,
-            11 * scale,
+            10 * scale,
         ),
         _block(
             "mixed_pressure",
             "Mixed Pressure",
-            "Finish with a mixed hidden-memory pressure block that rotates recall, count, and different-digit items under the hardest timings.",
+            "Finish with a mixed hidden-memory pressure block that rotates recall, count, different-digit, and difference-count items under the hardest timings.",
             ("Mixed-family switching", "Pressure tolerance"),
             "dr_mixed_pressure",
             AntDrillMode.STRESS,
-            10 * scale,
+            8 * scale,
         ),
     )
     return AntWorkoutPlan(
@@ -110,7 +119,7 @@ def build_dr_workout_plan(*, duration_scale: float = 1.0) -> AntWorkoutPlan:
         notes=(
             "Typed reflections and block setup screens do not count toward the 90-minute drill clock.",
             "Early blocks allow visible support; later blocks switch to the real hidden-memory show, mask, and question rhythm.",
-            "All Digit Recognition blocks stay typed digits only.",
+            "All Digit Recognition blocks stay typed digits only, with the family ladder expanding from recall into four non-recall comparison/count prompts.",
         ),
         blocks=blocks,
     )

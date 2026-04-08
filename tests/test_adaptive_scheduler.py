@@ -32,7 +32,14 @@ from cfast_trainer.adaptive_scheduler import (
     rank_adaptive_primitives,
 )
 from cfast_trainer.ant_drills import AntDrillMode
-from cfast_trainer.app import AdaptiveSessionScreen, App, BenchmarkScreen, MenuItem, MenuScreen
+from cfast_trainer.app import (
+    INTRO_LOADING_MIN_FRAMES,
+    AdaptiveSessionScreen,
+    App,
+    BenchmarkScreen,
+    MenuItem,
+    MenuScreen,
+)
 from cfast_trainer.benchmark import BenchmarkSession, build_benchmark_plan
 from cfast_trainer.cognitive_core import Phase
 from cfast_trainer.cognitive_core import TestSnapshot as SnapshotModel
@@ -1157,11 +1164,28 @@ def _complete_adaptive_session(session: AdaptiveSession, clock: _FakeClock) -> N
     session.activate()
     if session.stage is not AdaptiveStage.BLOCK:
         raise AssertionError(f"unexpected stage {session.stage}")
+    engine = session.current_engine()
+    assert engine is not None
+    assert getattr(engine, "phase", None) is Phase.INSTRUCTIONS
+    starter = getattr(engine, "start_practice", None)
+    assert callable(starter)
+    starter()
+    assert getattr(engine, "phase", None) is Phase.SCORED
     clock.advance(1.2)
     session.update()
     assert session.stage is AdaptiveStage.BLOCK_RESULTS
     session.finish_session()
     assert session.stage is AdaptiveStage.RESULTS
+
+
+def _start_adaptive_block(screen: AdaptiveSessionScreen, surface: pygame.Surface) -> None:
+    screen.handle_event(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""}))
+    screen.render(surface)
+    for _ in range(INTRO_LOADING_MIN_FRAMES):
+        screen.render(surface)
+    screen.handle_event(
+        pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "mod": 0, "unicode": ""})
+    )
 
 
 def test_adaptive_session_persists_one_attempt_with_block_metrics_and_telemetry(tmp_path) -> None:
@@ -1305,6 +1329,12 @@ def test_adaptive_session_replans_remaining_blocks_after_completed_result() -> N
 
     session = AdaptiveSession(clock=clock, seed=602, plan=plan, history=entries)
     session.activate()
+    engine = session.current_engine()
+    assert engine is not None
+    assert getattr(engine, "phase", None) is Phase.INSTRUCTIONS
+    starter = getattr(engine, "start_practice", None)
+    assert callable(starter)
+    starter()
     clock.advance(1.2)
     session.update()
     assert session.stage is AdaptiveStage.BLOCK_RESULTS
@@ -1421,8 +1451,7 @@ def test_adaptive_pause_menu_shows_unified_actions_and_settings(tmp_path) -> Non
             test_code="adaptive_session",
         )
         app.push(screen)
-        screen.handle_event(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""}))
-        screen.render(surface)
+        _start_adaptive_block(screen, surface)
 
         screen.handle_event(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_ESCAPE, "unicode": ""}))
 
@@ -1463,8 +1492,7 @@ def test_adaptive_pause_menu_skip_current_segment_advances_to_next_block() -> No
         session = AdaptiveSession(clock=clock, seed=555, plan=_small_adaptive_plan(clock))
         screen = AdaptiveSessionScreen(app, session=session, test_code="adaptive_session")
         app.push(screen)
-        screen.handle_event(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""}))
-        screen.render(surface)
+        _start_adaptive_block(screen, surface)
 
         assert session.snapshot().block_index == 1
         screen.handle_event(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_ESCAPE, "unicode": ""}))
@@ -1490,10 +1518,7 @@ def test_adaptive_keypad_enter_continues_after_block_results() -> None:
         session = AdaptiveSession(clock=clock, seed=555, plan=_small_adaptive_plan(clock))
         screen = AdaptiveSessionScreen(app, session=session, test_code="adaptive_session")
         app.push(screen)
-        screen.handle_event(
-            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""})
-        )
-        screen.render(surface)
+        _start_adaptive_block(screen, surface)
 
         session.debug_skip_current_block()
         assert session.stage is AdaptiveStage.BLOCK_RESULTS
@@ -1504,6 +1529,7 @@ def test_adaptive_keypad_enter_continues_after_block_results() -> None:
 
         assert session.stage is AdaptiveStage.BLOCK
         assert session.snapshot().block_index == 2
+        assert getattr(session.current_engine(), "phase", None) is Phase.INSTRUCTIONS
     finally:
         pygame.quit()
 
@@ -1519,10 +1545,7 @@ def test_adaptive_escape_opens_pause_on_block_results_and_final_results() -> Non
         session = AdaptiveSession(clock=clock, seed=555, plan=_small_adaptive_plan(clock))
         screen = AdaptiveSessionScreen(app, session=session, test_code="adaptive_session")
         app.push(screen)
-        screen.handle_event(
-            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""})
-        )
-        screen.render(surface)
+        _start_adaptive_block(screen, surface)
 
         session.debug_skip_current_block()
         assert session.stage is AdaptiveStage.BLOCK_RESULTS
@@ -1569,8 +1592,7 @@ def test_adaptive_pause_menu_skip_does_not_persist_attempt(tmp_path) -> None:
         session = AdaptiveSession(clock=clock, seed=555, plan=_small_adaptive_plan(clock))
         screen = AdaptiveSessionScreen(app, session=session, test_code="adaptive_session")
         app.push(screen)
-        screen.handle_event(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""}))
-        screen.render(surface)
+        _start_adaptive_block(screen, surface)
 
         screen.handle_event(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_ESCAPE, "unicode": ""}))
         skip_index = screen._pause_menu_options().index("Skip Current Segment")

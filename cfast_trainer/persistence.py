@@ -19,7 +19,7 @@ from .results import AttemptResult
 from .telemetry import TelemetryEvent, lifecycle_event
 
 RESULTS_DB_ENV = "CFAST_RESULTS_DB_PATH"
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 def open_db(path: Path) -> sqlite3.Connection:
@@ -100,6 +100,24 @@ class TestSessionSummary:
 
 
 @dataclass(frozen=True, slots=True)
+class AttemptCodeSummary:
+    test_code: str
+    attempt_count: int
+    latest_completed_at_utc: str
+    latest_score_ratio: float | None
+    best_score_ratio: float | None
+    worst_score_ratio: float | None
+    latest_accuracy: float | None
+    best_accuracy: float | None
+    worst_accuracy: float | None
+    latest_total_score: float | None
+    best_total_score: float | None
+    worst_total_score: float | None
+    observed_level_min: int | None
+    observed_level_max: int | None
+
+
+@dataclass(frozen=True, slots=True)
 class DifficultyStateSummary:
     scope_kind: str
     scope_key: str
@@ -167,6 +185,49 @@ class ResultsStore:
                 conn=conn,
                 session_id=self._session_id,
                 exit_reason=exit_reason,
+            )
+        finally:
+            conn.close()
+
+    def record_app_diagnostic(
+        self,
+        *,
+        category: str,
+        subsystem: str,
+        status: str,
+        stage: str | None = None,
+        summary: str,
+        detail: str,
+        diagnostic_code: str | None = None,
+        renderer_path: str | None = None,
+        exception_type: str | None = None,
+        location: str | None = None,
+        state: dict[str, object] | None = None,
+        activity_session_id: int | None = None,
+        app_version: str = "dev",
+    ) -> None:
+        conn = open_db(self._path)
+        try:
+            self._session_id = _ensure_session(
+                conn=conn,
+                session_id=self._session_id,
+                app_version=app_version,
+            )
+            _insert_app_diagnostic(
+                conn=conn,
+                session_id=int(self._session_id),
+                activity_session_id=activity_session_id,
+                category=category,
+                subsystem=subsystem,
+                status=status,
+                stage=stage,
+                summary=summary,
+                detail=detail,
+                diagnostic_code=diagnostic_code,
+                renderer_path=renderer_path,
+                exception_type=exception_type,
+                location=location,
+                state=state,
             )
         finally:
             conn.close()
@@ -382,13 +443,18 @@ class ResultsStore:
         since_days: int | None = 28,
         limit: int | None = None,
         child_item_preferred: bool = False,
+        test_code: str | None = None,
     ) -> list[AttemptHistoryEntry]:
         return load_recent_attempt_history(
             db_path=self._path,
             since_days=since_days,
             limit=limit,
             child_item_preferred=child_item_preferred,
+            test_code=test_code,
         )
+
+    def attempt_code_summaries(self) -> list[AttemptCodeSummary]:
+        return load_attempt_code_summaries(db_path=self._path)
 
     def difficulty_state(
         self,
@@ -519,6 +585,7 @@ def load_recent_attempt_history(
     since_days: int | None = 28,
     limit: int | None = None,
     child_item_preferred: bool = False,
+    test_code: str | None = None,
 ) -> list[AttemptHistoryEntry]:
     conn = open_db(db_path)
     try:
@@ -527,7 +594,16 @@ def load_recent_attempt_history(
             since_days=since_days,
             limit=limit,
             child_item_preferred=child_item_preferred,
+            test_code=test_code,
         )
+    finally:
+        conn.close()
+
+
+def load_attempt_code_summaries(*, db_path: Path) -> list[AttemptCodeSummary]:
+    conn = open_db(db_path)
+    try:
+        return _load_attempt_code_summaries(conn=conn)
     finally:
         conn.close()
 
@@ -538,6 +614,7 @@ def _load_recent_attempt_history(
     since_days: int | None,
     limit: int | None,
     child_item_preferred: bool,
+    test_code: str | None,
 ) -> list[AttemptHistoryEntry]:
     query = """
         SELECT
@@ -562,10 +639,17 @@ def _load_recent_attempt_history(
         LEFT JOIN activity_session ON activity_session.id = attempt.activity_session_id
     """
     params: list[object] = []
+    where_clauses: list[str] = []
     if since_days is not None:
         cutoff_utc = _utc_iso_from_epoch(_utc_now_epoch() - (max(0, int(since_days)) * 86400.0))
-        query += " WHERE attempt.completed_at_utc >= ?"
+        where_clauses.append("attempt.completed_at_utc >= ?")
         params.append(cutoff_utc)
+    token = str(test_code or "").strip()
+    if token != "":
+        where_clauses.append("attempt.test_code = ?")
+        params.append(token)
+    if where_clauses:
+        query += " WHERE " + " AND ".join(where_clauses)
     query += " ORDER BY attempt.completed_at_utc DESC, attempt.id DESC"
     if limit is not None:
         query += " LIMIT ?"
@@ -613,8 +697,145 @@ def _load_recent_attempt_history(
                 origin_activity_kind=None if row[15] is None else str(row[15]),
                 origin_item_index=None if row[16] is None else int(row[16]),
             )
-        )
+    )
     return _prefer_child_items(out) if child_item_preferred else out
+
+
+def _load_attempt_code_summaries(
+    *,
+    conn: sqlite3.Connection,
+) -> list[AttemptCodeSummary]:
+    rows = conn.execute(
+        """
+        WITH latest_attempt AS (
+            SELECT test_code, MAX(id) AS attempt_id
+            FROM attempt
+            GROUP BY test_code
+        ),
+        latest_metrics AS (
+            SELECT
+                latest_attempt.test_code AS test_code,
+                MAX(
+                    CASE
+                        WHEN attempt_metric.key='score_ratio' AND attempt_metric.value <> ''
+                        THEN CAST(attempt_metric.value AS REAL)
+                    END
+                ) AS latest_score_ratio,
+                MAX(
+                    CASE
+                        WHEN attempt_metric.key='accuracy' AND attempt_metric.value <> ''
+                        THEN CAST(attempt_metric.value AS REAL)
+                    END
+                ) AS latest_accuracy,
+                MAX(
+                    CASE
+                        WHEN attempt_metric.key='total_score' AND attempt_metric.value <> ''
+                        THEN CAST(attempt_metric.value AS REAL)
+                    END
+                ) AS latest_total_score
+            FROM latest_attempt
+            JOIN attempt ON attempt.id = latest_attempt.attempt_id
+            LEFT JOIN attempt_metric ON attempt_metric.attempt_id = attempt.id
+            GROUP BY latest_attempt.test_code
+        ),
+        rollup AS (
+            SELECT
+                attempt.test_code AS test_code,
+                COUNT(DISTINCT attempt.id) AS attempt_count,
+                MAX(attempt.completed_at_utc) AS latest_completed_at_utc,
+                MAX(
+                    CASE
+                        WHEN attempt_metric.key='score_ratio' AND attempt_metric.value <> ''
+                        THEN CAST(attempt_metric.value AS REAL)
+                    END
+                ) AS best_score_ratio,
+                MIN(
+                    CASE
+                        WHEN attempt_metric.key='score_ratio' AND attempt_metric.value <> ''
+                        THEN CAST(attempt_metric.value AS REAL)
+                    END
+                ) AS worst_score_ratio,
+                MAX(
+                    CASE
+                        WHEN attempt_metric.key='accuracy' AND attempt_metric.value <> ''
+                        THEN CAST(attempt_metric.value AS REAL)
+                    END
+                ) AS best_accuracy,
+                MIN(
+                    CASE
+                        WHEN attempt_metric.key='accuracy' AND attempt_metric.value <> ''
+                        THEN CAST(attempt_metric.value AS REAL)
+                    END
+                ) AS worst_accuracy,
+                MAX(
+                    CASE
+                        WHEN attempt_metric.key='total_score' AND attempt_metric.value <> ''
+                        THEN CAST(attempt_metric.value AS REAL)
+                    END
+                ) AS best_total_score,
+                MIN(
+                    CASE
+                        WHEN attempt_metric.key='total_score' AND attempt_metric.value <> ''
+                        THEN CAST(attempt_metric.value AS REAL)
+                    END
+                ) AS worst_total_score,
+                MIN(
+                    CASE
+                        WHEN attempt.difficulty_level_start IS NULL
+                        THEN attempt.difficulty_level_end
+                        ELSE attempt.difficulty_level_start
+                    END
+                ) AS observed_level_min,
+                MAX(
+                    CASE
+                        WHEN attempt.difficulty_level_end IS NULL
+                        THEN attempt.difficulty_level_start
+                        ELSE attempt.difficulty_level_end
+                    END
+                ) AS observed_level_max
+            FROM attempt
+            LEFT JOIN attempt_metric ON attempt_metric.attempt_id = attempt.id
+            GROUP BY attempt.test_code
+        )
+        SELECT
+            rollup.test_code,
+            rollup.attempt_count,
+            rollup.latest_completed_at_utc,
+            latest_metrics.latest_score_ratio,
+            rollup.best_score_ratio,
+            rollup.worst_score_ratio,
+            latest_metrics.latest_accuracy,
+            rollup.best_accuracy,
+            rollup.worst_accuracy,
+            latest_metrics.latest_total_score,
+            rollup.best_total_score,
+            rollup.worst_total_score,
+            rollup.observed_level_min,
+            rollup.observed_level_max
+        FROM rollup
+        LEFT JOIN latest_metrics ON latest_metrics.test_code = rollup.test_code
+        ORDER BY rollup.latest_completed_at_utc DESC, rollup.test_code ASC
+        """
+    ).fetchall()
+    return [
+        AttemptCodeSummary(
+            test_code=str(row[0]),
+            attempt_count=int(row[1]),
+            latest_completed_at_utc=str(row[2]),
+            latest_score_ratio=None if row[3] is None else float(row[3]),
+            best_score_ratio=None if row[4] is None else float(row[4]),
+            worst_score_ratio=None if row[5] is None else float(row[5]),
+            latest_accuracy=None if row[6] is None else float(row[6]),
+            best_accuracy=None if row[7] is None else float(row[7]),
+            worst_accuracy=None if row[8] is None else float(row[8]),
+            latest_total_score=None if row[9] is None else float(row[9]),
+            best_total_score=None if row[10] is None else float(row[10]),
+            worst_total_score=None if row[11] is None else float(row[11]),
+            observed_level_min=None if row[12] is None else int(row[12]),
+            observed_level_max=None if row[13] is None else int(row[13]),
+        )
+        for row in rows
+    ]
 
 
 def _load_difficulty_state(
@@ -709,6 +930,7 @@ def _update_difficulty_states(
         since_days=None,
         limit=None,
         child_item_preferred=True,
+        test_code=None,
     )
     ranking = rank_primitives(recent_history, now_utc=updated_at_utc)
     ranked_states = {state.primitive_id: state for state in ranking.primitive_states}
@@ -1170,6 +1392,35 @@ def _migrate(conn: sqlite3.Connection) -> None:
         )
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS app_diagnostic (
+                id INTEGER PRIMARY KEY,
+                session_id INTEGER NOT NULL REFERENCES session(id) ON DELETE CASCADE,
+                activity_session_id INTEGER REFERENCES activity_session(id) ON DELETE SET NULL,
+                created_at_utc TEXT NOT NULL,
+                category TEXT NOT NULL,
+                subsystem TEXT NOT NULL,
+                status TEXT NOT NULL,
+                stage TEXT,
+                summary TEXT NOT NULL,
+                detail TEXT NOT NULL,
+                diagnostic_code TEXT,
+                renderer_path TEXT,
+                exception_type TEXT,
+                location TEXT,
+                state_json TEXT
+            );
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_app_diagnostic_session "
+            "ON app_diagnostic(session_id, id);"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_app_diagnostic_subsystem "
+            "ON app_diagnostic(subsystem, created_at_utc);"
+        )
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS difficulty_state (
                 scope_kind TEXT NOT NULL,
                 scope_key TEXT NOT NULL,
@@ -1306,6 +1557,69 @@ def _add_column_if_missing(conn: sqlite3.Connection, table: str, column_def: str
     if name in _column_names(conn, table):
         return
     conn.execute(f"ALTER TABLE {table} ADD COLUMN {column_def}")
+
+
+def _insert_app_diagnostic(
+    *,
+    conn: sqlite3.Connection,
+    session_id: int,
+    activity_session_id: int | None,
+    category: str,
+    subsystem: str,
+    status: str,
+    stage: str | None,
+    summary: str,
+    detail: str,
+    diagnostic_code: str | None,
+    renderer_path: str | None,
+    exception_type: str | None,
+    location: str | None,
+    state: dict[str, object] | None,
+) -> None:
+    state_json = None
+    if state:
+        try:
+            state_json = json.dumps(state, sort_keys=True, default=str)
+        except Exception:
+            state_json = json.dumps({"unserializable_state": str(state)}, sort_keys=True)
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO app_diagnostic(
+                session_id,
+                activity_session_id,
+                created_at_utc,
+                category,
+                subsystem,
+                status,
+                stage,
+                summary,
+                detail,
+                diagnostic_code,
+                renderer_path,
+                exception_type,
+                location,
+                state_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                int(session_id),
+                None if activity_session_id is None else int(activity_session_id),
+                _utc_now_iso(),
+                str(category).strip() or "diagnostic",
+                str(subsystem).strip() or "app",
+                str(status).strip() or "info",
+                None if stage is None else (str(stage).strip() or None),
+                str(summary).strip() or "App diagnostic",
+                str(detail).strip(),
+                None if diagnostic_code is None else (str(diagnostic_code).strip() or None),
+                None if renderer_path is None else (str(renderer_path).strip() or None),
+                None if exception_type is None else (str(exception_type).strip() or None),
+                None if location is None else (str(location).strip() or None),
+                state_json,
+            ),
+        )
 
 
 def _ensure_session(

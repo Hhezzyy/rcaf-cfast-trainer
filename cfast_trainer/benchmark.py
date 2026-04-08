@@ -166,7 +166,7 @@ class _PreparedBenchmarkProbeRuntime:
         if self._forced_results or engine_phase is Phase.RESULTS:
             return Phase.RESULTS
         if not self._launched:
-            return Phase.PRACTICE_DONE
+            return Phase.INSTRUCTIONS
         if isinstance(engine_phase, Phase):
             return engine_phase
         return Phase.SCORED
@@ -239,8 +239,8 @@ class _PreparedBenchmarkProbeRuntime:
         base = self._engine.snapshot()
         return TestSnapshot(
             title=str(base.title),
-            phase=Phase.PRACTICE_DONE,
-            prompt=("Benchmark probe ready.\nPress Enter to begin the timed segment."),
+            phase=Phase.INSTRUCTIONS,
+            prompt=("Benchmark probe guide ready.\nPress Enter to begin the timed segment."),
             input_hint="Press Enter to begin timed block",
             time_remaining_s=None,
             attempted_scored=int(base.attempted_scored),

@@ -21,7 +21,7 @@ from .canonical_drill_registry import (
     resolved_canonical_drill_code,
 )
 from .clock import Clock
-from .cognitive_core import Phase
+from .cognitive_core import Phase, TestSnapshot
 from .guide_skill_catalog import guide_ranking_primitive_id_for_code, guide_subskill_ids_for_code
 from .persistence import AttemptHistoryEntry
 from .primitive_ranking import (
@@ -1910,6 +1910,124 @@ def _history_entry_from_block_result(
     )
 
 
+class _PreparedAdaptiveBlockRuntime:
+    _SKIP_TOKENS = frozenset({"__skip_section__", "skip_section", "__skip_all__", "skip_all"})
+
+    def __init__(self, *, engine: object, block_label: str) -> None:
+        self._engine = engine
+        self._block_label = str(block_label)
+        self._launched = False
+        self._forced_results = False
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._engine, name)
+
+    @property
+    def phase(self) -> Phase:
+        engine_phase = getattr(self._engine, "phase", None)
+        if self._forced_results or engine_phase is Phase.RESULTS:
+            return Phase.RESULTS
+        if not self._launched:
+            return Phase.INSTRUCTIONS
+        if isinstance(engine_phase, Phase):
+            return engine_phase
+        return Phase.SCORED
+
+    def can_exit(self) -> bool:
+        if not self._launched:
+            return True
+        can_exit = getattr(self._engine, "can_exit", None)
+        if callable(can_exit):
+            return bool(can_exit())
+        return self.phase is not Phase.SCORED
+
+    def start_practice(self) -> None:
+        if self._forced_results:
+            return
+        if self._launched:
+            starter = getattr(self._engine, "start_practice", None)
+            if callable(starter):
+                starter()
+            return
+        self._launch_into_scored()
+
+    def start_scored(self) -> None:
+        if self._forced_results:
+            return
+        if self._launched:
+            starter = getattr(self._engine, "start_scored", None)
+            if callable(starter):
+                starter()
+            return
+        self._launch_into_scored()
+
+    def submit_answer(self, raw: str) -> bool:
+        token = str(raw).strip().lower()
+        if not self._launched:
+            if token in self._SKIP_TOKENS:
+                self._forced_results = True
+                return True
+            return False
+        submit = getattr(self._engine, "submit_answer", None)
+        if not callable(submit):
+            return False
+        return bool(submit(raw))
+
+    def update(self) -> None:
+        if not self._launched or self._forced_results:
+            return
+        updater = getattr(self._engine, "update", None)
+        if callable(updater):
+            updater()
+
+    def finish(self) -> None:
+        if not self._launched:
+            self._forced_results = True
+            return
+        finish = getattr(self._engine, "finish", None)
+        if callable(finish):
+            finish()
+            return
+        if hasattr(self._engine, "phase"):
+            try:
+                setattr(self._engine, "phase", Phase.RESULTS)
+            except Exception:
+                if hasattr(self._engine, "_phase"):
+                    setattr(self._engine, "_phase", Phase.RESULTS)
+
+    def snapshot(self) -> TestSnapshot:
+        if self._launched:
+            return self._engine.snapshot()
+        base = self._engine.snapshot()
+        return TestSnapshot(
+            title=str(base.title),
+            phase=Phase.INSTRUCTIONS,
+            prompt=(
+                f"{self._block_label} guide ready.\n"
+                "Press Enter to begin the timed segment."
+            ),
+            input_hint="Press Enter to begin timed block",
+            time_remaining_s=None,
+            attempted_scored=int(base.attempted_scored),
+            correct_scored=int(base.correct_scored),
+            payload=getattr(base, "payload", None),
+        )
+
+    def _launch_into_scored(self) -> None:
+        if self._launched or self._forced_results:
+            return
+        starter = getattr(self._engine, "start_scored", None)
+        if callable(starter):
+            starter()
+        if getattr(self._engine, "phase", None) is not Phase.SCORED:
+            practice_starter = getattr(self._engine, "start_practice", None)
+            if callable(practice_starter):
+                practice_starter()
+            if callable(starter):
+                starter()
+        self._launched = True
+
+
 class AdaptiveSession:
     _NOMINAL_DIFFICULTY = 0.5
 
@@ -2478,35 +2596,43 @@ class AdaptiveSession:
     def _build_block_engine(self, block: AdaptiveSessionBlock) -> object:
         if block.builder is not None:
             engine = block.builder()
-            setattr(engine, "_difficulty_code", str(block.drill_code))
-            setattr(
-                engine,
-                "_resolved_difficulty_context",
-                self._block_difficulty_context(block),
+        else:
+            workout_block = AntWorkoutBlockPlan(
+                block_id=f"adaptive_{block.block_index + 1:02d}",
+                label=block.primitive_label,
+                description=f"{block.primitive_label} [{', '.join(block.reason_tags)}]",
+                focus_skills=(block.primitive_label,),
+                drill_code=block.drill_code,
+                mode=block.drill_mode,
+                duration_min=float(block.duration_s) / 60.0,
             )
-            starter = getattr(engine, "start_scored", None)
-            if callable(starter):
-                starter()
-            return engine
-        workout_block = AntWorkoutBlockPlan(
-            block_id=f"adaptive_{block.block_index + 1:02d}",
-            label=block.primitive_label,
-            description=f"{block.primitive_label} [{', '.join(block.reason_tags)}]",
-            focus_skills=(block.primitive_label,),
-            drill_code=block.drill_code,
-            mode=block.drill_mode,
-            duration_min=float(block.duration_s) / 60.0,
-        )
-        engine = build_workout_block_engine(
-            clock=self._clock,
-            block_seed=block.seed,
-            difficulty_level=block.difficulty_level,
-            block=workout_block,
-            block_index=0,
-        )
+            engine = build_workout_block_engine(
+                clock=self._clock,
+                block_seed=block.seed,
+                difficulty_level=block.difficulty_level,
+                block=workout_block,
+                block_index=0,
+            )
+        self._reset_block_engine_to_intro(engine)
         setattr(engine, "_difficulty_code", str(block.drill_code))
         setattr(engine, "_resolved_difficulty_context", self._block_difficulty_context(block))
-        return engine
+        return _PreparedAdaptiveBlockRuntime(
+            engine=engine,
+            block_label=block.primitive_label,
+        )
+
+    @staticmethod
+    def _reset_block_engine_to_intro(engine: object) -> None:
+        phase = getattr(engine, "phase", None)
+        if phase is not Phase.SCORED:
+            return
+        try:
+            setattr(engine, "phase", Phase.INSTRUCTIONS)
+        except Exception:
+            if hasattr(engine, "_phase"):
+                setattr(engine, "_phase", Phase.INSTRUCTIONS)
+        if hasattr(engine, "_scored_started_at_s"):
+            setattr(engine, "_scored_started_at_s", None)
 
     def _complete_current_block(self) -> None:
         block = self.current_block_plan()

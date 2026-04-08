@@ -13,7 +13,7 @@ from cfast_trainer.adaptive_difficulty import (
 )
 from cfast_trainer.ant_drills import AntDrillMode
 from cfast_trainer.auditory_capacity import AuditoryCapacityPayload
-from cfast_trainer.benchmark import BenchmarkPlan, BenchmarkProbePlan, BenchmarkSession
+from cfast_trainer.benchmark import BenchmarkPlan, BenchmarkProbePlan, BenchmarkSession, BenchmarkStage
 from cfast_trainer.cognitive_core import Phase
 from cfast_trainer.cognitive_core import TestSnapshot as SnapshotModel
 from cfast_trainer.cognitive_updating import (
@@ -448,10 +448,10 @@ def _build_small_benchmark_plan(*, clock: FakeClock) -> BenchmarkPlan:
         return BenchmarkProbePlan(
             probe_code=probe_code,
             label=label,
-            builder=lambda: _FakeProbeEngine(
+            builder=lambda resolved_seed, probe_seed=seed: _FakeProbeEngine(
                 clock=clock,
                 title=label,
-                seed=seed,
+                seed=resolved_seed if resolved_seed is not None else probe_seed,
                 difficulty_level=difficulty_level,
                 scored_duration_s=duration_s,
                 attempted=attempted,
@@ -545,10 +545,15 @@ def test_benchmark_result_emits_composite_realized_difficulty_and_prefixed_probe
     assert current is not None
     current.finish()
     session.sync_runtime()
+    assert session.stage is BenchmarkStage.PROBE_RESULTS
+    session.continue_after_probe_results()
     current = session.current_engine()
     assert current is not None
     current.finish()
     session.sync_runtime()
+    assert session.stage is BenchmarkStage.PROBE_RESULTS
+    session.continue_after_probe_results()
+    assert session.stage is BenchmarkStage.RESULTS
 
     result = attempt_result_from_engine(session, test_code="benchmark_battery")
 

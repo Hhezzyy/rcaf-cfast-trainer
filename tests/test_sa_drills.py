@@ -112,27 +112,27 @@ def test_sa_drills_are_deterministic_for_same_seed_and_answers(builder) -> None:
         (
             build_sa_picture_anchor_drill,
             ("pictorial", "coded", "numerical"),
-            ("current_location", "future_location"),
+            ("current_location", "current_allegiance", "vehicle_type"),
         ),
         (
             build_sa_contact_identification_prime_drill,
             ("pictorial", "coded"),
-            ("current_location",),
+            ("current_allegiance", "vehicle_type"),
         ),
         (
             build_sa_status_recall_prime_drill,
             ("coded", "numerical", "aural"),
-            ("status_recall",),
+            ("sighting_grid", "report_variation", "rule_action"),
         ),
         (
             build_sa_future_projection_run_drill,
             ("pictorial", "numerical", "aural"),
-            ("future_location",),
+            ("instructed_destination", "actual_destination"),
         ),
         (
             build_sa_action_selection_run_drill,
             SA_CHANNEL_ORDER,
-            ("safe_to_move",),
+            ("rule_action",),
         ),
     ),
 )
@@ -194,18 +194,20 @@ def test_sa_mixed_tempo_repeats_fixed_query_kind_cycle() -> None:
     drill.start_practice()
 
     observed: list[str] = []
+    expected = list(SA_QUERY_KIND_ORDER[:6])
     for _ in range(540):
         payload = drill.snapshot().payload
-        assert isinstance(payload, SituationalAwarenessPayload)
+        if not isinstance(payload, SituationalAwarenessPayload):
+            break
         query_kind = payload.active_query_kinds[0]
         if not observed or observed[-1] != query_kind:
             observed.append(query_kind)
-        if len(observed) >= 6:
+        if len(observed) >= len(expected):
             break
         clock.advance(1.0)
         drill.update()
 
-    assert observed[:6] == [*SA_QUERY_KIND_ORDER, SA_QUERY_KIND_ORDER[0]]
+    assert observed[: len(expected)] == expected
 
 
 def test_sa_pressure_run_keeps_all_channels_and_query_kinds_active() -> None:

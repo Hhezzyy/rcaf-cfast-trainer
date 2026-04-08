@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 import os
+import sys
+from importlib.machinery import ModuleSpec
+from types import ModuleType
 from typing import cast
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+
+if "moderngl" not in sys.modules:
+    moderngl_stub = ModuleType("moderngl")
+    moderngl_stub.__spec__ = ModuleSpec("moderngl", loader=None)
+    sys.modules["moderngl"] = moderngl_stub
 
 import pygame
 import pytest
@@ -12,6 +20,7 @@ import pytest
 from cfast_trainer.ac_drills import AcDrillConfig, build_ac_gate_anchor_drill
 from cfast_trainer.airborne_numerical import build_airborne_numerical_test
 from cfast_trainer.app import (
+    INTRO_LOADING_MIN_FRAMES,
     AnalogBinding,
     App,
     AxisCalibrationSettings,
@@ -35,6 +44,14 @@ from cfast_trainer.sensory_motor_apparatus import (
     SensoryMotorApparatusConfig,
     build_sensory_motor_apparatus_test,
 )
+
+
+class _PressedKeys:
+    def __init__(self, active: set[int]) -> None:
+        self._active = set(active)
+
+    def __getitem__(self, key: int) -> int:
+        return 1 if key in self._active else 0
 
 
 class _FakeEngine:
@@ -387,6 +404,80 @@ def test_pause_menu_mouse_click_activates_main_menu_row() -> None:
         )
 
         assert len(app._screens) == 1
+    finally:
+        pygame.quit()
+
+
+def test_pause_menu_mouse_click_activates_without_prior_pause_render() -> None:
+    app, screen, _engines = _build_app_and_screen(phase=Phase.INSTRUCTIONS)
+    try:
+        surface = pygame.display.get_surface()
+        assert surface is not None
+        for _ in range(4):
+            screen.render(surface)
+
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_ESCAPE, "mod": 0, "unicode": ""})
+        )
+        screen.render(surface)
+        main_menu_index = screen._pause_menu_options().index("Main Menu")
+        click_pos = screen._pause_menu_hitboxes[main_menu_index].center
+
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_ESCAPE, "mod": 0, "unicode": ""})
+        )
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_ESCAPE, "mod": 0, "unicode": ""})
+        )
+        screen.handle_event(
+            pygame.event.Event(
+                pygame.MOUSEBUTTONDOWN,
+                {"button": 1, "pos": click_pos},
+            )
+        )
+
+        assert len(app._screens) == 1
+    finally:
+        pygame.quit()
+
+
+def test_pause_menu_keyboard_hold_repeats_after_short_delay(monkeypatch) -> None:
+    _app, screen, _engines = _build_app_and_screen(phase=Phase.PRACTICE)
+    try:
+        surface = pygame.display.get_surface()
+        assert surface is not None
+        screen.render(surface)
+        screen._set_pause_menu_state(True)
+
+        held_keys = {pygame.K_DOWN}
+        now_ms = {"value": 0}
+        monkeypatch.setattr(pygame.key, "get_pressed", lambda: _PressedKeys(held_keys))
+        monkeypatch.setattr(pygame.time, "get_ticks", lambda: now_ms["value"])
+
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_DOWN, "mod": 0, "unicode": ""})
+        )
+        assert screen._pause_menu_selected == 1
+
+        _app.render()
+        assert screen._pause_menu_selected == 1
+
+        now_ms["value"] = 220
+        _app.render()
+        assert screen._pause_menu_selected == 1
+
+        now_ms["value"] = 270
+        _app.render()
+        assert screen._pause_menu_selected == 2
+
+        now_ms["value"] = 390
+        _app.render()
+        assert screen._pause_menu_selected == 3
+
+        held_keys.clear()
+        now_ms["value"] = 520
+        _app.render()
+        assert screen._pause_menu_selected == 3
     finally:
         pygame.quit()
 
@@ -884,6 +975,56 @@ def test_intro_difficulty_change_from_practice_done_restarts_to_beginning(tmp_pa
         assert engines[-1] is not first_engine
         assert engines[-1].snapshot().phase is Phase.INSTRUCTIONS
         assert engines[-1]._difficulty == pytest.approx((6 - 1) / 9.0)
+    finally:
+        pygame.quit()
+
+
+def test_numerical_operations_intro_segments_support_next_and_back_without_affecting_live_stage() -> None:
+    _app, screen, engines = _build_app_and_screen(
+        phase=Phase.INSTRUCTIONS,
+        test_code="numerical_operations",
+    )
+    try:
+        surface = pygame.display.get_surface()
+        assert surface is not None
+        engine = engines[-1]
+
+        screen.render(surface)
+        for _ in range(INTRO_LOADING_MIN_FRAMES):
+            screen.render(surface)
+
+        assert screen._intro_segment_index == 0
+
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_TAB, "mod": 0, "unicode": ""})
+        )
+        assert screen._intro_segment_index == 1
+
+        screen.handle_event(
+            pygame.event.Event(
+                pygame.KEYDOWN,
+                {"key": pygame.K_TAB, "mod": pygame.KMOD_SHIFT, "unicode": ""},
+            )
+        )
+        assert screen._intro_segment_index == 0
+
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_PAGEDOWN, "mod": 0, "unicode": ""})
+        )
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_PAGEDOWN, "mod": 0, "unicode": ""})
+        )
+        assert screen._intro_segment_index == 2
+
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "mod": 0, "unicode": ""})
+        )
+        assert engine.snapshot().phase is Phase.PRACTICE
+
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_TAB, "mod": 0, "unicode": ""})
+        )
+        assert engine.snapshot().phase is Phase.PRACTICE
     finally:
         pygame.quit()
 

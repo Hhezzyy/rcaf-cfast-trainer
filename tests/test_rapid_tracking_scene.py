@@ -42,6 +42,14 @@ class FakeApp:
     def dev_tools_enabled(self) -> bool:
         return True
 
+    def renderer_diagnostic_code(self, scene: str) -> None:
+        _ = scene
+        return None
+
+    def note_renderer_fallback(self, *, scene: str, stage: str | None = None, path: str | None = None) -> None:
+        _ = (scene, stage, path)
+        return None
+
 
 def _sample_sequence(
     engine,

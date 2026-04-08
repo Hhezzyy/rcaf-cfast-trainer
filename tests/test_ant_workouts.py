@@ -227,6 +227,7 @@ def test_real_airborne_numerical_workout_matches_standard_90_minute_structure() 
         ("ma_written_numerical_extraction", "Mental Arithmetic: Written Numerical Extraction"),
         ("vs_multi_target_class_search", "Visual Search: Multi-Target Class Search"),
         ("dr_visual_digit_query", "Digit Recognition: Visual Digit Query"),
+        ("dr_difference_count", "Digit Recognition: Difference Count"),
         ("sma_split_axis_control", "Sensory Motor Apparatus: Split Axis Control"),
         ("rt_obscured_target_prediction", "Rapid Tracking: Obscured Target Prediction"),
         ("tbl_single_lookup_anchor", "Table Reading: Single Lookup Anchor"),

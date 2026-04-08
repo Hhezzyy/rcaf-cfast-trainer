@@ -165,3 +165,20 @@ def test_visual_search_screen_renders_letter_variants_without_error() -> None:
         screen.render(surface)
     finally:
         pygame.quit()
+
+
+def test_visual_search_screen_renders_7x6_alphanumeric_string_board_without_error() -> None:
+    payload = _payload(
+        kind=VisualSearchTaskKind.ALPHANUMERIC,
+        rows=7,
+        cols=6,
+        target="A00B",
+        cells=tuple(f"A{row}{col}B" for row in range(7) for col in range(6)),
+    )
+    _app, screen = _build_screen(payload)
+    try:
+        surface = pygame.display.get_surface()
+        assert surface is not None
+        screen.render(surface)
+    finally:
+        pygame.quit()

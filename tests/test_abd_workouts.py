@@ -87,11 +87,15 @@ def _complete_small_abd_workout(clock: FakeClock) -> AntWorkoutSession:
     assert session.stage is AntWorkoutStage.BLOCK
     _finish_current_block_with_one_correct_answer(session, clock)
 
+    assert session.stage is AntWorkoutStage.BLOCK_RESULTS
+    session.activate()
     assert session.stage is AntWorkoutStage.BLOCK_SETUP
     session.activate()
     assert session.stage is AntWorkoutStage.BLOCK
     _finish_current_block_with_one_correct_answer(session, clock)
 
+    assert session.stage is AntWorkoutStage.BLOCK_RESULTS
+    session.activate()
     assert session.stage is AntWorkoutStage.POST_REFLECTION
     session.append_text("Bearings were slower than angles")
     session.activate()

@@ -5,13 +5,20 @@ from enum import StrEnum
 from typing import Literal
 
 from .clock import Clock
-from .cognitive_core import AttemptSummary, Phase, SeededRng, TestSnapshot, lerp_int
+from .cognitive_core import AttemptSummary, Phase, SeededRng, TestSnapshot
 
 
 class DigitRecognitionQuestionKind(StrEnum):
     RECALL = "recall"
     COUNT_TARGET = "count_target"
     DIFFERENT_DIGIT = "different_digit"
+    DIFFERENCE_COUNT = "difference_count"
+
+
+_OFFICIAL_MIN_LENGTH_BY_LEVEL: tuple[int, ...] = (4, 4, 5, 5, 6, 6, 7, 7, 8, 8)
+_OFFICIAL_MAX_LENGTH_BY_LEVEL: tuple[int, ...] = (5, 5, 6, 6, 7, 8, 8, 9, 10, 11)
+_OFFICIAL_DISPLAY_S_BY_LEVEL: tuple[float, ...] = (1.9, 1.75, 1.75, 1.6, 1.6, 1.45, 1.45, 1.3, 1.3, 1.15)
+_OFFICIAL_MASK_S_BY_LEVEL: tuple[float, ...] = (0.18, 0.18, 0.22, 0.22, 0.26, 0.26, 0.3, 0.32, 0.36, 0.4)
 
 
 @dataclass(frozen=True, slots=True)
@@ -20,6 +27,7 @@ class DigitRecognitionProfile:
         DigitRecognitionQuestionKind.RECALL,
         DigitRecognitionQuestionKind.COUNT_TARGET,
         DigitRecognitionQuestionKind.DIFFERENT_DIGIT,
+        DigitRecognitionQuestionKind.DIFFERENCE_COUNT,
     )
     min_length_easy: int = 5
     min_length_hard: int = 7
@@ -29,6 +37,10 @@ class DigitRecognitionProfile:
     display_s_hard: float = 1.25
     mask_s_easy: float = 0.25
     mask_s_hard: float = 0.25
+    min_length_by_level: tuple[int, ...] = ()
+    max_length_by_level: tuple[int, ...] = ()
+    display_s_by_level: tuple[float, ...] = ()
+    mask_s_by_level: tuple[float, ...] = ()
     visible_supported: bool = False
     string_profile: Literal["default", "friendly", "noisy"] = "default"
 
@@ -39,18 +51,70 @@ class DigitRecognitionProfile:
                 DigitRecognitionQuestionKind.RECALL,
                 DigitRecognitionQuestionKind.COUNT_TARGET,
                 DigitRecognitionQuestionKind.DIFFERENT_DIGIT,
+                DigitRecognitionQuestionKind.DIFFERENCE_COUNT,
             )
         return unique
 
     def display_s_for(self, difficulty: float) -> float:
-        d = 0.0 if difficulty <= 0.0 else 1.0 if difficulty >= 1.0 else float(difficulty)
-        return float(self.display_s_easy) + (
-            (float(self.display_s_hard) - float(self.display_s_easy)) * d
+        level = self.level_for(difficulty)
+        return self._value_for_level(
+            values=self.display_s_by_level,
+            level=level,
+            easy=float(self.display_s_easy),
+            hard=float(self.display_s_hard),
         )
 
     def mask_s_for(self, difficulty: float) -> float:
+        level = self.level_for(difficulty)
+        return self._value_for_level(
+            values=self.mask_s_by_level,
+            level=level,
+            easy=float(self.mask_s_easy),
+            hard=float(self.mask_s_hard),
+        )
+
+    def length_range_for(self, difficulty: float) -> tuple[int, int]:
+        level = self.level_for(difficulty)
+        lo = int(
+            round(
+                self._value_for_level(
+                    values=self.min_length_by_level,
+                    level=level,
+                    easy=float(self.min_length_easy),
+                    hard=float(self.min_length_hard),
+                )
+            )
+        )
+        hi = int(
+            round(
+                self._value_for_level(
+                    values=self.max_length_by_level,
+                    level=level,
+                    easy=float(self.max_length_easy),
+                    hard=float(self.max_length_hard),
+                )
+            )
+        )
+        return (max(1, lo), max(max(1, lo), hi))
+
+    @staticmethod
+    def level_for(difficulty: float) -> int:
         d = 0.0 if difficulty <= 0.0 else 1.0 if difficulty >= 1.0 else float(difficulty)
-        return float(self.mask_s_easy) + ((float(self.mask_s_hard) - float(self.mask_s_easy)) * d)
+        return max(1, min(10, int(round(d * 9.0)) + 1))
+
+    @staticmethod
+    def _value_for_level(
+        *,
+        values: tuple[int, ...] | tuple[float, ...],
+        level: int,
+        easy: float,
+        hard: float,
+    ) -> float:
+        if len(values) >= 10:
+            index = max(0, min(len(values) - 1, int(level) - 1))
+            return float(values[index])
+        difficulty = float(max(1, min(10, int(level))) - 1) / 9.0
+        return float(easy) + ((float(hard) - float(easy)) * difficulty)
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,8 +183,7 @@ class DigitRecognitionGenerator:
 
     def next_digit_string(self, *, difficulty: float) -> str:
         difficulty = 0.0 if difficulty <= 0.0 else 1.0 if difficulty >= 1.0 else float(difficulty)
-        lo = lerp_int(self._profile.min_length_easy, self._profile.min_length_hard, difficulty)
-        hi = lerp_int(self._profile.max_length_easy, self._profile.max_length_hard, difficulty)
+        lo, hi = self._profile.length_range_for(difficulty)
         n = int(self._rng.randint(lo, hi))
         return self._build_digit_string(length=n, difficulty=difficulty)
 
@@ -134,24 +197,37 @@ class DigitRecognitionGenerator:
             prompt = "ENTER THE DIGIT STRING:"
             expected = digits
             comparison_digits = None
+        elif kind is DigitRecognitionQuestionKind.COUNT_TARGET:
+            target = str(self._rng.randint(0, 9))
+            prompt = f"HOW MANY {target}s WERE THERE?"
+            expected = str(sum(1 for ch in digits if ch == target))
+            comparison_digits = None
+        elif kind is DigitRecognitionQuestionKind.DIFFERENT_DIGIT:
+            pos = int(self._rng.randint(0, n - 1))
+            original = digits[pos]
+            replacement_pool = self._replacement_pool(
+                digits=digits,
+                original_digit=original,
+                difficulty=difficulty,
+            )
+            changed = str(self._rng.choice(replacement_pool))
+            comparison_digits = digits[:pos] + changed + digits[pos + 1 :]
+            prompt = "SECOND STRING: WHAT DIGIT WAS DIFFERENT?"
+            expected = changed
         else:
-            if kind is DigitRecognitionQuestionKind.COUNT_TARGET:
-                target = str(self._rng.randint(0, 9))
-                prompt = f"HOW MANY {target}s WERE THERE?"
-                expected = str(sum(1 for ch in digits if ch == target))
-                comparison_digits = None
-            else:
-                pos = int(self._rng.randint(0, n - 1))
-                original = digits[pos]
+            diff_count = self._difference_count_for(difficulty=difficulty, length=n)
+            positions = tuple(self._rng.sample(tuple(range(n)), k=diff_count))
+            chars = list(digits)
+            for pos in positions:
                 replacement_pool = self._replacement_pool(
                     digits=digits,
-                    original_digit=original,
+                    original_digit=digits[pos],
                     difficulty=difficulty,
                 )
-                changed = str(self._rng.choice(replacement_pool))
-                comparison_digits = digits[:pos] + changed + digits[pos + 1 :]
-                prompt = "SECOND STRING: WHAT DIGIT WAS DIFFERENT?"
-                expected = changed
+                chars[pos] = str(self._rng.choice(replacement_pool))
+            comparison_digits = "".join(chars)
+            prompt = "SECOND STRING: HOW MANY DIGITS WERE DIFFERENT?"
+            expected = str(diff_count)
 
         self._index += 1
         return DigitRecognitionTrial(
@@ -169,12 +245,16 @@ class DigitRecognitionGenerator:
             DigitRecognitionQuestionKind.RECALL,
             DigitRecognitionQuestionKind.COUNT_TARGET,
             DigitRecognitionQuestionKind.DIFFERENT_DIGIT,
+            DigitRecognitionQuestionKind.DIFFERENCE_COUNT,
         ):
             if self._index % 2 == 0:
                 return DigitRecognitionQuestionKind.RECALL
-            if (self._index // 2) % 2 == 0:
-                return DigitRecognitionQuestionKind.COUNT_TARGET
-            return DigitRecognitionQuestionKind.DIFFERENT_DIGIT
+            families = (
+                DigitRecognitionQuestionKind.COUNT_TARGET,
+                DigitRecognitionQuestionKind.DIFFERENT_DIGIT,
+                DigitRecognitionQuestionKind.DIFFERENCE_COUNT,
+            )
+            return families[(self._index // 2) % len(families)]
         return DigitRecognitionQuestionKind(str(self._rng.choice(self._allowed_kinds)))
 
     def _build_digit_string(self, *, length: int, difficulty: float) -> str:
@@ -232,6 +312,16 @@ class DigitRecognitionGenerator:
             if preferred:
                 return preferred
         return [str(d) for d in range(10) if str(d) != original_digit]
+
+    def _difference_count_for(self, *, difficulty: float, length: int) -> int:
+        level = self._profile.level_for(difficulty)
+        if level <= 4:
+            target = 2
+        elif level <= 7:
+            target = 3
+        else:
+            target = 4
+        return max(2, min(max(2, int(length)), target))
 
 
 class DigitRecognitionTest:
@@ -472,7 +562,7 @@ class DigitRecognitionTest:
                     "Remember strings of digits of varying lengths.",
                     "Some questions ask you to retype the full string.",
                     "Others ask for information about it, such as counts or",
-                    "which digit changed between two similar strings.",
+                    "which digit changed or how many digits changed.",
                     "",
                     "Press Enter to start practice.",
                 ]
@@ -531,7 +621,7 @@ def build_digit_recognition_test(
     practice: bool = True,
     scored_duration_s: float = 360.0,
 ) -> DigitRecognitionTest:
-    profile = DigitRecognitionProfile()
+    profile = official_digit_recognition_profile()
     return DigitRecognitionTest(
         clock=clock,
         seed=seed,
@@ -541,4 +631,13 @@ def build_digit_recognition_test(
         display_s=profile.display_s_for(difficulty),
         mask_s=profile.mask_s_for(difficulty),
         profile=profile,
+    )
+
+
+def official_digit_recognition_profile() -> DigitRecognitionProfile:
+    return DigitRecognitionProfile(
+        min_length_by_level=_OFFICIAL_MIN_LENGTH_BY_LEVEL,
+        max_length_by_level=_OFFICIAL_MAX_LENGTH_BY_LEVEL,
+        display_s_by_level=_OFFICIAL_DISPLAY_S_BY_LEVEL,
+        mask_s_by_level=_OFFICIAL_MASK_S_BY_LEVEL,
     )

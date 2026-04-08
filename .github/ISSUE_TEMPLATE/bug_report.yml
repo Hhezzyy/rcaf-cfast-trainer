@@ -1,0 +1,91 @@
+name: Bug report
+description: Report a reproducible defect in the trainer UI, logic, rendering, or input flow.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use exact repro steps when possible. For UI or rendering issues, screenshots or short video clips are strongly preferred.
+
+  - type: textarea
+    id: current_behavior
+    attributes:
+      label: Current behavior
+      description: What is happening right now?
+      placeholder: The app opens the test, but the pause overlay renders behind the loading screen.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected_behavior
+    attributes:
+      label: Expected behavior
+      description: What should happen instead?
+      placeholder: The loading screen should clear before the pause menu can appear.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro_steps
+    attributes:
+      label: Exact repro steps
+      description: Provide a minimal, exact sequence that reproduces the issue.
+      placeholder: |
+        1. Launch `python -m cfast_trainer`
+        2. Open Tests > Target Recognition
+        3. Start practice
+        4. Press Escape during the loading transition
+      render: text
+    validations:
+      required: true
+
+  - type: dropdown
+    id: platform_scope
+    attributes:
+      label: Where does it occur?
+      description: Select the platform scope you tested.
+      options:
+        - macOS
+        - Windows
+        - Both macOS and Windows
+        - Unknown / only tested on one machine
+    validations:
+      required: true
+
+  - type: input
+    id: branch_commit
+    attributes:
+      label: Branch / commit tested
+      description: Include the branch name and commit SHA if available.
+      placeholder: main @ 8f4dea8
+    validations:
+      required: true
+
+  - type: textarea
+    id: hardware_used
+    attributes:
+      label: Hardware used
+      description: List the input hardware involved, even if the bug also reproduces with keyboard and mouse.
+      placeholder: |
+        - VKB Gladiator NXT EVO joystick
+        - Logitech Saitek Pro Rudder Pedals
+        - Logitech mouse and keyboard
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: screenshots_video
+    attributes:
+      label: Screenshots / video
+      description: Drag in screenshots or link a short video if the issue is visual, timing-related, or input-sensitive.
+      placeholder: Attach full-window screenshots when possible.
+
+  - type: textarea
+    id: additional_context
+    attributes:
+      label: Additional context
+      description: Optional notes such as renderer path, window mode, logs, or whether dummy/headless SDL was involved.
+

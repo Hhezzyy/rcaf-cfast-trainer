@@ -41,6 +41,7 @@ TEST_DIFFICULTY_OPTIONS: tuple[tuple[str, str], ...] = (
     ("dr_recall_run", "Digit Recognition: Recall Run"),
     ("dr_count_target", "Digit Recognition: Count Target"),
     ("dr_different_digit", "Digit Recognition: Different Digit"),
+    ("dr_difference_count", "Digit Recognition: Difference Count"),
     ("dr_grouped_family_run", "Digit Recognition: Grouped Family Run"),
     ("dr_mixed_pressure", "Digit Recognition: Mixed Pressure"),
     ("digit_recognition_workout", "Digit Recognition Workout"),
@@ -638,7 +639,7 @@ TEST_GUIDE_BRIEFS: dict[str, TestGuideBriefing] = {
     ),
     "dr_visible_family_primer": TestGuideBriefing(
         label="Digit Recognition: Visible Family Primer",
-        assessment="Timed Digit Recognition drill for visible-supported count-target and different-digit questions.",
+        assessment="Timed Digit Recognition drill for visible-supported count-target and string-comparison questions.",
         tasks=(
             "Touch the non-recall Digit Recognition families while the strings are still visible.",
             "Learn the family prompts before hidden-memory timing pressure starts.",
@@ -684,11 +685,23 @@ TEST_GUIDE_BRIEFS: dict[str, TestGuideBriefing] = {
         controls="Type the changed digit and press Enter.",
         app_flow="This drill reuses the real Digit Recognition show, mask, and question rhythm with workout-style feedback.",
     ),
+    "dr_difference_count": TestGuideBriefing(
+        label="Digit Recognition: Difference Count",
+        assessment="Timed Digit Recognition drill for hidden-memory difference-count judgments.",
+        tasks=(
+            "Compare two near-matching strings from memory and report how many positions changed.",
+            "Use a quick running tally so you do not drift into slow full-string reconstruction.",
+        ),
+        timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
+        prep="Guide preparation: none required.",
+        controls="Type the count and press Enter.",
+        app_flow="This drill reuses the real Digit Recognition show, mask, and question rhythm with workout-style feedback.",
+    ),
     "dr_grouped_family_run": TestGuideBriefing(
         label="Digit Recognition: Grouped Family Run",
         assessment="Timed Digit Recognition drill for grouped hidden-memory family runs.",
         tasks=(
-            "Run the live families in a fixed order: recall, count target, then different digit.",
+            "Run the live families in a fixed order: recall, count target, different digit, then difference count.",
             "Use the grouped order to stabilize each family before the final mixed pressure block.",
         ),
         timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
@@ -700,7 +713,7 @@ TEST_GUIDE_BRIEFS: dict[str, TestGuideBriefing] = {
         label="Digit Recognition: Mixed Pressure",
         assessment="Timed Digit Recognition drill for late-workout mixed-family hidden-memory pressure work.",
         tasks=(
-            "Switch across recall, count target, and different-digit prompts under the tightest timings in this library.",
+            "Switch across recall, count target, different-digit, and difference-count prompts under the tightest timings in this library.",
             "Accept misses fast and re-encode the next display immediately.",
         ),
         timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
@@ -713,7 +726,7 @@ TEST_GUIDE_BRIEFS: dict[str, TestGuideBriefing] = {
         assessment="Chained Digit Recognition workout with typed reflection, visible scaffold blocks, hidden-memory family runs, and a final mixed pressure block.",
         tasks=(
             "Start with typed focus prompts, then warm up with visible copy, position probes, and visible family primers.",
-            "Build into real hidden-memory recall, count-target, and different-digit work before ending on grouped and mixed pressure blocks.",
+            "Build into real hidden-memory recall, count-target, different-digit, and difference-count work before ending on grouped and mixed pressure blocks.",
         ),
         timing="Workout drill time: 90 minutes, plus opening and closing reflection outside the timed blocks.",
         prep="Guide preparation: know the Digit Recognition show, mask, and question rhythm first; the workout layers visible support before removing it.",

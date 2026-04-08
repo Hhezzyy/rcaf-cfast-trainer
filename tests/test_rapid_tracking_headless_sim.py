@@ -76,8 +76,8 @@ def test_headless_scripted_run_produces_expected_summary() -> None:
     assert 0.0 <= summary.obscured_tracking_ratio <= 1.0
     assert 0.0 <= summary.moving_target_ratio <= 1.0
     assert summary.max_score == pytest.approx(3.0)
-    assert summary.capture_points == 0
+    assert summary.capture_points == 1
     assert summary.capture_hits == 0
     assert summary.capture_attempts == 0
-    assert summary.capture_max_points == 0
-    assert summary.capture_score_ratio == pytest.approx(0.0)
+    assert summary.capture_max_points == 1
+    assert summary.capture_score_ratio == pytest.approx(1.0)

@@ -2,9 +2,18 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
+import sys
+from importlib.machinery import ModuleSpec
+from types import ModuleType
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+
+if "moderngl" not in sys.modules:
+    moderngl_stub = ModuleType("moderngl")
+    moderngl_stub.__spec__ = ModuleSpec("moderngl", loader=None)
+    sys.modules["moderngl"] = moderngl_stub
 
 import pygame
 
@@ -24,6 +33,8 @@ from cfast_trainer.app import (
 )
 from cfast_trainer.cognitive_core import Phase
 from cfast_trainer.cognitive_core import TestSnapshot as SnapshotModel
+from cfast_trainer.persistence import ResultsStore
+from cfast_trainer.rapid_tracking import build_rapid_tracking_test
 
 
 class _FakeEngine:
@@ -60,6 +71,14 @@ class _FakeEngine:
 
     def update(self) -> None:
         return None
+
+
+class _FakeClock:
+    def __init__(self) -> None:
+        self.t = 0.0
+
+    def now(self) -> float:
+        return self.t
 
 
 class _FailingRunScreen:
@@ -287,6 +306,107 @@ def test_present_renderer_failure_aborts_active_run_and_pushes_failure_screen() 
         assert failing.reasons == ["renderer_failure_abort"]
         assert len(app._screens) == 2
         assert isinstance(app._screens[-1], OpenGLFailureScreen)
+    finally:
+        pygame.quit()
+
+
+def test_present_renderer_failure_persists_diagnostic_record(tmp_path) -> None:
+    pygame.init()
+    try:
+        surface = pygame.display.set_mode((960, 540))
+        font = pygame.font.Font(None, 36)
+        store = ResultsStore(tmp_path / "results.sqlite3")
+        app = App(surface=surface, font=font, window_mode="windowed", results_store=store)
+        root = MenuScreen(app, "Main Menu", [MenuItem("Quit", app.quit)], is_root=True)
+        app.push(root)
+
+        app.present_renderer_failure(
+            OpenGLFailureInfo(
+                stage="render",
+                summary="Renderer failed.",
+                detail="The app could not continue while rendering the OpenGL frame.",
+                requested=True,
+                attempted=True,
+                scene="rapid_tracking",
+                path="modern_gl",
+                diagnostic_code="RT-REND-GL",
+                exception_type="RuntimeError",
+                location="modern_gl_renderer.py:245 in render_frame",
+                state={"renderer_gl_requested": True, "renderer_gl_attempted": True},
+            )
+        )
+
+        conn = sqlite3.connect(store.path)
+        try:
+            row = conn.execute(
+                """
+                SELECT category, subsystem, status, stage, diagnostic_code, exception_type, location, state_json
+                FROM app_diagnostic
+                ORDER BY id DESC
+                LIMIT 1
+                """
+            ).fetchone()
+        finally:
+            conn.close()
+
+        assert row is not None
+        assert row[0] == "renderer_failure"
+        assert row[1] == "rapid_tracking"
+        assert row[2] == "failed"
+        assert row[3] == "render"
+        assert row[4] == "RT-REND-GL"
+        assert row[5] == "RuntimeError"
+        assert row[6] == "modern_gl_renderer.py:245 in render_frame"
+        state = json.loads(row[7])
+        assert state["renderer_gl_requested"] is True
+        assert state["renderer_gl_attempted"] is True
+    finally:
+        pygame.quit()
+
+
+def test_rapid_tracking_requires_modern_gl_in_interactive_mode(monkeypatch, tmp_path) -> None:
+    pygame.init()
+    try:
+        surface = pygame.display.set_mode((960, 540))
+        font = pygame.font.Font(None, 36)
+        store = ResultsStore(tmp_path / "results.sqlite3")
+        app = App(surface=surface, font=font, window_mode="windowed", results_store=store)
+        root = MenuScreen(app, "Main Menu", [MenuItem("Quit", app.quit)], is_root=True)
+        app.push(root)
+        clock = _FakeClock()
+        screen = CognitiveTestScreen(
+            app,
+            engine_factory=lambda: build_rapid_tracking_test(clock=clock, seed=551, difficulty=0.5),
+            test_code="rapid_tracking",
+        )
+        app.push(screen)
+        monkeypatch.setattr(
+            CognitiveTestScreen,
+            "_rapid_tracking_requires_modern_gl",
+            lambda self: True,
+        )
+
+        app.render()
+
+        assert isinstance(app._screens[-1], OpenGLFailureScreen)
+        conn = sqlite3.connect(store.path)
+        try:
+            row = conn.execute(
+                """
+                SELECT subsystem, stage, diagnostic_code, detail
+                FROM app_diagnostic
+                ORDER BY id DESC
+                LIMIT 1
+                """
+            ).fetchone()
+        finally:
+            conn.close()
+
+        assert row is not None
+        assert row[0] == "rapid_tracking"
+        assert row[1] == "preflight"
+        assert row[2] == "RT-PREF-MODE"
+        assert "ModernGL renderer" in row[3]
     finally:
         pygame.quit()
 

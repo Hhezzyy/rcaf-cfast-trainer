@@ -86,8 +86,14 @@ def _complete_small_rt_workout(clock: FakeClock) -> AntWorkoutSession:
     session.activate()
     session.activate()
     _run_current_block(session, clock)
+    assert session.stage is AntWorkoutStage.BLOCK_RESULTS
+    session.activate()
+    assert session.stage is AntWorkoutStage.BLOCK_SETUP
     session.activate()
     _run_current_block(session, clock)
+    assert session.stage is AntWorkoutStage.BLOCK_RESULTS
+    session.activate()
+    assert session.stage is AntWorkoutStage.POST_REFLECTION
     session.append_text("mixed tempo needed quicker resets")
     session.activate()
     session.append_text("capture timing stayed mostly clean")

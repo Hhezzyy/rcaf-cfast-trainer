@@ -284,6 +284,7 @@ class DrVisibleFamilyPrimerGenerator(_BaseDigitRecognitionProblemGenerator):
                 allowed_kinds=(
                     DigitRecognitionQuestionKind.COUNT_TARGET,
                     DigitRecognitionQuestionKind.DIFFERENT_DIGIT,
+                    DigitRecognitionQuestionKind.DIFFERENCE_COUNT,
                 ),
                 min_length_easy=6,
                 min_length_hard=8,
@@ -413,11 +414,25 @@ class DrDifferentDigitGenerator(_HiddenMemoryFamilyGenerator):
         )
 
 
+class DrDifferenceCountGenerator(_HiddenMemoryFamilyGenerator):
+    def __init__(self, *, seed: int) -> None:
+        super().__init__(
+            seed=seed,
+            allowed_kinds=(DigitRecognitionQuestionKind.DIFFERENCE_COUNT,),
+            string_profile="noisy",
+            display_easy=1.55,
+            display_hard=0.58,
+            mask_easy=0.32,
+            mask_hard=0.12,
+        )
+
+
 class DrGroupedFamilyRunGenerator(_BaseDigitRecognitionProblemGenerator):
     _order = (
         DigitRecognitionQuestionKind.RECALL,
         DigitRecognitionQuestionKind.COUNT_TARGET,
         DigitRecognitionQuestionKind.DIFFERENT_DIGIT,
+        DigitRecognitionQuestionKind.DIFFERENCE_COUNT,
     )
 
     def __init__(self, *, seed: int, group_size: int = 2) -> None:
@@ -428,6 +443,7 @@ class DrGroupedFamilyRunGenerator(_BaseDigitRecognitionProblemGenerator):
             DigitRecognitionQuestionKind.RECALL: DrRecallRunGenerator(seed=seed + 101),
             DigitRecognitionQuestionKind.COUNT_TARGET: DrCountTargetGenerator(seed=seed + 202),
             DigitRecognitionQuestionKind.DIFFERENT_DIGIT: DrDifferentDigitGenerator(seed=seed + 303),
+            DigitRecognitionQuestionKind.DIFFERENCE_COUNT: DrDifferenceCountGenerator(seed=seed + 404),
         }
 
     def next_problem(self, *, difficulty: float) -> Problem:
@@ -448,6 +464,7 @@ class DrMixedPressureGenerator(_BaseDigitRecognitionProblemGenerator):
             DigitRecognitionQuestionKind.RECALL: DrRecallRunGenerator(seed=seed + 101),
             DigitRecognitionQuestionKind.COUNT_TARGET: DrCountTargetGenerator(seed=seed + 202),
             DigitRecognitionQuestionKind.DIFFERENT_DIGIT: DrDifferentDigitGenerator(seed=seed + 303),
+            DigitRecognitionQuestionKind.DIFFERENCE_COUNT: DrDifferenceCountGenerator(seed=seed + 404),
         }
 
     def next_problem(self, *, difficulty: float) -> Problem:
@@ -995,7 +1012,7 @@ def build_dr_visible_family_primer_drill(
         instructions=(
             "Digit Recognition: Visible Family Primer",
             f"Mode: {profile.label}",
-            "Touch the count-target and different-digit families while the strings are still visible.",
+            "Touch the count-target, different-digit, and difference-count families while the strings are still visible.",
             "Use this to learn the family prompts before the hidden-memory blocks remove the support.",
             "Press Enter to begin practice.",
         ),
@@ -1154,6 +1171,35 @@ def build_dr_different_digit_drill(
     )
 
 
+def build_dr_difference_count_drill(
+    *,
+    clock: Clock,
+    seed: int,
+    difficulty: float = 0.5,
+    mode: AntDrillMode | str = AntDrillMode.TEMPO,
+    config: DigitRecognitionDrillConfig | None = None,
+) -> DigitRecognitionTimedDrill:
+    cfg = config or DigitRecognitionDrillConfig()
+    profile = ANT_DRILL_MODE_PROFILES[_normalize_mode(mode)]
+    return _build_drill(
+        title_base="Digit Recognition: Difference Count",
+        instructions=(
+            "Digit Recognition: Difference Count",
+            f"Mode: {profile.label}",
+            "Compare the remembered strings and answer how many positions changed before the display fades from working memory.",
+            "Use a quick left-to-right tally instead of re-solving the whole string from scratch.",
+            "Press Enter to begin practice.",
+        ),
+        generator=DrDifferenceCountGenerator(seed=seed),
+        clock=clock,
+        seed=seed,
+        difficulty=difficulty,
+        mode=mode,
+        config=cfg,
+        base_question_caps_by_level=(12.0, 11.0, 10.5, 10.0, 9.0, 8.5, 7.5, 6.5, 6.0, 5.5),
+    )
+
+
 def build_dr_grouped_family_run_drill(
     *,
     clock: Clock,
@@ -1169,7 +1215,7 @@ def build_dr_grouped_family_run_drill(
         instructions=(
             "Digit Recognition: Grouped Family Run",
             f"Mode: {profile.label}",
-            "Hidden-memory family chunks arrive in a fixed order: recall, count target, then different digit.",
+            "Hidden-memory family chunks arrive in a fixed order: recall, count target, different digit, then difference count.",
             "Use the grouped order to stabilize each family before the late mixed block.",
             "Press Enter to begin practice.",
         ),
@@ -1198,7 +1244,7 @@ def build_dr_mixed_pressure_drill(
         instructions=(
             "Digit Recognition: Mixed Pressure",
             f"Mode: {profile.label}",
-            "All three hidden-memory families rotate under the shortest display, mask, and answer timings in this library.",
+            "All four hidden-memory families rotate under the shortest display, mask, and answer timings in this library.",
             "Recover immediately after misses and let the next-item banner reset you.",
             "Press Enter to begin practice.",
         ),

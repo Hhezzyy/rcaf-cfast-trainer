@@ -106,7 +106,7 @@ def test_mixed_tempo_emits_both_live_visual_search_families() -> None:
     }
 
 
-def test_standard_visual_search_drills_top_out_at_5x5() -> None:
+def test_standard_visual_search_drills_top_out_at_7x6() -> None:
     builders = (
         build_vs_target_preview_drill,
         build_vs_clean_scan_drill,
@@ -118,7 +118,7 @@ def test_standard_visual_search_drills_top_out_at_5x5() -> None:
         engine.start_scored()
         payload = engine._current.payload
         assert isinstance(payload, VisualSearchPayload)
-        assert (payload.rows, payload.cols) == (5, 5)
+        assert (payload.rows, payload.cols) == (7, 6)
 
     clock = FakeClock()
     mixed_engine = build_vs_mixed_tempo_drill(clock=clock, seed=61, difficulty=_difficulty_for_level(10))
@@ -129,7 +129,7 @@ def test_standard_visual_search_drills_top_out_at_5x5() -> None:
         assert isinstance(payload, VisualSearchPayload)
         mixed_shapes.add((payload.rows, payload.cols))
         assert mixed_engine.submit_answer(str(mixed_engine._current.answer)) is True
-    assert mixed_shapes >= {(4, 5), (5, 5)}
+    assert mixed_shapes >= {(5, 6), (7, 6)}
 
     for kind in (VisualSearchTaskKind.ALPHANUMERIC, VisualSearchTaskKind.SYMBOL_CODE):
         clock = FakeClock()
@@ -143,9 +143,14 @@ def test_standard_visual_search_drills_top_out_at_5x5() -> None:
         engine.start_scored()
         payload = engine._current.payload
         assert isinstance(payload, VisualSearchPayload)
-        assert (payload.rows, payload.cols) == (5, 5)
-        assert len(set(payload.cells)) == len(payload.cells)
-        assert all("@" in token for token in payload.cells)
+        assert (payload.rows, payload.cols) == (7, 6)
+        if kind is VisualSearchTaskKind.SYMBOL_CODE:
+            assert len(set(payload.cells)) == len(payload.cells)
+            assert all("@" in token for token in payload.cells)
+        else:
+            assert len(payload.target) == 4
+            assert all("@" not in token for token in payload.cells)
+            assert all(len(token) == 4 for token in payload.cells)
 
 
 def _difficulty_for_level(level: int) -> float:
@@ -256,38 +261,43 @@ def test_wave1_visual_search_drills_top_out_at_5x6_with_unique_l10_boards() -> N
         assert any("+" in token for token in payload.cells)
 
 
-def test_standard_visual_search_drills_switch_to_same_base_overload_at_l9_l10() -> None:
-    builders = (
-        build_vs_target_preview_drill,
-        build_vs_clean_scan_drill,
-        build_vs_pressure_run_drill,
-    )
+def test_symbol_family_run_switches_to_same_base_overload_at_l9_l10() -> None:
     for level in (9, 10):
-        for builder in builders:
-            clock = FakeClock()
-            engine = builder(clock=clock, seed=271, difficulty=_difficulty_for_level(level))
-            engine.start_scored()
-            payload = engine._current.payload
-            assert isinstance(payload, VisualSearchPayload)
-            assert len(_bases(payload)) == 1
-            assert VisualSearchGenerator.token_base(payload.target) in _bases(payload)
-            assert all("@" in token for token in payload.cells)
-            assert any("+" in token for token in payload.cells)
+        clock = FakeClock()
+        engine = build_vs_family_run_drill(
+            clock=clock,
+            seed=281,
+            kind=VisualSearchTaskKind.SYMBOL_CODE,
+            difficulty=_difficulty_for_level(level),
+            mode=AntDrillMode.STRESS,
+        )
+        engine.start_scored()
+        payload = engine._current.payload
+        assert isinstance(payload, VisualSearchPayload)
+        assert len(_bases(payload)) == 1
+        assert VisualSearchGenerator.token_base(payload.target) in _bases(payload)
+        assert all("@" in token for token in payload.cells)
+        assert any("+" in token for token in payload.cells)
 
-        for kind in (VisualSearchTaskKind.ALPHANUMERIC, VisualSearchTaskKind.SYMBOL_CODE):
-            clock = FakeClock()
-            engine = build_vs_family_run_drill(
-                clock=clock,
-                seed=281,
-                kind=kind,
-                difficulty=_difficulty_for_level(level),
-                mode=AntDrillMode.STRESS,
-            )
-            engine.start_scored()
-            payload = engine._current.payload
-            assert isinstance(payload, VisualSearchPayload)
-            assert len(_bases(payload)) == 1
-            assert VisualSearchGenerator.token_base(payload.target) in _bases(payload)
+
+def test_letter_family_run_uses_string_targets_at_l9_l10() -> None:
+    expected_lengths = {9: 3, 10: 4}
+    for level, expected_length in expected_lengths.items():
+        clock = FakeClock()
+        engine = build_vs_family_run_drill(
+            clock=clock,
+            seed=282,
+            kind=VisualSearchTaskKind.ALPHANUMERIC,
+            difficulty=_difficulty_for_level(level),
+            mode=AntDrillMode.STRESS,
+        )
+        engine.start_scored()
+        payload = engine._current.payload
+        assert isinstance(payload, VisualSearchPayload)
+        assert len(payload.target) == expected_length
+        assert all("@" not in token for token in payload.cells)
+        assert all(len(token) == expected_length for token in payload.cells)
+        assert len(set(payload.cells)) == len(payload.cells)
 
 
 def test_wave1_visual_search_drills_switch_from_mixed_bases_at_l8_to_same_base_at_l9() -> None:

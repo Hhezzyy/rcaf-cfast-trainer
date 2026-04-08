@@ -40,14 +40,22 @@ def test_generator_determinism_same_seed_same_sequence() -> None:
     ]
 
 
+def _assert_valid_block_codes(payload: VisualSearchPayload) -> None:
+    cell_count = payload.rows * payload.cols
+    assert len(payload.cell_codes) == cell_count
+    assert len(set(payload.cell_codes)) == cell_count
+    assert all(10 <= code <= 99 for code in payload.cell_codes)
+    assert all(len(str(code)) == 2 for code in payload.cell_codes)
+
+
 def test_generated_answer_matches_target_block_code() -> None:
     gen = VisualSearchGenerator(seed=123)
     p = gen.next_problem(difficulty=0.5)
     payload = p.payload
     assert isinstance(payload, VisualSearchPayload)
     assert payload.rows == 4
-    assert payload.cols == 4
-    assert sorted(payload.cell_codes) == list(range(10, 26))
+    assert payload.cols == 5
+    _assert_valid_block_codes(payload)
 
     target_indices = [i for i, tok in enumerate(payload.cells) if tok == payload.target]
     assert len(target_indices) == 1
@@ -65,12 +73,12 @@ def test_block_numbers_move_between_questions() -> None:
 
     assert isinstance(first_payload, VisualSearchPayload)
     assert isinstance(second_payload, VisualSearchPayload)
-    assert sorted(first_payload.cell_codes) == list(range(10, 26))
-    assert sorted(second_payload.cell_codes) == list(range(10, 26))
+    _assert_valid_block_codes(first_payload)
+    _assert_valid_block_codes(second_payload)
     assert first_payload.cell_codes != second_payload.cell_codes
 
 
-def test_official_grid_scales_from_3x4_to_4x5() -> None:
+def test_official_grid_scales_from_3x4_to_7x6() -> None:
     gen = VisualSearchGenerator(seed=321)
 
     low_payload = gen.next_problem(difficulty=0.0).payload
@@ -79,8 +87,8 @@ def test_official_grid_scales_from_3x4_to_4x5() -> None:
     assert isinstance(low_payload, VisualSearchPayload)
     assert isinstance(high_payload, VisualSearchPayload)
     assert (low_payload.rows, low_payload.cols) == (3, 4)
-    assert (high_payload.rows, high_payload.cols) == (4, 5)
-    assert sorted(high_payload.cell_codes) == list(range(10, 30))
+    assert (high_payload.rows, high_payload.cols) == (7, 6)
+    _assert_valid_block_codes(high_payload)
 
 
 def _difficulty_for_level(level: int) -> float:
@@ -96,8 +104,14 @@ def test_level_8_still_uses_mixed_base_high_band_before_same_base_overload() -> 
     assert len({VisualSearchGenerator.token_base(token) for token in payload.cells}) > 1
 
 
-def test_level_9_official_visual_search_switches_to_same_base_overload() -> None:
-    gen = VisualSearchGenerator(seed=654)
+def test_level_9_symbol_family_switches_to_same_base_overload() -> None:
+    gen = VisualSearchGenerator(
+        seed=654,
+        profile=VisualSearchProfile(
+            allowed_kinds=(VisualSearchTaskKind.SYMBOL_CODE,),
+            high_band_symbol_only=False,
+        ),
+    )
     payload = gen.next_problem(difficulty=_difficulty_for_level(9)).payload
 
     assert isinstance(payload, VisualSearchPayload)
@@ -106,8 +120,14 @@ def test_level_9_official_visual_search_switches_to_same_base_overload() -> None
     assert any("+" in token for token in payload.cells)
 
 
-def test_level_10_official_visual_search_uses_unique_same_base_symbol_boards() -> None:
-    gen = VisualSearchGenerator(seed=654)
+def test_level_10_symbol_family_uses_unique_same_base_boards() -> None:
+    gen = VisualSearchGenerator(
+        seed=654,
+        profile=VisualSearchProfile(
+            allowed_kinds=(VisualSearchTaskKind.SYMBOL_CODE,),
+            high_band_symbol_only=False,
+        ),
+    )
     payload = gen.next_problem(difficulty=1.0).payload
 
     assert isinstance(payload, VisualSearchPayload)
@@ -118,7 +138,43 @@ def test_level_10_official_visual_search_uses_unique_same_base_symbol_boards() -
     target_base = VisualSearchGenerator.token_base(payload.target)
     assert all(VisualSearchGenerator.token_base(token) == target_base for token in payload.cells)
     assert any("+" in token for token in payload.cells)
-    assert all(len(str(code)) == 2 for code in payload.cell_codes)
+    _assert_valid_block_codes(payload)
+
+
+def test_level_9_alphanumeric_family_uses_three_character_string_boards() -> None:
+    gen = VisualSearchGenerator(
+        seed=765,
+        profile=VisualSearchProfile(
+            allowed_kinds=(VisualSearchTaskKind.ALPHANUMERIC,),
+            high_band_symbol_only=False,
+        ),
+    )
+    payload = gen.next_problem(difficulty=_difficulty_for_level(9)).payload
+
+    assert isinstance(payload, VisualSearchPayload)
+    assert payload.kind is VisualSearchTaskKind.ALPHANUMERIC
+    assert len(payload.target) == 3
+    assert all("@" not in token for token in payload.cells)
+    assert all(len(token) == 3 for token in payload.cells)
+    assert len(set(payload.cells)) == len(payload.cells)
+
+
+def test_level_10_alphanumeric_family_uses_four_character_string_boards() -> None:
+    gen = VisualSearchGenerator(
+        seed=766,
+        profile=VisualSearchProfile(
+            allowed_kinds=(VisualSearchTaskKind.ALPHANUMERIC,),
+            high_band_symbol_only=False,
+        ),
+    )
+    payload = gen.next_problem(difficulty=1.0).payload
+
+    assert isinstance(payload, VisualSearchPayload)
+    assert payload.kind is VisualSearchTaskKind.ALPHANUMERIC
+    assert len(payload.target) == 4
+    assert all("@" not in token for token in payload.cells)
+    assert all(len(token) == 4 for token in payload.cells)
+    assert len(set(payload.cells)) == len(payload.cells)
 
 
 def test_profile_restricts_generator_to_selected_family() -> None:
@@ -138,8 +194,12 @@ def test_profile_restricts_generator_to_selected_family() -> None:
 
 
 def test_top_band_same_base_rule_is_stricter_than_mid_band_similarity() -> None:
-    low_gen = VisualSearchGenerator(seed=4321)
-    high_gen = VisualSearchGenerator(seed=4321)
+    profile = VisualSearchProfile(
+        allowed_kinds=(VisualSearchTaskKind.SYMBOL_CODE,),
+        high_band_symbol_only=False,
+    )
+    low_gen = VisualSearchGenerator(seed=4321, profile=profile)
+    high_gen = VisualSearchGenerator(seed=4321, profile=profile)
 
     low_payload = low_gen.next_problem(difficulty=_difficulty_for_level(8)).payload
     high_payload = high_gen.next_problem(difficulty=_difficulty_for_level(9)).payload

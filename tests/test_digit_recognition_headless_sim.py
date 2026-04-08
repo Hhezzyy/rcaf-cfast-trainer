@@ -7,6 +7,7 @@ from cfast_trainer.digit_recognition import (
     DigitRecognitionGenerator,
     DigitRecognitionQuestionKind,
     build_digit_recognition_test,
+    official_digit_recognition_profile,
 )
 
 
@@ -22,17 +23,18 @@ class FakeClock:
 
 
 def _advance_to_question(clock: FakeClock, engine) -> None:
-    clock.advance(1.3)
+    clock.advance(engine._display_s + 0.05)
     engine.update()
-    clock.advance(0.3)
+    clock.advance(engine._mask_s + 0.05)
     engine.update()
 
 
 def test_headless_sim_practice_then_scored_mixed_correctness() -> None:
     seed = 99
     clock = FakeClock()
+    profile = official_digit_recognition_profile()
 
-    mirror = DigitRecognitionGenerator(SeededRng(seed))
+    mirror = DigitRecognitionGenerator(SeededRng(seed), profile=profile)
     practice = [mirror.next_trial(difficulty=0.5) for _ in range(3)]
     scored = [mirror.next_trial(difficulty=0.5) for _ in range(4)]
 
@@ -79,7 +81,7 @@ def test_headless_sim_practice_then_scored_mixed_correctness() -> None:
 def test_difference_trial_payload_shows_two_strings() -> None:
     seed = 77
     clock = FakeClock()
-    mirror = DigitRecognitionGenerator(SeededRng(seed))
+    mirror = DigitRecognitionGenerator(SeededRng(seed), profile=official_digit_recognition_profile())
 
     target = None
     for _ in range(8):

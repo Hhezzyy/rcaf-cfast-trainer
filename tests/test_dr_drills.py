@@ -10,9 +10,11 @@ from cfast_trainer.digit_recognition import (
     DigitRecognitionTrainingSpec,
 )
 from cfast_trainer.dr_drills import (
+    DrDifferenceCountGenerator,
     DrGroupedFamilyRunGenerator,
     DrMixedPressureGenerator,
     DrRecallRunGenerator,
+    build_dr_difference_count_drill,
     build_dr_position_probe_drill,
     build_dr_recall_after_interference_drill,
     build_dr_recall_run_drill,
@@ -74,9 +76,13 @@ def test_visible_family_primer_uses_visible_supported_non_recall_families() -> N
     assert spec.kind in {
         DigitRecognitionQuestionKind.COUNT_TARGET,
         DigitRecognitionQuestionKind.DIFFERENT_DIGIT,
+        DigitRecognitionQuestionKind.DIFFERENCE_COUNT,
     }
     assert spec.keep_display_visible_during_question is True
-    if spec.kind is DigitRecognitionQuestionKind.DIFFERENT_DIGIT:
+    if spec.kind in {
+        DigitRecognitionQuestionKind.DIFFERENT_DIGIT,
+        DigitRecognitionQuestionKind.DIFFERENCE_COUNT,
+    }:
         assert len(spec.display_lines) == 2
 
 
@@ -107,7 +113,7 @@ def test_grouped_family_run_preserves_fixed_family_order() -> None:
     generator = DrGroupedFamilyRunGenerator(seed=55)
     families = [
         cast(DigitRecognitionTrainingSpec, generator.next_problem(difficulty=0.5).payload).kind
-        for _ in range(6)
+        for _ in range(8)
     ]
 
     assert families == [
@@ -117,10 +123,12 @@ def test_grouped_family_run_preserves_fixed_family_order() -> None:
         DigitRecognitionQuestionKind.COUNT_TARGET,
         DigitRecognitionQuestionKind.DIFFERENT_DIGIT,
         DigitRecognitionQuestionKind.DIFFERENT_DIGIT,
+        DigitRecognitionQuestionKind.DIFFERENCE_COUNT,
+        DigitRecognitionQuestionKind.DIFFERENCE_COUNT,
     ]
 
 
-def test_mixed_pressure_emits_all_three_families() -> None:
+def test_mixed_pressure_emits_all_four_families() -> None:
     generator = DrMixedPressureGenerator(seed=61)
     families = {
         cast(DigitRecognitionTrainingSpec, generator.next_problem(difficulty=0.8).payload).kind
@@ -131,7 +139,30 @@ def test_mixed_pressure_emits_all_three_families() -> None:
         DigitRecognitionQuestionKind.RECALL,
         DigitRecognitionQuestionKind.COUNT_TARGET,
         DigitRecognitionQuestionKind.DIFFERENT_DIGIT,
+        DigitRecognitionQuestionKind.DIFFERENCE_COUNT,
     }
+
+
+def test_difference_count_drill_uses_hidden_two_string_comparison() -> None:
+    clock = FakeClock()
+    engine = build_dr_difference_count_drill(clock=clock, seed=63, difficulty=0.7)
+
+    engine.start_practice()
+    spec = cast(DigitRecognitionTrainingSpec, engine._current.payload)
+
+    assert spec.kind is DigitRecognitionQuestionKind.DIFFERENCE_COUNT
+    assert len(spec.display_lines) == 2
+    assert spec.keep_display_visible_during_question is False
+
+
+def test_difference_count_generator_harder_difficulty_raises_count_or_pressure() -> None:
+    generator = DrDifferenceCountGenerator(seed=75)
+
+    low = cast(DigitRecognitionTrainingSpec, generator.next_problem(difficulty=0.1).payload)
+    high = cast(DigitRecognitionTrainingSpec, generator.next_problem(difficulty=0.9).payload)
+
+    assert int(high.expected_digits) >= int(low.expected_digits)
+    assert high.initial_display_s <= low.initial_display_s
 
 
 def test_recall_generator_harder_difficulty_uses_longer_strings_and_shorter_timings() -> None:

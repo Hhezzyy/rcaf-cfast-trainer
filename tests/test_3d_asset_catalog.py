@@ -160,7 +160,7 @@ def test_repo_manifest_includes_rapid_tracking_foliage_assets() -> None:
         assert resolved.exists()
 
 
-def test_repo_manifest_declares_builtin_modern_renderer_assets() -> None:
+def test_repo_manifest_declares_builtin_modern_renderer_fallback_assets() -> None:
     catalog = RenderAssetCatalog(asset_root=default_asset_root())
 
     expected_builtin_ids = {
@@ -180,5 +180,17 @@ def test_repo_manifest_declares_builtin_modern_renderer_assets() -> None:
     }
 
     for asset_id in expected_builtin_ids:
+        entry = catalog.entry(asset_id)
         source = catalog.require(asset_id)
-        assert source.is_builtin is True
+
+        assert entry is not None
+        assert entry.builtin_kind is not None
+        if entry.candidates:
+            assert source.path is not None
+            assert source.path.exists()
+            assert source.is_builtin is False
+            assert source.builtin_kind is None
+        else:
+            assert source.is_builtin is True
+            assert source.builtin_kind == entry.builtin_kind
+            assert source.path is None

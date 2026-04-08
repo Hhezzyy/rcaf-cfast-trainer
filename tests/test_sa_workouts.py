@@ -77,19 +77,35 @@ def _complete_small_sa_workout(clock: FakeClock) -> AntWorkoutSession:
         plan=_build_small_sa_workout_plan(),
         starting_level=5,
     )
-    session.activate()
-    session.append_text("stay ahead of the picture")
-    session.activate()
-    session.append_text("reset on every new query")
-    session.activate()
-    session.activate()
-    _run_current_block(session, clock)
-    session.activate()
-    _run_current_block(session, clock)
-    session.append_text("status recall stayed clean")
-    session.activate()
-    session.append_text("mixed prompts needed faster resets")
-    session.activate()
+    reflection_text = {
+        AntWorkoutStage.PRE_REFLECTION: (
+            "stay ahead of the picture",
+            "reset on every new query",
+        ),
+        AntWorkoutStage.POST_REFLECTION: (
+            "status recall stayed clean",
+            "mixed prompts needed faster resets",
+        ),
+    }
+    reflection_index = {
+        AntWorkoutStage.PRE_REFLECTION: 0,
+        AntWorkoutStage.POST_REFLECTION: 0,
+    }
+
+    while session.stage is not AntWorkoutStage.RESULTS:
+        if session.stage in (AntWorkoutStage.INTRO, AntWorkoutStage.BLOCK_SETUP, AntWorkoutStage.BLOCK_RESULTS):
+            session.activate()
+            continue
+        if session.stage is AntWorkoutStage.BLOCK:
+            _run_current_block(session, clock)
+            continue
+        if session.stage in (AntWorkoutStage.PRE_REFLECTION, AntWorkoutStage.POST_REFLECTION):
+            idx = reflection_index[session.stage]
+            session.append_text(reflection_text[session.stage][idx])
+            reflection_index[session.stage] = idx + 1
+            session.activate()
+            continue
+
     assert session.stage is AntWorkoutStage.RESULTS
     return session
 
@@ -125,8 +141,8 @@ def test_real_sa_workout_matches_standard_90_minute_structure() -> None:
     assert {
         "Picture tracking",
         "Contact identification",
-        "Status recall",
-        "Future projection",
-        "Intervention selection",
+        "Report correlation",
+        "Route tracking",
+        "Action selection",
         "Pressure tolerance",
     }.issubset(set(plan.focus_skills))

@@ -16,14 +16,14 @@ from .cognitive_core import (
 _OFFICIAL_GRID_BY_LEVEL: tuple[tuple[int, int], ...] = (
     (3, 4),
     (3, 4),
-    (3, 4),
-    (4, 4),
-    (4, 4),
     (4, 4),
     (4, 4),
     (4, 5),
     (4, 5),
-    (4, 5),
+    (5, 5),
+    (5, 6),
+    (6, 6),
+    (7, 6),
 )
 _VISUAL_SEARCH_VARIANT_MARKS: tuple[str, ...] = (
     "T",
@@ -73,7 +73,7 @@ class VisualSearchProfile:
     grid_by_level: tuple[tuple[int, int], ...] = _OFFICIAL_GRID_BY_LEVEL
     high_band_unique_level: int = 8
     same_base_overload_level: int = 9
-    high_band_symbol_only: bool = True
+    high_band_symbol_only: bool = False
     variant_marks: tuple[str, ...] = _VISUAL_SEARCH_VARIANT_MARKS
 
 
@@ -146,6 +146,10 @@ class VisualSearchGenerator:
         ("BOX", "TRIANGLE", "RING_SPOKE"),
         ("S_BEND", "LOLLIPOP"),
     )
+    _ALPHANUMERIC_STRING_BY_LEVEL = {
+        9: 3,
+        10: 4,
+    }
 
     def __init__(self, *, seed: int, profile: VisualSearchProfile | None = None) -> None:
         self._rng = SeededRng(seed)
@@ -161,9 +165,17 @@ class VisualSearchGenerator:
         cell_count = rows * cols
 
         bank = self._token_bank(kind)
+        string_length = self._string_length_for(kind=kind, level=level)
         target_base = str(self._rng.choice(bank))
         same_base_level = max(1, int(self._profile.same_base_overload_level))
-        if level >= same_base_level:
+        if string_length > 1:
+            target, cells = self._build_high_difficulty_string_board(
+                count=cell_count,
+                length=string_length,
+                level=level,
+            )
+            target_idx = cells.index(target)
+        elif level >= same_base_level:
             target, cells = self._build_same_base_overload_board(
                 kind=kind,
                 target_base=target_base,
@@ -192,8 +204,7 @@ class VisualSearchGenerator:
             cells[target_idx] = target
 
         # Visible per-cell numeric labels that the user types as the answer.
-        code_pool = tuple(range(10, 10 + cell_count))
-        cell_codes = tuple(int(v) for v in self._rng.sample(code_pool, k=cell_count))
+        cell_codes = self._build_cell_codes(count=cell_count)
         correct_code = int(cell_codes[target_idx])
 
         full_credit_error = 0
@@ -221,6 +232,17 @@ class VisualSearchGenerator:
         index = max(0, min(len(shapes) - 1, int(level) - 1))
         rows, cols = shapes[index]
         return (max(1, int(rows)), max(1, int(cols)))
+
+    def _string_length_for(self, *, kind: VisualSearchTaskKind, level: int) -> int:
+        if kind is not VisualSearchTaskKind.ALPHANUMERIC:
+            return 0
+        return int(self._ALPHANUMERIC_STRING_BY_LEVEL.get(int(level), 0))
+
+    def _build_cell_codes(self, *, count: int, rng: SeededRng | None = None) -> tuple[int, ...]:
+        active_rng = self._rng if rng is None else rng
+        needed = max(1, int(count))
+        code_pool = tuple(range(10, 100))
+        return tuple(int(v) for v in active_rng.sample(code_pool, k=needed))
 
     def _pick_kind(self, *, difficulty: float, level: int) -> VisualSearchTaskKind:
         if (
@@ -344,6 +366,61 @@ class VisualSearchGenerator:
         cells.append(target)
         cells = [str(token) for token in self._rng.sample(tuple(cells), k=len(cells))]
         return target, cells
+
+    def _build_high_difficulty_string_board(
+        self,
+        *,
+        count: int,
+        length: int,
+        level: int,
+    ) -> tuple[str, list[str]]:
+        char_pool = self._ALPHANUMERIC_TOKENS
+        target = self._build_string_token(length=length)
+        distractors: list[str] = []
+        seen = {target}
+        positions = tuple(range(max(1, int(length))))
+        while len(distractors) < max(0, int(count) - 1):
+            max_changes = 1 if level <= 9 and len(distractors) < max(1, int(count) // 2) else 2
+            change_count = min(
+                len(positions),
+                1 if max_changes <= 1 or self._rng.random() < 0.72 else 2,
+            )
+            chosen_positions = tuple(self._rng.sample(positions, k=change_count))
+            chars = list(target)
+            for pos in chosen_positions:
+                current = target[pos]
+                replacement_pool = self._string_confusable_chars(current)
+                if not replacement_pool:
+                    replacement_pool = tuple(ch for ch in char_pool if ch != current)
+                chars[pos] = str(self._rng.choice(replacement_pool))
+            candidate = "".join(chars)
+            if candidate in seen:
+                fallback = self._build_string_token(length=length)
+                if fallback in seen:
+                    continue
+                candidate = fallback
+            seen.add(candidate)
+            distractors.append(candidate)
+        cells = list(distractors)
+        cells.append(target)
+        cells = [str(token) for token in self._rng.sample(tuple(cells), k=len(cells))]
+        return target, cells
+
+    def _build_string_token(self, *, length: int) -> str:
+        length = max(1, int(length))
+        chars = [str(self._rng.choice(self._ALPHANUMERIC_TOKENS)) for _ in range(length)]
+        if length > 1 and len(set(chars)) == 1:
+            replacement_pool = tuple(ch for ch in self._ALPHANUMERIC_TOKENS if ch != chars[-1])
+            chars[-1] = str(self._rng.choice(replacement_pool))
+        return "".join(chars)
+
+    def _string_confusable_chars(self, token: str) -> tuple[str, ...]:
+        base = str(token)
+        for cluster in self._LETTER_CONFUSABLE_CLUSTERS:
+            if base not in cluster:
+                continue
+            return tuple(ch for ch in cluster if ch != base)
+        return tuple(ch for ch in self._ALPHANUMERIC_TOKENS if ch != base)
 
     def _high_band_base_pool(
         self,

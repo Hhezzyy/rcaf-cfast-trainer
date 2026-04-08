@@ -30,8 +30,8 @@ def build_sa_workout_plan(*, duration_scale: float = 1.0) -> AntWorkoutPlan:
         _block(
             "picture_anchor",
             "Picture Anchor Warm-Up",
-            "Warm up the sparse grid first so current and near-future location work settles before the heavier memory blocks.",
-            ("Picture tracking", "Contact stabilization"),
+            "Warm up the sparse grid first so current location, side, and vehicle recognition settle before the heavier report blocks.",
+            ("Picture tracking", "Identity stabilization"),
             "sa_picture_anchor",
             AntDrillMode.BUILD,
             10 * scale,
@@ -39,26 +39,26 @@ def build_sa_workout_plan(*, duration_scale: float = 1.0) -> AntWorkoutPlan:
         _block(
             "contact_identification",
             "Contact Identification Prime",
-            "Match callsigns to the correct fading contact until the cue-card and grid flashes feel automatic.",
-            ("Contact identification", "Index-panel reading"),
+            "Match callsigns to side and vehicle type until the cue-card and grid flashes feel automatic.",
+            ("Contact identification", "Type and side reading"),
             "sa_contact_identification_prime",
             AntDrillMode.BUILD,
             10 * scale,
         ),
         _block(
             "status_recall",
-            "Status Recall Prime",
-            "Train channel, altitude, ETA, and waypoint recall from short cue-card flashes and radio chatter before the route block tightens up.",
-            ("Status recall", "Coded-state tracking"),
+            "Report Correlation Prime",
+            "Train sighting-grid, variation, and rule-call recall from short cue-card flashes and radio chatter before the route block tightens up.",
+            ("Report correlation", "Coded-state tracking"),
             "sa_status_recall_prime",
             AntDrillMode.BUILD,
             10 * scale,
         ),
         _block(
             "future_projection",
-            "Future Projection Run",
-            "Project route and handoff updates forward after the last cue has already faded.",
-            ("Future projection", "Route forecasting"),
+            "Route Tracking Run",
+            "Separate ordered destination from actual movement after the last cue has already faded.",
+            ("Route tracking", "Intent vs movement"),
             "sa_future_projection_run",
             AntDrillMode.BUILD,
             10 * scale,
@@ -66,8 +66,8 @@ def build_sa_workout_plan(*, duration_scale: float = 1.0) -> AntWorkoutPlan:
         _block(
             "action_selection",
             "Action Selection Run",
-            "Bring safe-move judgments online once the core hidden-picture skills are warm.",
-            ("Intervention selection", "Priority control"),
+            "Bring rule-based action judgments online once the core hidden-picture skills are warm.",
+            ("Action selection", "Priority control"),
             "sa_action_selection_run",
             AntDrillMode.TEMPO,
             10 * scale,
@@ -105,12 +105,12 @@ def build_sa_workout_plan(*, duration_scale: float = 1.0) -> AntWorkoutPlan:
         title="Situational Awareness Workout (90m)",
         description=(
             "Standard 90-minute Situational Awareness workout with typed reflection, sparse-picture anchors, "
-            "family and query switching, and a final full-pressure hidden-state run."
+            "report and route correlation, family and query switching, and a final full-pressure hidden-state run."
         ),
         notes=(
             "Typed reflections and block setup screens do not count toward the 90-minute drill clock.",
-            "Every block reuses the live continuous Situational Awareness screen with fading cues and direct-response queries.",
-            "Controls stay the live model throughout: click or type grid cells, then answer choice prompts with click or 1-4.",
+            "Every block reuses the live continuous Situational Awareness screen with fading cues, radio chatter, and direct-response queries.",
+            "Controls stay the live model throughout: click or type grid cells, then answer choice prompts with click or 1-5.",
         ),
         blocks=blocks,
     )

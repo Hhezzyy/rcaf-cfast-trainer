@@ -1,12 +1,20 @@
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass
+from importlib.machinery import ModuleSpec
 from types import SimpleNamespace
+from types import ModuleType
 from typing import cast
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+
+if "moderngl" not in sys.modules:
+    moderngl_stub = ModuleType("moderngl")
+    moderngl_stub.__spec__ = ModuleSpec("moderngl", loader=None)
+    sys.modules["moderngl"] = moderngl_stub
 
 import pygame
 import pytest
@@ -276,6 +284,38 @@ def test_rapid_tracking_main_runtime_uses_joystick_x_and_y(monkeypatch) -> None:
         pygame.quit()
 
 
+def test_rapid_tracking_prefers_primary_stick_when_pedals_are_listed_first(monkeypatch) -> None:
+    clock = _FakeClock()
+    screen = _build_live_rt_screen(clock=clock)
+    try:
+        surface = pygame.display.get_surface()
+        assert surface is not None
+        monkeypatch.setattr(
+            "cfast_trainer.app._iter_connected_joysticks",
+            lambda: [
+                _AxisJoystick(
+                    name="rudder pedals",
+                    guid="rudder-guid",
+                    axes={0: -0.91, 1: 0.84, 3: -0.77},
+                ),
+                _AxisJoystick(
+                    name="VKB Gladiator NXT EVO joystick",
+                    guid="vkb-guid",
+                    axes={0: 0.33, 1: -0.52, 3: 0.48},
+                ),
+            ],
+        )
+        monkeypatch.setattr(pygame.key, "get_pressed", lambda: _PressedKeys(set()))
+
+        screen.render(surface)
+
+        assert screen._engine.control_scheme == "joystick_only"
+        assert screen._engine._control_x == pytest.approx(0.33)
+        assert screen._engine._control_y == pytest.approx(-0.52)
+    finally:
+        pygame.quit()
+
+
 def test_existing_rt_drill_runtime_uses_joystick_horizontal_control(monkeypatch) -> None:
     clock = _FakeClock()
     drill = build_rt_ground_tempo_run_drill(
@@ -313,6 +353,49 @@ def test_existing_rt_drill_runtime_uses_joystick_horizontal_control(monkeypatch)
         assert payload.control_scheme == "joystick_only"
         assert drill._control_x == pytest.approx(-0.35)
         assert drill._control_y == pytest.approx(0.22)
+    finally:
+        pygame.quit()
+
+
+def test_rt_rudder_horizontal_prefers_pedals_for_horizontal_and_stick_for_vertical_when_pedals_listed_first(
+    monkeypatch,
+) -> None:
+    clock = _FakeClock()
+    drill = build_rt_rudder_horizontal_prime_drill(
+        clock=clock,
+        seed=912,
+        difficulty=0.5,
+        mode=AntDrillMode.BUILD,
+    )
+    drill.start_scored()
+    _app, screen = _build_screen(drill)
+    try:
+        surface = pygame.display.get_surface()
+        assert surface is not None
+        monkeypatch.setattr(
+            "cfast_trainer.app._iter_connected_joysticks",
+            lambda: [
+                _AxisJoystick(
+                    name="Logitech Saitek Pro Rudder Pedals",
+                    guid="rudder-guid",
+                    axes={0: 0.41, 1: 0.92, 3: -0.72},
+                ),
+                _AxisJoystick(
+                    name="VKB Gladiator NXT EVO joystick",
+                    guid="vkb-guid",
+                    axes={0: 0.55, 1: 0.24, 3: 0.81},
+                ),
+            ],
+        )
+        monkeypatch.setattr(pygame.key, "get_pressed", lambda: _PressedKeys(set()))
+
+        screen.render(surface)
+        payload = drill.snapshot().payload
+
+        assert isinstance(payload, RapidTrackingPayload)
+        assert payload.control_scheme == "rudder_horizontal"
+        assert drill._control_x == pytest.approx(-0.72)
+        assert drill._control_y == pytest.approx(0.24)
     finally:
         pygame.quit()
 

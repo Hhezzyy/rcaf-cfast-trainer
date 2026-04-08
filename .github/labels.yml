@@ -1,0 +1,49 @@
+labels:
+  - name: rapid-tracking
+    color: "0e8a16"
+    description: Rapid Tracking runtime, rendering, drills, or assets
+  - name: rendering-opengl
+    color: "1d76db"
+    description: Modern GL bootstrap, rendering, fallback, or OpenGL-specific work
+  - name: input-joystick-rudder
+    color: "5319e7"
+    description: HOTAS, joystick, rudder, calibration, or bindings work
+  - name: menus-input
+    color: "0052cc"
+    description: Main menu, settings menu, mouse navigation, or shell input routing
+  - name: instructions-flow
+    color: "c2e0c6"
+    description: Intro briefings, loading flow, instructions, or practice-to-scored transitions
+  - name: digit-recognition
+    color: "fbca04"
+    description: Digit Recognition engine, drills, workouts, or UI
+  - name: target-recognition
+    color: "d93f0b"
+    description: Target Recognition engine, drills, workouts, or UI
+  - name: situational-awareness
+    color: "b60205"
+    description: Situational Awareness engine, channels, drills, workouts, or UI
+  - name: benchmark
+    color: "006b75"
+    description: Benchmark battery planning, runtime, summaries, or persistence
+  - name: adaptive
+    color: "0b3d91"
+    description: Adaptive session planning, ranking, or evidence selection
+  - name: persistence
+    color: "5319e7"
+    description: Results storage, history, migrations, or summaries
+  - name: settings-ui
+    color: "bfdadc"
+    description: Runtime defaults, difficulty settings, or settings screens
+  - name: visual-search
+    color: "f9d0c4"
+    description: Visual Search engine, drills, workouts, or UI
+  - name: app-shell
+    color: "c5def5"
+    description: Shared app shell, pause flow, loading, or screen routing
+  - name: docs
+    color: "fef2c0"
+    description: Documentation-only changes
+  - name: tests
+    color: "ededed"
+    description: Test-only changes or test coverage follow-up

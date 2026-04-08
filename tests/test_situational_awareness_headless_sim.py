@@ -8,6 +8,9 @@ from cfast_trainer.cognitive_core import Phase
 from cfast_trainer.situational_awareness import (
     SituationalAwarenessConfig,
     SituationalAwarenessPayload,
+    SituationalAwarenessQueryKind,
+    SituationalAwarenessTrainingProfile,
+    SituationalAwarenessTrainingSegment,
     build_situational_awareness_test,
 )
 
@@ -112,6 +115,24 @@ def test_grid_cell_and_choice_direct_response_modes_are_accepted() -> None:
             scored_scenario_duration_s=60.0,
             query_interval_min_s=12,
             query_interval_max_s=12,
+        ),
+        practice_segments=(),
+        scored_segments=(
+            SituationalAwarenessTrainingSegment(
+                label="Mixed Modes",
+                duration_s=60.0,
+                active_channels=("pictorial", "coded", "numerical", "aural"),
+                active_query_kinds=(
+                    SituationalAwarenessQueryKind.CURRENT_LOCATION.value,
+                    SituationalAwarenessQueryKind.RULE_ACTION.value,
+                ),
+                focus_label="Grid and choice",
+                profile=SituationalAwarenessTrainingProfile(
+                    query_interval_min_s=10,
+                    query_interval_max_s=10,
+                    response_window_s=10,
+                ),
+            ),
         ),
     )
     engine.start_scored()

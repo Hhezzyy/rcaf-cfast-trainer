@@ -485,7 +485,7 @@ def test_benchmark_session_advances_probe_by_probe_and_accumulates_results() -> 
     assert session.stage is BenchmarkStage.PROBE
     assert len(created) == 1
     assert session.current_engine() is not None
-    assert getattr(session.current_engine(), "phase", None) is Phase.PRACTICE_DONE
+    assert getattr(session.current_engine(), "phase", None) is Phase.INSTRUCTIONS
     assert created[0].phase is Phase.INSTRUCTIONS
     assert created[0].start_practice_calls == 0
     assert created[0].start_scored_calls == 0
@@ -504,7 +504,7 @@ def test_benchmark_session_advances_probe_by_probe_and_accumulates_results() -> 
     assert session.stage is BenchmarkStage.PROBE
     assert len(created) == 2
     assert session.current_engine() is not None
-    assert getattr(session.current_engine(), "phase", None) is Phase.PRACTICE_DONE
+    assert getattr(session.current_engine(), "phase", None) is Phase.INSTRUCTIONS
     assert created[1].phase is Phase.INSTRUCTIONS
     assert created[1].start_practice_calls == 0
     assert created[1].start_scored_calls == 0
@@ -624,8 +624,8 @@ def test_benchmark_launch_ignores_difficulty_and_seed_overrides(tmp_path) -> Non
         assert getattr(engine, "difficulty", None) == pytest.approx(
             difficulty_ratio_for_level("numerical_operations", 5)
         )
-        assert getattr(engine, "phase", None) is Phase.PRACTICE_DONE
-        assert session.phase is Phase.PRACTICE_DONE
+        assert getattr(engine, "phase", None) is Phase.INSTRUCTIONS
+        assert session.phase is Phase.INSTRUCTIONS
     finally:
         pygame.quit()
 
@@ -1067,24 +1067,24 @@ def test_benchmark_probe_waits_on_buffer_before_starting_timed_block(tmp_path) -
         )
         screen.render(surface)
 
-        assert getattr(session.current_engine(), "phase", None) is Phase.PRACTICE_DONE
+        assert getattr(session.current_engine(), "phase", None) is Phase.INSTRUCTIONS
         assert created[0].phase is Phase.INSTRUCTIONS
         assert created[0].start_scored_calls == 0
         runtime = screen._runtime_screen
         assert isinstance(runtime, CognitiveTestScreen)
-        assert runtime._intro_loading_complete(Phase.PRACTICE_DONE) is False
+        assert runtime._intro_loading_complete(Phase.INSTRUCTIONS) is False
 
         screen.handle_event(
             pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "mod": 0, "unicode": ""})
         )
-        assert getattr(session.current_engine(), "phase", None) is Phase.PRACTICE_DONE
+        assert getattr(session.current_engine(), "phase", None) is Phase.INSTRUCTIONS
         assert created[0].phase is Phase.INSTRUCTIONS
         assert created[0].start_scored_calls == 0
 
         for _ in range(INTRO_LOADING_MIN_FRAMES):
             screen.render(surface)
 
-        assert runtime._intro_loading_complete(Phase.PRACTICE_DONE) is True
+        assert runtime._intro_loading_complete(Phase.INSTRUCTIONS) is True
         screen.handle_event(
             pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "mod": 0, "unicode": ""})
         )
@@ -1299,7 +1299,7 @@ def test_benchmark_segment_handoff_swaps_to_next_probe_buffer_in_same_frame() ->
         assert session.stage is BenchmarkStage.PROBE
         assert session.snapshot().current_probe_code == "beta"
         assert session.current_engine() is not None
-        assert getattr(session.current_engine(), "phase", None) is Phase.PRACTICE_DONE
+        assert getattr(session.current_engine(), "phase", None) is Phase.INSTRUCTIONS
         assert created[1].phase is Phase.INSTRUCTIONS
         assert screen._runtime_engine_id == id(session.current_engine())
     finally:

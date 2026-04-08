@@ -56,6 +56,8 @@ def _build_small_dr_workout_plan() -> AntWorkoutPlan:
 
 
 def _advance_dr_engine_to_question(session: AntWorkoutSession, clock: FakeClock) -> DigitRecognitionTrainingSpec:
+    if session.stage is AntWorkoutStage.BLOCK_SETUP:
+        session.activate()
     engine = session.current_engine()
     assert engine is not None
     while True:
@@ -99,6 +101,7 @@ def _complete_small_dr_workout(clock: FakeClock) -> AntWorkoutSession:
     _finish_current_block_with_one_correct_answer(session, clock)
     session.activate()
     _finish_current_block_with_one_correct_answer(session, clock)
+    session.activate()
     session.append_text("Different-digit items were slower")
     session.activate()
     session.append_text("Re-encode the next display immediately")
@@ -131,6 +134,7 @@ def test_real_dr_workout_matches_standard_90_minute_structure() -> None:
         "dr_recall_run",
         "dr_count_target",
         "dr_different_digit",
+        "dr_difference_count",
         "dr_grouped_family_run",
         "dr_mixed_pressure",
     )
@@ -141,6 +145,7 @@ def test_real_dr_workout_matches_standard_90_minute_structure() -> None:
         "Full-string recall",
         "Target counting",
         "Different-digit detection",
+        "Difference-count discrimination",
         "Grouped family solving",
         "Mixed-family switching",
     }.issubset(set(plan.focus_skills))

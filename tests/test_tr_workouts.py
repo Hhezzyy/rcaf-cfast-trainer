@@ -54,6 +54,8 @@ def _build_small_tr_workout_plan() -> AntWorkoutPlan:
 
 
 def _finish_current_block_with_one_correct_answer(session: AntWorkoutSession, clock: FakeClock) -> None:
+    if session.stage is AntWorkoutStage.BLOCK_SETUP:
+        session.activate()
     engine = session.current_engine()
     assert engine is not None
     answer = engine._current.answer
@@ -80,6 +82,7 @@ def _complete_small_tr_workout(clock: FakeClock) -> AntWorkoutSession:
     _finish_current_block_with_one_correct_answer(session, clock)
     session.activate()
     _finish_current_block_with_one_correct_answer(session, clock)
+    session.activate()
     session.append_text("Switching was the slow point")
     session.activate()
     session.append_text("Keep the panel order cleaner")

@@ -78,8 +78,14 @@ def _complete_small_mr_workout(clock: FakeClock) -> AntWorkoutSession:
     session.activate()
     session.activate()
     _finish_current_block_with_one_correct_answer(session, clock)
+    assert session.stage is AntWorkoutStage.BLOCK_RESULTS
+    session.activate()
+    assert session.stage is AntWorkoutStage.BLOCK_SETUP
     session.activate()
     _finish_current_block_with_one_correct_answer(session, clock)
+    assert session.stage is AntWorkoutStage.BLOCK_RESULTS
+    session.activate()
+    assert session.stage is AntWorkoutStage.POST_REFLECTION
     session.append_text("Averages got slow")
     session.activate()
     session.append_text("Keep units visible in my head")
