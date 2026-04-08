@@ -14,7 +14,7 @@ body:
     attributes:
       label: Problem to solve
       description: What pain point, risk, or missing capability are you trying to address?
-      placeholder: It is hard to tell which renderer path was active after a fallback.
+      placeholder: It is hard to tell which renderer mode was requested when startup fails.
     validations:
       required: true
 
@@ -23,7 +23,7 @@ body:
     attributes:
       label: Proposed change
       description: Describe the smallest useful version of the change.
-      placeholder: Add a persistent renderer status line to the loading failure and fallback screens.
+      placeholder: Add a clearer failure screen and saved diagnostic context for renderer startup errors.
     validations:
       required: true
 
@@ -45,5 +45,4 @@ body:
     attributes:
       label: How should this be validated?
       description: Manual steps, test ideas, or expected acceptance criteria.
-      placeholder: Existing loading-screen tests should still pass, and a new screenshot should show the fallback reason clearly.
-
+      placeholder: Existing loading-screen tests should still pass, and a new screenshot should show the failure state and diagnostic code clearly.

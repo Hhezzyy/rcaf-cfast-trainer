@@ -11,7 +11,7 @@ Screenshots are especially useful in this repo because many regressions are visu
   - Situational Awareness grid plus cue card plus active query
   - Benchmark and adaptive intro/result transitions
   - HOTAS calibration, profile, and bindings screens
-- Any renderer fallback or startup failure screen.
+- Any renderer failure or startup diagnostic screen.
 
 ## Naming
 
@@ -33,7 +33,7 @@ Examples:
 
 - Prefer full-window captures over tight crops.
 - If a crop is needed, keep one full-window shot as well.
-- Include the platform and renderer path in the issue or PR text when relevant.
+- Include the platform, requested renderer mode, and any failure-screen diagnostic code in the issue or PR text when relevant.
 - Mention the input hardware used for reproduction when the bug is input-sensitive.
 - If the problem is motion or timing related, attach a short video or a before/after pair.
 
@@ -44,6 +44,7 @@ Include these alongside the screenshot:
 - exact branch and commit tested
 - subsystem or screen name
 - platform (`macOS`, `Windows`, or both)
-- renderer path (`fallback 2D`, `Modern GL`, or `Panda3D`)
+- requested renderer mode (`Modern GL`, `Panda3D`, or default app setting)
+- whether a renderer failure screen appeared, plus any diagnostic code shown
 - window mode (`windowed`, `fullscreen`, or `borderless`)
 - whether the bug reproduces with keyboard/mouse only or also with joystick/rudder hardware

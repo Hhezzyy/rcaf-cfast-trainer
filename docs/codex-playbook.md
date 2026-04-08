@@ -16,6 +16,7 @@
   ```
 
 - Stay on the most recently updated local branch unless the task explicitly requires a different one.
+- GitHub may only visibly expose `main` from the remote view; local refs are the source of truth for choosing the starting branch.
 
 ## Run Commands
 
@@ -99,7 +100,7 @@
 - Visual Search dense late-level boards.
 - Situational Awareness grid plus cue card plus active query.
 - Benchmark/adaptive intro, block, and results transitions.
-- Renderer fallback/failure screens and any Panda3D/OpenGL mismatch.
+- Renderer failure/diagnostic screens and any Panda3D/OpenGL mismatch.
 - HOTAS calibration, input profile, and joystick binding screens.
 
 ## Scoped Change Rules
@@ -111,6 +112,7 @@
 - Preserve macOS behavior first, but keep Windows compatibility in code and tests where practical.
 - Do not make gameplay or scoring changes unless the task explicitly calls for them.
 - Treat screenshots as authoritative for UI symptoms and visual regressions.
+- If you materially move file ownership, subsystem ownership, or primary test coverage, update `README.md`, the relevant subsystem README, and `docs/test-matrix.md` in the same PR.
 
 ## Suggested Workflow
 
@@ -123,10 +125,10 @@
 
 ### Rendering Bugs
 
-1. Decide whether the issue is fallback 2D, Modern GL, or Panda3D.
+1. Decide whether the issue is Modern GL, Panda3D, or shared renderer failure/diagnostics behavior.
 2. Inspect `cfast_trainer/app.py` bootstrap code first, then the renderer-specific module.
 3. Compare against `tests/test_3d_renderer_selection.py`, `tests/test_gl_bootstrap.py`, and any subsystem renderer tests.
-4. Use full-window screenshots and note platform, renderer path, and window mode.
+4. Use full-window screenshots and note platform, requested renderer mode, window mode, and any failure-screen diagnostic code.
 
 ### Scoring Bugs
 

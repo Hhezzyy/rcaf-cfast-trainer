@@ -2,7 +2,7 @@
 
 ## Purpose
 
-- The shared pygame shell owns app startup, menu routing, loading screens, pause flows, settings screens, rendering fallbacks, activity-session wiring, and result persistence.
+- The shared pygame shell owns app startup, menu routing, loading screens, pause flows, settings screens, renderer bootstrap/failure handling, activity-session wiring, diagnostic persistence, and result persistence.
 - This is the highest-leverage navigation document for UI, input, and cross-subsystem bugs.
 
 ## Important Files
@@ -34,7 +34,7 @@
 ## Input / Rendering Dependencies
 
 - Keyboard, mouse, joystick calibration, input profiles, and button bindings are all configured here.
-- Renderer bootstrap, OpenGL fallback, and Panda3D handoff start here.
+- Renderer bootstrap, explicit failure handling, diagnostic persistence, and Panda3D handoff start here.
 - Many subsystem payloads are rendered directly by `CognitiveTestScreen`, so shell changes can affect many tests at once.
 
 ## Persistence / Test Hooks
@@ -53,4 +53,4 @@
 
 - `cfast_trainer/app.py` is large and cross-cutting; avoid unrelated cleanup while fixing one bug.
 - Pause flow, loading flow, and persistence flow each touch many subsystem types.
-- Renderer selection and input setup behave differently in normal, fallback, and headless modes.
+- Renderer selection, failure paths, and input setup behave differently in normal and headless modes, and renderer failures are expected to be loud plus diagnostic-rich.

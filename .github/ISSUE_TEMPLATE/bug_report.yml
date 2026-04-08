@@ -87,5 +87,4 @@ body:
     id: additional_context
     attributes:
       label: Additional context
-      description: Optional notes such as renderer path, window mode, logs, or whether dummy/headless SDL was involved.
-
+      description: Optional notes such as requested renderer mode, window mode, failure screen name or diagnostic code, logs, or whether dummy/headless SDL was involved.

@@ -31,7 +31,7 @@ Offline-first training app for CFASC CFAST-style aircrew selection aptitude doma
 
 ### Rendering, Input, Persistence, Settings
 
-- Rendering bootstrap and fallback policy:
+- Renderer bootstrap, failure handling, and diagnostics:
   - `cfast_trainer/app.py`
   - `cfast_trainer/modern_gl_renderer.py`
   - `cfast_trainer/gl_scenes.py`
@@ -61,7 +61,7 @@ Offline-first training app for CFASC CFAST-style aircrew selection aptitude doma
 | Adaptive plan selection | `cfast_trainer/adaptive_scheduler.py`, `cfast_trainer/canonical_drill_registry.py`, `tests/test_adaptive_scheduler.py` | Ranking and drill selection are concentrated here. |
 | Benchmark battery order or summaries | `cfast_trainer/benchmark.py`, `tests/test_benchmark.py` | Probe order and session summary logic live together. |
 | Persistence/history regressions | `cfast_trainer/persistence.py`, `tests/test_persistence.py`, `tests/test_cognitive_test_screen_persistence.py` | DB schema, writes, and shell persistence hooks are covered there. |
-| OpenGL/Panda3D startup or fallback issues | `cfast_trainer/app.py`, `cfast_trainer/modern_gl_renderer.py`, `cfast_trainer/panda3d_runtime.py`, `tests/test_3d_renderer_selection.py`, `tests/test_gl_bootstrap.py` | Bootstrap, fallback, and renderer selection are shared infra. |
+| OpenGL/Panda3D startup, bootstrap, or diagnostics issues | `cfast_trainer/app.py`, `cfast_trainer/modern_gl_renderer.py`, `cfast_trainer/panda3d_runtime.py`, `tests/test_3d_renderer_selection.py`, `tests/test_gl_bootstrap.py` | Bootstrap, failure handling, diagnostics, and renderer selection are shared infra. |
 | HOTAS/input binding problems | `cfast_trainer/app.py`, `tests/test_app_window_mode.py`, `tests/test_cognitive_test_screen_pause_menu.py`, `tests/test_sensory_motor_apparatus_ui.py` | Input stores and shell mapping screens live in `app.py`. |
 
 ### Major Test And Drill Subsystems
@@ -100,9 +100,11 @@ Offline-first training app for CFASC CFAST-style aircrew selection aptitude doma
 - Adaptive scheduler map: `docs/subsystems/adaptive-scheduler/README.md`
 - Rapid Tracking local map: `cfast_trainer/rapid_tracking/README.md`
 - Panda3D asset map: `assets/panda3d/README.md`
-- Contributor workflow: `docs/codex-playbook.md`
+- Contributor workflow and branch selection: `docs/codex-playbook.md`
 - Test coverage overview: `docs/test-matrix.md`
 - Screenshot convention: `docs/screenshots/README.md`
+
+GitHub may only visibly show `main` from the remote view, but branch selection in this repo should follow the most recently updated local branch. `docs/codex-playbook.md` is the source of truth for that workflow.
 
 ## Requirements
 

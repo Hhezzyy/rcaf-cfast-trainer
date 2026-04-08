@@ -21,5 +21,5 @@
 - [ ] I preferred extending existing tests where practical.
 - [ ] I noted macOS behavior and kept Windows compatibility in mind where applicable.
 - [ ] I included screenshots or video for UI-heavy changes, or explained why they were not needed.
+- [ ] I updated `README.md`, subsystem docs, or `docs/test-matrix.md` if repo navigation or ownership changed.
 - [ ] I listed any follow-up GitHub label or repo-setting work that still needs a manual step.
-

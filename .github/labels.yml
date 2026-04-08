@@ -4,7 +4,7 @@ labels:
     description: Rapid Tracking runtime, rendering, drills, or assets
   - name: rendering-opengl
     color: "1d76db"
-    description: Modern GL bootstrap, rendering, fallback, or OpenGL-specific work
+    description: Modern GL bootstrap, failure handling, diagnostics, or OpenGL-specific work
   - name: input-joystick-rudder
     color: "5319e7"
     description: HOTAS, joystick, rudder, calibration, or bindings work
