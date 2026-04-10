@@ -54,6 +54,19 @@ class _FakeClnEngine:
         pass
 
 
+class _RecordingFont:
+    def __init__(self, base: pygame.font.Font, sink: list[str]) -> None:
+        self._base = base
+        self._sink = sink
+
+    def render(self, text: str, antialias: bool, color: object) -> pygame.Surface:
+        self._sink.append(str(text))
+        return self._base.render(text, antialias, color)
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._base, name)
+
+
 def _build_screen(
     payload: ColoursLettersNumbersRuntimePayload,
     *,
@@ -69,6 +82,17 @@ def _build_screen(
     screen = CognitiveTestScreen(app, engine_factory=lambda: engine)
     app.push(screen)
     return app, screen, engine
+
+
+def _install_recording_fonts(*fonts: object) -> list[str]:
+    captured: list[str] = []
+    for obj in fonts:
+        for attr in ("_small_font", "_tiny_font", "_mid_font", "_big_font"):
+            font = getattr(obj, attr, None)
+            if isinstance(font, _RecordingFont) or font is None:
+                continue
+            setattr(obj, attr, _RecordingFont(font, captured))
+    return captured
 
 
 def _build_payload(*, options_active: bool = True) -> ColoursLettersNumbersPayload:
@@ -271,6 +295,23 @@ def test_app_routes_scaled_mouse_click_to_cln_option_hitbox() -> None:
         )
 
         assert engine.answers == ["MEM:2"]
+    finally:
+        pygame.quit()
+
+
+def test_cln_live_screen_hides_footer_scoreboard() -> None:
+    _app, screen, _engine = _build_screen(_build_payload(options_active=True))
+    try:
+        surface = pygame.display.get_surface()
+        assert surface is not None
+        captured = _install_recording_fonts(screen)
+
+        screen.render(surface)
+
+        assert not any(text.startswith("Scored ") for text in captured)
+        assert not any(text.startswith("Clear ") for text in captured)
+        assert not any(text.startswith("Miss ") for text in captured)
+        assert not any(text.startswith("Pts ") for text in captured)
     finally:
         pygame.quit()
 

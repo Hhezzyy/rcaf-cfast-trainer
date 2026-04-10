@@ -862,7 +862,11 @@ def test_forbidden_gate_rule_changes_gate_scoring() -> None:
     assert payload.gate_hits == 1
     assert payload.gate_misses == 1
     assert payload.forbidden_gate_hits == 1
-    assert payload.gates == ()
+    assert tuple(gate.gate_id for gate in payload.gates) == (1, 2)
+    assert payload.gates[0].flash_color == "WHITE"
+    assert payload.gates[0].flash_strength > 0.0
+    assert payload.gates[1].flash_color == "ERROR_RED"
+    assert payload.gates[1].flash_strength > 0.0
 
 
 def test_gate_scoring_plane_does_not_move_with_ball_horizontal_offset() -> None:
@@ -898,7 +902,10 @@ def test_gate_scoring_plane_does_not_move_with_ball_horizontal_offset() -> None:
     assert payload is not None
     assert payload.gate_hits == 1
     assert payload.gate_misses == 0
-    assert payload.gates == ()
+    assert len(payload.gates) == 1
+    assert payload.gates[0].gate_id == 9
+    assert payload.gates[0].flash_color == "WHITE"
+    assert payload.gates[0].flash_strength > 0.0
 
 
 def test_spawned_gates_receive_persistent_visual_slots_in_payload() -> None:

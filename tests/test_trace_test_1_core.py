@@ -90,6 +90,10 @@ def _angle_delta_deg(a: float, b: float) -> float:
     return ((float(a) - float(b) + 180.0) % 360.0) - 180.0
 
 
+def _plan_step_progress(plan: TraceTest1AircraftPlan, *, step_index: int, local_t: float) -> float:
+    return (float(step_index) + float(local_t)) / float(len(plan.lattice_actions))
+
+
 def test_generator_determinism_same_seed_same_sequence() -> None:
     seed = 901
     g1 = TraceTest1Generator(seed=seed)
@@ -409,52 +413,100 @@ def test_left_and_right_lattice_paths_finish_in_expected_heading_family() -> Non
     assert abs(_angle_delta_deg(right_end.travel_heading_deg, 90.0)) <= 2.0
 
 
-def test_left_and_right_turn_paths_rotate_in_place_before_translation() -> None:
+def test_left_and_right_turn_paths_advance_during_turn_window() -> None:
     left_prompt = _manual_prompt(command=TraceTest1Command.LEFT)
     right_prompt = _manual_prompt(command=TraceTest1Command.RIGHT)
+    left_step = _tt1_command_step_index(left_prompt.red_plan)
+    right_step = _tt1_command_step_index(right_prompt.red_plan)
 
-    left_positions = [
-        trace_test_1_scene_frames(prompt=left_prompt, progress=progress).red_frame.position
-        for progress in (0.36, 0.40, 0.68, 1.0)
-    ]
-    right_positions = [
-        trace_test_1_scene_frames(prompt=right_prompt, progress=progress).red_frame.position
-        for progress in (0.36, 0.40, 0.68, 1.0)
-    ]
+    left_early = trace_test_1_scene_frames(
+        prompt=left_prompt,
+        progress=_plan_step_progress(left_prompt.red_plan, step_index=left_step, local_t=0.08),
+    ).red_frame
+    left_mid = trace_test_1_scene_frames(
+        prompt=left_prompt,
+        progress=_plan_step_progress(left_prompt.red_plan, step_index=left_step, local_t=0.20),
+    ).red_frame
+    left_late = trace_test_1_scene_frames(
+        prompt=left_prompt,
+        progress=_plan_step_progress(left_prompt.red_plan, step_index=left_step, local_t=0.60),
+    ).red_frame
+    right_early = trace_test_1_scene_frames(
+        prompt=right_prompt,
+        progress=_plan_step_progress(right_prompt.red_plan, step_index=right_step, local_t=0.08),
+    ).red_frame
+    right_mid = trace_test_1_scene_frames(
+        prompt=right_prompt,
+        progress=_plan_step_progress(right_prompt.red_plan, step_index=right_step, local_t=0.20),
+    ).red_frame
+    right_late = trace_test_1_scene_frames(
+        prompt=right_prompt,
+        progress=_plan_step_progress(right_prompt.red_plan, step_index=right_step, local_t=0.60),
+    ).red_frame
 
-    assert left_positions[0] == pytest.approx(left_positions[1])
-    assert left_positions[2][0] < left_positions[1][0]
-    assert left_positions[3][0] < left_positions[2][0]
-    assert left_positions[2][1] == pytest.approx(left_positions[1][1], abs=0.01)
+    assert left_mid.position[0] < left_early.position[0]
+    assert left_mid.position[1] > left_early.position[1]
+    assert left_late.position[0] < left_mid.position[0]
+    assert abs(_angle_delta_deg(left_mid.travel_heading_deg, 270.0)) < abs(
+        _angle_delta_deg(left_early.travel_heading_deg, 270.0)
+    )
+    assert abs(_angle_delta_deg(left_late.travel_heading_deg, 270.0)) < abs(
+        _angle_delta_deg(left_mid.travel_heading_deg, 270.0)
+    )
 
-    assert right_positions[0] == pytest.approx(right_positions[1])
-    assert right_positions[2][0] > right_positions[1][0]
-    assert right_positions[3][0] > right_positions[2][0]
-    assert right_positions[2][1] == pytest.approx(right_positions[1][1], abs=0.01)
+    assert right_mid.position[0] > right_early.position[0]
+    assert right_mid.position[1] > right_early.position[1]
+    assert right_late.position[0] > right_mid.position[0]
+    assert abs(_angle_delta_deg(right_mid.travel_heading_deg, 90.0)) < abs(
+        _angle_delta_deg(right_early.travel_heading_deg, 90.0)
+    )
+    assert abs(_angle_delta_deg(right_late.travel_heading_deg, 90.0)) < abs(
+        _angle_delta_deg(right_mid.travel_heading_deg, 90.0)
+    )
 
 
-def test_push_and_pull_pitch_in_place_before_vertical_translation() -> None:
+def test_push_and_pull_pitch_continue_moving_while_pitch_changes() -> None:
     push_prompt = _manual_prompt(command=TraceTest1Command.PUSH)
     pull_prompt = _manual_prompt(command=TraceTest1Command.PULL)
+    push_step = _tt1_command_step_index(push_prompt.red_plan)
+    pull_step = _tt1_command_step_index(pull_prompt.red_plan)
 
-    push_start = trace_test_1_scene_frames(prompt=push_prompt, progress=0.36).red_frame
-    push_turn = trace_test_1_scene_frames(prompt=push_prompt, progress=0.40).red_frame
-    push_mid = trace_test_1_scene_frames(prompt=push_prompt, progress=0.82).red_frame
-    pull_start = trace_test_1_scene_frames(prompt=pull_prompt, progress=0.36).red_frame
-    pull_turn = trace_test_1_scene_frames(prompt=pull_prompt, progress=0.40).red_frame
-    pull_mid = trace_test_1_scene_frames(prompt=pull_prompt, progress=0.82).red_frame
+    push_early = trace_test_1_scene_frames(
+        prompt=push_prompt,
+        progress=_plan_step_progress(push_prompt.red_plan, step_index=push_step, local_t=0.08),
+    ).red_frame
+    push_mid = trace_test_1_scene_frames(
+        prompt=push_prompt,
+        progress=_plan_step_progress(push_prompt.red_plan, step_index=push_step, local_t=0.20),
+    ).red_frame
+    push_late = trace_test_1_scene_frames(
+        prompt=push_prompt,
+        progress=_plan_step_progress(push_prompt.red_plan, step_index=push_step, local_t=0.60),
+    ).red_frame
+    pull_early = trace_test_1_scene_frames(
+        prompt=pull_prompt,
+        progress=_plan_step_progress(pull_prompt.red_plan, step_index=pull_step, local_t=0.08),
+    ).red_frame
+    pull_mid = trace_test_1_scene_frames(
+        prompt=pull_prompt,
+        progress=_plan_step_progress(pull_prompt.red_plan, step_index=pull_step, local_t=0.20),
+    ).red_frame
+    pull_late = trace_test_1_scene_frames(
+        prompt=pull_prompt,
+        progress=_plan_step_progress(pull_prompt.red_plan, step_index=pull_step, local_t=0.60),
+    ).red_frame
 
-    assert push_turn.position == pytest.approx(push_start.position)
-    assert push_mid.position[1] == pytest.approx(push_start.position[1], abs=0.01)
-    assert push_mid.position[2] < push_start.position[2]
-    assert push_mid.travel_heading_deg == pytest.approx(0.0, abs=0.01)
-    assert push_mid.attitude.pitch_deg < 0.0
+    assert push_mid.position[1] > push_early.position[1]
+    assert push_mid.position[2] < push_early.position[2]
+    assert push_late.position[2] < push_mid.position[2]
+    assert push_mid.attitude.pitch_deg < push_early.attitude.pitch_deg
+    assert push_late.attitude.pitch_deg <= push_mid.attitude.pitch_deg
 
-    assert pull_turn.position == pytest.approx(pull_start.position)
-    assert pull_mid.position[1] == pytest.approx(pull_start.position[1], abs=0.01)
-    assert pull_mid.position[2] > pull_start.position[2]
-    assert pull_mid.travel_heading_deg == pytest.approx(0.0, abs=0.01)
-    assert pull_mid.attitude.pitch_deg > 0.0
+    assert pull_mid.position[1] > pull_early.position[1]
+    assert pull_mid.position[2] > pull_early.position[2]
+    assert pull_late.position[2] > pull_mid.position[2]
+    assert pull_mid.attitude.pitch_deg > pull_early.attitude.pitch_deg
+    assert pull_late.attitude.pitch_deg >= pull_mid.attitude.pitch_deg
 
 
 def test_submit_answer_keeps_current_prompt_running_until_clip_end() -> None:

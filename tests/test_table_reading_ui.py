@@ -64,6 +64,19 @@ class _FakeTableReadingEngine:
         pass
 
 
+class _RecordingFont:
+    def __init__(self, base: pygame.font.Font, sink: list[str]) -> None:
+        self._base = base
+        self._sink = sink
+
+    def render(self, text: str, antialias: bool, color: object) -> pygame.Surface:
+        self._sink.append(str(text))
+        return self._base.render(text, antialias, color)
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._base, name)
+
+
 def _sample_payload(*, part: TableReadingPart) -> TableReadingPayload:
     generator = TableReadingGenerator(seed=202)
     problem = generator.next_problem_for_selection(difficulty=0.5, part=part)
@@ -80,6 +93,17 @@ def _build_screen(engine: object) -> tuple[App, CognitiveTestScreen]:
     screen = CognitiveTestScreen(app, engine_factory=lambda: engine)
     app.push(screen)
     return app, screen
+
+
+def _install_recording_fonts(*fonts: object) -> list[str]:
+    captured: list[str] = []
+    for obj in fonts:
+        for attr in ("_small_font", "_tiny_font", "_mid_font", "_big_font"):
+            font = getattr(obj, attr, None)
+            if isinstance(font, _RecordingFont) or font is None:
+                continue
+            setattr(obj, attr, _RecordingFont(font, captured))
+    return captured
 
 
 def test_table_reading_drill_title_still_routes_to_real_renderer(monkeypatch) -> None:
@@ -191,5 +215,22 @@ def test_table_reading_real_drill_engine_uses_table_payload_on_live_screen() -> 
         payload = engine._current.payload
         assert isinstance(payload, TableReadingPayload)
         assert payload.part in (TableReadingPart.PART_ONE, TableReadingPart.PART_TWO)
+    finally:
+        pygame.quit()
+
+
+def test_table_reading_live_screen_hides_scored_counter() -> None:
+    payload = _sample_payload(part=TableReadingPart.PART_ONE)
+    _app, screen = _build_screen(
+        _FakeTableReadingEngine(payload, title="Table Reading: Part 1 Anchor")
+    )
+    try:
+        surface = pygame.display.get_surface()
+        assert surface is not None
+        captured = _install_recording_fonts(screen)
+
+        screen.render(surface)
+
+        assert not any(text.startswith("Scored") for text in captured)
     finally:
         pygame.quit()

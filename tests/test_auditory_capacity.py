@@ -7,6 +7,7 @@ import wave
 import pytest
 
 from cfast_trainer.auditory_capacity import (
+    AUDITORY_GATE_PLAYER_X_NORM,
     AUDITORY_GATE_RETIRE_X_NORM,
     AUDITORY_GATE_SPAWN_X_NORM,
     AUDITORY_TRIANGLE_GATE_POINTS,
@@ -16,6 +17,11 @@ from cfast_trainer.auditory_capacity import (
     tube_contact_ratio,
 )
 from cfast_trainer.auditory_capacity_panda3d import AuditoryCapacityPanda3DRenderer
+from cfast_trainer.auditory_capacity_view import (
+    gate_distance_from_x_norm,
+    run_start_distance,
+    run_travel_distance,
+)
 
 
 @dataclass
@@ -109,6 +115,145 @@ def test_spawned_gate_uses_shared_far_spawn_anchor() -> None:
 
     assert len(engine._gates) == 1
     assert engine._gates[0].x_norm == pytest.approx(AUDITORY_GATE_SPAWN_X_NORM)
+
+
+def test_live_tunnel_travel_stays_monotonic_even_when_ball_forward_norm_relaxes() -> None:
+    clock = _FakeClock()
+    engine = build_auditory_capacity_test(clock=clock, seed=17, difficulty=0.58)
+    engine.start_practice()
+
+    samples: list[tuple[float, float, float]] = []
+    for step in range(16 * 120):
+        clock.advance(1.0 / 120.0)
+        engine.update()
+        if step % 60 != 0:
+            continue
+        payload = engine.snapshot().payload
+        assert payload is not None
+        samples.append(
+            (
+                float(payload.phase_elapsed_s),
+                float(payload.ball_forward_norm),
+                run_travel_distance(
+                    session_seed=int(payload.session_seed),
+                    phase_elapsed_s=float(payload.phase_elapsed_s),
+                ),
+            )
+        )
+
+    assert any(
+        samples[idx + 1][1] + 0.20 < samples[idx][1]
+        for idx in range(len(samples) - 1)
+    )
+    assert all(
+        samples[idx + 1][2] >= samples[idx][2]
+        for idx in range(len(samples) - 1)
+    )
+
+
+def test_live_tunnel_run_start_is_seeded_repeatable_and_varies_between_runs() -> None:
+    first = run_start_distance(17)
+    second = run_start_distance(17)
+    other = run_start_distance(99)
+
+    assert first == pytest.approx(second)
+    assert 0.0 <= first
+    assert other != pytest.approx(first)
+
+
+def test_correct_pass_gate_flashes_white_on_the_gate() -> None:
+    clock = _FakeClock()
+    engine = build_auditory_capacity_test(clock=clock, seed=17, difficulty=0.58)
+    engine.start_practice()
+    engine._next_gate_at_s = 0.0
+    engine._update_gates(0.0)
+
+    assert len(engine._gates) == 1
+    gate = engine._gates[0]
+    gate.x_norm = float(AUDITORY_GATE_PLAYER_X_NORM)
+    gate.y_norm = float(engine._ball_y)
+    gate.aperture_norm = 0.22
+
+    engine._update_gates(0.0)
+    payload = engine.snapshot().payload
+
+    assert payload is not None
+    flashed = next(g for g in payload.gates if g.gate_id == gate.gate_id)
+    assert flashed.flash_color == "WHITE"
+    assert flashed.flash_strength > 0.95
+    assert payload.gate_hits == 1
+    assert payload.gate_misses == 0
+    assert payload.forbidden_gate_hits == 0
+
+
+def test_forbidden_pass_flashes_distinct_error_red_on_the_gate() -> None:
+    clock = _FakeClock()
+    engine = build_auditory_capacity_test(clock=clock, seed=17, difficulty=0.58)
+    engine.start_practice()
+    engine._next_gate_at_s = 0.0
+    engine._update_gates(0.0)
+
+    assert len(engine._gates) == 1
+    gate = engine._gates[0]
+    engine._forbidden_gate_color = str(gate.color)
+    gate.x_norm = float(AUDITORY_GATE_PLAYER_X_NORM)
+    gate.y_norm = float(engine._ball_y)
+    gate.aperture_norm = 0.22
+
+    engine._update_gates(0.0)
+    payload = engine.snapshot().payload
+
+    assert payload is not None
+    flashed = next(g for g in payload.gates if g.gate_id == gate.gate_id)
+    assert flashed.flash_color == "ERROR_RED"
+    assert flashed.flash_strength > 0.95
+    assert payload.gate_hits == 0
+    assert payload.gate_misses == 1
+    assert payload.forbidden_gate_hits == 1
+
+
+def test_gate_distance_comes_from_live_x_progress_and_preserves_spacing() -> None:
+    travel_distance = 18.0
+    far = gate_distance_from_x_norm(
+        AUDITORY_GATE_SPAWN_X_NORM,
+        travel_distance=travel_distance,
+        spawn_x_norm=AUDITORY_GATE_SPAWN_X_NORM,
+        player_x_norm=AUDITORY_GATE_PLAYER_X_NORM,
+        retire_x_norm=AUDITORY_GATE_RETIRE_X_NORM,
+    )
+    mid = gate_distance_from_x_norm(
+        1.15,
+        travel_distance=travel_distance,
+        spawn_x_norm=AUDITORY_GATE_SPAWN_X_NORM,
+        player_x_norm=AUDITORY_GATE_PLAYER_X_NORM,
+        retire_x_norm=AUDITORY_GATE_RETIRE_X_NORM,
+    )
+    near = gate_distance_from_x_norm(
+        0.55,
+        travel_distance=travel_distance,
+        spawn_x_norm=AUDITORY_GATE_SPAWN_X_NORM,
+        player_x_norm=AUDITORY_GATE_PLAYER_X_NORM,
+        retire_x_norm=AUDITORY_GATE_RETIRE_X_NORM,
+    )
+    contact = gate_distance_from_x_norm(
+        AUDITORY_GATE_PLAYER_X_NORM,
+        travel_distance=travel_distance,
+        spawn_x_norm=AUDITORY_GATE_SPAWN_X_NORM,
+        player_x_norm=AUDITORY_GATE_PLAYER_X_NORM,
+        retire_x_norm=AUDITORY_GATE_RETIRE_X_NORM,
+    )
+    behind = gate_distance_from_x_norm(
+        -0.80,
+        travel_distance=travel_distance,
+        spawn_x_norm=AUDITORY_GATE_SPAWN_X_NORM,
+        player_x_norm=AUDITORY_GATE_PLAYER_X_NORM,
+        retire_x_norm=AUDITORY_GATE_RETIRE_X_NORM,
+    )
+
+    assert far > mid > near > contact > behind
+    assert (far - mid) > 6.0
+    assert (mid - near) > 6.0
+    assert (near - contact) > 6.0
 
 
 def test_triangle_gate_profile_is_equilateral() -> None:

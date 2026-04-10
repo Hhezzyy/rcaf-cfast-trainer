@@ -27,9 +27,11 @@ from cfast_trainer.app import (
     App,
     AxisCalibrationSettings,
     CognitiveTestScreen,
+    DigitalBinding,
     InputProfilesStore,
     MenuItem,
     MenuScreen,
+    RapidTrackingSettingsStore,
 )
 from cfast_trainer.cognitive_core import Phase
 from cfast_trainer.cognitive_core import TestSnapshot as SnapshotModel
@@ -100,6 +102,19 @@ class _FakeRapidTrackingEngine:
         pass
 
 
+class _RecordingFont:
+    def __init__(self, base: pygame.font.Font, sink: list[str]) -> None:
+        self._base = base
+        self._sink = sink
+
+    def render(self, text: str, antialias: bool, color: object) -> pygame.Surface:
+        self._sink.append(str(text))
+        return self._base.render(text, antialias, color)
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._base, name)
+
+
 def _sample_payload() -> RapidTrackingPayload:
     clock = _FakeClock()
     engine = build_rapid_tracking_test(clock=clock, seed=551, difficulty=0.5)
@@ -119,6 +134,17 @@ def _build_screen(engine: object) -> tuple[App, CognitiveTestScreen]:
     screen = CognitiveTestScreen(app, engine_factory=lambda: engine)
     app.push(screen)
     return app, screen
+
+
+def _install_recording_fonts(*fonts: object) -> list[str]:
+    captured: list[str] = []
+    for obj in fonts:
+        for attr in ("_small_font", "_tiny_font", "_mid_font", "_big_font"):
+            font = getattr(obj, attr, None)
+            if isinstance(font, _RecordingFont) or font is None:
+                continue
+            setattr(obj, attr, _RecordingFont(font, captured))
+    return captured
 
 
 def _build_live_rt_screen(*, clock: _FakeClock) -> CognitiveTestScreen:
@@ -154,6 +180,35 @@ class _AxisJoystick:
 
     def get_axis(self, idx: int) -> float:
         return float(self._axes.get(idx, 0.0))
+
+
+class _ButtonJoystick:
+    def __init__(self, *, name: str, guid: str, buttons: dict[int, int]) -> None:
+        self._name = name
+        self._guid = guid
+        self._buttons = dict(buttons)
+
+    def get_name(self) -> str:
+        return self._name
+
+    def get_guid(self) -> str:
+        return self._guid
+
+    def get_numaxes(self) -> int:
+        return 0
+
+    def get_axis(self, idx: int) -> float:
+        _ = idx
+        return 0.0
+
+    def get_numbuttons(self) -> int:
+        return (max(self._buttons) + 1) if self._buttons else 0
+
+    def get_button(self, idx: int) -> int:
+        return int(self._buttons.get(idx, 0))
+
+    def get_numhats(self) -> int:
+        return 0
 
 
 def test_rapid_tracking_title_prefix_routes_to_real_renderer(monkeypatch) -> None:
@@ -248,6 +303,25 @@ def test_rapid_tracking_real_drill_engine_exposes_focus_metadata_on_live_screen(
         assert payload.focus_label == "Stable lock quality"
         assert payload.active_target_kinds == ("soldier", "truck")
         assert payload.control_scheme == "joystick_only"
+    finally:
+        pygame.quit()
+
+
+def test_rapid_tracking_live_screen_hides_window_and_segment_progress_counters() -> None:
+    clock = _FakeClock()
+    screen = _build_live_rt_screen(clock=clock)
+    try:
+        surface = pygame.display.get_surface()
+        assert surface is not None
+        payload = screen._engine.snapshot().payload
+        assert isinstance(payload, RapidTrackingPayload)
+        captured = _install_recording_fonts(screen)
+
+        screen.render(surface)
+
+        assert payload.segment_label in captured
+        assert not any(text.startswith("Windows ") for text in captured)
+        assert f"{payload.segment_label} {payload.segment_index}/{payload.segment_total}" not in captured
     finally:
         pygame.quit()
 
@@ -471,6 +545,235 @@ def test_rapid_tracking_missing_explicit_primary_binding_falls_back_to_joystick(
         pygame.quit()
 
 
+def test_rapid_tracking_fallback_vertical_axis_respects_profile_inversion(monkeypatch, tmp_path) -> None:
+    profiles = InputProfilesStore(tmp_path / "input-profiles.json")
+    profile_id = profiles.active_profile().profile_id
+    neutral = AxisCalibrationSettings(deadzone=0.0, curve=1.0)
+    profiles.set_axis_calibration(
+        profile_id=profile_id,
+        axis_key="primary stick|primary-guid::axis0",
+        settings=neutral,
+    )
+    profiles.set_axis_calibration(
+        profile_id=profile_id,
+        axis_key="primary stick|primary-guid::axis1",
+        settings=AxisCalibrationSettings(deadzone=0.0, invert=True, curve=1.0),
+    )
+
+    pygame.init()
+    try:
+        surface = pygame.display.set_mode((960, 540))
+        font = pygame.font.Font(None, 36)
+        app = App(surface=surface, font=font, input_profiles_store=profiles)
+        app.push(MenuScreen(app, "Main Menu", [MenuItem("Quit", app.quit)], is_root=True))
+        clock = _FakeClock()
+        screen = CognitiveTestScreen(
+            app,
+            engine_factory=lambda: build_rapid_tracking_test(clock=clock, seed=655, difficulty=0.5),
+            test_code="rapid_tracking",
+        )
+        app.push(screen)
+        screen._engine.start_scored()
+        monkeypatch.setattr(
+            "cfast_trainer.app._iter_connected_joysticks",
+            lambda: [_AxisJoystick(name="primary stick", guid="primary-guid", axes={0: 0.22, 1: 0.41})],
+        )
+        monkeypatch.setattr(pygame.key, "get_pressed", lambda: _PressedKeys(set()))
+
+        app._joystick_binding_router.poll()
+        screen.render(surface)
+
+        assert screen._engine._control_x == pytest.approx(0.22)
+        assert screen._engine._control_y == pytest.approx(-0.41)
+    finally:
+        pygame.quit()
+
+
+def test_rapid_tracking_explicit_primary_vertical_binding_respects_profile_inversion(
+    monkeypatch, tmp_path
+) -> None:
+    profiles = InputProfilesStore(tmp_path / "input-profiles.json")
+    profile_id = profiles.active_profile().profile_id
+    profiles.set_axis_role_binding(
+        profile_id=profile_id,
+        role="primary_vertical",
+        binding=AnalogBinding(device_key="primary stick|primary-guid", axis_index=3),
+    )
+    neutral = AxisCalibrationSettings(deadzone=0.0, curve=1.0)
+    profiles.set_axis_calibration(
+        profile_id=profile_id,
+        axis_key="primary stick|primary-guid::axis0",
+        settings=neutral,
+    )
+    profiles.set_axis_calibration(
+        profile_id=profile_id,
+        axis_key="primary stick|primary-guid::axis3",
+        settings=AxisCalibrationSettings(deadzone=0.0, invert=True, curve=1.0),
+    )
+
+    pygame.init()
+    try:
+        surface = pygame.display.set_mode((960, 540))
+        font = pygame.font.Font(None, 36)
+        app = App(surface=surface, font=font, input_profiles_store=profiles)
+        app.push(MenuScreen(app, "Main Menu", [MenuItem("Quit", app.quit)], is_root=True))
+        clock = _FakeClock()
+        screen = CognitiveTestScreen(
+            app,
+            engine_factory=lambda: build_rapid_tracking_test(clock=clock, seed=656, difficulty=0.5),
+            test_code="rapid_tracking",
+        )
+        app.push(screen)
+        screen._engine.start_scored()
+        monkeypatch.setattr(
+            "cfast_trainer.app._iter_connected_joysticks",
+            lambda: [
+                _AxisJoystick(
+                    name="primary stick",
+                    guid="primary-guid",
+                    axes={0: 0.18, 1: 0.35, 3: 0.56},
+                )
+            ],
+        )
+        monkeypatch.setattr(pygame.key, "get_pressed", lambda: _PressedKeys(set()))
+
+        app._joystick_binding_router.poll()
+        screen.render(surface)
+
+        assert screen._engine._control_x == pytest.approx(0.18)
+        assert screen._engine._control_y == pytest.approx(-0.56)
+    finally:
+        pygame.quit()
+
+
+def test_rapid_tracking_capture_hold_tracks_all_explicit_bindings_across_devices(
+    monkeypatch, tmp_path
+) -> None:
+    profile_store = InputProfilesStore(tmp_path / "input-profiles.json")
+    profile_id = profile_store.active_profile().profile_id
+    profile_store.set_action_binding(
+        profile_id=profile_id,
+        action="rapid_tracking_capture",
+        slot_index=0,
+        binding=DigitalBinding(kind="button", device_key="capture stick a|guid-a", control_index=4),
+    )
+    profile_store.set_action_binding(
+        profile_id=profile_id,
+        action="rapid_tracking_capture",
+        slot_index=1,
+        binding=DigitalBinding(kind="button", device_key="capture stick b|guid-b", control_index=1),
+    )
+
+    pygame.init()
+    try:
+        surface = pygame.display.set_mode((960, 540))
+        font = pygame.font.Font(None, 36)
+        app = App(surface=surface, font=font, input_profiles_store=profile_store)
+        app.push(MenuScreen(app, "Main Menu", [MenuItem("Quit", app.quit)], is_root=True))
+        clock = _FakeClock()
+        screen = CognitiveTestScreen(
+            app,
+            engine_factory=lambda: build_rapid_tracking_test(clock=clock, seed=8123, difficulty=0.5),
+            test_code="rapid_tracking",
+        )
+        app.push(screen)
+        screen._engine.start_practice()
+        screen._engine._target_x = 0.0
+        screen._engine._target_y = 0.0
+        screen._engine._target_terrain_occluded = False
+        screen._engine._reset_camera_pose_to_target()
+
+        stick_a = _ButtonJoystick(name="capture stick a", guid="guid-a", buttons={})
+        stick_b = _ButtonJoystick(name="capture stick b", guid="guid-b", buttons={})
+        monkeypatch.setattr("cfast_trainer.app._iter_connected_joysticks", lambda: [stick_a, stick_b])
+        monkeypatch.setattr(pygame.key, "get_pressed", lambda: _PressedKeys(set()))
+
+        stick_a._buttons[4] = 1
+        app.render()
+        first = screen._engine.snapshot().payload
+        assert first is not None
+        assert first.capture_attempts == 1
+        assert first.capture_zoom > 0.0
+
+        stick_b._buttons[1] = 1
+        clock.advance(0.10)
+        app.render()
+        both_held = screen._engine.snapshot().payload
+        assert both_held is not None
+        assert both_held.capture_attempts == 1
+        assert both_held.capture_zoom > 0.5
+
+        stick_a._buttons[4] = 0
+        clock.advance(0.30)
+        app.render()
+        still_held = screen._engine.snapshot().payload
+        assert still_held is not None
+        assert still_held.capture_attempts == 1
+        assert still_held.capture_zoom > 0.8
+
+        stick_b._buttons[1] = 0
+        clock.advance(0.30)
+        app.render()
+        released = screen._engine.snapshot().payload
+        assert released is not None
+        assert released.capture_zoom < 0.2
+    finally:
+        pygame.quit()
+
+
+def test_rapid_tracking_global_invert_pitch_applies_after_axis_calibration(
+    monkeypatch, tmp_path
+) -> None:
+    profiles = InputProfilesStore(tmp_path / "input-profiles.json")
+    profile_id = profiles.active_profile().profile_id
+    neutral = AxisCalibrationSettings(deadzone=0.0, curve=1.0)
+    profiles.set_axis_calibration(
+        profile_id=profile_id,
+        axis_key="primary stick|primary-guid::axis0",
+        settings=neutral,
+    )
+    profiles.set_axis_calibration(
+        profile_id=profile_id,
+        axis_key="primary stick|primary-guid::axis1",
+        settings=AxisCalibrationSettings(deadzone=0.0, invert=True, curve=1.0),
+    )
+    rapid_tracking_settings = RapidTrackingSettingsStore(tmp_path / "rapid-tracking-settings.json")
+    rapid_tracking_settings.set_invert_pitch(True)
+
+    pygame.init()
+    try:
+        surface = pygame.display.set_mode((960, 540))
+        font = pygame.font.Font(None, 36)
+        app = App(
+            surface=surface,
+            font=font,
+            input_profiles_store=profiles,
+            rapid_tracking_settings_store=rapid_tracking_settings,
+        )
+        app.push(MenuScreen(app, "Main Menu", [MenuItem("Quit", app.quit)], is_root=True))
+        clock = _FakeClock()
+        screen = CognitiveTestScreen(
+            app,
+            engine_factory=lambda: build_rapid_tracking_test(clock=clock, seed=657, difficulty=0.5),
+            test_code="rapid_tracking",
+        )
+        app.push(screen)
+        screen._engine.start_scored()
+        monkeypatch.setattr(
+            "cfast_trainer.app._iter_connected_joysticks",
+            lambda: [_AxisJoystick(name="primary stick", guid="primary-guid", axes={0: 0.22, 1: 0.41})],
+        )
+        monkeypatch.setattr(pygame.key, "get_pressed", lambda: _PressedKeys(set()))
+
+        app._joystick_binding_router.poll()
+        screen.render(surface)
+
+        assert screen._engine._control_x == pytest.approx(0.22)
+        assert screen._engine._control_y == pytest.approx(0.41)
+    finally:
+        pygame.quit()
+
+
 def test_rt_rudder_horizontal_prime_uses_rudder_left_right_and_joystick_y(monkeypatch) -> None:
     clock = _FakeClock()
     drill = build_rt_rudder_horizontal_prime_drill(
@@ -527,6 +830,45 @@ def test_rapid_tracking_joybutton_hold_starts_zoom_and_release_restores_view() -
 
         screen.handle_event(
             pygame.event.Event(pygame.JOYBUTTONUP, {"button": 0})
+        )
+        clock.advance(0.30)
+        screen._engine.update()
+        released = screen._engine.snapshot().payload
+        assert released is not None
+        assert released.capture_zoom < 0.2
+    finally:
+        pygame.quit()
+
+
+def test_rapid_tracking_legacy_capture_hold_waits_for_last_button_release() -> None:
+    clock = _FakeClock()
+    screen = _build_live_rt_screen(clock=clock)
+    try:
+        screen.handle_event(
+            pygame.event.Event(pygame.JOYBUTTONDOWN, {"button": 0})
+        )
+        screen.handle_event(
+            pygame.event.Event(pygame.JOYBUTTONDOWN, {"button": 1})
+        )
+        clock.advance(0.30)
+        screen._engine.update()
+        held = screen._engine.snapshot().payload
+        assert held is not None
+        assert held.capture_zoom > 0.8
+        assert held.capture_attempts == 1
+
+        screen.handle_event(
+            pygame.event.Event(pygame.JOYBUTTONUP, {"button": 0})
+        )
+        clock.advance(0.30)
+        screen._engine.update()
+        still_held = screen._engine.snapshot().payload
+        assert still_held is not None
+        assert still_held.capture_zoom > 0.8
+        assert still_held.capture_attempts == 1
+
+        screen.handle_event(
+            pygame.event.Event(pygame.JOYBUTTONUP, {"button": 1})
         )
         clock.advance(0.30)
         screen._engine.update()

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from cfast_trainer.aircraft_art import screen_motion_heading_deg
 from cfast_trainer.trace_lattice import TraceLatticeAction, trace_lattice_state
 from cfast_trainer.trace_scene_3d import (
     build_trace_test_1_scene3d,
@@ -19,6 +20,11 @@ from cfast_trainer.trace_test_1 import (
     _tt1_aircraft_state_from_lattice_state,
     trace_test_1_scene_frames,
 )
+from cfast_trainer.trace_test_1_gl import aircraft_screen_pose_for_frame, project_scene_position
+
+
+def _angle_delta_deg(current: float, reference: float) -> float:
+    return ((float(current) - float(reference) + 180.0) % 360.0) - 180.0
 
 
 def _manual_plan(command: TraceTest1Command) -> TraceTest1AircraftPlan:
@@ -117,3 +123,89 @@ def test_trace_test_1_scene3d_camera_tracks_real_world_aircraft_pose() -> None:
     assert snapshot.camera.position != snapshot.camera.target
     assert snapshot.camera.target[1] > snapshot.camera.position[1]
     assert snapshot.aircraft[0].position == pytest.approx(payload.scene.red_frame.position)
+
+
+def test_trace_test_1_projected_red_aircraft_center_moves_between_observe_samples() -> None:
+    early = _sample_payload(progress=0.18)
+    late = _sample_payload(progress=0.82)
+
+    early_center, _early_scale = project_scene_position(
+        early.scene.red_frame.position,
+        size=(640, 360),
+    )
+    late_center, _late_scale = project_scene_position(
+        late.scene.red_frame.position,
+        size=(640, 360),
+    )
+
+    assert early_center != pytest.approx(late_center)
+
+
+def test_trace_test_1_projected_red_aircraft_center_moves_during_turn_window() -> None:
+    prompt = _manual_prompt(TraceTest1Command.LEFT)
+    step_count = len(prompt.red_plan.lattice_actions)
+    early = trace_test_1_scene_frames(
+        prompt=prompt,
+        progress=(1.0 + 0.08) / float(step_count),
+    ).red_frame
+    mid = trace_test_1_scene_frames(
+        prompt=prompt,
+        progress=(1.0 + 0.20) / float(step_count),
+    ).red_frame
+
+    early_center, _ = project_scene_position(early.position, size=(640, 360))
+    mid_center, _ = project_scene_position(mid.position, size=(640, 360))
+
+    assert mid_center[0] < early_center[0]
+    assert mid_center[1] < early_center[1]
+
+
+def test_trace_test_1_projected_motion_matches_manual_command_direction() -> None:
+    expected = {
+        TraceTest1Command.LEFT: 180.0,
+        TraceTest1Command.RIGHT: 0.0,
+        TraceTest1Command.PUSH: 90.0,
+        TraceTest1Command.PULL: -90.0,
+    }
+
+    for command, expected_heading in expected.items():
+        prompt = _manual_prompt(command)
+        early_frame = trace_test_1_scene_frames(prompt=prompt, progress=0.45).red_frame
+        mid_frame = trace_test_1_scene_frames(prompt=prompt, progress=0.50).red_frame
+        late_frame = trace_test_1_scene_frames(prompt=prompt, progress=0.55).red_frame
+        early_center, _ = project_scene_position(early_frame.position, size=(640, 360))
+        late_center, _ = project_scene_position(late_frame.position, size=(640, 360))
+        motion_heading = screen_motion_heading_deg(
+            early_center,
+            late_center,
+            minimum_distance=0.01,
+        )
+        assert motion_heading is not None
+
+        assert _angle_delta_deg(motion_heading, expected_heading) == pytest.approx(0.0, abs=1.5)
+
+
+def test_trace_test_1_screen_pose_progresses_toward_turn_heading_during_turn_window() -> None:
+    prompt = _manual_prompt(TraceTest1Command.RIGHT)
+    step_count = len(prompt.red_plan.lattice_actions)
+    early_progress = (1.0 + 0.08) / float(step_count)
+    mid_progress = (1.0 + 0.20) / float(step_count)
+    early_frame = trace_test_1_scene_frames(prompt=prompt, progress=early_progress).red_frame
+    mid_frame = trace_test_1_scene_frames(prompt=prompt, progress=mid_progress).red_frame
+
+    early_pose = aircraft_screen_pose_for_frame(
+        early_frame,
+        command=TraceTest1Command.RIGHT,
+        observe_progress=early_progress,
+        answer_open_progress=prompt.answer_open_progress,
+        size=(640, 360),
+    )
+    mid_pose = aircraft_screen_pose_for_frame(
+        mid_frame,
+        command=TraceTest1Command.RIGHT,
+        observe_progress=mid_progress,
+        answer_open_progress=prompt.answer_open_progress,
+        size=(640, 360),
+    )
+
+    assert abs(_angle_delta_deg(mid_pose[0], 0.0)) < abs(_angle_delta_deg(early_pose[0], 0.0))

@@ -14,15 +14,16 @@ from .auditory_capacity import (
     AuditoryCapacityPayload,
 )
 from .auditory_capacity_view import (
-    BALL_FORWARD_IDLE_NORM,
+    AUDITORY_BALL_ANCHOR_DISTANCE,
+    AUDITORY_GATE_BEHIND_DISTANCE,
     TUBE_PATH_POINTS as _TUBE_PATH_POINTS,
     TUBE_PATH_SPAN,
     TUNNEL_CAMERA_H_FOV_DEG,
     TUNNEL_GEOMETRY_END_DISTANCE,
     TUNNEL_GEOMETRY_START_DISTANCE,
-    fixed_camera_pose,
-    forward_norm_to_distance,
-    slot_distance,
+    fixed_camera_pose_at_distance,
+    gate_depth_ratio_from_distance,
+    gate_distance_from_x_norm,
     tube_center_at_distance as _tube_center_at_distance,
     tube_frame as _tube_frame,
     vec_add as _vec_add,
@@ -65,6 +66,7 @@ class AuditoryCapacityPanda3DRenderer:
     _TUNNEL_RIB_STEP = 4.0
     _BALL_COLOR_MAP = {
         "RED": (0.94, 0.34, 0.38),
+        "ERROR_RED": (0.98, 0.46, 0.24),
         "GREEN": (0.34, 0.88, 0.56),
         "BLUE": (0.36, 0.62, 0.94),
         "YELLOW": (0.94, 0.82, 0.34),
@@ -528,10 +530,8 @@ class AuditoryCapacityPanda3DRenderer:
         return root
 
     def _update_ball(self, *, payload: AuditoryCapacityPayload | None) -> None:
-        forward_norm = (
-            float(payload.ball_forward_norm) if payload is not None else float(BALL_FORWARD_IDLE_NORM)
-        )
-        distance = forward_norm_to_distance(forward_norm)
+        travel_distance = 0.0 if payload is None else float(payload.presentation_travel_distance)
+        distance = travel_distance + AUDITORY_BALL_ANCHOR_DISTANCE
         center, tangent, right, up = _tube_frame(distance, span=self._span)
         ball_pos = center
         danger = False
@@ -555,9 +555,9 @@ class AuditoryCapacityPanda3DRenderer:
             strength = 0.0 if payload is None else float(payload.ball_visual_strength)
             ball_rgb = _mix_rgb(self._BALL_COLOR_MAP["WHITE"], target_rgb, mix=strength)
         self._ball_root.setColor(ball_rgb[0], ball_rgb[1], ball_rgb[2], 1.0)
-        self._ball_root.setHpr((forward_norm * 540.0) % 360.0, 0.0, 0.0)
+        self._ball_root.setHpr((travel_distance * 9.0) % 360.0, 0.0, 0.0)
 
-        cam_pos, look_target = fixed_camera_pose(forward_norm=forward_norm)
+        cam_pos, look_target = fixed_camera_pose_at_distance(distance)
         self._base.cam.setPos(*cam_pos)
         self._base.cam.lookAt(*look_target)
 
@@ -570,22 +570,40 @@ class AuditoryCapacityPanda3DRenderer:
             self._gate_nodes.clear()
             return
 
-        visible_gates = [
-            gate for gate in payload.gates if gate.visual_slot_index is not None
-        ]
-        visible_gates.sort(key=lambda gate: int(gate.visual_slot_index), reverse=True)
+        visible_gates = list(payload.gates)
+        travel_distance = float(payload.presentation_travel_distance)
+        visible_gates.sort(key=lambda gate: float(gate.x_norm), reverse=True)
         y_half_span = max(0.08, float(payload.tube_half_height))
         keep_ids: set[int] = set()
-        for gate in visible_gates[:14]:
-            assert gate.visual_slot_index is not None
-            distance = slot_distance(int(gate.visual_slot_index))
+        for gate in visible_gates:
+            distance = gate_distance_from_x_norm(
+                float(gate.x_norm),
+                travel_distance=travel_distance,
+                spawn_x_norm=float(self._GATE_SPAWN_X_NORM),
+                player_x_norm=float(self._GATE_PLAYER_X_NORM),
+                retire_x_norm=float(self._GATE_RETIRE_X_NORM),
+            )
+            if distance < (travel_distance + AUDITORY_GATE_BEHIND_DISTANCE):
+                continue
+            if distance > (travel_distance + self._tube_geometry_end_distance + 0.5):
+                continue
             keep_ids.add(int(gate.gate_id))
             center, tangent, right, up = _tube_frame(distance, span=self._span)
-            depth_t = max(0.0, min(1.0, float(gate.visual_slot_index + 1) / 8.0))
+            depth_t = gate_depth_ratio_from_distance(distance, travel_distance=travel_distance)
             local_x = 0.0
             local_z = max(-1.0, min(1.0, gate.y_norm / y_half_span)) * (self._tube_rz * 0.62)
             radius = max(0.16, (float(gate.aperture_norm) / y_half_span) * (self._tube_rz * 0.82))
-            rgba = self._depth_gate_rgba(base=self._gate_rgba(gate.color), depth_t=depth_t)
+            base_rgba = self._gate_rgba(gate.color)
+            if gate.flash_color is not None and float(gate.flash_strength) > 0.0:
+                flash_rgba = self._gate_rgba(gate.flash_color)
+                flash_mix = max(0.0, min(1.0, float(gate.flash_strength)))
+                base_rgba = (
+                    (base_rgba[0] * (1.0 - flash_mix)) + (flash_rgba[0] * flash_mix),
+                    (base_rgba[1] * (1.0 - flash_mix)) + (flash_rgba[1] * flash_mix),
+                    (base_rgba[2] * (1.0 - flash_mix)) + (flash_rgba[2] * flash_mix),
+                    (base_rgba[3] * (1.0 - flash_mix)) + (flash_rgba[3] * flash_mix),
+                )
+            rgba = self._depth_gate_rgba(base=base_rgba, depth_t=depth_t)
             node = self._gate_nodes.get(int(gate.gate_id))
             if node is None:
                 node = self._build_gate_shape_node(shape=gate.shape)
@@ -803,6 +821,7 @@ class AuditoryCapacityPanda3DRenderer:
     def _gate_rgba(name: str) -> tuple[float, float, float, float]:
         palette = {
             "RED": (0.92, 0.28, 0.34, 0.96),
+            "ERROR_RED": (0.98, 0.44, 0.22, 0.98),
             "GREEN": (0.32, 0.86, 0.50, 0.96),
             "BLUE": (0.38, 0.58, 0.96, 0.96),
             "YELLOW": (0.96, 0.84, 0.32, 0.96),

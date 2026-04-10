@@ -72,16 +72,16 @@ def test_same_seed_gives_same_problem_stream_for_each_tr_drill() -> None:
             assert engine_b.submit_answer(str(engine_b._current.answer)) is True
 
 
-def test_focused_tr_drills_emit_only_their_intended_active_panels() -> None:
+def test_focused_tr_drills_keep_scene_active_for_anchor_variants() -> None:
     cases = (
         (build_tr_scene_anchor_drill, ("scene",)),
         (build_tr_scene_modifier_run_drill, ("scene",)),
         (build_tr_priority_sweep_drill, ("scene",)),
         (build_tr_damaged_sweep_drill, ("scene",)),
         (build_tr_category_sweep_drill, ("scene",)),
-        (build_tr_light_anchor_drill, ("light",)),
-        (build_tr_scan_anchor_drill, ("scan",)),
-        (build_tr_system_anchor_drill, ("system",)),
+        (build_tr_light_anchor_drill, ("scene", "light")),
+        (build_tr_scan_anchor_drill, ("scene", "scan")),
+        (build_tr_system_anchor_drill, ("scene", "system")),
     )
     for builder, expected in cases:
         engine = builder(clock=FakeClock(), seed=818, difficulty=0.5, mode=AntDrillMode.BUILD)
@@ -90,7 +90,7 @@ def test_focused_tr_drills_emit_only_their_intended_active_panels() -> None:
         assert payload.active_panels == expected
 
 
-def test_tr_panel_switch_run_repeats_fixed_single_panel_cycle() -> None:
+def test_tr_panel_switch_run_repeats_fixed_scene_backed_cycle() -> None:
     engine = build_tr_panel_switch_run_drill(
         clock=FakeClock(),
         seed=919,
@@ -106,17 +106,17 @@ def test_tr_panel_switch_run_repeats_fixed_single_panel_cycle() -> None:
 
     assert seen == [
         ("scene",),
-        ("light",),
-        ("scan",),
-        ("system",),
+        ("scene", "light"),
+        ("scene", "scan"),
+        ("scene", "system"),
         ("scene",),
-        ("light",),
-        ("scan",),
-        ("system",),
+        ("scene", "light"),
+        ("scene", "scan"),
+        ("scene", "system"),
     ]
 
 
-def test_tr_mixed_tempo_repeats_fixed_six_step_cycle() -> None:
+def test_tr_mixed_tempo_repeats_fixed_scene_backed_six_step_cycle() -> None:
     engine = build_tr_mixed_tempo_drill(
         clock=FakeClock(),
         seed=1212,
@@ -132,9 +132,9 @@ def test_tr_mixed_tempo_repeats_fixed_six_step_cycle() -> None:
 
     assert seen == [
         ("scene", "light"),
-        ("scan", "system"),
+        ("scene", "scan", "system"),
         ("scene", "scan"),
-        ("light", "system"),
+        ("scene", "light", "system"),
         ("scene", "light", "scan"),
         ("scene", "light", "scan", "system"),
     ]

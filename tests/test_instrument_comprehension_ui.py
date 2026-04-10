@@ -97,6 +97,19 @@ class _FakeGlRenderer:
         _ = (ui_surface, scene)
 
 
+class _RecordingFont:
+    def __init__(self, base: pygame.font.Font, sink: list[str]) -> None:
+        self._base = base
+        self._sink = sink
+
+    def render(self, text: str, antialias: bool, color: object) -> pygame.Surface:
+        self._sink.append(str(text))
+        return self._base.render(text, antialias, color)
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._base, name)
+
+
 def _base_state() -> InstrumentState:
     return InstrumentState(
         speed_kts=220,
@@ -217,6 +230,17 @@ def _build_live_screen(
     return app, screen
 
 
+def _install_recording_fonts(*fonts: object) -> list[str]:
+    captured: list[str] = []
+    for obj in fonts:
+        for attr in ("_small_font", "_tiny_font", "_mid_font", "_big_font"):
+            font = getattr(obj, attr, None)
+            if isinstance(font, _RecordingFont) or font is None:
+                continue
+            setattr(obj, attr, _RecordingFont(font, captured))
+    return captured
+
+
 def test_instrument_screen_renders_after_display_bootstrap_sync() -> None:
     app, screen = _build_screen(_build_payload())
     try:
@@ -240,6 +264,20 @@ def test_instrument_screen_renders_after_display_bootstrap_sync() -> None:
         assert app.surface.get_size() == (1440, 900)
         assert screen._instrument_part1_layout is not None
         assert app.current_run_state().display_mode == "FULLSCREEN"
+    finally:
+        pygame.quit()
+
+
+def test_instrument_live_screen_hides_scored_counter() -> None:
+    _app, screen = _build_screen(_build_payload())
+    try:
+        surface = pygame.display.get_surface()
+        assert surface is not None
+        captured = _install_recording_fonts(screen)
+
+        screen.render(surface)
+
+        assert not any(text.startswith("Scored") for text in captured)
     finally:
         pygame.quit()
 

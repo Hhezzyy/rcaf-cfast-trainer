@@ -31,6 +31,19 @@ class FakeClock:
         self._now += float(delta_s)
 
 
+class _RecordingFont:
+    def __init__(self, base: pygame.font.Font, sink: list[str]) -> None:
+        self._base = base
+        self._sink = sink
+
+    def render(self, text: str, antialias: bool, color: object) -> pygame.Surface:
+        self._sink.append(str(text))
+        return self._base.render(text, antialias, color)
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._base, name)
+
+
 @dataclass(frozen=True, slots=True)
 class _FakeOption:
     code: int
@@ -130,6 +143,17 @@ def _build_digit_recognition_screen(
     )
     app.push(screen)
     return screen
+
+
+def _install_recording_fonts(*fonts: object) -> list[str]:
+    captured: list[str] = []
+    for obj in fonts:
+        for attr in ("_small_font", "_tiny_font", "_mid_font", "_big_font", "_num_header_font"):
+            font = getattr(obj, attr, None)
+            if isinstance(font, _RecordingFont) or font is None:
+                continue
+            setattr(obj, attr, _RecordingFont(font, captured))
+    return captured
 
 
 def _advance_digit_recognition_to_question(clock: FakeClock, screen: CognitiveTestScreen) -> None:
@@ -289,5 +313,41 @@ def test_digit_recognition_without_review_mode_keeps_answer_hidden(tmp_path) -> 
         assert screen._review_state is None
         assert screen._engine.snapshot().practice_feedback is None
         assert screen._input == ""
+    finally:
+        pygame.quit()
+
+
+def test_numerical_operations_live_screen_hides_scored_counter(tmp_path) -> None:
+    screen, _clock = _build_screen(tmp_path=tmp_path, review_mode=False, payload=None)
+    try:
+        surface = pygame.display.get_surface()
+        assert surface is not None
+        screen._engine._title = "Numerical Operations"
+        screen._engine.start_scored()
+        captured = _install_recording_fonts(screen)
+
+        screen.render(surface)
+
+        assert not any(text.startswith("Scored") for text in captured)
+    finally:
+        pygame.quit()
+
+
+def test_digit_recognition_live_screen_hides_scored_counter(tmp_path) -> None:
+    clock = FakeClock()
+    screen = _build_digit_recognition_screen(
+        tmp_path=tmp_path,
+        review_mode=False,
+        clock=clock,
+    )
+    try:
+        surface = pygame.display.get_surface()
+        assert surface is not None
+        _advance_digit_recognition_to_question(clock, screen)
+        captured = _install_recording_fonts(screen)
+
+        screen.render(surface)
+
+        assert not any(text.startswith("Scored") for text in captured)
     finally:
         pygame.quit()

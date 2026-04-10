@@ -27,9 +27,34 @@ class SpatialIntegrationSceneLayout:
     aircraft_future: tuple[float, float] | None
 
 
-def _project_topdown(
-    point: SpatialIntegrationPoint,
+def landmark_visual_cell_offsets(
     *,
+    landmarks: tuple[SpatialIntegrationLandmark, ...],
+) -> dict[str, tuple[float, float]]:
+    groups: dict[tuple[int, int], list[SpatialIntegrationLandmark]] = {}
+    for landmark in landmarks:
+        groups.setdefault((int(landmark.x), int(landmark.y)), []).append(landmark)
+
+    offsets: dict[str, tuple[float, float]] = {}
+    for grouped_landmarks in groups.values():
+        ordered = sorted(grouped_landmarks, key=lambda landmark: (str(landmark.label), str(landmark.kind)))
+        if len(ordered) <= 1:
+            pattern = ((0.0, 0.0),)
+        elif len(ordered) == 2:
+            pattern = ((-0.18, -0.08), (0.18, 0.08))
+        elif len(ordered) == 3:
+            pattern = ((-0.18, -0.10), (0.18, -0.10), (0.0, 0.16))
+        else:
+            pattern = ((-0.18, -0.10), (0.18, -0.10), (-0.12, 0.16), (0.12, 0.16))
+        for landmark, offset in zip(ordered, pattern, strict=False):
+            offsets[str(landmark.label)] = (float(offset[0]), float(offset[1]))
+    return offsets
+
+
+def _project_topdown(
+    *,
+    x: float,
+    y: float,
     grid_cols: int,
     grid_rows: int,
     size: tuple[int, int],
@@ -43,14 +68,16 @@ def _project_topdown(
     cell_w = usable_w / max(1, grid_cols)
     cell_h = usable_h / max(1, grid_rows)
     return (
-        margin_x + ((float(point.x) + 0.5) * cell_w),
-        margin_y + ((float(point.y) + 0.5) * cell_h),
+        margin_x + ((float(x) + 0.5) * cell_w),
+        margin_y + ((float(y) + 0.5) * cell_h),
     )
 
 
 def _project_oblique(
-    point: SpatialIntegrationPoint,
     *,
+    x: float,
+    y: float,
+    z: float,
     grid_cols: int,
     grid_rows: int,
     alt_levels: int,
@@ -61,9 +88,9 @@ def _project_oblique(
     col_span = max(1, grid_cols - 1)
     row_span = max(1, grid_rows - 1)
     alt_span = max(1, alt_levels - 1)
-    nx = float(point.x) / col_span
-    ny = float(point.y) / row_span
-    nz = float(point.z) / alt_span
+    nx = float(x) / col_span
+    ny = float(y) / row_span
+    nz = float(z) / alt_span
     return (
         (width * 0.22) + (nx * width * 0.52) + (ny * width * 0.10),
         (height * 0.76) - (ny * height * 0.34) - (nz * height * 0.22),
@@ -71,20 +98,25 @@ def _project_oblique(
 
 
 def _project(
-    point: SpatialIntegrationPoint,
     *,
+    x: float,
+    y: float,
+    z: float,
     payload: SpatialIntegrationPayload,
     size: tuple[int, int],
 ) -> tuple[float, float]:
     if payload.scene_view is SpatialIntegrationSceneView.TOPDOWN:
         return _project_topdown(
-            point,
+            x=x,
+            y=y,
             grid_cols=int(payload.grid_cols),
             grid_rows=int(payload.grid_rows),
             size=size,
         )
     return _project_oblique(
-        point,
+        x=x,
+        y=y,
+        z=z,
         grid_cols=int(payload.grid_cols),
         grid_rows=int(payload.grid_rows),
         alt_levels=int(payload.alt_levels),
@@ -115,19 +147,24 @@ def build_scene_layout(
             aircraft_future=None,
         )
 
+    landmark_offsets = landmark_visual_cell_offsets(landmarks=tuple(payload.landmarks))
     landmarks = tuple(
         SpatialIntegrationProjectedMarker(
             label=str(landmark.label),
             screen_x=float(
                 _project(
-                    SpatialIntegrationPoint(x=int(landmark.x), y=int(landmark.y), z=0),
+                    x=float(landmark.x) + landmark_offsets.get(str(landmark.label), (0.0, 0.0))[0],
+                    y=float(landmark.y) + landmark_offsets.get(str(landmark.label), (0.0, 0.0))[1],
+                    z=0.0,
                     payload=payload,
                     size=size,
                 )[0]
             ),
             screen_y=float(
                 _project(
-                    SpatialIntegrationPoint(x=int(landmark.x), y=int(landmark.y), z=0),
+                    x=float(landmark.x) + landmark_offsets.get(str(landmark.label), (0.0, 0.0))[0],
+                    y=float(landmark.y) + landmark_offsets.get(str(landmark.label), (0.0, 0.0))[1],
+                    z=0.0,
                     payload=payload,
                     size=size,
                 )[1]
@@ -135,16 +172,26 @@ def build_scene_layout(
         )
         for landmark in payload.landmarks
     )
-    aircraft_prev = _project(payload.aircraft_prev, payload=payload, size=size)
-    aircraft_now = _project(payload.aircraft_now, payload=payload, size=size)
+    aircraft_prev = _project(
+        x=float(payload.aircraft_prev.x),
+        y=float(payload.aircraft_prev.y),
+        z=float(payload.aircraft_prev.z),
+        payload=payload,
+        size=size,
+    )
+    aircraft_now = _project(
+        x=float(payload.aircraft_now.x),
+        y=float(payload.aircraft_now.y),
+        z=float(payload.aircraft_now.z),
+        payload=payload,
+        size=size,
+    )
     aircraft_future = None
     if payload.show_aircraft_motion:
         aircraft_future = _project(
-            SpatialIntegrationPoint(
-                x=int(payload.aircraft_now.x + payload.velocity.dx),
-                y=int(payload.aircraft_now.y + payload.velocity.dy),
-                z=int(payload.aircraft_now.z + payload.velocity.dz),
-            ),
+            x=float(payload.aircraft_now.x + payload.velocity.dx),
+            y=float(payload.aircraft_now.y + payload.velocity.dy),
+            z=float(payload.aircraft_now.z + payload.velocity.dz),
             payload=payload,
             size=size,
         )

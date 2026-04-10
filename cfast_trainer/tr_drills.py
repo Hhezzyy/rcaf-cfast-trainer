@@ -741,7 +741,7 @@ class TrLightAnchorGenerator(_TargetRecognitionTrainingGenerator):
         super().__init__(
             seed=seed,
             mode=mode,
-            active_panel_sequence=(("light",),),
+            active_panel_sequence=(("scene", "light"),),
             cadence_style="steady",
         )
 
@@ -751,7 +751,7 @@ class TrScanAnchorGenerator(_TargetRecognitionTrainingGenerator):
         super().__init__(
             seed=seed,
             mode=mode,
-            active_panel_sequence=(("scan",),),
+            active_panel_sequence=(("scene", "scan"),),
             scan_pool_mode="simple",
             cadence_style="steady",
         )
@@ -762,7 +762,7 @@ class TrSystemAnchorGenerator(_TargetRecognitionTrainingGenerator):
         super().__init__(
             seed=seed,
             mode=mode,
-            active_panel_sequence=(("system",),),
+            active_panel_sequence=(("scene", "system"),),
             cadence_style="steady",
         )
 
@@ -772,7 +772,12 @@ class TrPanelSwitchRunGenerator(_TargetRecognitionTrainingGenerator):
         super().__init__(
             seed=seed,
             mode=mode,
-            active_panel_sequence=(("scene",), ("light",), ("scan",), ("system",)),
+            active_panel_sequence=(
+                ("scene",),
+                ("scene", "light"),
+                ("scene", "scan"),
+                ("scene", "system"),
+            ),
             cadence_style="switch",
         )
 
@@ -784,9 +789,9 @@ class TrMixedTempoGenerator(_TargetRecognitionTrainingGenerator):
             mode=mode,
             active_panel_sequence=(
                 ("scene", "light"),
-                ("scan", "system"),
+                ("scene", "scan", "system"),
                 ("scene", "scan"),
-                ("light", "system"),
+                ("scene", "light", "system"),
                 ("scene", "light", "scan"),
                 ("scene", "light", "scan", "system"),
             ),
@@ -916,8 +921,8 @@ def build_tr_light_anchor_drill(
         instructions=(
             "Target Recognition: Light Anchor",
             f"Mode: {profile.label}",
-            "Train the light panel by itself first so the colour-pattern timing becomes automatic.",
-            "Inactive panels stay visible but OFF, and light cadence tightens as the mode climbs.",
+            "Train the light panel with the map panel still live so colour-pattern timing becomes automatic without losing scene context.",
+            "Map and light stay active together, while the remaining panels stay visible but OFF and light cadence tightens as the mode climbs.",
             "Mouse only: use the live Target Recognition panel interactions.",
             "Press Enter to begin practice.",
         ),
@@ -1036,8 +1041,8 @@ def build_tr_scan_anchor_drill(
         instructions=(
             "Target Recognition: Scan Anchor",
             f"Mode: {profile.label}",
-            "Train the scan stream by itself first, using an easier symbol pool in the lower end of the family.",
-            "Inactive panels stay visible but OFF, and scan cadence tightens as the mode climbs.",
+            "Train the scan stream with the map panel still live, using an easier symbol pool in the lower end of the family.",
+            "Map and scan stay active together, while the remaining panels stay visible but OFF and scan cadence tightens as the mode climbs.",
             "Mouse only: use the live Target Recognition panel interactions.",
             "Press Enter to begin practice.",
         ),
@@ -1066,8 +1071,8 @@ def build_tr_system_anchor_drill(
         instructions=(
             "Target Recognition: System Anchor",
             f"Mode: {profile.label}",
-            "Train the scrolling system columns by themselves so the target-code handoff becomes stable.",
-            "Inactive panels stay visible but OFF, and system cadence tightens as the mode climbs.",
+            "Train the scrolling system columns with the map panel still live so the target-code handoff becomes stable without dropping scene context.",
+            "Map and system stay active together, while the remaining panels stay visible but OFF and system cadence tightens as the mode climbs.",
             "Mouse only: use the live Target Recognition panel interactions.",
             "Press Enter to begin practice.",
         ),
@@ -1096,8 +1101,8 @@ def build_tr_panel_switch_run_drill(
         instructions=(
             "Target Recognition: Panel Switch Run",
             f"Mode: {profile.label}",
-            "One panel is active at a time, and the block cycles Scene -> Light -> Scan -> System.",
-            "Use the switching rhythm to reset your eyes cleanly instead of carrying the previous panel into the next one.",
+            "The map panel stays active throughout, and the block cycles Scene -> Scene + Light -> Scene + Scan -> Scene + System.",
+            "Use the switching rhythm to reset your eyes cleanly while keeping the shared map context in view.",
             "Mouse only: use the live Target Recognition panel interactions.",
             "Press Enter to begin practice.",
         ),
@@ -1126,7 +1131,7 @@ def build_tr_mixed_tempo_drill(
         instructions=(
             "Target Recognition: Mixed Tempo",
             f"Mode: {profile.label}",
-            "Cycle through fixed multi-panel combinations so panel switching becomes deliberate before the full test-style run.",
+            "Cycle through fixed multi-panel combinations with the map panel always active so panel switching becomes deliberate before the full test-style run.",
             "The active-panel rhythm is fixed and deterministic for the session seed.",
             "Mouse only: use the live Target Recognition panel interactions.",
             "Press Enter to begin practice.",

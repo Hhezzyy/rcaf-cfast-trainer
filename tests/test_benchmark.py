@@ -1011,6 +1011,9 @@ def test_benchmark_probe_overlay_hides_timer_text() -> None:
 
         assert not any("Probe time" in text or "Battery remaining" in text for text in captured)
         assert not any(re.search(r"\b\d{2}:\d{2}\b", text) for text in captured)
+        assert not any(text.startswith("Benchmark ") for text in captured)
+        assert not any(text.startswith("Attempted ") for text in captured)
+        assert not any(text.startswith("Correct ") for text in captured)
     finally:
         pygame.quit()
 
@@ -1041,6 +1044,7 @@ def test_standard_runtime_screen_hides_timer_text() -> None:
 
         assert not any("Time remaining" in text for text in captured)
         assert not any(re.search(r"\b\d{2}:\d{2}\b", text) for text in captured)
+        assert not any(text.startswith("Scored") for text in captured)
     finally:
         pygame.quit()
 

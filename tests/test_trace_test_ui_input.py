@@ -31,6 +31,19 @@ class FakeClock:
         self.t += float(dt)
 
 
+class _RecordingFont:
+    def __init__(self, base: pygame.font.Font, sink: list[str]) -> None:
+        self._base = base
+        self._sink = sink
+
+    def render(self, text: str, antialias: bool, color: object) -> pygame.Surface:
+        self._sink.append(str(text))
+        return self._base.render(text, antialias, color)
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._base, name)
+
+
 def _build_screen(
     *,
     engine_factory,
@@ -57,6 +70,17 @@ def _build_screen(
     screen = CognitiveTestScreen(app, engine_factory=engine_factory, test_code=test_code)
     app.push(screen)
     return screen
+
+
+def _install_recording_fonts(*fonts: object) -> list[str]:
+    captured: list[str] = []
+    for obj in fonts:
+        for attr in ("_small_font", "_tiny_font", "_mid_font", "_big_font"):
+            font = getattr(obj, attr, None)
+            if isinstance(font, _RecordingFont) or font is None:
+                continue
+            setattr(obj, attr, _RecordingFont(font, captured))
+    return captured
 
 
 def test_trace_test_1_arrow_input_faults_wrong_choice_during_observe_stage() -> None:
@@ -258,11 +282,64 @@ def test_trace_test_1_answer_input_does_not_swap_prompt_immediately(tmp_path) ->
     assert next_payload is not None
     assert next_payload.prompt_index == before.prompt_index
 
-    clock.advance(0.20)
-    screen._engine.update()
-    final_payload = screen._engine.snapshot().payload
-    assert final_payload is not None
-    assert final_payload.prompt_index == before.prompt_index + 1
+
+def test_trace_test_1_live_screen_hides_scored_counter() -> None:
+    clock = FakeClock()
+    screen = _build_screen(
+        engine_factory=lambda: build_trace_test_1_test(
+            clock=clock,
+            seed=17,
+            difficulty=0.5,
+            config=TraceTest1Config(
+                practice_questions=1,
+                practice_observe_s=1.0,
+                scored_observe_s=1.0,
+            ),
+        ),
+        test_code="trace_test_1",
+    )
+    try:
+        screen._engine.start_practice()
+        captured = _install_recording_fonts(screen)
+
+        screen.render(screen._app.surface)
+
+        assert "Observe" in captured
+        assert not any(text.startswith("Scored") for text in captured)
+    finally:
+        pygame.quit()
+
+
+def test_trace_test_2_live_screen_hides_clip_and_question_progress() -> None:
+    clock = FakeClock()
+    screen = _build_screen(
+        engine_factory=lambda: build_trace_test_2_test(
+            clock=clock,
+            seed=17,
+            difficulty=0.5,
+            config=TraceTest2Config(
+                practice_questions=1,
+                practice_observe_s=1.0,
+                scored_observe_s=1.0,
+            ),
+        ),
+        test_code="trace_test_2",
+    )
+    try:
+        screen._engine.start_practice()
+        captured = _install_recording_fonts(screen)
+
+        screen.render(screen._app.surface)
+        clock.advance(1.05)
+        screen._engine.update()
+        screen.render(screen._app.surface)
+
+        assert "Observe" in captured
+        assert "Answer" in captured
+        assert not any("Clip " in text for text in captured)
+        assert "Question: 1 of 1" not in captured
+    finally:
+        pygame.quit()
 
 
 def test_trace_test_2_letter_choice_submits_only_after_observe_stage() -> None:

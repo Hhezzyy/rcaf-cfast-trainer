@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 from dataclasses import replace
 from dataclasses import dataclass
@@ -78,6 +79,19 @@ class _FakeSpatialEngine:
         pass
 
 
+class _RecordingFont:
+    def __init__(self, base: pygame.font.Font, sink: list[str]) -> None:
+        self._base = base
+        self._sink = sink
+
+    def render(self, text: str, antialias: bool, color: object) -> pygame.Surface:
+        self._sink.append(str(text))
+        return self._base.render(text, antialias, color)
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._base, name)
+
+
 def _build_screen(engine: object) -> tuple[App, CognitiveTestScreen]:
     pygame.init()
     surface = pygame.display.set_mode((960, 540))
@@ -88,6 +102,17 @@ def _build_screen(engine: object) -> tuple[App, CognitiveTestScreen]:
     screen = CognitiveTestScreen(app, engine_factory=lambda: engine)
     app.push(screen)
     return app, screen
+
+
+def _install_recording_fonts(*fonts: object) -> list[str]:
+    captured: list[str] = []
+    for obj in fonts:
+        for attr in ("_small_font", "_tiny_font", "_mid_font", "_big_font"):
+            font = getattr(obj, attr, None)
+            if isinstance(font, _RecordingFont) or font is None:
+                continue
+            setattr(obj, attr, _RecordingFont(font, captured))
+    return captured
 
 
 def _payload_for(*, part: SpatialIntegrationPart, study: bool, question_index: int) -> SpatialIntegrationPayload:
@@ -174,6 +199,26 @@ def test_study_scene_is_static_across_renders(monkeypatch) -> None:
         pygame.quit()
 
 
+def test_study_scene_opengl_overlay_renders_landmark_callouts() -> None:
+    payload = _payload_for(part=SpatialIntegrationPart.STATIC, study=True, question_index=1)
+    app, screen = _build_screen(_FakeSpatialEngine(payload))
+    captured = _install_recording_fonts(screen)
+    queued: list[object] = []
+    app.set_opengl_enabled(True)
+    app.queue_gl_scene = lambda scene: queued.append(scene)  # type: ignore[method-assign]
+    try:
+        surface = pygame.display.get_surface()
+        assert surface is not None
+
+        screen.render(surface)
+
+        rendered_labels = {text for text in captured if text in {landmark.label for landmark in payload.landmarks}}
+        assert len(rendered_labels) >= 3
+        assert queued
+    finally:
+        pygame.quit()
+
+
 def test_study_scene_uses_same_scene_with_different_reference_view_heading() -> None:
     payload = _payload_for(part=SpatialIntegrationPart.STATIC, study=True, question_index=1)
     assert len(payload.reference_views) >= 2
@@ -249,6 +294,26 @@ def test_study_scene_falls_back_to_builtin_renderer_when_external_3d_is_unavaila
 
         assert asset_calls["count"] > 0
         assert pygame.transform.average_color(surface.subsurface(crop))[:3] != (0, 0, 0)
+    finally:
+        pygame.quit()
+
+
+def test_spatial_integration_live_screen_hides_scene_question_and_view_counters() -> None:
+    study_payload = _payload_for(part=SpatialIntegrationPart.STATIC, study=True, question_index=1)
+    question_payload = _payload_for(part=SpatialIntegrationPart.STATIC, study=False, question_index=1)
+    _app, screen = _build_screen(_FakeSpatialEngine(study_payload))
+    try:
+        surface = pygame.display.get_surface()
+        assert surface is not None
+        captured = _install_recording_fonts(screen)
+
+        screen.render(surface)
+        screen._engine = _FakeSpatialEngine(question_payload)
+        screen.render(surface)
+
+        assert not any(re.match(r"Scene \d+/\d+$", text) for text in captured)
+        assert not any(re.match(r"Question \d+/\d+$", text) for text in captured)
+        assert not any(re.match(r"View \d+/\d+$", text) for text in captured)
     finally:
         pygame.quit()
 

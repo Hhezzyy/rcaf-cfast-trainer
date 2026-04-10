@@ -32,6 +32,19 @@ class FakeClock:
         self.t += float(dt)
 
 
+class _RecordingFont:
+    def __init__(self, base: pygame.font.Font, sink: list[str]) -> None:
+        self._base = base
+        self._sink = sink
+
+    def render(self, text: str, antialias: bool, color: object) -> pygame.Surface:
+        self._sink.append(str(text))
+        return self._base.render(text, antialias, color)
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._base, name)
+
+
 def _build_screen(
     *,
     engine_factory,
@@ -55,6 +68,17 @@ def _build_screen(
     screen = CognitiveTestScreen(app, engine_factory=engine_factory, test_code=test_code)
     app.push(screen)
     return screen
+
+
+def _install_recording_fonts(*fonts: object) -> list[str]:
+    captured: list[str] = []
+    for obj in fonts:
+        for attr in ("_small_font", "_tiny_font", "_mid_font", "_big_font"):
+            font = getattr(obj, attr, None)
+            if isinstance(font, _RecordingFont) or font is None:
+                continue
+            setattr(obj, attr, _RecordingFont(font, captured))
+    return captured
 
 
 def _advance_until_symbol(
@@ -246,5 +270,40 @@ def test_vigilance_live_stream_keeps_advancing_after_enter_submission() -> None:
         )
         assert updated.symbols
         assert updated.symbols[0].symbol_id != symbol.symbol_id
+    finally:
+        pygame.quit()
+
+
+def test_vigilance_live_screen_keeps_symbol_points_legend_without_live_tally_counters() -> None:
+    clock = FakeClock()
+    try:
+        screen = _build_screen(
+            engine_factory=lambda: build_vig_entry_anchor_drill(
+                clock=clock,
+                seed=131,
+                difficulty=0.5,
+                mode=AntDrillMode.BUILD,
+                config=VigilanceDrillConfig(
+                    practice_duration_s=5.0,
+                    scored_duration_s=10.0,
+                    spawn_interval_s=0.25,
+                    max_active_symbols=2,
+                ),
+            ),
+            test_code="vig_entry_anchor",
+        )
+        screen._engine.start_practice()
+        _advance_until_symbol(screen=screen, clock=clock)
+        captured = _install_recording_fonts(screen)
+
+        screen.render(screen._app.surface)
+
+        assert "Symbol Points" in captured
+        assert not any(text.startswith("Captures ") for text in captured)
+        assert not any(text.startswith("Points ") for text in captured)
+        assert not any(text.startswith("Points: ") for text in captured)
+        assert not any(text.startswith("Captured: ") for text in captured)
+        assert not any(text.startswith("Missed: ") for text in captured)
+        assert not any(text.startswith("Visible: ") for text in captured)
     finally:
         pygame.quit()

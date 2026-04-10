@@ -57,6 +57,19 @@ class _FakeSystemLogicEngine:
         return
 
 
+class _RecordingFont:
+    def __init__(self, base: pygame.font.Font, sink: list[str]) -> None:
+        self._base = base
+        self._sink = sink
+
+    def render(self, text: str, antialias: bool, color: object) -> pygame.Surface:
+        self._sink.append(str(text))
+        return self._base.render(text, antialias, color)
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._base, name)
+
+
 def _build_payload() -> SystemLogicPayload:
     return SystemLogicPayload(
         scenario_code="SYS-999",
@@ -146,6 +159,17 @@ def _build_screen(engine: _FakeSystemLogicEngine) -> CognitiveTestScreen:
     screen = CognitiveTestScreen(app, engine_factory=lambda: engine)
     app.push(screen)
     return screen
+
+
+def _install_recording_fonts(*fonts: object) -> list[str]:
+    captured: list[str] = []
+    for obj in fonts:
+        for attr in ("_small_font", "_tiny_font", "_mid_font", "_big_font"):
+            font = getattr(obj, attr, None)
+            if isinstance(font, _RecordingFont) or font is None:
+                continue
+            setattr(obj, attr, _RecordingFont(font, captured))
+    return captured
 
 
 def test_system_logic_layout_matches_guide_structure() -> None:
@@ -285,6 +309,21 @@ def test_app_routes_scaled_mouse_clicks_to_system_logic_hitboxes() -> None:
         )
 
         assert engine.submissions == ["4"]
+    finally:
+        pygame.quit()
+
+
+def test_system_logic_live_screen_hides_scored_counter() -> None:
+    engine = _FakeSystemLogicEngine(payload=_build_payload())
+    screen = _build_screen(engine)
+    try:
+        surface = pygame.display.get_surface()
+        assert surface is not None
+        captured = _install_recording_fonts(screen)
+
+        screen.render(surface)
+
+        assert not any(text.startswith("Scored") for text in captured)
     finally:
         pygame.quit()
 

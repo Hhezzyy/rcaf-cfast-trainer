@@ -25,8 +25,8 @@ from cfast_trainer.aircraft_art import (
 from cfast_trainer.auditory_capacity import AuditoryCapacityGate, build_auditory_capacity_test
 from cfast_trainer.auditory_capacity_view import (
     BALL_FORWARD_IDLE_NORM,
-    GATE_DEPTH_SLOTS_NORM,
     TUNNEL_GEOMETRY_END_DISTANCE,
+    run_travel_distance,
 )
 from cfast_trainer.gl_scenes import (
     AuditoryGlScene,
@@ -66,7 +66,11 @@ from cfast_trainer.rapid_tracking import (
     build_rapid_tracking_test,
 )
 from cfast_trainer.render_assets import RenderAssetCatalog
-from cfast_trainer.spatial_integration import build_spatial_integration_test
+from cfast_trainer.spatial_integration import (
+    SpatialIntegrationLandmark,
+    SpatialIntegrationPart,
+    build_spatial_integration_test,
+)
 from cfast_trainer.trace_test_1 import (
     TraceTest1Generator,
     TraceTest1Payload,
@@ -138,10 +142,9 @@ def _spatial_integration_payload():
     raise AssertionError("expected a spatial integration payload")
 
 
-def _trace_test_1_payload() -> TraceTest1Payload:
+def _trace_test_1_payload(*, progress: float = 0.68) -> TraceTest1Payload:
     prompt = TraceTest1Generator(seed=44).next_problem(difficulty=0.82).payload
     assert isinstance(prompt, TraceTest1PromptPlan)
-    progress = 0.68
     return TraceTest1Payload(
         trial_stage=TraceTest1TrialStage.ANSWER_OPEN,
         stage_time_remaining_s=1.0,
@@ -214,6 +217,18 @@ def _marker_centroid(faces) -> tuple[float, float]:
     )
 
 
+def _triangle_signature(batch: _GeometryBatch) -> tuple[tuple[float, float, float, float], ...]:
+    return tuple(
+        (
+            round(vertex.x, 3),
+            round(vertex.y, 3),
+            round(vertex.r, 3),
+            round(vertex.g, 3),
+        )
+        for vertex in batch.triangles
+    )
+
+
 def _angle_delta_deg(a: float, b: float) -> float:
     return ((float(a) - float(b) + 180.0) % 360.0) - 180.0
 
@@ -238,7 +253,6 @@ def _auditory_scene_with_visible_gates() -> AuditoryGlScene:
                 color="GREEN",
                 shape="SQUARE",
                 aperture_norm=0.18,
-                visual_slot_index=len(GATE_DEPTH_SLOTS_NORM) - 1,
             ),
             AuditoryCapacityGate(
                 gate_id=702,
@@ -247,7 +261,6 @@ def _auditory_scene_with_visible_gates() -> AuditoryGlScene:
                 color="RED",
                 shape="TRIANGLE",
                 aperture_norm=0.22,
-                visual_slot_index=len(GATE_DEPTH_SLOTS_NORM) - 2,
             ),
             AuditoryCapacityGate(
                 gate_id=703,
@@ -256,7 +269,6 @@ def _auditory_scene_with_visible_gates() -> AuditoryGlScene:
                 color="BLUE",
                 shape="CIRCLE",
                 aperture_norm=0.20,
-                visual_slot_index=len(GATE_DEPTH_SLOTS_NORM) - 3,
             ),
         ),
     )
@@ -343,12 +355,16 @@ def test_auditory_scene_plan_includes_volumetric_gate_assets_when_visible() -> N
             assert instance.color[3] > 0.0
 
 
-def test_auditory_scene_plan_camera_follows_forward_progress_but_ignores_ball_offsets() -> None:
+def test_auditory_scene_plan_camera_follows_presentation_travel_but_ignores_ball_offsets() -> None:
     baseline = _build_auditory_scene_plan(_auditory_scene_with_ball_offset(ball_x=0.0, ball_y=0.0))
     lateral = _build_auditory_scene_plan(_auditory_scene_with_ball_offset(ball_x=0.82, ball_y=-0.60))
     shifted_payload = replace(
         _auditory_payload(),
         phase_elapsed_s=9.4,
+        presentation_travel_distance=run_travel_distance(
+            session_seed=int(_auditory_payload().session_seed),
+            phase_elapsed_s=9.4,
+        ),
         ball_x=0.82,
         ball_y=-0.60,
         ball_forward_norm=0.74,
@@ -370,13 +386,17 @@ def test_auditory_scene_plan_camera_follows_forward_progress_but_ignores_ball_of
     assert shifted.camera.position[0] > baseline.camera.position[0]
 
 
-def test_auditory_scene_plan_gate_positions_stay_fixed_for_same_slot_assignments() -> None:
+def test_auditory_scene_plan_gate_positions_advance_with_travel_but_keep_ball_spacing() -> None:
     base_scene = _auditory_scene_with_visible_gates()
     advanced_scene = AuditoryGlScene(
         world=pygame.Rect(0, 0, 640, 360),
         payload=replace(
             base_scene.payload,
             phase_elapsed_s=7.1,
+            presentation_travel_distance=run_travel_distance(
+                session_seed=int(base_scene.payload.session_seed),
+                phase_elapsed_s=7.1,
+            ),
             ball_forward_norm=0.72,
         )
         if base_scene.payload is not None
@@ -387,21 +407,28 @@ def test_auditory_scene_plan_gate_positions_stay_fixed_for_same_slot_assignments
 
     first_plan = _build_auditory_scene_plan(base_scene)
     second_plan = _build_auditory_scene_plan(advanced_scene)
+    first_ball = next(
+        instance for instance in first_plan.asset_instances if instance.asset_id == "auditory_ball"
+    )
+    second_ball = next(
+        instance for instance in second_plan.asset_instances if instance.asset_id == "auditory_ball"
+    )
     first_gates = sorted(
-        instance.position
+        instance.position[1] - first_ball.position[1]
         for instance in first_plan.asset_instances
         if instance.asset_id.startswith("auditory_gate_")
     )
     second_gates = sorted(
-        instance.position
+        instance.position[1] - second_ball.position[1]
         for instance in second_plan.asset_instances
         if instance.asset_id.startswith("auditory_gate_")
     )
 
+    assert second_ball.position[1] > first_ball.position[1]
     assert second_gates == pytest.approx(first_gates)
 
 
-def test_auditory_scene_plan_ball_moves_forward_toward_fixed_gate_slots() -> None:
+def test_auditory_scene_plan_ball_advances_with_presentation_travel() -> None:
     scene_near = AuditoryGlScene(
         world=pygame.Rect(0, 0, 640, 360),
         payload=replace(_auditory_payload(), ball_forward_norm=float(BALL_FORWARD_IDLE_NORM)),
@@ -410,7 +437,15 @@ def test_auditory_scene_plan_ball_moves_forward_toward_fixed_gate_slots() -> Non
     )
     scene_far = AuditoryGlScene(
         world=pygame.Rect(0, 0, 640, 360),
-        payload=replace(_auditory_payload(), ball_forward_norm=0.74),
+        payload=replace(
+            _auditory_payload(),
+            phase_elapsed_s=9.4,
+            presentation_travel_distance=run_travel_distance(
+                session_seed=int(_auditory_payload().session_seed),
+                phase_elapsed_s=9.4,
+            ),
+            ball_forward_norm=0.74,
+        ),
         time_remaining_s=18.0,
         time_fill_ratio=0.44,
     )
@@ -427,8 +462,67 @@ def test_auditory_scene_plan_ball_moves_forward_toward_fixed_gate_slots() -> Non
     assert far_ball.position[1] > near_ball.position[1]
 
 
+def test_auditory_scene_plan_gate_flash_overrides_base_gate_color() -> None:
+    payload = replace(
+        _auditory_payload(),
+        gates=(
+            AuditoryCapacityGate(
+                gate_id=801,
+                x_norm=1.05,
+                y_norm=0.0,
+                color="RED",
+                shape="CIRCLE",
+                aperture_norm=0.20,
+            ),
+            AuditoryCapacityGate(
+                gate_id=802,
+                x_norm=1.05,
+                y_norm=0.0,
+                color="RED",
+                shape="SQUARE",
+                aperture_norm=0.20,
+                flash_color="WHITE",
+                flash_strength=1.0,
+            ),
+            AuditoryCapacityGate(
+                gate_id=803,
+                x_norm=1.05,
+                y_norm=0.0,
+                color="RED",
+                shape="TRIANGLE",
+                aperture_norm=0.20,
+                flash_color="ERROR_RED",
+                flash_strength=1.0,
+            ),
+        ),
+    )
+    plan = _build_auditory_scene_plan(
+        AuditoryGlScene(
+            world=pygame.Rect(0, 0, 640, 360),
+            payload=payload,
+            time_remaining_s=12.0,
+            time_fill_ratio=0.40,
+        )
+    )
+    gate_colors = {
+        instance.asset_id: instance.color
+        for instance in plan.asset_instances
+        if instance.asset_id.startswith("auditory_gate_")
+    }
+
+    base_red = gate_colors["auditory_gate_circle"]
+    white_flash = gate_colors["auditory_gate_square"]
+    error_red = gate_colors["auditory_gate_triangle"]
+
+    assert white_flash[1] > base_red[1]
+    assert white_flash[2] > base_red[2]
+    assert error_red[1] > base_red[1]
+    assert error_red[2] < white_flash[2]
+
+
 def test_auditory_scene_plan_keeps_far_end_tunnel_ring_in_front_of_camera() -> None:
-    plan = _build_auditory_scene_plan(_auditory_scene_for_render_frame())
+    scene = _auditory_scene_for_render_frame()
+    plan = _build_auditory_scene_plan(scene)
     assert plan.camera is not None
 
     farthest_rib = max(
@@ -440,7 +534,11 @@ def test_auditory_scene_plan_keeps_far_end_tunnel_ring_in_front_of_camera() -> N
         key=lambda instance: instance.position[1],
     )
 
-    assert farthest_rib.position[1] == pytest.approx(TUNNEL_GEOMETRY_END_DISTANCE, abs=0.01)
+    assert scene.payload is not None
+    assert farthest_rib.position[1] == pytest.approx(
+        float(scene.payload.presentation_travel_distance) + TUNNEL_GEOMETRY_END_DISTANCE,
+        abs=0.01,
+    )
     assert farthest_rib.position[1] > plan.camera.position[1]
     assert farthest_rib.position[1] < plan.camera.far_clip
 
@@ -1033,6 +1131,20 @@ def test_scene_asset_library_falls_back_to_builtin_when_candidate_is_missing(tmp
     assert len(mesh.triangles) > 0
 
 
+def test_scene_asset_library_builds_builtin_spatial_integration_landmark_meshes() -> None:
+    library = _SceneAssetLibrary(RenderAssetCatalog())
+
+    tent_mesh = library.mesh("spatial_tent_canvas")
+    sheep_mesh = library.mesh("spatial_sheep_flock")
+
+    assert tent_mesh.asset_id == "spatial_tent_canvas"
+    assert sheep_mesh.asset_id == "spatial_sheep_flock"
+    assert len(tent_mesh.triangles) > 0
+    assert len(sheep_mesh.triangles) > 0
+    assert tent_mesh.role_palette["body"] != (0.78, 0.80, 0.84)
+    assert sheep_mesh.role_palette["body"] != (0.78, 0.80, 0.84)
+
+
 def test_spatial_integration_scene_plan_includes_aircraft_and_landmarks() -> None:
     scene = SpatialIntegrationGlScene(
         world=pygame.Rect(0, 0, 640, 360),
@@ -1044,11 +1156,81 @@ def test_spatial_integration_scene_plan_includes_aircraft_and_landmarks() -> Non
 
     assert plan.camera is not None
     assert "plane_blue" in instance_ids
-    assert any(asset_id == "building_tower" for asset_id in instance_ids)
     assert any(
-        asset_id in {"trees_field_cluster", "forest_canopy_patch"} for asset_id in instance_ids
+        asset_id
+        in {
+            "building_hangar",
+            "building_tower",
+            "truck_olive",
+            "soldiers_patrol",
+            "spatial_tent_canvas",
+            "spatial_sheep_flock",
+            "trees_field_cluster",
+            "forest_canopy_patch",
+        }
+        for asset_id in instance_ids
     )
     assert plan.entity_count == len(plan.asset_instances)
+
+
+def test_spatial_integration_scene_plan_maps_landmark_kinds_to_asset_inventory() -> None:
+    payload = replace(
+        _spatial_integration_payload(),
+        part=SpatialIntegrationPart.AIRCRAFT,
+        show_aircraft_motion=True,
+        query_label="BLD1",
+        landmarks=(
+            SpatialIntegrationLandmark(label="BLD1", x=1, y=1, kind="building"),
+            SpatialIntegrationLandmark(label="TWR1", x=2, y=2, kind="tower"),
+            SpatialIntegrationLandmark(label="TRK1", x=3, y=3, kind="truck"),
+            SpatialIntegrationLandmark(label="SOL1", x=4, y=2, kind="foot_soldiers"),
+            SpatialIntegrationLandmark(label="WOOD", x=5, y=4, kind="forest"),
+            SpatialIntegrationLandmark(label="TENT", x=2, y=4, kind="tent"),
+            SpatialIntegrationLandmark(label="SHP1", x=4, y=5, kind="sheep"),
+        ),
+    )
+    plan = _build_spatial_integration_scene_plan(
+        SpatialIntegrationGlScene(world=pygame.Rect(0, 0, 640, 360), payload=payload)
+    )
+    instance_ids = {instance.asset_id for instance in plan.asset_instances}
+
+    assert {
+        "plane_blue",
+        "plane_green",
+        "plane_yellow",
+        "building_hangar",
+        "building_tower",
+        "truck_olive",
+        "soldiers_patrol",
+        "spatial_tent_canvas",
+        "spatial_sheep_flock",
+    } <= instance_ids
+    assert {"trees_field_cluster", "forest_canopy_patch"} & instance_ids
+    assert set(plan.asset_ids) == instance_ids
+
+
+def test_spatial_integration_scene_plan_offsets_same_cell_landmarks_deterministically() -> None:
+    payload = replace(
+        _spatial_integration_payload(),
+        query_label="BLD1",
+        landmarks=(
+            SpatialIntegrationLandmark(label="BLD1", x=3, y=3, kind="building"),
+            SpatialIntegrationLandmark(label="TENT", x=3, y=3, kind="tent"),
+        ),
+    )
+    scene = SpatialIntegrationGlScene(world=pygame.Rect(0, 0, 640, 360), payload=payload)
+
+    plan_a = _build_spatial_integration_scene_plan(scene)
+    plan_b = _build_spatial_integration_scene_plan(scene)
+    landmark_instances = [
+        instance
+        for instance in plan_a.asset_instances
+        if instance.asset_id in {"building_hangar", "spatial_tent_canvas"}
+    ]
+
+    assert len(landmark_instances) == 2
+    assert landmark_instances[0].position != landmark_instances[1].position
+    assert plan_a.asset_instances == plan_b.asset_instances
 
 
 def test_trace_test_1_scene_plan_builds_real_world_camera_and_aircraft_instances() -> None:
@@ -1060,10 +1242,8 @@ def test_trace_test_1_scene_plan_builds_real_world_camera_and_aircraft_instances
     assert plan.camera is not None
     assert plan.overlay_primitives == ()
     assert plan.entity_count == 1 + len(payload.scene.blue_frames)
-    assert len(plan.asset_instances) == plan.entity_count
-    assert plan.asset_instances[0].asset_id == "plane_red"
-    assert all(instance.asset_id == "plane_blue" for instance in plan.asset_instances[1:])
-    assert set(plan.asset_ids) == {"plane_blue", "plane_red"}
+    assert plan.asset_instances == ()
+    assert plan.asset_ids == ()
 
 
 def test_trace_test_2_scene_plan_builds_real_world_camera_and_practice_ghosts() -> None:
@@ -1078,51 +1258,93 @@ def test_trace_test_2_scene_plan_builds_real_world_camera_and_practice_ghosts() 
 
     assert plan.camera is not None
     assert plan.overlay_primitives == ()
-    assert len(plan.asset_instances) == plan.entity_count
+    assert len(plan.asset_instances) > 0
+    assert len(plan.asset_instances) < plan.entity_count
+    assert plan.entity_count == len(payload.aircraft) + len(plan.asset_instances)
     assert plan.entity_count > len(payload.aircraft)
     assert {"plane_blue", "plane_green", "plane_red", "plane_yellow"} >= set(plan.asset_ids)
 
 
-def test_trace_test_1_draw_scene_invokes_shared_world_scene_renderer(monkeypatch) -> None:
+def test_trace_test_1_draw_scene_renders_projected_marker_geometry(monkeypatch) -> None:
     renderer = _build_pipeline_probe_renderer()
     scene = TraceTest1GlScene(world=pygame.Rect(0, 0, 640, 360), payload=_trace_test_1_payload())
     scene_plan = _build_trace_test_1_scene_plan(scene)
-    calls: list[int] = []
 
     monkeypatch.setattr(
         renderer,
         "_render_scene_plan",
-        lambda *, scene_plan: calls.append(len(scene_plan.asset_instances)),
+        lambda *, scene_plan: (_ for _ in ()).throw(AssertionError("unexpected world scene render")),
     )
 
     entity_count = renderer._draw_trace_test_1_scene(scene=scene, scene_plan=scene_plan)
 
     assert entity_count == scene_plan.entity_count
-    assert calls == [scene_plan.entity_count]
     assert renderer._batch.triangles
 
 
-def test_trace_test_2_draw_scene_invokes_shared_world_scene_renderer(monkeypatch) -> None:
+def test_trace_test_2_draw_scene_renders_projected_marker_geometry(monkeypatch) -> None:
     renderer = _build_pipeline_probe_renderer()
     scene = TraceTest2GlScene(
         world=pygame.Rect(0, 0, 640, 360),
         payload=_trace_test_2_payload(),
-        practice_mode=True,
+        practice_mode=False,
     )
     scene_plan = _build_trace_test_2_scene_plan(scene)
-    calls: list[int] = []
 
     monkeypatch.setattr(
         renderer,
         "_render_scene_plan",
-        lambda *, scene_plan: calls.append(len(scene_plan.asset_instances)),
+        lambda *, scene_plan: (_ for _ in ()).throw(AssertionError("unexpected world scene render")),
     )
 
     entity_count = renderer._draw_trace_test_2_scene(scene=scene, scene_plan=scene_plan)
 
     assert entity_count == scene_plan.entity_count
-    assert calls == [scene_plan.entity_count]
     assert renderer._batch.triangles
+
+
+def test_trace_test_1_draw_scene_marker_geometry_changes_with_progress() -> None:
+    early_renderer = _build_pipeline_probe_renderer()
+    early_scene = TraceTest1GlScene(
+        world=pygame.Rect(0, 0, 640, 360),
+        payload=_trace_test_1_payload(progress=0.18),
+    )
+    early_plan = _build_trace_test_1_scene_plan(early_scene)
+    early_renderer._draw_trace_test_1_scene(scene=early_scene, scene_plan=early_plan)
+
+    late_renderer = _build_pipeline_probe_renderer()
+    late_scene = TraceTest1GlScene(
+        world=pygame.Rect(0, 0, 640, 360),
+        payload=_trace_test_1_payload(progress=0.82),
+    )
+    late_plan = _build_trace_test_1_scene_plan(late_scene)
+    late_renderer._draw_trace_test_1_scene(scene=late_scene, scene_plan=late_plan)
+
+    assert _triangle_signature(early_renderer._batch) != _triangle_signature(late_renderer._batch)
+
+
+def test_trace_test_2_draw_scene_marker_geometry_changes_with_progress() -> None:
+    payload = _trace_test_2_payload()
+
+    early_renderer = _build_pipeline_probe_renderer()
+    early_scene = TraceTest2GlScene(
+        world=pygame.Rect(0, 0, 640, 360),
+        payload=replace(payload, observe_progress=0.18),
+        practice_mode=False,
+    )
+    early_plan = _build_trace_test_2_scene_plan(early_scene)
+    early_renderer._draw_trace_test_2_scene(scene=early_scene, scene_plan=early_plan)
+
+    late_renderer = _build_pipeline_probe_renderer()
+    late_scene = TraceTest2GlScene(
+        world=pygame.Rect(0, 0, 640, 360),
+        payload=replace(payload, observe_progress=0.82),
+        practice_mode=False,
+    )
+    late_plan = _build_trace_test_2_scene_plan(late_scene)
+    late_renderer._draw_trace_test_2_scene(scene=late_scene, scene_plan=late_plan)
+
+    assert _triangle_signature(early_renderer._batch) != _triangle_signature(late_renderer._batch)
 
 
 def test_trace_marker_projection_preserves_heading_bank_and_stable_translation() -> None:

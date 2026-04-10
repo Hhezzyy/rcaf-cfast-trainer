@@ -3,7 +3,7 @@ from __future__ import annotations
 import sys
 from dataclasses import replace
 from importlib.machinery import ModuleSpec
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 
 import pygame
 import pytest
@@ -32,8 +32,19 @@ from cfast_trainer.auditory_capacity_panda3d import (
     _tube_frame,
     panda3d_auditory_rendering_available,
 )
-from cfast_trainer.auditory_capacity_view import BALL_FORWARD_IDLE_NORM, GATE_DEPTH_SLOTS_NORM, slot_distance
+from cfast_trainer.auditory_capacity_view import (
+    BALL_FORWARD_IDLE_NORM,
+    GATE_DEPTH_SLOTS_NORM,
+    gate_distance_from_x_norm,
+    run_travel_distance,
+)
 from cfast_trainer.cognitive_core import Phase
+from cfast_trainer.gl_scenes import AuditoryGlScene
+from cfast_trainer.modern_gl_renderer import (
+    ModernSceneRenderer,
+    _build_auditory_scene_plan,
+    _rapid_tracking_static_asset_library,
+)
 
 
 class _FakeClock:
@@ -106,6 +117,8 @@ def _payload_with_gate(
     gate_id: int = 401,
     slot_index: int | None = None,
     ball_forward_norm: float = BALL_FORWARD_IDLE_NORM,
+    phase_elapsed_s: float | None = None,
+    presentation_travel_distance: float | None = None,
 ) -> AuditoryCapacityPayload:
     clock = _FakeClock()
     engine = build_auditory_capacity_test(clock=clock, seed=17, difficulty=0.58)
@@ -114,10 +127,21 @@ def _payload_with_gate(
     engine.update()
     payload = engine.snapshot().payload
     assert payload is not None
+    elapsed = float(payload.phase_elapsed_s if phase_elapsed_s is None else phase_elapsed_s)
+    travel_distance = (
+        run_travel_distance(
+            session_seed=int(payload.session_seed),
+            phase_elapsed_s=elapsed,
+        )
+        if presentation_travel_distance is None
+        else float(presentation_travel_distance)
+    )
     return replace(
         payload,
         ball_x=0.0,
         ball_y=0.0,
+        phase_elapsed_s=elapsed,
+        presentation_travel_distance=float(travel_distance),
         ball_forward_norm=float(ball_forward_norm),
         gates=(
             AuditoryCapacityGate(
@@ -131,6 +155,16 @@ def _payload_with_gate(
             ),
         ),
     )
+
+
+def _stub_modern_auditory_renderer(*, size: tuple[int, int]) -> ModernSceneRenderer:
+    renderer = ModernSceneRenderer.__new__(ModernSceneRenderer)
+    renderer._win_w = int(size[0])
+    renderer._win_h = int(size[1])
+    renderer._scene_assets = _rapid_tracking_static_asset_library()
+    renderer._batch = SimpleNamespace(triangles=[], scene_triangles=[], textured=[])
+    renderer._last_rt_world_debug = {}
+    return renderer
 
 
 def test_panda3d_auditory_rendering_disabled_for_dummy_video(monkeypatch) -> None:
@@ -241,41 +275,54 @@ def test_auditory_world_frame_keeps_gl_viewport_transparent_in_freeze_mode(
     assert frozen_frame.get_at((0, 0)).a > 0
 
 
-def test_gate_visual_slot_maps_to_fixed_tunnel_distance() -> None:
-    if not panda3d_auditory_rendering_available():
-        pytest.skip("Panda3D unavailable")
-
-    renderer = AuditoryCapacityPanda3DRenderer(size=(640, 360))
-    try:
-        slot_index = len(GATE_DEPTH_SLOTS_NORM) - 1
-        payload = _payload_with_gate(
-            x_norm=AUDITORY_GATE_SPAWN_X_NORM,
-            gate_id=402,
-            slot_index=slot_index,
-        )
-        renderer._update_ball(payload=payload)
-        renderer._update_gates(payload=payload)
-
-        assert 402 in renderer._gate_nodes
-        gate_np = renderer._gate_nodes[402]
-        gate_pos = gate_np.getPos()
-        assert float(gate_pos[1]) == pytest.approx(slot_distance(slot_index), abs=0.01)
-    finally:
-        renderer.close()
-
-
-def test_ball_moves_forward_while_same_gate_stays_stationary() -> None:
+def test_gate_position_comes_from_live_x_norm_not_visual_slot_index() -> None:
     if not panda3d_auditory_rendering_available():
         pytest.skip("Panda3D unavailable")
 
     renderer = AuditoryCapacityPanda3DRenderer(size=(640, 360))
     try:
         payload_a = _payload_with_gate(
-            x_norm=0.90,
+            x_norm=0.85,
+            gate_id=402,
+            slot_index=0,
+        )
+        payload_b = replace(payload_a, slot_index=len(GATE_DEPTH_SLOTS_NORM) - 1)
+        travel_distance = float(payload_a.presentation_travel_distance)
+
+        renderer._update_ball(payload=payload_a)
+        renderer._update_gates(payload=payload_a)
+        gate_pos_a = renderer._gate_nodes[402].getPos()
+
+        renderer._update_ball(payload=payload_b)
+        renderer._update_gates(payload=payload_b)
+        gate_pos_b = renderer._gate_nodes[402].getPos()
+
+        expected_distance = gate_distance_from_x_norm(
+            0.85,
+            travel_distance=travel_distance,
+            spawn_x_norm=AUDITORY_GATE_SPAWN_X_NORM,
+            player_x_norm=renderer._GATE_PLAYER_X_NORM,
+            retire_x_norm=renderer._GATE_RETIRE_X_NORM,
+        )
+
+        assert tuple(gate_pos_b) == pytest.approx(tuple(gate_pos_a))
+        assert float(gate_pos_a[1]) == pytest.approx(expected_distance, abs=0.01)
+    finally:
+        renderer.close()
+
+
+def test_gate_moves_closer_as_live_x_norm_advances() -> None:
+    if not panda3d_auditory_rendering_available():
+        pytest.skip("Panda3D unavailable")
+
+    renderer = AuditoryCapacityPanda3DRenderer(size=(640, 360))
+    try:
+        payload_a = _payload_with_gate(
+            x_norm=1.10,
             slot_index=len(GATE_DEPTH_SLOTS_NORM) - 2,
             ball_forward_norm=0.20,
         )
-        payload_b = replace(payload_a, ball_forward_norm=0.74)
+        payload_b = replace(payload_a, x_norm=0.25)
 
         renderer._update_ball(payload=payload_a)
         renderer._update_gates(payload=payload_a)
@@ -287,10 +334,39 @@ def test_ball_moves_forward_while_same_gate_stays_stationary() -> None:
         gate_pos_b = renderer._gate_nodes[401].getPos()
         ball_pos_b = renderer._ball_root.getPos()
 
-        assert tuple(gate_pos_b) == pytest.approx(tuple(gate_pos_a))
-        assert float(ball_pos_b[1]) > float(ball_pos_a[1])
+        assert float(gate_pos_b[1]) < float(gate_pos_a[1])
+        assert tuple(ball_pos_b) == pytest.approx(tuple(ball_pos_a))
     finally:
         renderer.close()
+
+
+def test_modern_gl_auditory_scene_keeps_front_edge_gate_geometry_when_near_ball() -> None:
+    payload = _payload_with_gate(
+        x_norm=0.01,
+        slot_index=len(GATE_DEPTH_SLOTS_NORM) - 1,
+        ball_forward_norm=0.20,
+    )
+    baseline_scene = AuditoryGlScene(
+        world=pygame.Rect(0, 0, 960, 540),
+        payload=replace(payload, gates=()),
+        time_remaining_s=10.0,
+        time_fill_ratio=0.5,
+    )
+    gated_scene = AuditoryGlScene(
+        world=pygame.Rect(0, 0, 960, 540),
+        payload=payload,
+        time_remaining_s=10.0,
+        time_fill_ratio=0.5,
+    )
+
+    baseline_renderer = _stub_modern_auditory_renderer(size=(960, 540))
+    baseline_renderer._render_scene_plan(scene_plan=_build_auditory_scene_plan(baseline_scene))
+    baseline_triangles = len(baseline_renderer._batch.triangles)
+
+    gated_renderer = _stub_modern_auditory_renderer(size=(960, 540))
+    gated_renderer._render_scene_plan(scene_plan=_build_auditory_scene_plan(gated_scene))
+
+    assert len(gated_renderer._batch.triangles) > baseline_triangles
 
 
 def test_renderer_prefers_repo_auditory_assets_when_present() -> None:
@@ -332,7 +408,7 @@ def test_camera_is_stable_across_ball_offsets() -> None:
         renderer.close()
 
 
-def test_camera_advances_with_ball_forward_progress() -> None:
+def test_camera_advances_with_presentation_travel_progress() -> None:
     if not panda3d_auditory_rendering_available():
         pytest.skip("Panda3D unavailable")
 
@@ -344,6 +420,11 @@ def test_camera_advances_with_ball_forward_progress() -> None:
         )
         far_payload = replace(
             near_payload,
+            phase_elapsed_s=9.4,
+            presentation_travel_distance=run_travel_distance(
+                session_seed=int(near_payload.session_seed),
+                phase_elapsed_s=9.4,
+            ),
             ball_forward_norm=0.74,
         )
 

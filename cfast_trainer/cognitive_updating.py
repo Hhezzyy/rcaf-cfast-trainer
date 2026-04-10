@@ -408,12 +408,17 @@ class CognitiveUpdatingRuntime:
         self._bravo_next_due_s = float(payload.bravo_camera_due_s)
         self._air_next_due_s = float(payload.air_sensor_due_s)
         self._ground_next_due_s = float(payload.ground_sensor_due_s)
+        self._alpha_message_visible_from_s = 0.0
+        self._bravo_message_visible_from_s = 0.0
+        self._air_message_visible_from_s = 0.0
+        self._ground_message_visible_from_s = 0.0
 
         self._parcel_values = ["", "", ""]
         self._active_parcel_field = 0
         self._comms_input = ""
 
         self._objective_cycle_duration_s = max(1, int(payload.objective_deadline_s))
+        self._objective_cycle_started_at_s = 0.0
         self._objective_deadline_s = float(self._objective_cycle_duration_s)
         self._objective_successes = 0
         self._objective_last_drop_late = False
@@ -477,6 +482,45 @@ class CognitiveUpdatingRuntime:
         return (at_s > float(self._air_next_due_s + GRACE_WINDOW_S)) or (
             at_s > float(self._ground_next_due_s + GRACE_WINDOW_S)
         )
+
+    def _task_message_reveal_lead_s(self, interval_s: int) -> float:
+        return _clamp_float(float(interval_s) * 0.45, 6.0, 16.0)
+
+    def _task_visible(self, *, now_s: float, due_s: float, visible_from_s: float) -> bool:
+        return now_s >= float(visible_from_s) and now_s <= float(due_s + GRACE_WINDOW_S)
+
+    def _advance_sensor_cycles(self, at_s: float) -> None:
+        task_specs = (
+            ("_alpha_next_due_s", self._alpha_interval_s, "_alpha_message_visible_from_s"),
+            ("_bravo_next_due_s", self._bravo_interval_s, "_bravo_message_visible_from_s"),
+            ("_air_next_due_s", self._air_interval_s, "_air_message_visible_from_s"),
+            ("_ground_next_due_s", self._ground_interval_s, "_ground_message_visible_from_s"),
+        )
+        for due_attr, interval_s, visible_attr in task_specs:
+            due_s = float(getattr(self, due_attr))
+            if at_s <= float(due_s + GRACE_WINDOW_S):
+                continue
+            while at_s > float(due_s + GRACE_WINDOW_S):
+                due_s += float(interval_s)
+            setattr(self, due_attr, due_s)
+            setattr(
+                self,
+                visible_attr,
+                max(0.0, due_s - self._task_message_reveal_lead_s(interval_s)),
+            )
+
+    def _advance_objective_cycle(self, at_s: float) -> None:
+        if not self._domain_active("objectives"):
+            return
+        if at_s < float(self._objective_deadline_s):
+            return
+        while at_s >= float(self._objective_deadline_s):
+            self._objective_cycle_started_at_s = float(self._objective_deadline_s)
+            self._objective_deadline_s = (
+                self._objective_cycle_started_at_s + float(self._objective_cycle_duration_s)
+            )
+        self._parcel_values = ["", "", ""]
+        self._active_parcel_field = 0
 
     def _objective_mistyped(self) -> bool:
         if not self._domain_active("objectives"):
@@ -567,9 +611,13 @@ class CognitiveUpdatingRuntime:
                 self._tank_levels[idx] = max(260.0, self._tank_levels[idx] - (drain * dt))
 
         while self._next_eval_s <= now_s + 1e-9:
+            self._advance_sensor_cycles(self._next_eval_s)
+            self._advance_objective_cycle(self._next_eval_s)
             self._evaluate_interval(self._next_eval_s)
             self._next_eval_s += EVAL_INTERVAL_S
 
+        self._advance_sensor_cycles(now_s)
+        self._advance_objective_cycle(now_s)
         self._last_advance_s = now_s
         return now_s
 
@@ -584,6 +632,10 @@ class CognitiveUpdatingRuntime:
                 self._alpha_hits += 1
             self._alpha_last_press_s = now_s
             self._alpha_next_due_s = now_s + float(self._alpha_interval_s)
+            self._alpha_message_visible_from_s = max(
+                0.0,
+                self._alpha_next_due_s - self._task_message_reveal_lead_s(self._alpha_interval_s),
+            )
             if self._alpha_armed_at_s is None:
                 self._alpha_armed_at_s = now_s
             self._record("camera_alpha", "1")
@@ -593,6 +645,10 @@ class CognitiveUpdatingRuntime:
                 self._bravo_hits += 1
             self._bravo_last_press_s = now_s
             self._bravo_next_due_s = now_s + float(self._bravo_interval_s)
+            self._bravo_message_visible_from_s = max(
+                0.0,
+                self._bravo_next_due_s - self._task_message_reveal_lead_s(self._bravo_interval_s),
+            )
             if self._bravo_armed_at_s is None:
                 self._bravo_armed_at_s = now_s
             self._record("camera_bravo", "1")
@@ -608,6 +664,10 @@ class CognitiveUpdatingRuntime:
                 self._air_hits += 1
             self._air_last_press_s = now_s
             self._air_next_due_s = now_s + float(self._air_interval_s)
+            self._air_message_visible_from_s = max(
+                0.0,
+                self._air_next_due_s - self._task_message_reveal_lead_s(self._air_interval_s),
+            )
             if self._air_sensor_armed_at_s is None:
                 self._air_sensor_armed_at_s = now_s
             self._record("sensor_air", "1")
@@ -617,6 +677,10 @@ class CognitiveUpdatingRuntime:
                 self._ground_hits += 1
             self._ground_last_press_s = now_s
             self._ground_next_due_s = now_s + float(self._ground_interval_s)
+            self._ground_message_visible_from_s = max(
+                0.0,
+                self._ground_next_due_s - self._task_message_reveal_lead_s(self._ground_interval_s),
+            )
             if self._ground_sensor_armed_at_s is None:
                 self._ground_sensor_armed_at_s = now_s
             self._record("sensor_ground", "1")
@@ -664,6 +728,7 @@ class CognitiveUpdatingRuntime:
             self._objective_last_drop_at_s = now_s
             self._parcel_values = ["", "", ""]
             self._active_parcel_field = 0
+            self._objective_cycle_started_at_s = now_s
             self._objective_deadline_s = now_s + float(self._objective_cycle_duration_s)
         self._record("objective_drop", "1" if ready else "0")
 
@@ -859,22 +924,24 @@ class CognitiveUpdatingRuntime:
         warning_lines = self._collect_warnings(float(elapsed))
         air_left = max(0, int(round(self._air_next_due_s - now_s)))
         ground_left = max(0, int(round(self._ground_next_due_s - now_s)))
-        alpha_due_hms = _fmt_hms(self._clock_base_s + int(round(self._alpha_next_due_s)))
-        bravo_due_hms = _fmt_hms(self._clock_base_s + int(round(self._bravo_next_due_s)))
         target_lat, target_lon, target_time = self._parcel_target_tokens()
+        objective_elapsed_s = max(0.0, now_s - float(self._objective_cycle_started_at_s))
         latitude_line = (
             f"Latitude: {target_lat}"
-            if self._domain_active("objectives") and now_s >= float(self._payload.message_reveal_lat_s)
+            if self._domain_active("objectives")
+            and objective_elapsed_s >= float(self._payload.message_reveal_lat_s)
             else ""
         )
         longitude_line = (
             f"Longitude: {target_lon}"
-            if self._domain_active("objectives") and now_s >= float(self._payload.message_reveal_lon_s)
+            if self._domain_active("objectives")
+            and objective_elapsed_s >= float(self._payload.message_reveal_lon_s)
             else ""
         )
         time_line = (
             f"Time: {target_time}"
-            if self._domain_active("objectives") and now_s >= float(self._payload.message_reveal_time_s)
+            if self._domain_active("objectives")
+            and objective_elapsed_s >= float(self._payload.message_reveal_time_s)
             else ""
         )
         comms_line = (
@@ -882,13 +949,53 @@ class CognitiveUpdatingRuntime:
             if now_s >= float(self._payload.message_reveal_comms_s)
             else ""
         )
+        sensor_domain_lines: list[str] = []
+        if self._domain_active("sensors"):
+            task_lines: list[tuple[int, float, int, str]] = []
+            task_specs = (
+                (
+                    "alpha",
+                    self._alpha_next_due_s,
+                    self._alpha_message_visible_from_s,
+                    0,
+                    lambda: f"Activate Alpha Camera at: {_fmt_hms(self._clock_base_s + int(round(self._alpha_next_due_s)))}",
+                ),
+                (
+                    "bravo",
+                    self._bravo_next_due_s,
+                    self._bravo_message_visible_from_s,
+                    1,
+                    lambda: f"Activate Bravo Camera at: {_fmt_hms(self._clock_base_s + int(round(self._bravo_next_due_s)))}",
+                ),
+                (
+                    "air",
+                    self._air_next_due_s,
+                    self._air_message_visible_from_s,
+                    2,
+                    lambda: f"Air Sensor due in: {max(0, int(round(self._air_next_due_s - now_s))):02d}s",
+                ),
+                (
+                    "ground",
+                    self._ground_next_due_s,
+                    self._ground_message_visible_from_s,
+                    3,
+                    lambda: f"Ground Sensor due in: {max(0, int(round(self._ground_next_due_s - now_s))):02d}s",
+                ),
+            )
+            for _name, due_s, visible_from_s, order, builder in task_specs:
+                if not self._task_visible(now_s=now_s, due_s=due_s, visible_from_s=visible_from_s):
+                    continue
+                overdue_rank = 0 if now_s > float(due_s) else 1
+                task_lines.append((overdue_rank, float(due_s), order, builder()))
+            task_lines.sort(key=lambda item: (item[0], item[1], item[2]))
+            sensor_domain_lines = [line for *_prefix, line in task_lines[:2]]
         message_lines = (
             latitude_line,
             longitude_line,
             time_line,
             comms_line,
-            f"Activate Alpha Camera at: {alpha_due_hms}" if self._domain_active("sensors") else "",
-            f"Activate Bravo Camera at: {bravo_due_hms}" if self._domain_active("sensors") else "",
+            sensor_domain_lines[0] if len(sensor_domain_lines) > 0 else "",
+            sensor_domain_lines[1] if len(sensor_domain_lines) > 1 else "",
         )
         deadline_left = max(0, int(round(self._objective_deadline_s - now_s)))
 

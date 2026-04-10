@@ -1,7 +1,25 @@
 from __future__ import annotations
 
+import sys
+from dataclasses import replace
+from importlib.machinery import ModuleSpec
+from types import ModuleType, SimpleNamespace
+
+if "moderngl" not in sys.modules:
+    moderngl_stub = ModuleType("moderngl")
+    moderngl_stub.__spec__ = ModuleSpec("moderngl", loader=None)
+    sys.modules["moderngl"] = moderngl_stub
+
+import pygame
 import pytest
 
+from cfast_trainer.gl_scenes import RapidTrackingGlScene
+from cfast_trainer.modern_gl_renderer import (
+    ModernSceneRenderer,
+    _build_rapid_tracking_scene_plan,
+    _rapid_tracking_backdrop_plan,
+    _rapid_tracking_static_asset_library,
+)
 from cfast_trainer.rapid_tracking import build_rapid_tracking_test
 from cfast_trainer.rapid_tracking_gl import (
     _TERRAIN_HALF_SPAN,
@@ -24,6 +42,16 @@ class _FakeClock:
 
     def advance(self, dt: float) -> None:
         self.t += dt
+
+
+def _stub_rt_renderer(*, size: tuple[int, int]) -> ModernSceneRenderer:
+    renderer = ModernSceneRenderer.__new__(ModernSceneRenderer)
+    renderer._win_w = int(size[0])
+    renderer._win_h = int(size[1])
+    renderer._scene_assets = _rapid_tracking_static_asset_library()
+    renderer._batch = SimpleNamespace(triangles=[], scene_triangles=[], textured=[])
+    renderer._last_rt_world_debug = {}
+    return renderer
 
 
 def _angle_delta_deg(a: float, b: float) -> float:
@@ -460,3 +488,45 @@ def test_engine_driven_targets_map_to_gl_scene_targets_by_kind() -> None:
 def test_world_span_is_expanded_for_large_scene() -> None:
     assert _WORLD_EXTENT_SCALE == 5.0
     assert _TERRAIN_HALF_SPAN == 1300.0
+
+
+def test_rapid_tracking_backdrop_plan_lightens_ground_and_clamps_steep_up_horizon() -> None:
+    clock = _FakeClock()
+    engine = build_rapid_tracking_test(clock=clock, seed=551, difficulty=0.63)
+    engine.start_scored()
+    payload = engine.snapshot().payload
+    assert payload is not None
+
+    neutral = _rapid_tracking_backdrop_plan(viewport_size=(960, 540), payload=payload)
+    steep_up = _rapid_tracking_backdrop_plan(
+        viewport_size=(960, 540),
+        payload=replace(payload, camera_pitch_deg=82.0),
+    )
+
+    assert 180.0 <= neutral.horizon_y <= 320.0
+    assert steep_up.horizon_y <= 0.0
+    assert steep_up.horizon_y < neutral.horizon_y
+    assert min(neutral.ground_base_rgb) > 0.35
+    assert min(neutral.ground_horizon_rgb) > 0.25
+
+
+def test_rapid_tracking_scene_plan_emits_world_geometry_at_representative_camera_pose() -> None:
+    clock = _FakeClock()
+    engine = build_rapid_tracking_test(clock=clock, seed=551, difficulty=0.63)
+    engine.start_scored()
+    payload = engine.snapshot().payload
+    assert payload is not None
+
+    scene = RapidTrackingGlScene(
+        world=pygame.Rect(0, 0, 960, 540),
+        payload=payload,
+        active_phase=True,
+    )
+    scene_plan = _build_rapid_tracking_scene_plan(scene)
+    renderer = _stub_rt_renderer(size=(960, 540))
+
+    renderer._render_scene_plan(scene_plan=scene_plan)
+
+    assert renderer._last_rt_world_debug["world_triangles_emitted"] > 0
+    assert renderer._last_rt_world_debug["world_triangles_rejected"] >= 0
+    assert len(renderer._batch.scene_triangles) > 0

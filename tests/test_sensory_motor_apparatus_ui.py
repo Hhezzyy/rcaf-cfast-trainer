@@ -165,8 +165,10 @@ def test_sma_renderer_draws_guide_band_and_segment_metadata(monkeypatch) -> None
         screen.render(surface)
 
         assert band_draws
-        assert any("Tempo - Split Pulse 2/4" == text for text in spy_tiny.rendered)
+        assert "Tempo - Split Pulse" in spy_tiny.rendered
+        assert "Tempo - Split Pulse 2/4" not in spy_tiny.rendered
         assert not any(text.startswith("Segment 00:") for text in spy_tiny.rendered)
+        assert not any(text.startswith("Windows ") for text in spy_tiny.rendered)
     finally:
         pygame.quit()
 

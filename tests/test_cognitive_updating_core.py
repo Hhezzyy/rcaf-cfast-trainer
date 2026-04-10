@@ -45,6 +45,10 @@ def _payload_for(seed: int) -> CognitiveUpdatingPayload:
     )
 
 
+def _task_message_lines(snap) -> tuple[str, ...]:
+    return tuple(line for line in snap.message_lines[4:] if line != "")
+
+
 def test_generator_determinism_same_seed_same_sequence() -> None:
     seed = 447
     gen_a = CognitiveUpdatingGenerator(seed=seed)
@@ -207,7 +211,8 @@ def test_camera_button_flashes_and_resets_due_message() -> None:
 
     assert first.alpha_armed is True
     assert first.event_count == before.event_count + 1
-    assert first.message_lines[4] != before.message_lines[4]
+    assert any("Alpha Camera" in line for line in _task_message_lines(before))
+    assert all("Alpha Camera" not in line for line in _task_message_lines(first))
 
     clock.advance(1.0)
     second = runtime.snapshot()
@@ -224,8 +229,7 @@ def test_message_lines_include_objective_and_comms_status_rows() -> None:
     assert start.message_lines[1] == ""
     assert start.message_lines[2] == ""
     assert start.message_lines[3] == ""
-    assert start.message_lines[4].startswith("Activate Alpha Camera at: ")
-    assert start.message_lines[5].startswith("Activate Bravo Camera at: ")
+    assert len(_task_message_lines(start)) == 2
 
     clock.advance(3.0)
     lat = runtime.snapshot()
@@ -244,6 +248,115 @@ def test_message_lines_include_objective_and_comms_status_rows() -> None:
     clock.advance(8.0)
     timed = runtime.snapshot()
     assert timed.message_lines[2].startswith("Time: ")
+
+
+def test_objective_message_fragments_clear_after_successful_drop() -> None:
+    clock = FakeClock()
+    payload = replace(
+        _payload_for(521),
+        parcel_target=(725880, 292172, 180742),
+        objective_deadline_s=40,
+    )
+    runtime = CognitiveUpdatingRuntime(payload=payload, clock=clock)
+
+    clock.advance(23.0)
+    before = runtime.snapshot()
+    assert before.message_lines[:3] == (
+        "Latitude: 725880",
+        "Longitude: 292172",
+        "Time: 180742",
+    )
+
+    for ch in "725880":
+        runtime.append_parcel_digit(ch)
+    for ch in "292172":
+        runtime.append_parcel_digit(ch)
+    for ch in "180742":
+        runtime.append_parcel_digit(ch)
+    runtime.activate_dispenser()
+
+    after = runtime.snapshot()
+    assert after.message_lines[:3] == ("", "", "")
+
+
+def test_objective_deadline_rollover_clears_entry_and_restarts_message_cycle() -> None:
+    clock = FakeClock()
+    payload = replace(
+        _payload_for(522),
+        parcel_target=(725880, 292172, 180742),
+        objective_deadline_s=8,
+        message_reveal_lat_s=1.0,
+        message_reveal_lon_s=2.0,
+        message_reveal_time_s=3.0,
+    )
+    runtime = CognitiveUpdatingRuntime(payload=payload, clock=clock)
+
+    clock.advance(4.0)
+    visible = runtime.snapshot()
+    assert visible.message_lines[:3] == (
+        "Latitude: 725880",
+        "Longitude: 292172",
+        "Time: 180742",
+    )
+
+    for ch in "725":
+        runtime.append_parcel_digit(ch)
+    partially_entered = runtime.snapshot()
+    assert partially_entered.parcel_values[0] == "725"
+
+    clock.advance(4.1)
+    rolled = runtime.snapshot()
+    assert rolled.parcel_values == ("", "", "")
+    assert rolled.active_parcel_field == 0
+    assert rolled.message_lines[:3] == ("", "", "")
+    assert 7 <= rolled.objective_deadline_left_s <= 8
+
+    clock.advance(1.1)
+    restarted = runtime.snapshot()
+    assert restarted.message_lines[0] == "Latitude: 725880"
+
+
+def test_sensor_message_panel_prioritizes_urgent_items_and_clears_completed_sensor() -> None:
+    clock = FakeClock()
+    payload = replace(
+        _payload_for(523),
+        alpha_camera_due_s=45,
+        bravo_camera_due_s=48,
+        air_sensor_due_s=8,
+        ground_sensor_due_s=10,
+    )
+    runtime = CognitiveUpdatingRuntime(payload=payload, clock=clock)
+
+    start = runtime.snapshot()
+    assert _task_message_lines(start) == (
+        "Air Sensor due in: 08s",
+        "Ground Sensor due in: 10s",
+    )
+
+    runtime.toggle_sensor("air")
+    after = runtime.snapshot()
+    assert all("Air Sensor" not in line for line in _task_message_lines(after))
+    assert any("Ground Sensor" in line for line in _task_message_lines(after))
+
+
+def test_message_panel_orders_overdue_task_before_nearest_due_task() -> None:
+    clock = FakeClock()
+    payload = replace(
+        _payload_for(524),
+        alpha_camera_due_s=9,
+        bravo_camera_due_s=18,
+        air_sensor_due_s=14,
+        ground_sensor_due_s=26,
+    )
+    runtime = CognitiveUpdatingRuntime(payload=payload, clock=clock)
+
+    clock.advance(12.0)
+    snap = runtime.snapshot()
+
+    task_lines = _task_message_lines(snap)
+    assert len(task_lines) == 2
+    assert task_lines[0].startswith("Activate Alpha Camera at: ")
+    assert task_lines[1] == "Air Sensor due in: 02s"
 
 
 def test_objective_dispenser_lights_match_reference_progression() -> None:

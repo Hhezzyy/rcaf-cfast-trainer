@@ -15,17 +15,23 @@ from .aircraft_art import (
     project_fixed_wing_faces,
     rotate_fixed_wing_point,
 )
-from .auditory_capacity import AUDITORY_TRIANGLE_GATE_POINTS
+from .auditory_capacity import (
+    AUDITORY_GATE_PLAYER_X_NORM,
+    AUDITORY_GATE_RETIRE_X_NORM,
+    AUDITORY_GATE_SPAWN_X_NORM,
+    AUDITORY_TRIANGLE_GATE_POINTS,
+)
 from .auditory_capacity_view import (
-    BALL_FORWARD_IDLE_NORM,
-    GATE_DEPTH_SLOTS_NORM,
+    AUDITORY_BALL_ANCHOR_DISTANCE,
+    AUDITORY_GATE_BEHIND_DISTANCE,
     TUNNEL_CAMERA_H_FOV_DEG,
     TUNNEL_CAMERA_V_FOV_DEG,
     TUNNEL_GEOMETRY_END_DISTANCE,
     TUNNEL_GEOMETRY_START_DISTANCE,
-    fixed_camera_pose,
-    forward_norm_to_distance,
-    slot_distance,
+    fixed_camera_pose_at_distance,
+    gate_depth_ratio_from_distance,
+    gate_distance_from_x_norm,
+    run_travel_distance,
 )
 from .auditory_capacity_view import (
     tube_frame as _tube_frame,
@@ -62,8 +68,11 @@ from .rapid_tracking_view import (
     track_to_world_xy as rapid_tracking_track_to_world_xy,
 )
 from .render_assets import RenderAssetCatalog, RenderAssetResolutionError
-from .spatial_integration import SpatialIntegrationSceneView
-from .spatial_integration_gl import build_scene_layout as build_spatial_integration_scene_layout
+from .spatial_integration import SpatialIntegrationLandmark, SpatialIntegrationSceneView
+from .spatial_integration_gl import (
+    build_scene_layout as build_spatial_integration_scene_layout,
+)
+from .spatial_integration_gl import landmark_visual_cell_offsets
 from .trace_scene_3d import (
     TraceAircraftPose,
     TraceCameraPose,
@@ -71,6 +80,17 @@ from .trace_scene_3d import (
     build_trace_test_1_scene3d,
     build_trace_test_2_scene3d,
 )
+from .trace_test_1_gl import (
+    aircraft_screen_poses_for_payload as trace_test_1_aircraft_screen_poses_for_payload,
+)
+from .trace_test_1_gl import (
+    project_scene_position as trace_test_1_project_scene_position,
+)
+from .trace_test_2 import trace_test_2_track_position
+from .trace_test_2_gl import (
+    aircraft_screen_pose_for_track as trace_test_2_aircraft_screen_pose_for_track,
+)
+from .trace_test_2_gl import project_point as trace_test_2_project_point
 
 
 class RendererBootstrapError(RuntimeError):
@@ -168,6 +188,15 @@ class _ScenePlan:
     static_groups: tuple[_RapidTrackingStaticGroup, ...] = ()
     backdrop_groups: tuple[_RapidTrackingStaticGroup, ...] = ()
     playfield_groups: tuple[_RapidTrackingStaticGroup, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class _RapidTrackingBackdropPlan:
+    horizon_y: float
+    sky_top_rgb: tuple[float, float, float]
+    sky_bottom_rgb: tuple[float, float, float]
+    ground_horizon_rgb: tuple[float, float, float]
+    ground_base_rgb: tuple[float, float, float]
 
 
 @dataclass(frozen=True, slots=True)
@@ -700,11 +729,36 @@ def _auditory_gate_asset_id(shape: str) -> str:
 def _auditory_gate_rgba(name: str) -> tuple[float, float, float, float]:
     palette = {
         "RED": (0.92, 0.28, 0.34, 0.96),
+        "ERROR_RED": (0.98, 0.44, 0.22, 0.98),
         "GREEN": (0.32, 0.86, 0.50, 0.96),
         "BLUE": (0.38, 0.58, 0.96, 0.96),
         "YELLOW": (0.96, 0.84, 0.32, 0.96),
     }
     return palette.get(str(name).upper(), (0.90, 0.92, 0.98, 0.96))
+
+
+def _mix_rgba(
+    left: tuple[float, float, float, float],
+    right: tuple[float, float, float, float],
+    t: float,
+) -> tuple[float, float, float, float]:
+    blend = max(0.0, min(1.0, float(t)))
+    inv = 1.0 - blend
+    return (
+        (left[0] * inv) + (right[0] * blend),
+        (left[1] * inv) + (right[1] * blend),
+        (left[2] * inv) + (right[2] * blend),
+        (left[3] * inv) + (right[3] * blend),
+    )
+
+
+def _auditory_gate_display_rgba(gate: object) -> tuple[float, float, float, float]:
+    base = _auditory_gate_rgba(str(getattr(gate, "color", "WHITE")))
+    flash_color = getattr(gate, "flash_color", None)
+    flash_strength = float(getattr(gate, "flash_strength", 0.0))
+    if flash_color is None or flash_strength <= 0.0:
+        return base
+    return _mix_rgba(base, _auditory_gate_rgba(str(flash_color)), flash_strength)
 
 
 def _auditory_depth_gate_rgba(
@@ -776,6 +830,14 @@ def _asset_palette(asset_id: str) -> dict[str, tuple[float, float, float]]:
             "body": (0.72, 0.72, 0.68),
             "roof": (0.34, 0.38, 0.40),
             "accent": (0.24, 0.28, 0.30),
+        },
+        "spatial_tent_canvas": {
+            "body": (0.76, 0.70, 0.46),
+            "accent": (0.44, 0.34, 0.20),
+        },
+        "spatial_sheep_flock": {
+            "body": (0.92, 0.92, 0.88),
+            "accent": (0.24, 0.24, 0.22),
         },
         "road_paved_segment": {
             "body": (0.20, 0.20, 0.20),
@@ -954,6 +1016,47 @@ class _SceneAssetLibrary:
                 *_box_triangles(role="body", size=(0.9, 0.9, 4.8), center=(0.0, 0.0, 2.4)),
                 *_box_triangles(role="roof", size=(2.1, 1.8, 0.9), center=(0.0, 0.0, 5.3)),
             ]
+            return self._mesh_from_triangles(asset_id=asset_id, triangles=triangles)
+        if token == "spatial_tent":
+            triangles = [
+                *_roof_prism_triangles(role="body", size=(2.4, 2.8, 1.7), center=(0.0, 0.0, 0.85)),
+                *_box_triangles(role="accent", size=(0.16, 2.6, 0.22), center=(0.0, 0.0, 0.11)),
+                *_box_triangles(role="accent", size=(1.8, 0.16, 0.14), center=(0.0, 1.16, 0.07)),
+                *_box_triangles(role="accent", size=(1.8, 0.16, 0.14), center=(0.0, -1.16, 0.07)),
+            ]
+            return self._mesh_from_triangles(asset_id=asset_id, triangles=triangles)
+        if token == "spatial_sheep":
+            triangles = []
+            flock_offsets = ((-0.62, -0.16), (0.58, 0.20))
+            for offset_x, offset_y in flock_offsets:
+                triangles.extend(
+                    _box_triangles(
+                        role="body",
+                        size=(0.84, 1.18, 0.58),
+                        center=(offset_x, offset_y, 0.36),
+                    )
+                )
+                triangles.extend(
+                    _box_triangles(
+                        role="accent",
+                        size=(0.30, 0.30, 0.24),
+                        center=(offset_x + 0.46, offset_y + 0.10, 0.42),
+                    )
+                )
+                triangles.extend(
+                    _box_triangles(
+                        role="accent",
+                        size=(0.10, 0.10, 0.26),
+                        center=(offset_x - 0.20, offset_y - 0.18, 0.05),
+                    )
+                )
+                triangles.extend(
+                    _box_triangles(
+                        role="accent",
+                        size=(0.10, 0.10, 0.26),
+                        center=(offset_x + 0.20, offset_y - 0.18, 0.05),
+                    )
+                )
             return self._mesh_from_triangles(asset_id=asset_id, triangles=triangles)
         if token == "road_paved":
             triangles = [
@@ -1263,6 +1366,187 @@ def _project_aircraft_marker_polygons(
     )
 
 
+def _aircraft_marker_primitives(
+    *,
+    rect: pygame.Rect,
+    window_height: int,
+    center_top_left: tuple[float, float],
+    heading_deg: float,
+    size: float,
+    color: tuple[float, float, float, float],
+    outline: tuple[float, float, float, float],
+    pitch_deg: float = 0.0,
+    bank_deg: float = 0.0,
+    view_yaw_deg: float = 0.0,
+    view_pitch_deg: float = 20.0,
+) -> tuple[_ProjectedOverlayPrimitive, ...]:
+    palette = build_pygame_palette(
+        body_color=tuple(
+            max(0, min(255, int(round(channel * 255.0)))) for channel in color[:3]
+        ),
+        outline_color=tuple(
+            max(0, min(255, int(round(channel * 255.0)))) for channel in outline[:3]
+        ),
+    )
+    role_colors = {
+        "body": palette.body,
+        "accent": palette.accent,
+        "canopy": palette.canopy,
+        "engine": palette.engine,
+    }
+    projected_faces = _project_aircraft_marker_polygons(
+        rect=rect,
+        window_height=window_height,
+        center_top_left=center_top_left,
+        heading_deg=heading_deg,
+        size=size,
+        color=color,
+        outline=outline,
+        pitch_deg=pitch_deg,
+        bank_deg=bank_deg,
+        view_yaw_deg=view_yaw_deg,
+        view_pitch_deg=view_pitch_deg,
+    )
+    primitives: list[_ProjectedOverlayPrimitive] = []
+    for face in projected_faces:
+        base = role_colors.get(face.role, palette.body)
+        fill = tuple(max(0, min(255, int(round(channel * float(face.shade))))) for channel in base)
+        fill_color = (
+            fill[0] / 255.0,
+            fill[1] / 255.0,
+            fill[2] / 255.0,
+            float(color[3]),
+        )
+        primitives.append(
+            _ProjectedOverlayPrimitive(
+                kind="polygon",
+                points=tuple((float(px), float(py)) for px, py in face.points),
+                color=fill_color,
+                filled=True,
+            )
+        )
+        primitives.append(
+            _ProjectedOverlayPrimitive(
+                kind="polygon",
+                points=tuple((float(px), float(py)) for px, py in face.points),
+                color=tuple(float(channel) for channel in outline),
+                filled=False,
+                width=1.0,
+            )
+        )
+    return tuple(primitives)
+
+
+def _trace_test_1_marker_primitives(
+    *,
+    rect: pygame.Rect,
+    window_height: int,
+    payload,
+) -> tuple[_ProjectedOverlayPrimitive, ...]:
+    vw = max(1, int(rect.w))
+    vh = max(1, int(rect.h))
+    target_pose, blue_poses = trace_test_1_aircraft_screen_poses_for_payload(
+        payload,
+        size=(vw, vh),
+    )
+    blue_colors = (
+        (0.34, 0.52, 0.90, 0.96),
+        (0.38, 0.60, 0.94, 0.96),
+        (0.42, 0.66, 0.96, 0.96),
+        (0.30, 0.46, 0.82, 0.96),
+    )
+    blue_outlines = (
+        (0.92, 0.96, 1.0, 0.88),
+        (0.90, 0.96, 1.0, 0.86),
+        (0.88, 0.94, 0.98, 0.84),
+        (0.84, 0.92, 0.98, 0.84),
+    )
+    primitives: list[_ProjectedOverlayPrimitive] = []
+    for idx, (blue_frame, blue_pose) in enumerate(
+        zip(payload.scene.blue_frames, blue_poses, strict=True)
+    ):
+        blue_center, blue_scale = trace_test_1_project_scene_position(
+            blue_frame.position,
+            size=(vw, vh),
+        )
+        primitives.extend(
+            _aircraft_marker_primitives(
+                rect=rect,
+                window_height=window_height,
+                center_top_left=blue_center,
+                heading_deg=float(blue_pose[0]),
+                size=max(8.6, blue_scale * 10.2),
+                color=blue_colors[idx % len(blue_colors)],
+                outline=blue_outlines[idx % len(blue_outlines)],
+                pitch_deg=float(blue_pose[1]),
+                bank_deg=float(blue_pose[2]),
+                view_pitch_deg=0.0,
+            )
+        )
+
+    target_center, target_scale = trace_test_1_project_scene_position(
+        payload.scene.red_frame.position,
+        size=(vw, vh),
+    )
+    primitives.extend(
+        _aircraft_marker_primitives(
+            rect=rect,
+            window_height=window_height,
+            center_top_left=target_center,
+            heading_deg=float(target_pose[0]),
+            size=max(11.6, target_scale * 13.0),
+            color=(0.92, 0.24, 0.24, 0.98),
+            outline=(1.0, 0.92, 0.92, 0.90),
+            pitch_deg=float(target_pose[1]),
+            bank_deg=float(target_pose[2]),
+            view_pitch_deg=0.0,
+        )
+    )
+    return tuple(primitives)
+
+
+def _trace_test_2_marker_primitives(
+    *,
+    rect: pygame.Rect,
+    window_height: int,
+    payload,
+) -> tuple[_ProjectedOverlayPrimitive, ...]:
+    vw = max(1, int(rect.w))
+    vh = max(1, int(rect.h))
+    progress = float(payload.observe_progress)
+    primitives: list[_ProjectedOverlayPrimitive] = []
+    for track in payload.aircraft:
+        center = trace_test_2_project_point(
+            trace_test_2_track_position(track=track, progress=progress),
+            size=(vw, vh),
+        )
+        pose = trace_test_2_aircraft_screen_pose_for_track(
+            track=track,
+            progress=progress,
+            size=(vw, vh),
+        )
+        primitives.extend(
+            _aircraft_marker_primitives(
+                rect=rect,
+                window_height=window_height,
+                center_top_left=center,
+                heading_deg=float(pose[0]),
+                size=max(10.0, 14.0 - (abs(float(pose[1])) * 0.05)),
+                color=(
+                    track.color_rgb[0] / 255.0,
+                    track.color_rgb[1] / 255.0,
+                    track.color_rgb[2] / 255.0,
+                    0.96,
+                ),
+                outline=(0.96, 0.98, 1.0, 0.88),
+                pitch_deg=float(pose[1]),
+                bank_deg=float(pose[2]),
+                view_pitch_deg=22.0,
+            )
+        )
+    return tuple(primitives)
+
+
 def _rapid_tracking_target_asset_id(target_kind: str, variant: str) -> str:
     token = str(target_kind).strip().lower()
     if token == "building":
@@ -1285,10 +1569,20 @@ def _rapid_tracking_target_asset_id(target_kind: str, variant: str) -> str:
 
 def _build_auditory_scene_plan(scene: AuditoryGlScene) -> _ScenePlan:
     payload = scene.payload
-    ball_forward_norm = (
-        float(payload.ball_forward_norm) if payload is not None else float(BALL_FORWARD_IDLE_NORM)
-    )
-    ball_distance = forward_norm_to_distance(ball_forward_norm)
+    if payload is None:
+        travel_distance = run_travel_distance(session_seed=0, phase_elapsed_s=0.0)
+    else:
+        travel_distance = float(
+            getattr(
+                payload,
+                "presentation_travel_distance",
+                run_travel_distance(
+                    session_seed=int(payload.session_seed),
+                    phase_elapsed_s=float(payload.phase_elapsed_s),
+                ),
+            )
+        )
+    ball_distance = travel_distance + AUDITORY_BALL_ANCHOR_DISTANCE
     local_x = 0.0
     local_z = 0.0
     ball_color = (0.94, 0.96, 1.0, 0.98)
@@ -1310,7 +1604,7 @@ def _build_auditory_scene_plan(scene: AuditoryGlScene) -> _ScenePlan:
                 "BLUE": (0.36, 0.62, 0.94, 0.98),
                 "YELLOW": (0.94, 0.82, 0.34, 0.98),
             }.get(str(payload.ball_visual_color).upper(), (0.94, 0.96, 1.0, 0.98))
-    cam_pos, look_target = fixed_camera_pose(forward_norm=ball_forward_norm)
+    cam_pos, look_target = fixed_camera_pose_at_distance(ball_distance)
     camera = _look_at_camera(
         position=cam_pos,
         target=look_target,
@@ -1320,8 +1614,8 @@ def _build_auditory_scene_plan(scene: AuditoryGlScene) -> _ScenePlan:
     )
 
     instances: list[_AssetInstance] = []
-    geometry_start = _AUDITORY_TUBE_GEOMETRY_START
-    geometry_end = _AUDITORY_TUBE_GEOMETRY_END
+    geometry_start = travel_distance + _AUDITORY_TUBE_GEOMETRY_START
+    geometry_end = travel_distance + _AUDITORY_TUBE_GEOMETRY_END
 
     distance = geometry_start + (_AUDITORY_TUBE_SEGMENT_LENGTH * 0.5)
     while distance <= geometry_end:
@@ -1363,7 +1657,7 @@ def _build_auditory_scene_plan(scene: AuditoryGlScene) -> _ScenePlan:
         _AssetInstance(
             asset_id="auditory_ball",
             position=ball_center,
-            hpr_deg=((ball_forward_norm * 540.0) % 360.0, 0.0, 0.0),
+            hpr_deg=((travel_distance * 9.0) % 360.0, 0.0, 0.0),
             scale=(0.11, 0.11, 0.11),
             color=ball_color,
         )
@@ -1371,16 +1665,24 @@ def _build_auditory_scene_plan(scene: AuditoryGlScene) -> _ScenePlan:
 
     if payload is not None:
         y_half_span = max(0.08, float(payload.tube_half_height))
-        visible_gates = [gate for gate in payload.gates if gate.visual_slot_index is not None]
-        visible_gates.sort(key=lambda gate: int(gate.visual_slot_index), reverse=True)
-        for gate in visible_gates[:14]:
-            assert gate.visual_slot_index is not None
-            distance = slot_distance(int(gate.visual_slot_index))
-            center, tangent, right, up = _tube_frame(distance)
-            depth_t = max(
-                0.0,
-                min(1.0, float(gate.visual_slot_index + 1) / float(len(GATE_DEPTH_SLOTS_NORM))),
+        visible_gates: list[tuple[float, object]] = []
+        for gate in payload.gates:
+            distance = gate_distance_from_x_norm(
+                float(gate.x_norm),
+                travel_distance=travel_distance,
+                spawn_x_norm=float(AUDITORY_GATE_SPAWN_X_NORM),
+                player_x_norm=float(AUDITORY_GATE_PLAYER_X_NORM),
+                retire_x_norm=float(AUDITORY_GATE_RETIRE_X_NORM),
             )
+            if distance < (travel_distance + AUDITORY_GATE_BEHIND_DISTANCE):
+                continue
+            if distance > (travel_distance + _AUDITORY_TUBE_GEOMETRY_END + 0.5):
+                continue
+            visible_gates.append((distance, gate))
+        visible_gates.sort(key=lambda item: float(item[0]), reverse=True)
+        for distance, gate in visible_gates[:14]:
+            center, tangent, right, up = _tube_frame(distance)
+            depth_t = gate_depth_ratio_from_distance(distance, travel_distance=travel_distance)
             local_z = max(-1.0, min(1.0, float(gate.y_norm) / y_half_span)) * (
                 _AUDITORY_TUBE_RZ * 0.62
             )
@@ -1397,7 +1699,7 @@ def _build_auditory_scene_plan(scene: AuditoryGlScene) -> _ScenePlan:
                     hpr_deg=_world_hpr_from_tangent(tangent=tangent, roll_deg=-6.0),
                     scale=(radius, radius, radius),
                     color=_auditory_depth_gate_rgba(
-                        base=_auditory_gate_rgba(gate.color),
+                        base=_auditory_gate_display_rgba(gate),
                         depth_t=depth_t,
                     ),
                 )
@@ -1600,6 +1902,46 @@ def _build_rapid_tracking_scene_plan(scene: RapidTrackingGlScene) -> _ScenePlan:
         static_groups=static_bundle.groups,
         backdrop_groups=backdrop_groups,
         playfield_groups=playfield_groups,
+    )
+
+
+def _rapid_tracking_backdrop_plan(
+    *,
+    viewport_size: tuple[int, int],
+    payload: object | None,
+) -> _RapidTrackingBackdropPlan:
+    vh = max(1, int(viewport_size[1]))
+    horizon_ratio = 0.46
+    if payload is not None:
+        rig = rapid_tracking_camera_rig_state(
+            elapsed_s=float(getattr(payload, "phase_elapsed_s", 0.0)),
+            seed=int(getattr(payload, "scene_seed", 0)),
+            progress=float(getattr(payload, "scene_progress", 0.0)),
+            camera_yaw_deg=float(getattr(payload, "camera_yaw_deg", 0.0)),
+            camera_pitch_deg=float(getattr(payload, "camera_pitch_deg", 0.0)),
+            zoom=float(getattr(payload, "capture_zoom", 0.0)),
+            target_kind=str(getattr(payload, "target_kind", "soldier")),
+            target_world_x=float(getattr(payload, "target_world_x", 0.0)),
+            target_world_y=float(getattr(payload, "target_world_y", 0.0)),
+            focus_world_x=float(getattr(payload, "focus_world_x", 0.0)),
+            focus_world_y=float(getattr(payload, "focus_world_y", 70.0)),
+            turbulence_strength=float(getattr(payload, "turbulence_strength", 0.0)),
+        )
+        clamped_pitch = max(-82.0, min(82.0, float(rig.view_pitch_deg)))
+        pitch_t = (clamped_pitch + 82.0) / 164.0
+        horizon_ratio = _lerp(0.76, 0.08, pitch_t)
+        if clamped_pitch >= 68.0:
+            # Let the skyline move fully off-screen when the player looks almost straight up.
+            horizon_ratio = _lerp(horizon_ratio, -0.08, (clamped_pitch - 68.0) / 14.0)
+        elif clamped_pitch <= -68.0:
+            horizon_ratio = _lerp(horizon_ratio, 0.82, (-68.0 - clamped_pitch) / 14.0)
+    horizon_y = max(-(vh * 0.12), min(vh * 0.82, vh * horizon_ratio))
+    return _RapidTrackingBackdropPlan(
+        horizon_y=float(horizon_y),
+        sky_top_rgb=(0.56, 0.68, 0.82),
+        sky_bottom_rgb=(0.22, 0.38, 0.46),
+        ground_horizon_rgb=(0.34, 0.42, 0.26),
+        ground_base_rgb=(0.56, 0.64, 0.38),
     )
 
 
@@ -2422,9 +2764,9 @@ def _spatial_terrain_height(*, wx: float, wy: float) -> float:
 
 def _spatial_grid_to_world(
     *,
-    x: int,
-    y: int,
-    z: int,
+    x: float,
+    y: float,
+    z: float,
     grid_cols: int,
     grid_rows: int,
     alt_levels: int,
@@ -2440,6 +2782,65 @@ def _spatial_grid_to_world(
     terrain = _spatial_terrain_height(wx=wx, wy=wy)
     wz = terrain + 2.4 + (z_norm * 24.0)
     return wx, wy, wz, terrain
+
+
+def _spatial_landmark_seed(*tokens: object) -> int:
+    joined = "|".join(str(token) for token in tokens)
+    return sum((idx + 1) * ord(ch) for idx, ch in enumerate(joined))
+
+
+def _spatial_landmark_asset_id(landmark: SpatialIntegrationLandmark) -> str:
+    token = str(landmark.kind).strip().lower()
+    if token == "building":
+        return "building_hangar"
+    if token == "tower":
+        return "building_tower"
+    if token == "truck":
+        return "truck_olive"
+    if token == "foot_soldiers":
+        return "soldiers_patrol"
+    if token == "forest":
+        return (
+            "trees_field_cluster"
+            if (_spatial_landmark_seed(landmark.label, landmark.kind) % 2) == 0
+            else "forest_canopy_patch"
+        )
+    if token == "tent":
+        return "spatial_tent_canvas"
+    if token == "sheep":
+        return "spatial_sheep_flock"
+    raise RendererBootstrapError(f"Unsupported Spatial Integration landmark kind: {landmark.kind}")
+
+
+def _spatial_landmark_scale(asset_id: str, *, label: str, kind: str) -> tuple[float, float, float]:
+    base = {
+        "building_hangar": 2.4,
+        "building_tower": 3.2,
+        "truck_olive": 1.9,
+        "soldiers_patrol": 1.8,
+        "trees_field_cluster": 2.8,
+        "forest_canopy_patch": 3.1,
+        "spatial_tent_canvas": 1.7,
+        "spatial_sheep_flock": 1.5,
+    }.get(asset_id)
+    if base is None:
+        raise RendererBootstrapError(f"Unsupported Spatial Integration landmark asset: {asset_id}")
+    variation = 0.94 + ((_spatial_landmark_seed(label, kind, asset_id) % 11) * 0.012)
+    scale = base * variation
+    return (scale, scale, scale)
+
+
+def _spatial_landmark_heading_deg(asset_id: str, *, label: str, kind: str) -> tuple[float, float, float]:
+    seed = _spatial_landmark_seed(label, kind, asset_id)
+    if asset_id in {"building_hangar", "spatial_tent_canvas"}:
+        heading = float((seed % 4) * 90)
+    elif asset_id == "truck_olive":
+        heading = float((seed % 8) * 45)
+    elif asset_id == "soldiers_patrol":
+        heading = float((seed % 12) * 30)
+    else:
+        heading = float(seed % 360)
+    return (heading, 0.0, 0.0)
 
 
 def _build_spatial_integration_scene_plan(scene: SpatialIntegrationGlScene) -> _ScenePlan:
@@ -2547,49 +2948,43 @@ def _build_spatial_integration_scene_plan(scene: SpatialIntegrationGlScene) -> _
             )
         )
 
-    landmark_specs = tuple(payload.landmarks)
-    for idx, landmark in enumerate(landmark_specs):
+    landmark_offsets = landmark_visual_cell_offsets(landmarks=tuple(payload.landmarks))
+    for landmark in tuple(payload.landmarks):
+        offset_x, offset_y = landmark_offsets.get(str(landmark.label), (0.0, 0.0))
         wx, wy, wz, terrain = _spatial_grid_to_world(
-            x=int(landmark.x),
-            y=int(landmark.y),
+            x=float(landmark.x) + float(offset_x),
+            y=float(landmark.y) + float(offset_y),
             z=0,
             grid_cols=int(payload.grid_cols),
             grid_rows=int(payload.grid_rows),
             alt_levels=int(payload.alt_levels),
         )
-        if str(landmark.label).upper() == str(payload.query_label).upper():
-            instances.append(
-                _AssetInstance(
-                    asset_id="building_tower",
-                    position=(wx, wy, terrain),
-                    scale=(3.4, 3.4, 3.4),
-                )
-            )
-            continue
-        asset_id = "trees_field_cluster" if idx % 2 == 0 else "forest_canopy_patch"
-        scale = 2.8 if asset_id == "trees_field_cluster" else 3.2
+        asset_id = _spatial_landmark_asset_id(landmark)
         instances.append(
             _AssetInstance(
                 asset_id=asset_id,
                 position=(wx, wy, terrain),
-                scale=(scale, scale, scale),
+                hpr_deg=_spatial_landmark_heading_deg(
+                    asset_id,
+                    label=str(landmark.label),
+                    kind=str(landmark.kind),
+                ),
+                scale=_spatial_landmark_scale(
+                    asset_id,
+                    label=str(landmark.label),
+                    kind=str(landmark.kind),
+                ),
             )
         )
 
+    asset_ids = tuple(sorted({instance.asset_id for instance in instances}))
     return _ScenePlan(
         kind="spatial_integration",
         rect=rect,
         camera=camera,
         asset_instances=tuple(instances),
         overlay_primitives=(),
-        asset_ids=(
-            "building_tower",
-            "forest_canopy_patch",
-            "plane_blue",
-            "plane_green",
-            "plane_yellow",
-            "trees_field_cluster",
-        ),
+        asset_ids=asset_ids,
         entity_count=len(instances),
     )
 
@@ -2608,15 +3003,14 @@ def _build_trace_test_1_scene_plan(scene: TraceTest1GlScene) -> _ScenePlan:
             entity_count=0,
         )
     snapshot = build_trace_test_1_scene3d(payload=payload)
-    asset_instances = tuple(_asset_instance_from_trace_aircraft(pose) for pose in snapshot.aircraft)
     return _ScenePlan(
         kind="trace_test_1",
         rect=rect,
         camera=_scene_camera_from_trace_camera(snapshot.camera),
-        asset_instances=asset_instances,
+        asset_instances=(),
         overlay_primitives=(),
-        asset_ids=tuple(sorted({instance.asset_id for instance in asset_instances})),
-        entity_count=len(asset_instances),
+        asset_ids=(),
+        entity_count=1 + len(payload.scene.blue_frames),
     )
 
 
@@ -2639,7 +3033,7 @@ def _build_trace_test_2_scene_plan(scene: TraceTest2GlScene) -> _ScenePlan:
     )
     asset_instances = tuple(
         _asset_instance_from_trace_aircraft(pose)
-        for pose in (*snapshot.aircraft, *snapshot.ghosts)
+        for pose in snapshot.ghosts
     )
     return _ScenePlan(
         kind="trace_test_2",
@@ -2648,7 +3042,7 @@ def _build_trace_test_2_scene_plan(scene: TraceTest2GlScene) -> _ScenePlan:
         asset_instances=asset_instances,
         overlay_primitives=(),
         asset_ids=tuple(sorted({instance.asset_id for instance in asset_instances})),
-        entity_count=len(asset_instances),
+        entity_count=len(payload.aircraft) + len(asset_instances),
     )
 
 
@@ -3234,6 +3628,7 @@ class ModernSceneRenderer:
     def _render_scene_plan(self, *, scene_plan: _ScenePlan) -> None:
         camera = scene_plan.camera
         use_depth_world = scene_plan.kind == "rapid_tracking"
+        clip_world_triangles = scene_plan.kind in {"rapid_tracking", "auditory"}
         rt_world_debug = {
             "world_triangles_input": 0,
             "world_triangles_emitted": 0,
@@ -3262,12 +3657,12 @@ class ModernSceneRenderer:
         ] = []
 
         for group in static_groups:
-            if not _rapid_tracking_static_group_visible(camera=camera, group=group):
+            if use_depth_world and not _rapid_tracking_static_group_visible(camera=camera, group=group):
                 continue
             is_far = group.layer == "far"
             for triangle in group.triangles:
                 rt_world_debug["world_triangles_input"] += 1
-                if use_depth_world:
+                if clip_world_triangles:
                     projected_world_triangles, was_clipped, rejected = (
                         self._project_world_triangle_clipped(
                             rect=scene_plan.rect,
@@ -3334,17 +3729,33 @@ class ModernSceneRenderer:
                         ),
                     )
                     if is_far:
-                        shade = 0.30 + (light * 0.44)
                         depth_t = max(0.0, min(1.0, (sum(depths) / 3.0 - 220.0) / 900.0))
-                        base_rgb = _mix_rgb(
-                            triangle.base_rgb, (0.50, 0.60, 0.68), 0.30 + (0.30 * depth_t)
-                        )
-                        alpha = max(0.42, triangle.alpha * (0.82 - (0.22 * depth_t)))
+                        if use_depth_world:
+                            shade = 0.66 + (light * 0.28)
+                            base_rgb = _mix_rgb(
+                                triangle.base_rgb, (0.62, 0.70, 0.66), 0.26 + (0.20 * depth_t)
+                            )
+                            alpha = max(0.56, triangle.alpha * (0.90 - (0.10 * depth_t)))
+                        else:
+                            shade = 0.30 + (light * 0.44)
+                            base_rgb = _mix_rgb(
+                                triangle.base_rgb, (0.50, 0.60, 0.68), 0.30 + (0.30 * depth_t)
+                            )
+                            alpha = max(0.42, triangle.alpha * (0.82 - (0.22 * depth_t)))
                     else:
-                        shade = 0.38 + (light * 0.62)
                         depth_t = max(0.0, min(1.0, (sum(depths) / 3.0 - 120.0) / 700.0))
-                        base_rgb = _mix_rgb(triangle.base_rgb, (0.40, 0.48, 0.44), 0.06 * depth_t)
-                        alpha = triangle.alpha
+                        if use_depth_world:
+                            shade = 0.70 + (light * 0.32)
+                            base_rgb = _mix_rgb(
+                                triangle.base_rgb, (0.52, 0.60, 0.48), 0.16 + (0.12 * depth_t)
+                            )
+                            alpha = triangle.alpha
+                        else:
+                            shade = 0.38 + (light * 0.62)
+                            base_rgb = _mix_rgb(
+                                triangle.base_rgb, (0.40, 0.48, 0.44), 0.06 * depth_t
+                            )
+                            alpha = triangle.alpha
                     fill_color = (
                         max(0.0, min(1.0, base_rgb[0] * shade)),
                         max(0.0, min(1.0, base_rgb[1] * shade)),
@@ -3380,7 +3791,7 @@ class ModernSceneRenderer:
                     self._transform_instance_point(point, instance) for point in triangle.points
                 )
                 rt_world_debug["world_triangles_input"] += 1
-                if use_depth_world:
+                if clip_world_triangles:
                     projected_world_triangles, was_clipped, rejected = (
                         self._project_world_triangle_clipped(
                             rect=scene_plan.rect,
@@ -3439,13 +3850,16 @@ class ModernSceneRenderer:
                         + (world_normal[2] * light_dir[2]),
                     ),
                 )
-                shade = 0.38 + (light * 0.62)
+                shade = (0.52 + (light * 0.48)) if use_depth_world else (0.38 + (light * 0.62))
                 if base_override is None:
                     base_rgb = mesh.color_for_role(triangle.role)
                     alpha = 1.0
                 else:
                     base_rgb = tuple(float(channel) for channel in base_override[:3])
                     alpha = float(base_override[3])
+                if use_depth_world:
+                    base_rgb = _mix_rgb(base_rgb, (0.50, 0.58, 0.46), 0.12)
+                    shade = 0.64 + (light * 0.32)
                 fill_color = (
                     max(0.0, min(1.0, base_rgb[0] * shade)),
                     max(0.0, min(1.0, base_rgb[1] * shade)),
@@ -3489,7 +3903,21 @@ class ModernSceneRenderer:
                 color=color,
             )
 
-        for primitive in scene_plan.overlay_primitives:
+        self._render_overlay_primitives(scene_plan.overlay_primitives)
+        if use_depth_world:
+            self._last_rt_world_debug = {
+                "world_triangles_input": int(rt_world_debug["world_triangles_input"]),
+                "world_triangles_emitted": int(rt_world_debug["world_triangles_emitted"]),
+                "world_triangles_clipped": int(rt_world_debug["world_triangles_clipped"]),
+                "world_triangles_rejected": int(rt_world_debug["world_triangles_rejected"]),
+                "max_projected_extent_px": float(rt_world_debug["max_projected_extent_px"]),
+            }
+
+    def _render_overlay_primitives(
+        self,
+        primitives: tuple[_ProjectedOverlayPrimitive, ...] | list[_ProjectedOverlayPrimitive],
+    ) -> None:
+        for primitive in primitives:
             if primitive.kind == "polygon":
                 if primitive.filled:
                     self._add_filled_polygon(primitive.points, primitive.color)
@@ -3509,14 +3937,6 @@ class ModernSceneRenderer:
                     filled=primitive.filled,
                     width=primitive.width,
                 )
-        if use_depth_world:
-            self._last_rt_world_debug = {
-                "world_triangles_input": int(rt_world_debug["world_triangles_input"]),
-                "world_triangles_emitted": int(rt_world_debug["world_triangles_emitted"]),
-                "world_triangles_clipped": int(rt_world_debug["world_triangles_clipped"]),
-                "world_triangles_rejected": int(rt_world_debug["world_triangles_rejected"]),
-                "max_projected_extent_px": float(rt_world_debug["max_projected_extent_px"]),
-            }
 
     @staticmethod
     def _build_vortex_rgba(*, size: int) -> tuple[bytes, int]:
@@ -3739,42 +4159,49 @@ class ModernSceneRenderer:
         payload = scene.payload
         vw = max(1, int(rect.w))
         vh = max(1, int(rect.h))
-        horizon = vh * 0.48
-        if payload is not None:
-            rig = rapid_tracking_camera_rig_state(
-                elapsed_s=float(payload.phase_elapsed_s),
-                seed=int(payload.scene_seed),
-                progress=float(payload.scene_progress),
-                camera_yaw_deg=float(payload.camera_yaw_deg),
-                camera_pitch_deg=float(payload.camera_pitch_deg),
-                zoom=float(payload.capture_zoom),
-                target_kind=str(payload.target_kind),
-                target_world_x=float(payload.target_world_x),
-                target_world_y=float(payload.target_world_y),
-                focus_world_x=float(payload.focus_world_x),
-                focus_world_y=float(payload.focus_world_y),
-                turbulence_strength=float(payload.turbulence_strength),
-            )
-            horizon = max(vh * 0.28, min(vh * 0.70, vh * (0.60 - (rig.view_pitch_deg / 90.0))))
-        band_h = max(1.0, vh / 10.0)
-        for idx in range(10):
-            y0 = vh - ((idx + 1) * band_h)
-            y1 = vh - (idx * band_h)
-            mix = idx / 9.0
+        backdrop = _rapid_tracking_backdrop_plan(viewport_size=(vw, vh), payload=payload)
+        horizon = float(backdrop.horizon_y)
+        ground_top = max(0.0, min(float(vh), horizon))
+        if ground_top < float(vh):
+            sky_span = max(1.0, float(vh) - ground_top)
+            for idx in range(8):
+                t0 = idx / 8.0
+                t1 = (idx + 1) / 8.0
+                y0 = ground_top + (sky_span * t0)
+                y1 = ground_top + (sky_span * t1)
+                mix = (t0 + t1) * 0.5
+                sky_rgb = _mix_rgb(backdrop.sky_bottom_rgb, backdrop.sky_top_rgb, mix)
+                self._add_quad(
+                    self._to_screen(rect, 0.0, y0),
+                    self._to_screen(rect, float(vw), y0),
+                    self._to_screen(rect, float(vw), y1),
+                    self._to_screen(rect, 0.0, y1),
+                    (sky_rgb[0], sky_rgb[1], sky_rgb[2], 1.0),
+                )
+        if ground_top > 0.0:
+            for idx in range(7):
+                t0 = idx / 7.0
+                t1 = (idx + 1) / 7.0
+                y0 = ground_top * t0
+                y1 = ground_top * t1
+                mix = (t0 + t1) * 0.5
+                ground_rgb = _mix_rgb(backdrop.ground_base_rgb, backdrop.ground_horizon_rgb, mix)
+                self._add_quad(
+                    self._to_screen(rect, 0.0, y0),
+                    self._to_screen(rect, float(vw), y0),
+                    self._to_screen(rect, float(vw), y1),
+                    self._to_screen(rect, 0.0, y1),
+                    (ground_rgb[0], ground_rgb[1], ground_rgb[2], 1.0),
+                )
+        if 0.0 < horizon < float(vh):
+            haze_half_h = max(1.0, float(vh) / 90.0)
             self._add_quad(
-                self._to_screen(rect, 0.0, y0),
-                self._to_screen(rect, float(vw), y0),
-                self._to_screen(rect, float(vw), y1),
-                self._to_screen(rect, 0.0, y1),
-                (0.08 + (0.12 * mix), 0.20 + (0.20 * mix), 0.28 + (0.18 * mix), 1.0),
+                self._to_screen(rect, 0.0, max(0.0, horizon - haze_half_h)),
+                self._to_screen(rect, float(vw), max(0.0, horizon - haze_half_h)),
+                self._to_screen(rect, float(vw), min(float(vh), horizon + haze_half_h)),
+                self._to_screen(rect, 0.0, min(float(vh), horizon + haze_half_h)),
+                (0.72, 0.78, 0.72, 0.18),
             )
-        self._add_quad(
-            self._to_screen(rect, 0.0, 0.0),
-            self._to_screen(rect, float(vw), 0.0),
-            self._to_screen(rect, float(vw), horizon),
-            self._to_screen(rect, 0.0, horizon),
-            (0.10, 0.22, 0.16, 1.0),
-        )
         self._flush_color_geometry()
         self._render_scene_plan(scene_plan=scene_plan)
         self._flush_world_geometry()
@@ -3890,12 +4317,6 @@ class ModernSceneRenderer:
                 (0.30, 0.44, 0.22, 1.0),
             )
         self._render_scene_plan(scene_plan=scene_plan)
-        for marker in layout.landmarks:
-            center = self._to_screen(rect, float(marker.screen_x), float(vh - marker.screen_y))
-            self._add_circle(center=center, radius=7.0, color=(0.98, 0.88, 0.42, 0.94))
-            self._add_circle(
-                center=center, radius=11.0, color=(0.98, 0.94, 0.72, 0.44), filled=False
-            )
         prev = self._to_screen(
             rect, float(layout.aircraft_prev[0]), float(vh - layout.aircraft_prev[1])
         )
@@ -3908,7 +4329,7 @@ class ModernSceneRenderer:
                 rect, float(layout.aircraft_future[0]), float(vh - layout.aircraft_future[1])
             )
             self._add_line(now, future, (0.94, 0.56, 0.30, 0.82), width=2.0)
-        return max(int(scene_plan.entity_count), len(layout.landmarks) + 1)
+        return int(scene_plan.entity_count)
 
     def _draw_trace_test_1_scene(self, *, scene: TraceTest1GlScene, scene_plan: _ScenePlan) -> int:
         rect = scene.world
@@ -3930,7 +4351,13 @@ class ModernSceneRenderer:
         )
         if scene.payload is None:
             return 0
-        self._render_scene_plan(scene_plan=scene_plan)
+        self._render_overlay_primitives(
+            _trace_test_1_marker_primitives(
+                rect=rect,
+                window_height=self._win_h,
+                payload=scene.payload,
+            )
+        )
         if scene.practice_mode:
             horizon_y = float(vh * 0.52)
             left = _scene_local_top_left_to_screen(
@@ -3982,7 +4409,15 @@ class ModernSceneRenderer:
         )
         if scene.payload is None:
             return 0
-        self._render_scene_plan(scene_plan=scene_plan)
+        if scene_plan.asset_instances:
+            self._render_scene_plan(scene_plan=scene_plan)
+        self._render_overlay_primitives(
+            _trace_test_2_marker_primitives(
+                rect=rect,
+                window_height=self._win_h,
+                payload=scene.payload,
+            )
+        )
         return int(scene_plan.entity_count)
 
 

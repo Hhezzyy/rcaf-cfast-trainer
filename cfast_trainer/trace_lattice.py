@@ -78,6 +78,7 @@ class TraceLatticePose:
 
 
 DEFAULT_TRACE_LATTICE_SPEC = TraceLatticeSpec(cols=7, rows=7, levels=5)
+_TRACE_LATTICE_TURN_CURVE_TANGENT_SCALE = 0.4
 
 
 def _cross(a: Point3, b: Point3) -> Point3:
@@ -325,6 +326,41 @@ def _interpolated_orientation(
     )
 
 
+def _point_lerp(a: Point3, b: Point3, t: float) -> Point3:
+    return (
+        float(a[0] + ((b[0] - a[0]) * t)),
+        float(a[1] + ((b[1] - a[1]) * t)),
+        float(a[2] + ((b[2] - a[2]) * t)),
+    )
+
+
+def _cubic_hermite_point(
+    start_point: Point3,
+    end_point: Point3,
+    start_tangent: Point3,
+    end_tangent: Point3,
+    t: float,
+) -> Point3:
+    h00 = (2.0 * t * t * t) - (3.0 * t * t) + 1.0
+    h10 = (t * t * t) - (2.0 * t * t) + t
+    h01 = (-2.0 * t * t * t) + (3.0 * t * t)
+    h11 = (t * t * t) - (t * t)
+    return (
+        (h00 * float(start_point[0]))
+        + (h10 * float(start_tangent[0]))
+        + (h01 * float(end_point[0]))
+        + (h11 * float(end_tangent[0])),
+        (h00 * float(start_point[1]))
+        + (h10 * float(start_tangent[1]))
+        + (h01 * float(end_point[1]))
+        + (h11 * float(end_tangent[1])),
+        (h00 * float(start_point[2]))
+        + (h10 * float(start_tangent[2]))
+        + (h01 * float(end_point[2]))
+        + (h11 * float(end_tangent[2])),
+    )
+
+
 def trace_lattice_sample_path(
     path: TraceLatticePath,
     *,
@@ -362,27 +398,32 @@ def trace_lattice_sample_path(
     index = min(step_count - 1, int(math.floor(scaled)))
     local_t = scaled - float(index)
     step = path.steps[index]
-    turn_ratio = max(0.05, min(0.95, float(turn_phase_ratio)))
     start_point = trace_lattice_node_point(step.start_state.node, spec=path.spec)
     end_point = trace_lattice_node_point(step.end_state.node, spec=path.spec)
-    if local_t <= turn_ratio and step.effective_action is not TraceLatticeAction.STRAIGHT:
-        forward, up = _interpolated_orientation(step, turn_progress=local_t / turn_ratio)
-        position = start_point
-        rotated = False
-    else:
-        move_t = 0.0
-        if step.effective_action is TraceLatticeAction.STRAIGHT:
-            move_t = local_t
-        else:
-            move_t = 1.0 if local_t <= turn_ratio else (local_t - turn_ratio) / max(1e-6, 1.0 - turn_ratio)
-        position = (
-            start_point[0] + ((end_point[0] - start_point[0]) * move_t),
-            start_point[1] + ((end_point[1] - start_point[1]) * move_t),
-            start_point[2] + ((end_point[2] - start_point[2]) * move_t),
-        )
+    if step.effective_action is TraceLatticeAction.STRAIGHT:
+        position = _point_lerp(start_point, end_point, local_t)
         forward = tuple(float(v) for v in step.rotated_orientation.forward)
         up = tuple(float(v) for v in step.rotated_orientation.up)
         rotated = True
+    else:
+        _ = turn_phase_ratio
+        start_forward = tuple(float(v) for v in step.start_state.orientation.forward)
+        end_forward = tuple(float(v) for v in step.rotated_orientation.forward)
+        position = _cubic_hermite_point(
+            start_point,
+            end_point,
+            tuple(
+                float(component) * float(_TRACE_LATTICE_TURN_CURVE_TANGENT_SCALE)
+                for component in start_forward
+            ),
+            tuple(
+                float(component) * float(_TRACE_LATTICE_TURN_CURVE_TANGENT_SCALE)
+                for component in end_forward
+            ),
+            local_t,
+        )
+        forward, up = _interpolated_orientation(step, turn_progress=local_t)
+        rotated = local_t > 0.0
 
     return TraceLatticePose(
         position=position,

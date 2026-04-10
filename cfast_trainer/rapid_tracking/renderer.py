@@ -180,13 +180,6 @@ class RapidTrackingExerciseRenderer:
         title = context.small_font.render(f"{snap.title} - {phase_label}", True, text_main)
         surface.blit(title, (header.x + 12, header.y + 8))
 
-        stats = context.tiny_font.render(
-            f"Windows {snap.correct_scored}/{snap.attempted_scored}",
-            True,
-            text_muted,
-        )
-        surface.blit(stats, stats.get_rect(midright=(header.right - 12, header.centery)))
-
         if runtime_visible_timers_enabled() and snap.time_remaining_s is not None:
             rem = int(round(snap.time_remaining_s))
             mm = rem // 60
@@ -199,11 +192,7 @@ class RapidTrackingExerciseRenderer:
             focus_text = context.tiny_font.render(f"Focus: {payload.focus_label}", True, text_main)
             target_label = rapid_tracking_target_label(kind=payload.target_kind, variant=payload.target_variant)
             target_text = context.tiny_font.render(f"Target: {target_label}", True, text_muted)
-            segment_text = context.tiny_font.render(
-                f"{payload.segment_label} {int(payload.segment_index)}/{int(payload.segment_total)}",
-                True,
-                text_muted,
-            )
+            segment_text = context.tiny_font.render(payload.segment_label, True, text_muted)
             surface.blit(focus_text, (frame.x + 12, meta_top))
             surface.blit(target_text, (frame.x + 12, meta_top + 16))
             surface.blit(segment_text, segment_text.get_rect(topright=(frame.right - 12, meta_top)))

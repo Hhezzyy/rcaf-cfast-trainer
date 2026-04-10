@@ -10,6 +10,7 @@ from .auditory_capacity_view import (
     GATE_DEPTH_SLOTS_NORM,
     TUNNEL_EXIT_NORM,
     lerp,
+    run_travel_distance,
     smoothstep01,
 )
 from .clock import Clock
@@ -175,6 +176,8 @@ class AuditoryCapacityGate:
     shape: str
     aperture_norm: float
     visual_slot_index: int | None = None
+    flash_color: str | None = None
+    flash_strength: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -194,6 +197,7 @@ class AuditoryCapacityMetrics:
 class AuditoryCapacityPayload:
     session_seed: int
     phase_elapsed_s: float
+    presentation_travel_distance: float
     active_channels: tuple[str, ...]
     segment_label: str
     segment_index: int
@@ -348,6 +352,10 @@ class _LiveGate:
     aperture_norm: float
     visual_slot_index: int | None = None
     scored: bool = False
+    flash_color: str | None = None
+    flash_started_at_s: float = 0.0
+    flash_duration_s: float = 0.0
+    flash_until_s: float = 0.0
 
 
 @dataclass(slots=True)
@@ -743,9 +751,13 @@ class AuditoryCapacityEngine:
     _BALL_VISUAL_SUCCESS_COLOR = "GREEN"
     _BALL_VISUAL_ERROR_COLOR = "RED"
     _BALL_VISUAL_IDLE_COLOR = "WHITE"
+    _GATE_VISUAL_PASS_COLOR = "WHITE"
+    _GATE_VISUAL_ERROR_COLOR = "ERROR_RED"
     _BALL_VISUAL_SUCCESS_DURATION_S = 0.35
     _BALL_VISUAL_COLOR_CHANGE_DURATION_S = 0.30
     _BALL_VISUAL_ERROR_DURATION_S = 0.40
+    _GATE_VISUAL_SUCCESS_DURATION_S = 0.35
+    _GATE_VISUAL_ERROR_DURATION_S = 0.40
     _ALL_ACTIVE_CHANNELS = (
         "gates",
         "state_commands",
@@ -2028,6 +2040,31 @@ class AuditoryCapacityEngine:
         strength = clamp01(remaining / duration)
         return (self._ball_visual_flash_color, strength**0.85)
 
+    def _trigger_gate_visual_feedback(
+        self,
+        gate: _LiveGate,
+        *,
+        color: str,
+        duration_s: float,
+    ) -> None:
+        gate.flash_color = str(color).strip().upper() or self._GATE_VISUAL_PASS_COLOR
+        gate.flash_started_at_s = float(self._sim_elapsed_s)
+        gate.flash_duration_s = max(0.05, float(duration_s))
+        gate.flash_until_s = gate.flash_started_at_s + gate.flash_duration_s
+
+    def _gate_visual_state(self, gate: _LiveGate) -> tuple[str | None, float]:
+        if self._sim_elapsed_s >= float(gate.flash_until_s):
+            return (None, 0.0)
+        duration = max(0.05, float(gate.flash_duration_s))
+        remaining = max(0.0, float(gate.flash_until_s - self._sim_elapsed_s))
+        strength = clamp01(remaining / duration)
+        color = (
+            None
+            if gate.flash_color is None
+            else (str(gate.flash_color).strip().upper() or self._GATE_VISUAL_PASS_COLOR)
+        )
+        return (color, strength**0.85)
+
     def _bind_gate_directive_to_next_match(self) -> None:
         directive_state = self._active_gate_directive
         if directive_state is None:
@@ -2132,6 +2169,20 @@ class AuditoryCapacityEngine:
                         if inside_aperture:
                             self._forbidden_gate_hits += 1
 
+                if inside_aperture and (not self._outside_tube):
+                    if should_pass and is_correct:
+                        self._trigger_gate_visual_feedback(
+                            gate,
+                            color=self._GATE_VISUAL_PASS_COLOR,
+                            duration_s=self._GATE_VISUAL_SUCCESS_DURATION_S,
+                        )
+                    elif (not should_pass) and (not is_correct):
+                        self._trigger_gate_visual_feedback(
+                            gate,
+                            color=self._GATE_VISUAL_ERROR_COLOR,
+                            duration_s=self._GATE_VISUAL_ERROR_DURATION_S,
+                        )
+
                 gate_action = "PASS" if should_pass else "AVOID"
                 pilot_action = "PASS" if inside_aperture else "SKIP"
                 self._record_event(
@@ -2151,7 +2202,10 @@ class AuditoryCapacityEngine:
                 ):
                     self._active_gate_directive = None
 
-            if (not gate.scored) and gate.x_norm >= AUDITORY_GATE_RETIRE_X_NORM:
+            _flash_color, flash_strength = self._gate_visual_state(gate)
+            if gate.x_norm >= AUDITORY_GATE_RETIRE_X_NORM and (
+                (not gate.scored) or flash_strength > 0.0
+            ):
                 active.append(gate)
         self._gates = active
         self._assign_gate_visual_slots()
@@ -2341,7 +2395,9 @@ class AuditoryCapacityEngine:
             addressed_call_sign=addressed_call_sign,
         )
         self._events.append(evt)
-        if is_correct:
+        if kind is AuditoryCapacityEventKind.GATE:
+            pass
+        elif is_correct:
             if (
                 kind is AuditoryCapacityEventKind.COMMAND
                 and command_type == AuditoryCapacityCommandType.CHANGE_COLOUR.value
@@ -2468,20 +2524,30 @@ class AuditoryCapacityEngine:
         if self._distortion_level_override is not None:
             background_distortion_level = float(self._distortion_level_override)
 
-        gates = tuple(
-            AuditoryCapacityGate(
-                gate_id=g.gate_id,
-                x_norm=float(g.x_norm),
-                y_norm=float(g.y_norm),
-                color=g.color,
-                shape=g.shape,
-                aperture_norm=float(g.aperture_norm),
-                visual_slot_index=(
-                    None if g.visual_slot_index is None else int(g.visual_slot_index)
-                ),
-            )
-            for g in self._gates
+        presentation_travel_distance = run_travel_distance(
+            session_seed=int(self._seed),
+            phase_elapsed_s=float(self._sim_elapsed_s),
         )
+
+        gate_payloads: list[AuditoryCapacityGate] = []
+        for g in self._gates:
+            flash_color, flash_strength = self._gate_visual_state(g)
+            gate_payloads.append(
+                AuditoryCapacityGate(
+                    gate_id=g.gate_id,
+                    x_norm=float(g.x_norm),
+                    y_norm=float(g.y_norm),
+                    color=g.color,
+                    shape=g.shape,
+                    aperture_norm=float(g.aperture_norm),
+                    visual_slot_index=(
+                        None if g.visual_slot_index is None else int(g.visual_slot_index)
+                    ),
+                    flash_color=flash_color,
+                    flash_strength=float(flash_strength),
+                )
+            )
+        gates = tuple(gate_payloads)
         pending_color = (
             self._pending_state_command.expected_color
             if self._pending_state_command is not None
@@ -2553,6 +2619,7 @@ class AuditoryCapacityEngine:
         return AuditoryCapacityPayload(
             session_seed=int(self._seed),
             phase_elapsed_s=float(self._sim_elapsed_s),
+            presentation_travel_distance=float(presentation_travel_distance),
             active_channels=tuple(self._segment_active_channels),
             segment_label=self._segment_label,
             segment_index=int(self._segment_index + 1),

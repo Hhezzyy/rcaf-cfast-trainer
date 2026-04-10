@@ -36,24 +36,29 @@ def test_trace_lattice_rotations_are_self_relative() -> None:
     )
 
 
-def test_trace_lattice_samples_rotate_before_translating() -> None:
+def test_trace_lattice_samples_non_straight_steps_with_continuous_motion() -> None:
     path = trace_lattice_build_path(
         start_state=trace_lattice_center_state(),
         actions=(TraceLatticeAction.RIGHT,),
     )
 
     early_pose = trace_lattice_sample_path(path, progress=0.10, turn_phase_ratio=0.35)
+    mid_pose = trace_lattice_sample_path(path, progress=0.30, turn_phase_ratio=0.35)
     late_pose = trace_lattice_sample_path(path, progress=0.70, turn_phase_ratio=0.35)
 
-    assert early_pose.position == pytest.approx((0.0, 3.0, 0.0))
-    assert early_pose.rotated is False
+    assert early_pose.position[0] > 0.0
+    assert early_pose.position[1] > 3.0
+    assert early_pose.rotated is True
     assert early_pose.forward[0] > 0.0
     assert early_pose.forward[1] > 0.0
 
-    assert late_pose.position[0] > early_pose.position[0]
-    assert late_pose.position[1] == pytest.approx(3.0)
+    assert mid_pose.position[0] > early_pose.position[0]
+    assert mid_pose.position[1] >= early_pose.position[1]
+    assert late_pose.position[0] > mid_pose.position[0]
+    assert late_pose.position[1] > 3.0
     assert late_pose.rotated is True
-    assert late_pose.forward == pytest.approx((1.0, 0.0, 0.0))
+    assert late_pose.forward[0] > 0.0
+    assert abs(late_pose.forward[0]) > abs(late_pose.forward[1])
 
 
 def test_trace_lattice_boundary_overrides_force_inward_actions() -> None:

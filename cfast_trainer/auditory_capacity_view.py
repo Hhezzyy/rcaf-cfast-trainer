@@ -49,6 +49,9 @@ TUNNEL_CAMERA_TARGET_FORWARD_OFFSET = 0.45
 TUNNEL_CAMERA_TARGET_UP_OFFSET = 0.04
 TUNNEL_CAMERA_H_FOV_DEG = 50.0
 TUNNEL_CAMERA_V_FOV_DEG = 38.0
+AUDITORY_RUN_TRAVEL_SPEED_DISTANCE_PER_S = 0.16
+AUDITORY_RUN_MAX_SCORING_DURATION_S = 13.0 * 60.0
+AUDITORY_RUN_TRAVEL_MARGIN_DISTANCE = 2.0
 
 
 def smoothstep01(value: float) -> float:
@@ -160,23 +163,108 @@ def slot_distance(slot_index: int) -> float:
     return forward_norm_to_distance(slot_forward_norm(slot_index))
 
 
-def fixed_camera_pose(
+AUDITORY_BALL_ANCHOR_DISTANCE = forward_norm_to_distance(BALL_FORWARD_IDLE_NORM)
+AUDITORY_GATE_FAR_DISTANCE = slot_distance(len(GATE_DEPTH_SLOTS_NORM) - 1)
+AUDITORY_GATE_BEHIND_DISTANCE = max(
+    TUNNEL_GEOMETRY_START_DISTANCE + 1.0,
+    AUDITORY_BALL_ANCHOR_DISTANCE - 6.0,
+)
+AUDITORY_RUN_MAX_START_DISTANCE = max(
+    0.0,
+    TUBE_PATH_SPAN
+    - TUNNEL_GEOMETRY_END_DISTANCE
+    - (AUDITORY_RUN_TRAVEL_SPEED_DISTANCE_PER_S * AUDITORY_RUN_MAX_SCORING_DURATION_S)
+    - AUDITORY_RUN_TRAVEL_MARGIN_DISTANCE,
+)
+
+
+def _seed_unit_float(seed: int) -> float:
+    value = int(seed) & 0xFFFFFFFF
+    value ^= value >> 16
+    value = (value * 0x7FEB352D) & 0xFFFFFFFF
+    value ^= value >> 15
+    value = (value * 0x846CA68B) & 0xFFFFFFFF
+    value ^= value >> 16
+    return float(value) / float(0xFFFFFFFF)
+
+
+def run_start_distance(session_seed: int, *, span: float = TUBE_PATH_SPAN) -> float:
+    usable = min(
+        max(0.0, float(AUDITORY_RUN_MAX_START_DISTANCE)),
+        max(
+            0.0,
+            float(span) - TUNNEL_GEOMETRY_END_DISTANCE - AUDITORY_RUN_TRAVEL_MARGIN_DISTANCE,
+        ),
+    )
+    if usable <= 1e-6:
+        return 0.0
+    return usable * _seed_unit_float(int(session_seed))
+
+
+def run_travel_distance(
     *,
-    forward_norm: float = BALL_FORWARD_IDLE_NORM,
-) -> tuple[Point3, Point3]:
-    ball_distance = forward_norm_to_distance(forward_norm)
+    session_seed: int,
+    phase_elapsed_s: float,
+    span: float = TUBE_PATH_SPAN,
+) -> float:
+    max_visible_start = max(
+        0.0,
+        float(span) - TUNNEL_GEOMETRY_END_DISTANCE - AUDITORY_RUN_TRAVEL_MARGIN_DISTANCE,
+    )
+    start = min(max_visible_start, run_start_distance(int(session_seed), span=span))
+    distance = start + (
+        max(0.0, float(phase_elapsed_s)) * AUDITORY_RUN_TRAVEL_SPEED_DISTANCE_PER_S
+    )
+    return min(distance, max_visible_start)
+
+
+def gate_distance_from_x_norm(
+    x_norm: float,
+    *,
+    travel_distance: float,
+    spawn_x_norm: float,
+    player_x_norm: float,
+    retire_x_norm: float,
+) -> float:
+    spawn = float(spawn_x_norm)
+    player = float(player_x_norm)
+    retire = float(retire_x_norm)
+    x = float(x_norm)
+    if x >= player:
+        span = max(1e-6, spawn - player)
+        t = clamp01((spawn - x) / span)
+        relative = lerp(AUDITORY_GATE_FAR_DISTANCE, AUDITORY_BALL_ANCHOR_DISTANCE, t)
+    else:
+        span = max(1e-6, player - retire)
+        t = clamp01((player - x) / span)
+        relative = lerp(AUDITORY_BALL_ANCHOR_DISTANCE, AUDITORY_GATE_BEHIND_DISTANCE, t)
+    return float(travel_distance) + relative
+
+
+def gate_depth_ratio_from_distance(
+    distance: float,
+    *,
+    travel_distance: float,
+) -> float:
+    near = float(travel_distance) + AUDITORY_BALL_ANCHOR_DISTANCE
+    far = float(travel_distance) + AUDITORY_GATE_FAR_DISTANCE
+    span = max(1e-6, far - near)
+    return clamp01((float(distance) - near) / span)
+
+
+def fixed_camera_pose_at_distance(ball_distance: float) -> tuple[Point3, Point3]:
     cam_distance = max(
         TUNNEL_CAMERA_DISTANCE,
         min(
             TUNNEL_GEOMETRY_END_DISTANCE - 6.0,
-            ball_distance - TUNNEL_CAMERA_FOLLOW_BACK_DISTANCE,
+            float(ball_distance) - TUNNEL_CAMERA_FOLLOW_BACK_DISTANCE,
         ),
     )
     look_distance = max(
         cam_distance + 4.0,
         min(
             TUNNEL_GEOMETRY_END_DISTANCE - 0.4,
-            ball_distance + TUNNEL_CAMERA_LOOK_AHEAD_DISTANCE,
+            float(ball_distance) + TUNNEL_CAMERA_LOOK_AHEAD_DISTANCE,
         ),
     )
     cam_center, _cam_tangent, _cam_right, cam_up = tube_frame(cam_distance)
@@ -190,3 +278,10 @@ def fixed_camera_pose(
         ),
     )
     return cam_pos, look_target
+
+
+def fixed_camera_pose(
+    *,
+    forward_norm: float = BALL_FORWARD_IDLE_NORM,
+) -> tuple[Point3, Point3]:
+    return fixed_camera_pose_at_distance(forward_norm_to_distance(forward_norm))

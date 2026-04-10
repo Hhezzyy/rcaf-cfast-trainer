@@ -270,6 +270,69 @@ def test_generated_tracks_preserve_role_specific_smooth_tangent_behavior() -> No
             assert end_tangent[2] > 0.0
 
 
+def test_generated_turning_tracks_continue_moving_during_turn_steps() -> None:
+    payload = TraceTest2Generator(seed=29).next_problem(difficulty=0.55).payload
+    assert isinstance(payload, TraceTest2Payload)
+
+    for track in payload.aircraft:
+        if track.motion_kind is TraceTest2MotionKind.STRAIGHT:
+            continue
+        assert track.lattice_path is not None
+        turn_index = next(
+            idx
+            for idx, step in enumerate(track.lattice_path.steps)
+            if step.effective_action is not TraceLatticeAction.STRAIGHT
+        )
+        step_count = len(track.lattice_path.steps)
+        early = trace_test_2_track_position(
+            track=track,
+            progress=(float(turn_index) + 0.08) / float(step_count),
+        )
+        mid = trace_test_2_track_position(
+            track=track,
+            progress=(float(turn_index) + 0.20) / float(step_count),
+        )
+
+        assert mid != pytest.approx(early)
+        if track.motion_kind in (TraceTest2MotionKind.LEFT, TraceTest2MotionKind.RIGHT):
+            expected_sign = -1.0 if track.motion_kind is TraceTest2MotionKind.LEFT else 1.0
+            assert (mid.x - early.x) * expected_sign > 0.0
+            assert mid.y > early.y
+        else:
+            assert mid.z > early.z
+            assert mid.y > early.y
+
+
+def test_generated_turning_tracks_keep_tangent_direction_consistent_with_motion_family() -> None:
+    payload = TraceTest2Generator(seed=29).next_problem(difficulty=0.55).payload
+    assert isinstance(payload, TraceTest2Payload)
+
+    for track in payload.aircraft:
+        if track.motion_kind is TraceTest2MotionKind.STRAIGHT:
+            continue
+        assert track.lattice_path is not None
+        turn_index = next(
+            idx
+            for idx, step in enumerate(track.lattice_path.steps)
+            if step.effective_action is not TraceLatticeAction.STRAIGHT
+        )
+        step_count = len(track.lattice_path.steps)
+        mid_tangent = trace_test_2_track_tangent(
+            track=track,
+            progress=(float(turn_index) + 0.20) / float(step_count),
+        )
+
+        assert math.isfinite(mid_tangent[0])
+        assert math.isfinite(mid_tangent[1])
+        assert math.isfinite(mid_tangent[2])
+        if track.motion_kind is TraceTest2MotionKind.LEFT:
+            assert mid_tangent[0] < 0.0
+        elif track.motion_kind is TraceTest2MotionKind.RIGHT:
+            assert mid_tangent[0] > 0.0
+        elif track.motion_kind is TraceTest2MotionKind.CLIMB:
+            assert mid_tangent[2] > 0.0
+
+
 def test_track_position_uses_quadratic_control_polygon_for_three_point_tracks() -> None:
     track = TraceTest2AircraftTrack(
         code=1,

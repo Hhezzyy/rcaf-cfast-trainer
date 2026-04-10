@@ -118,3 +118,60 @@ def test_build_scene_layout_includes_future_marker_for_moving_oblique_scene() ->
     assert layout.aircraft_future is not None
     assert layout.aircraft_future[0] > layout.aircraft_now[0]
     assert layout.aircraft_future[1] < layout.aircraft_now[1]
+
+
+def test_build_scene_layout_offsets_colocated_landmarks_deterministically() -> None:
+    payload = SpatialIntegrationPayload(
+        part=SpatialIntegrationPart.STATIC,
+        trial_stage=SpatialIntegrationTrialStage.STUDY,
+        block_kind="practice",
+        scene_id=3,
+        scene_index_in_block=1,
+        scenes_in_block=2,
+        study_view_index=1,
+        study_views_in_scene=3,
+        question_index_in_scene=0,
+        questions_in_scene=3,
+        stage_time_remaining_s=4.5,
+        part_time_remaining_s=None,
+        kind=SpatialIntegrationQuestionKind.LANDMARK_GRID,
+        answer_mode=None,
+        stem="Study the scene.",
+        query_label="BLD1",
+        north_arrow_deg=0,
+        scene_view=SpatialIntegrationSceneView.OBLIQUE,
+        grid_cols=8,
+        grid_rows=8,
+        alt_levels=4,
+        reference_views=(
+            SpatialIntegrationReferenceView("Oblique", SpatialIntegrationSceneView.OBLIQUE, 0),
+        ),
+        active_reference_view=SpatialIntegrationReferenceView("Oblique", SpatialIntegrationSceneView.OBLIQUE, 0),
+        hills=(),
+        landmarks=(
+            SpatialIntegrationLandmark(label="BLD1", x=3, y=3, kind="building"),
+            SpatialIntegrationLandmark(label="TENT", x=3, y=3, kind="tent"),
+        ),
+        answer_map_landmarks=(),
+        route_points=(),
+        route_current_index=0,
+        aircraft_prev=SpatialIntegrationPoint(x=1, y=0, z=1),
+        aircraft_now=SpatialIntegrationPoint(x=2, y=1, z=1),
+        velocity=SpatialIntegrationVector(dx=1, dy=0, dz=0),
+        show_aircraft_motion=False,
+        options=(),
+        correct_code=0,
+        correct_point=SpatialIntegrationPoint(x=3, y=3, z=0),
+        correct_answer_token="D4",
+    )
+
+    layout = build_scene_layout(payload=payload, size=(800, 600))
+    layout_repeat = build_scene_layout(payload=payload, size=(800, 600))
+
+    assert layout.landmarks[0].label == "BLD1"
+    assert layout.landmarks[1].label == "TENT"
+    assert (layout.landmarks[0].screen_x, layout.landmarks[0].screen_y) != (
+        layout.landmarks[1].screen_x,
+        layout.landmarks[1].screen_y,
+    )
+    assert layout == layout_repeat

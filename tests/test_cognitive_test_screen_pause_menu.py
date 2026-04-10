@@ -31,6 +31,8 @@ from cfast_trainer.app import (
     JoystickBindingsScreen,
     MenuItem,
     MenuScreen,
+    RapidTrackingSettingsScreen,
+    RapidTrackingSettingsStore,
     _AuditoryPandaRequirementState,
 )
 from cfast_trainer.clock import Clock
@@ -180,6 +182,7 @@ def _build_app_and_screen(
     test_code: str | None = None,
     difficulty_settings_store: DifficultySettingsStore | None = None,
     input_profiles_store: InputProfilesStore | None = None,
+    rapid_tracking_settings_store: RapidTrackingSettingsStore | None = None,
     runtime_defaults_store: RuntimeDefaultsStore | None = None,
 ) -> tuple[App, CognitiveTestScreen, list[_FakeEngine]]:
     pygame.init()
@@ -190,6 +193,7 @@ def _build_app_and_screen(
         font=font,
         difficulty_settings_store=difficulty_settings_store,
         input_profiles_store=input_profiles_store,
+        rapid_tracking_settings_store=rapid_tracking_settings_store,
         runtime_defaults_store=runtime_defaults_store,
     )
     root = MenuScreen(app, "Main Menu", [MenuItem("Quit", app.quit)], is_root=True)
@@ -288,6 +292,26 @@ def test_airborne_reference_overlays_follow_held_reference_keys(monkeypatch) -> 
         monkeypatch.setattr(pygame.key, "get_pressed", lambda: _PressedKeys(set()))
         screen.render(app.surface)
         assert screen._air_overlay is None
+    finally:
+        pygame.quit()
+
+
+def test_airborne_live_screen_hides_practice_progress_and_scored_counter() -> None:
+    app, screen, _clock = _build_airborne_screen()
+    try:
+        tiny_font = _SpyFont()
+        small_font = _SpyFont()
+        app_font = _SpyFont()
+        screen._tiny_font = tiny_font
+        screen._small_font = small_font
+        screen._app._font = app_font
+
+        screen.render(app.surface)
+        rendered = app_font.rendered + small_font.rendered + tiny_font.rendered
+
+        assert "Practice" in rendered
+        assert not any(text.startswith("Practice:") for text in rendered)
+        assert not any(text.startswith("Scored:") for text in rendered)
     finally:
         pygame.quit()
 
@@ -685,6 +709,54 @@ def test_pause_settings_open_joystick_bindings_screen_and_return_to_pause_settin
 
         screen._app.pop()
         assert screen._app._screens[-1] is screen
+        assert screen._pause_menu_active is True
+        assert screen._pause_menu_mode == "settings"
+    finally:
+        pygame.quit()
+
+
+def test_rapid_tracking_pause_settings_open_dedicated_rt_settings_screen(tmp_path) -> None:
+    rapid_tracking_store = RapidTrackingSettingsStore(tmp_path / "rapid-tracking-settings.json")
+    _app, screen, _engines = _build_app_and_screen(
+        phase=Phase.PRACTICE,
+        title="Rapid Tracking",
+        test_code="rapid_tracking",
+        rapid_tracking_settings_store=rapid_tracking_store,
+    )
+    try:
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_ESCAPE, "mod": 0, "unicode": ""})
+        )
+        settings_index = screen._pause_menu_options().index("Settings")
+        for _ in range(settings_index):
+            screen.handle_event(
+                pygame.event.Event(
+                    pygame.KEYDOWN,
+                    {"key": pygame.K_DOWN, "mod": 0, "unicode": ""},
+                )
+            )
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "mod": 0, "unicode": ""})
+        )
+
+        rows = screen._pause_settings_rows()
+        rt_settings_index = next(
+            idx for idx, (key, _label, _value) in enumerate(rows) if key == "rapid_tracking_settings"
+        )
+        assert rows[rt_settings_index][2] == "Pitch Invert OFF"
+
+        while screen._pause_settings_selected != rt_settings_index:
+            screen.handle_event(
+                pygame.event.Event(
+                    pygame.KEYDOWN,
+                    {"key": pygame.K_DOWN, "mod": 0, "unicode": ""},
+                )
+            )
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "mod": 0, "unicode": ""})
+        )
+
+        assert isinstance(screen._app._screens[-1], RapidTrackingSettingsScreen)
         assert screen._pause_menu_active is True
         assert screen._pause_menu_mode == "settings"
     finally:
@@ -1136,6 +1208,7 @@ def test_auditory_prefixed_title_uses_live_auditory_renderer_path() -> None:
 
         assert "Auditory Capacity - Practice" in rendered_text
         assert "Q/W/E/R: colour" in rendered_text
+        assert "Scored " not in rendered_text
     finally:
         pygame.quit()
 
@@ -1741,6 +1814,110 @@ def test_explicit_rapid_tracking_capture_binding_supports_hold_zoom_and_capture(
         assert held.capture_points >= 2
 
         fake.buttons[4] = 0
+        clock.advance(0.30)
+        app.render()
+        released = engine.snapshot().payload
+        assert released is not None
+        assert released.capture_zoom < 0.2
+    finally:
+        pygame.quit()
+
+
+def test_explicit_rapid_tracking_capture_binding_waits_for_last_bound_control_release(
+    monkeypatch, tmp_path
+) -> None:
+    pygame.init()
+    try:
+        surface = pygame.display.set_mode((960, 540))
+        font = pygame.font.Font(None, 36)
+        profile_store = InputProfilesStore(tmp_path / "input-profiles.json")
+        profile_id = profile_store.active_profile().profile_id
+        profile_store.set_action_binding(
+            profile_id=profile_id,
+            action="rapid_tracking_capture",
+            slot_index=0,
+            binding=DigitalBinding(kind="button", device_key="capture stick|guid-1", control_index=4),
+        )
+        profile_store.set_action_binding(
+            profile_id=profile_id,
+            action="rapid_tracking_capture",
+            slot_index=1,
+            binding=DigitalBinding(kind="button", device_key="capture stick|guid-1", control_index=5),
+        )
+
+        app = App(surface=surface, font=font, input_profiles_store=profile_store)
+        app.push(MenuScreen(app, "Main Menu", [MenuItem("Quit", app.quit)], is_root=True))
+        clock = _FakeClock()
+        screen = CognitiveTestScreen(
+            app,
+            engine_factory=lambda: build_rapid_tracking_test(
+                clock=clock,
+                seed=9877,
+                difficulty=0.5,
+            ),
+            test_code="rapid_tracking",
+        )
+        app.push(screen)
+
+        class _FakeJoystick:
+            def __init__(self) -> None:
+                self.buttons = [0] * 8
+
+            def get_name(self) -> str:
+                return "capture stick"
+
+            def get_guid(self) -> str:
+                return "guid-1"
+
+            def get_numaxes(self) -> int:
+                return 4
+
+            def get_axis(self, idx: int) -> float:
+                return 0.0
+
+            def get_numbuttons(self) -> int:
+                return len(self.buttons)
+
+            def get_button(self, idx: int) -> int:
+                return int(self.buttons[idx])
+
+            def get_numhats(self) -> int:
+                return 0
+
+        fake = _FakeJoystick()
+        monkeypatch.setattr("cfast_trainer.app._iter_connected_joysticks", lambda: [fake])
+        monkeypatch.setattr(pygame.key, "get_pressed", lambda: _PressedKeys(set()))
+        engine = cast(object, screen._engine)
+        engine.start_practice()
+        engine._target_x = 0.0
+        engine._target_y = 0.0
+        engine._target_terrain_occluded = False
+        engine._reset_camera_pose_to_target()
+
+        fake.buttons[4] = 1
+        app.render()
+        first = engine.snapshot().payload
+        assert first is not None
+        assert first.capture_attempts == 1
+        assert first.capture_zoom > 0.0
+
+        fake.buttons[5] = 1
+        clock.advance(0.10)
+        app.render()
+        both_held = engine.snapshot().payload
+        assert both_held is not None
+        assert both_held.capture_attempts == 1
+        assert both_held.capture_zoom > 0.5
+
+        fake.buttons[4] = 0
+        clock.advance(0.30)
+        app.render()
+        still_held = engine.snapshot().payload
+        assert still_held is not None
+        assert still_held.capture_attempts == 1
+        assert still_held.capture_zoom > 0.8
+
+        fake.buttons[5] = 0
         clock.advance(0.30)
         app.render()
         released = engine.snapshot().payload

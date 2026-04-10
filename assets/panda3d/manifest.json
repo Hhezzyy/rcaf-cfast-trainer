@@ -90,6 +90,22 @@
         "rapid_tracking/building_tower.obj"
       ]
     },
+    "spatial_tent_canvas": {
+      "category": "scenery",
+      "builtin_kind": "spatial_tent",
+      "scale": 1.0,
+      "hpr_offset_deg": [0.0, 0.0, 0.0],
+      "pos_offset": [0.0, 0.0, 0.0],
+      "candidates": []
+    },
+    "spatial_sheep_flock": {
+      "category": "scenery",
+      "builtin_kind": "spatial_sheep",
+      "scale": 1.0,
+      "hpr_offset_deg": [0.0, 0.0, 0.0],
+      "pos_offset": [0.0, 0.0, 0.0],
+      "candidates": []
+    },
     "road_paved_segment": {
       "category": "scenery",
       "builtin_kind": "road_paved",

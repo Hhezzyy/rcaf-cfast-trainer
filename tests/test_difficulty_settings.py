@@ -20,6 +20,8 @@ from cfast_trainer.app import (
     MenuScreen,
     OpenGLFailureInfo,
     OpenGLFailureScreen,
+    RapidTrackingSettingsScreen,
+    RapidTrackingSettingsStore,
     TestSeedSettingsScreen,
     TestSeedSettingsStore,
 )
@@ -147,6 +149,18 @@ def test_test_seed_settings_store_persists_override_and_seed_value(tmp_path) -> 
     assert reloaded.rapid_tracking_seed_value() == 424242
 
 
+def test_rapid_tracking_settings_store_persists_invert_pitch(tmp_path) -> None:
+    path = tmp_path / "rapid-tracking-settings.json"
+    store = RapidTrackingSettingsStore(path)
+
+    assert store.invert_pitch() is False
+
+    store.set_invert_pitch(True)
+
+    reloaded = RapidTrackingSettingsStore(path)
+    assert reloaded.invert_pitch() is True
+
+
 def test_test_seed_settings_screen_toggles_override_and_saves_typed_seed(tmp_path) -> None:
     pygame.init()
     try:
@@ -200,6 +214,39 @@ def test_test_seed_settings_screen_toggles_override_and_saves_typed_seed(tmp_pat
 
         assert seed_store.rapid_tracking_seed_value() == 12345
         assert screen._editing_seed is False
+    finally:
+        pygame.quit()
+
+
+def test_rapid_tracking_settings_screen_toggles_invert_pitch(tmp_path) -> None:
+    pygame.init()
+    try:
+        surface = pygame.display.set_mode((960, 540))
+        font = pygame.font.Font(None, 36)
+        rapid_tracking_store = RapidTrackingSettingsStore(tmp_path / "rapid-tracking-settings.json")
+        app = App(
+            surface=surface,
+            font=font,
+            rapid_tracking_settings_store=rapid_tracking_store,
+        )
+        root = MenuScreen(app, "Main Menu", [MenuItem("Quit", app.quit)], is_root=True)
+        app.push(root)
+        screen = RapidTrackingSettingsScreen(app)
+        app.push(screen)
+
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "mod": 0, "unicode": ""})
+        )
+        assert rapid_tracking_store.invert_pitch() is True
+
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_DOWN, "mod": 0, "unicode": ""})
+        )
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "mod": 0, "unicode": ""})
+        )
+
+        assert app._screens[-1] is root
     finally:
         pygame.quit()
 
