@@ -149,7 +149,7 @@ def test_runtime_state_machine_changes_code_from_actions() -> None:
     parsed = decode_cognitive_updating_submission_raw(raw)
     assert parsed is not None
     assert parsed.entered_code == "1234"
-    assert len(parsed.state_code) == 4
+    assert parsed.state_code == after.current_comms_code
 
 
 def test_runtime_clock_tracks_elapsed_seconds() -> None:
@@ -221,7 +221,7 @@ def test_camera_button_flashes_and_resets_due_message() -> None:
 
 def test_message_lines_include_objective_and_comms_status_rows() -> None:
     clock = FakeClock()
-    payload = _payload_for(515)
+    payload = replace(_payload_for(515), comms_time_limit_s=40)
     runtime = CognitiveUpdatingRuntime(payload=payload, clock=clock)
 
     start = runtime.snapshot()
@@ -239,15 +239,96 @@ def test_message_lines_include_objective_and_comms_status_rows() -> None:
     clock.advance(8.0)
     lon = runtime.snapshot()
     assert lon.message_lines[1].startswith("Longitude: ")
+    assert lon.message_lines[3] == ""
 
-    clock.advance(4.0)
+    clock.advance(9.0)
     comms = runtime.snapshot()
     assert comms.message_lines[2] == ""
-    assert comms.message_lines[3].startswith("Comms Code: ")
+    assert comms.message_lines[3].startswith("New Comms Code: ")
 
-    clock.advance(8.0)
+    clock.advance(3.0)
     timed = runtime.snapshot()
     assert timed.message_lines[2].startswith("Time: ")
+    assert timed.message_lines[3].startswith("New Comms Code: ")
+
+
+def test_comms_message_reveal_uses_remaining_time_threshold() -> None:
+    clock = FakeClock()
+    payload = replace(
+        _payload_for(520),
+        comms_time_limit_s=30,
+        message_reveal_comms_s=20.0,
+    )
+    runtime = CognitiveUpdatingRuntime(payload=payload, clock=clock)
+
+    clock.advance(9.9)
+    hidden = runtime.snapshot()
+    assert hidden.next_comms_code is None
+    assert hidden.message_lines[3] == ""
+    assert hidden.comms_swap_in_s == 21
+
+    clock.advance(0.1)
+    revealed = runtime.snapshot()
+    assert revealed.next_comms_code is not None
+    assert revealed.comms_swap_in_s == 20
+    assert revealed.message_lines[3] == f"New Comms Code: {revealed.next_comms_code} in 20s"
+
+
+def test_comms_code_rollover_replaces_target_and_clears_stale_entry() -> None:
+    clock = FakeClock()
+    payload = replace(_payload_for(522), comms_time_limit_s=30)
+    runtime = CognitiveUpdatingRuntime(payload=payload, clock=clock)
+
+    start = runtime.snapshot()
+    old_code = start.current_comms_code
+    for ch in old_code:
+        runtime.append_comms_digit(ch)
+
+    clock.advance(10.0)
+    warning = runtime.snapshot()
+    assert warning.next_comms_code is not None
+    incoming_code = warning.next_comms_code
+    assert incoming_code != old_code
+    assert warning.message_lines[3].startswith("New Comms Code: ")
+
+    clock.advance(19.5)
+    almost = runtime.snapshot()
+    assert almost.current_comms_code == old_code
+    assert almost.comms_input == old_code
+    assert almost.comms_swap_in_s == 1
+    assert almost.message_lines[3] == f"New Comms Code: {incoming_code} in 01s"
+
+    clock.advance(0.4)
+    still_pending = runtime.snapshot()
+    assert still_pending.current_comms_code == old_code
+    assert still_pending.comms_input == old_code
+    assert still_pending.comms_swap_in_s == 1
+
+    clock.advance(0.1)
+    rolled = runtime.snapshot()
+    assert rolled.current_comms_code == incoming_code
+    assert rolled.current_comms_code != old_code
+    assert rolled.comms_input == ""
+    assert rolled.comms_swap_in_s == 30
+    assert rolled.message_lines[3] == ""
+
+    for ch in old_code:
+        runtime.append_comms_digit(ch)
+    stale_raw = runtime.build_submission_raw()
+    stale_parsed = decode_cognitive_updating_submission_raw(stale_raw)
+    assert stale_parsed is not None
+    assert stale_parsed.entered_code == old_code
+    assert stale_parsed.state_code == rolled.current_comms_code
+    assert stale_parsed.entered_code != stale_parsed.state_code
+
+    runtime.clear_comms()
+    for ch in rolled.current_comms_code:
+        runtime.append_comms_digit(ch)
+    raw = runtime.build_submission_raw()
+    parsed = decode_cognitive_updating_submission_raw(raw)
+    assert parsed is not None
+    assert parsed.entered_code == rolled.current_comms_code
+    assert parsed.state_code == rolled.current_comms_code
 
 
 def test_objective_message_fragments_clear_after_successful_drop() -> None:

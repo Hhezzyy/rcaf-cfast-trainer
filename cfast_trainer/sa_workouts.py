@@ -39,7 +39,7 @@ def build_sa_workout_plan(*, duration_scale: float = 1.0) -> AntWorkoutPlan:
         _block(
             "contact_identification",
             "Contact Identification Prime",
-            "Match callsigns to side and vehicle type until the cue-card and grid flashes feel automatic.",
+            "Match callsigns to side and vehicle type until the right-side status panel and grid flashes feel automatic.",
             ("Contact identification", "Type and side reading"),
             "sa_contact_identification_prime",
             AntDrillMode.BUILD,
@@ -48,7 +48,7 @@ def build_sa_workout_plan(*, duration_scale: float = 1.0) -> AntWorkoutPlan:
         _block(
             "status_recall",
             "Report Correlation Prime",
-            "Train sighting-grid, variation, and rule-call recall from short cue-card flashes and radio chatter before the route block tightens up.",
+            "Train sighting-grid, variation, and rule-call recall from short status-panel flashes and radio chatter before the route block tightens up.",
             ("Report correlation", "Coded-state tracking"),
             "sa_status_recall_prime",
             AntDrillMode.BUILD,
@@ -84,7 +84,7 @@ def build_sa_workout_plan(*, duration_scale: float = 1.0) -> AntWorkoutPlan:
         _block(
             "mixed_tempo",
             "Mixed Tempo Run",
-            "Repeat the full query rhythm while the world keeps evolving behind fading grid and cue-card flashes.",
+            "Repeat the full query rhythm while the world keeps evolving behind fading grid updates, the incoming bar, and the status panel.",
             ("Mixed query tempo", "Full-picture continuity"),
             "sa_mixed_tempo",
             AntDrillMode.TEMPO,
@@ -109,7 +109,7 @@ def build_sa_workout_plan(*, duration_scale: float = 1.0) -> AntWorkoutPlan:
         ),
         notes=(
             "Typed reflections and block setup screens do not count toward the 90-minute drill clock.",
-            "Every block reuses the live continuous Situational Awareness screen with fading cues, radio chatter, and direct-response queries.",
+            "Every block reuses the live continuous Situational Awareness screen with the incoming bar, flashing status panel, radio chatter, and direct-response queries.",
             "Controls stay the live model throughout: click or type grid cells, then answer choice prompts with click or 1-5.",
         ),
         blocks=blocks,

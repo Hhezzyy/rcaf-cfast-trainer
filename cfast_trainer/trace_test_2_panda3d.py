@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import importlib.util
-import math
 import os
 
 import pygame
@@ -9,16 +8,15 @@ import pygame
 from .aircraft_art import (
     build_panda_palette,
     build_panda3d_fixed_wing_model,
-    panda3d_fixed_wing_hpr_from_screen_heading,
+    panda3d_fixed_wing_hpr_from_world_hpr,
     panda3d_fixed_wing_hpr_from_world_tangent,
 )
+from .trace_scene_3d import TraceAircraftPose, TraceCameraPose, build_trace_test_2_scene3d
 from .trace_test_2 import (
     TraceTest2AircraftTrack,
     TraceTest2Payload,
-    trace_test_2_track_position,
     trace_test_2_track_tangent,
 )
-from .trace_test_2_gl import aircraft_screen_pose_for_track
 
 
 def panda3d_trace_test_2_rendering_available() -> bool:
@@ -57,8 +55,8 @@ class TraceTest2Panda3DRenderer:
         self._texture = Texture()
         self._texture.setKeepRamImage(True)
         self._base.win.addRenderTexture(self._texture, GraphicsOutput.RTMCopyRam)
-        self._base.camLens.setFov(44.0)
-        self._base.camLens.setNearFar(0.1, 640.0)
+        self._base.camLens.setFov(52.0, 40.0)
+        self._base.camLens.setNearFar(0.12, 1200.0)
 
         ambient = AmbientLight("trace2-ambient")
         ambient.setColor(Vec4(0.82, 0.86, 0.90, 1.0))
@@ -76,7 +74,6 @@ class TraceTest2Panda3DRenderer:
         self._aircraft_nodes: dict[int, object] = {}
 
         self._build_world()
-        self._update_camera()
 
     @property
     def size(self) -> tuple[int, int]:
@@ -95,13 +92,11 @@ class TraceTest2Panda3DRenderer:
         self._elapsed_s += dt_s
 
         if payload is None:
-            tracks = ()
-            progress = float((self._elapsed_s / 8.0) % 1.0)
+            self._update_aircraft(poses=())
         else:
-            tracks = payload.aircraft
-            progress = float(payload.observe_progress)
-
-        self._update_aircraft(tracks=tracks, progress=progress)
+            snapshot = self._scene_snapshot(payload=payload)
+            self._apply_camera(camera=snapshot.camera)
+            self._update_aircraft(poses=snapshot.aircraft)
         self._base.graphicsEngine.renderFrame()
 
         ram = self._texture.getRamImageAs("RGBA")
@@ -114,41 +109,34 @@ class TraceTest2Panda3DRenderer:
         ground.setPos(0.0, 122.0, -19.0)
         ground.reparentTo(self._world_root)
 
-    def _update_camera(self) -> None:
-        self._base.cam.setPos(0.0, -18.0, 14.0)
-        self._base.cam.lookAt(0.0, 96.0, 9.0)
-
     def _update_aircraft(
         self,
         *,
-        tracks: tuple[TraceTest2AircraftTrack, ...],
-        progress: float,
+        poses: tuple[TraceAircraftPose, ...],
     ) -> None:
-        active_codes = {int(track.code) for track in tracks}
+        active_codes = {int(pose.code) for pose in poses}
         for code, node in self._aircraft_nodes.items():
             if code not in active_codes:
                 node.hide()
 
-        for track in tracks:
-            node = self._aircraft_nodes.get(int(track.code))
+        for pose in poses:
+            node = self._aircraft_nodes.get(int(pose.code))
             if node is None:
-                node = self._build_aircraft_model(color_rgb=track.color_rgb)
+                node = self._build_aircraft_model(color_rgba=self._pose_color_rgba(pose))
                 node.reparentTo(self._aircraft_root)
-                self._aircraft_nodes[int(track.code)] = node
+                self._aircraft_nodes[int(pose.code)] = node
             node.show()
-
-            pos = trace_test_2_track_position(track=track, progress=progress)
-            tangent = self._track_tangent(track=track, progress=progress)
-            hpr = self._aircraft_hpr_for_track(
-                track=track,
-                progress=progress,
-                size=self._size,
-                tangent=tangent,
+            node.setPos(
+                float(pose.position[0]),
+                float(pose.position[1]),
+                float(pose.position[2]),
             )
-
-            node.setPos(float(pos.x), float(pos.y), float(pos.z))
-            node.setHpr(*hpr)
-            node.setScale(0.98)
+            node.setHpr(*self._aircraft_hpr_for_pose(pose))
+            node.setScale(
+                float(pose.scale[0]),
+                float(pose.scale[1]),
+                float(pose.scale[2]),
+            )
 
     @staticmethod
     def _aircraft_hpr_from_tangent(
@@ -169,16 +157,33 @@ class TraceTest2Panda3DRenderer:
         size: tuple[int, int],
         tangent: tuple[float, float, float],
     ) -> tuple[float, float, float]:
-        screen_heading_deg, pitch_deg, roll_deg = aircraft_screen_pose_for_track(
-            track=track,
-            progress=progress,
-            size=size,
-            tangent=tangent,
+        _ = (track, progress, size)
+        return cls._aircraft_hpr_from_tangent(tangent=tangent)
+
+    @staticmethod
+    def _aircraft_hpr_for_pose(pose: TraceAircraftPose) -> tuple[float, float, float]:
+        return panda3d_fixed_wing_hpr_from_world_hpr(
+            heading_deg=float(pose.hpr_deg[0]),
+            pitch_deg=float(pose.hpr_deg[1]),
+            roll_deg=float(pose.hpr_deg[2]),
         )
-        return panda3d_fixed_wing_hpr_from_screen_heading(
-            screen_heading_deg=screen_heading_deg,
-            pitch_deg=float(pitch_deg),
-            roll_deg=float(roll_deg),
+
+    @staticmethod
+    def _scene_snapshot(*, payload: TraceTest2Payload):
+        return build_trace_test_2_scene3d(payload=payload)
+
+    def _apply_camera(self, *, camera: TraceCameraPose) -> None:
+        self._base.camLens.setFov(float(camera.h_fov_deg), float(camera.v_fov_deg))
+        self._base.camLens.setNearFar(float(camera.near_clip), float(camera.far_clip))
+        self._base.cam.setPos(
+            float(camera.position[0]),
+            float(camera.position[1]),
+            float(camera.position[2]),
+        )
+        self._base.cam.setHpr(
+            float(camera.heading_deg),
+            float(camera.pitch_deg),
+            0.0,
         )
 
     @staticmethod
@@ -199,15 +204,22 @@ class TraceTest2Panda3DRenderer:
             )
         return (float(dx), float(dy), float(dz))
 
-    def _build_aircraft_model(self, *, color_rgb: tuple[int, int, int]):
+    @staticmethod
+    def _pose_color_rgba(pose: TraceAircraftPose) -> tuple[float, float, float, float]:
+        if pose.color_rgba is not None:
+            return tuple(float(channel) for channel in pose.color_rgba)
+        fallback = {
+            "plane_red": (0.86, 0.25, 0.28, 1.0),
+            "plane_blue": (0.28, 0.50, 0.88, 1.0),
+            "plane_yellow": (0.90, 0.74, 0.24, 1.0),
+            "plane_green": (0.42, 0.72, 0.48, 1.0),
+        }
+        return fallback.get(str(pose.asset_id), (0.28, 0.50, 0.88, 1.0))
+
+    def _build_aircraft_model(self, *, color_rgba: tuple[float, float, float, float]):
         return build_panda3d_fixed_wing_model(
             palette=build_panda_palette(
-                body_color=(
-                    color_rgb[0] / 255.0,
-                    color_rgb[1] / 255.0,
-                    color_rgb[2] / 255.0,
-                    1.0,
-                ),
+                body_color=color_rgba,
                 canopy_color=(0.94, 0.96, 1.0, 1.0),
             )
         )

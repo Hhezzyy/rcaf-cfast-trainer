@@ -65,6 +65,7 @@ class TargetRecognitionPayload:
     scan_repeat_range: tuple[int, int] = (2, 4)
     scene_objective_label: str = ""
     scene_clear_all_targets: bool = False
+    developer_answer_review: bool = False
     content_family: str = ""
     variant_id: str = ""
     content_pack: str = "target_recognition"

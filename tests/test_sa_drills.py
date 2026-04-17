@@ -154,6 +154,7 @@ def test_sa_focused_drills_emit_expected_channels_and_query_kinds(
     assert isinstance(payload, SituationalAwarenessPayload)
     assert payload.active_channels == expected_channels
     assert payload.active_query_kinds == expected_query_kinds
+    assert payload.north_heading_deg in (0, 90, 180, 270)
 
 
 def test_sa_family_switch_run_repeats_fixed_family_cycle() -> None:
@@ -225,3 +226,6 @@ def test_sa_pressure_run_keeps_all_channels_and_query_kinds_active() -> None:
     assert isinstance(payload, SituationalAwarenessPayload)
     assert payload.active_channels == SA_CHANNEL_ORDER
     assert payload.active_query_kinds == SA_QUERY_KIND_ORDER
+    assert payload.north_heading_deg in (0, 90, 180, 270)
+    assert "altitude" in payload.active_query_kinds
+    assert "communication_channel" in payload.active_query_kinds

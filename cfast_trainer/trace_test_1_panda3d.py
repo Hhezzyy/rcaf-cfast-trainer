@@ -8,11 +8,10 @@ import pygame
 from .aircraft_art import (
     build_panda_palette,
     build_panda3d_fixed_wing_model,
-    fixed_wing_heading_from_screen_heading,
     panda3d_fixed_wing_hpr_from_world_hpr,
 )
-from .trace_test_1 import TraceTest1Command, TraceTest1Payload
-from .trace_test_1_gl import aircraft_screen_pose_for_frame, project_scene_position
+from .trace_scene_3d import TraceAircraftPose, TraceCameraPose, build_trace_test_1_scene3d
+from .trace_test_1 import TraceTest1Command, TraceTest1Payload, trace_test_1_aircraft_hpr
 
 
 def panda3d_trace_test_1_rendering_available() -> bool:
@@ -29,7 +28,6 @@ class TraceTest1Panda3DRenderer:
         from panda3d.core import (
             AmbientLight,
             GraphicsOutput,
-            OrthographicLens,
             Texture,
             Vec4,
             loadPrcFileData,
@@ -49,12 +47,8 @@ class TraceTest1Panda3DRenderer:
         self._base = ShowBase(windowType="offscreen")
         self._base.disableMouse()
         self._base.setBackgroundColor(0.45, 0.60, 0.82, 1.0)
-        lens = OrthographicLens()
-        lens.setFilmSize(width, height)
-        lens.setNearFar(-500.0, 500.0)
-        self._base.cam.node().setLens(lens)
-        self._base.cam.setPos(0.0, -120.0, 0.0)
-        self._base.cam.setHpr(0.0, 0.0, 0.0)
+        self._base.camLens.setFov(48.0, 38.0)
+        self._base.camLens.setNearFar(0.12, 1200.0)
 
         self._texture = Texture()
         self._texture.setKeepRamImage(True)
@@ -96,25 +90,17 @@ class TraceTest1Panda3DRenderer:
             surface.fill((86, 118, 160))
             return surface
 
-        self._ensure_blue_anchors(count=len(payload.scene.blue_frames))
+        snapshot = self._scene_snapshot(payload=payload)
+        self._apply_camera(camera=snapshot.camera)
+        self._ensure_blue_anchors(count=max(0, len(snapshot.aircraft) - 1))
         self._update_aircraft(
             anchor=self._red_anchor,
-            frame=payload.scene.red_frame,
-            command=payload.active_command,
-            observe_progress=payload.observe_progress,
-            answer_open_progress=payload.answer_open_progress,
-            scale=1.08,
+            pose=snapshot.aircraft[0],
         )
-        for idx, (frame, command) in enumerate(
-            zip(payload.scene.blue_frames, payload.blue_commands, strict=True)
-        ):
+        for idx, pose in enumerate(snapshot.aircraft[1:]):
             self._update_aircraft(
                 anchor=self._blue_anchors[idx],
-                frame=frame,
-                command=command,
-                observe_progress=payload.observe_progress,
-                answer_open_progress=payload.answer_open_progress,
-                scale=0.88,
+                pose=pose,
             )
         self._base.graphicsEngine.renderFrame()
 
@@ -140,28 +126,19 @@ class TraceTest1Panda3DRenderer:
         self,
         *,
         anchor,
-        frame,
-        command: TraceTest1Command,
-        observe_progress: float,
-        answer_open_progress: float,
-        scale: float,
+        pose: TraceAircraftPose,
     ) -> None:
-        center, projected_scale = project_scene_position(frame.position, size=self._size)
         anchor.setPos(
-            float(center[0] - (self._size[0] * 0.5)),
-            0.0,
-            float((self._size[1] * 0.5) - center[1]),
+            float(pose.position[0]),
+            float(pose.position[1]),
+            float(pose.position[2]),
         )
-        anchor.setScale(scale * projected_scale * 11.0)
-        anchor.setHpr(
-            *self._aircraft_hpr_for_frame(
-                frame=frame,
-                command=command,
-                observe_progress=observe_progress,
-                answer_open_progress=answer_open_progress,
-                size=self._size,
-            )
+        anchor.setScale(
+            float(pose.scale[0]),
+            float(pose.scale[1]),
+            float(pose.scale[2]),
         )
+        anchor.setHpr(*self._aircraft_hpr_for_pose(pose))
 
     @staticmethod
     def _aircraft_hpr_for_frame(
@@ -172,17 +149,38 @@ class TraceTest1Panda3DRenderer:
         answer_open_progress: float,
         size: tuple[int, int],
     ) -> tuple[float, float, float]:
-        screen_heading_deg, pitch_deg, roll_deg = aircraft_screen_pose_for_frame(
-            frame,
-            command=command,
-            observe_progress=observe_progress,
-            answer_open_progress=answer_open_progress,
-            size=size,
-        )
+        _ = (command, observe_progress, answer_open_progress, size)
+        heading_deg, pitch_deg, roll_deg = trace_test_1_aircraft_hpr(frame)
         return panda3d_fixed_wing_hpr_from_world_hpr(
-            heading_deg=fixed_wing_heading_from_screen_heading(screen_heading_deg),
+            heading_deg=float(heading_deg),
             pitch_deg=float(pitch_deg),
             roll_deg=float(roll_deg),
+        )
+
+    @staticmethod
+    def _aircraft_hpr_for_pose(pose: TraceAircraftPose) -> tuple[float, float, float]:
+        return panda3d_fixed_wing_hpr_from_world_hpr(
+            heading_deg=float(pose.hpr_deg[0]),
+            pitch_deg=float(pose.hpr_deg[1]),
+            roll_deg=float(pose.hpr_deg[2]),
+        )
+
+    @staticmethod
+    def _scene_snapshot(*, payload: TraceTest1Payload):
+        return build_trace_test_1_scene3d(payload=payload)
+
+    def _apply_camera(self, *, camera: TraceCameraPose) -> None:
+        self._base.camLens.setFov(float(camera.h_fov_deg), float(camera.v_fov_deg))
+        self._base.camLens.setNearFar(float(camera.near_clip), float(camera.far_clip))
+        self._base.cam.setPos(
+            float(camera.position[0]),
+            float(camera.position[1]),
+            float(camera.position[2]),
+        )
+        self._base.cam.setHpr(
+            float(camera.heading_deg),
+            float(camera.pitch_deg),
+            0.0,
         )
 
     def _build_aircraft_model(

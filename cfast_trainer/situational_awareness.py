@@ -1483,7 +1483,11 @@ class SituationalAwarenessTest:
             return False
         if self._current_query is None or self._scenario_started_at_s is None:
             return False
-        normalized = self._normalize_submission(raw, answer_mode=self._current_query.answer_mode)
+        normalized = self._normalize_submission(
+            raw,
+            answer_mode=self._current_query.answer_mode,
+            accepted_tokens=self._current_query.accepted_tokens,
+        )
         if normalized is None:
             return False
         event = self._record_query_result(raw=normalized, is_timeout=False)
@@ -2678,11 +2682,15 @@ class SituationalAwarenessQueryKind(StrEnum):
     RULE_ACTION = "rule_action"
     INTERCEPT_DIRECTION = "intercept_direction"
     ASSIST_SELECTION = "assist_selection"
+    ALTITUDE = "altitude"
+    COMMUNICATION_CHANNEL = "communication_channel"
 
 
 class SituationalAwarenessAnswerMode(StrEnum):
     GRID_CELL = "grid_cell"
     CHOICE = "choice"
+    NUMERIC = "numeric"
+    TOKEN = "token"
 
 
 SA_QUERY_KIND_ORDER = tuple(kind.value for kind in SituationalAwarenessQueryKind)
@@ -2751,6 +2759,10 @@ class SituationalAwarenessCueCard:
     task_text: str
     channel_text: str
     fade: float
+    next_waypoint: str = ""
+    next_waypoint_at_text: str = ""
+    altitude_text: str = ""
+    communications_text: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -2770,6 +2782,10 @@ class SituationalAwarenessActiveQuery:
     subject_callsign: str | None = None
     future_offset_s: int | None = None
     answer_choices: tuple[SituationalAwarenessAnswerChoice, ...] = ()
+    accepted_tokens: tuple[str, ...] = ()
+    entry_label: str = ""
+    entry_placeholder: str = ""
+    entry_max_chars: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -2801,6 +2817,9 @@ class SituationalAwarenessPayload:
     announcement_lines: tuple[str, ...]
     radio_log: tuple[str, ...] = ()
     speech_prefetch_lines: tuple[str, ...] = ()
+    round_index: int = 1
+    round_total: int = 1
+    north_heading_deg: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -2929,6 +2948,14 @@ class _SaCueCardState:
 
 
 @dataclass(slots=True)
+class _SaInfoPanelState:
+    callsign: str
+    shown_at_s: int
+    flash_until_s: int
+    trigger_source: str
+
+
+@dataclass(slots=True)
 class _SaTopStripState:
     text: str
     shown_at_s: int
@@ -2947,6 +2974,10 @@ class _SaActiveQueryState:
     subject_callsign: str | None = None
     future_offset_s: int | None = None
     answer_choices: tuple[SituationalAwarenessAnswerChoice, ...] = ()
+    accepted_tokens: tuple[str, ...] = ()
+    entry_label: str = ""
+    entry_placeholder: str = ""
+    entry_max_chars: int = 0
 
 
 def _sa_family_label(family: SituationalAwarenessScenarioFamily) -> str:
@@ -2984,10 +3015,56 @@ def _sa_asset_type_short(asset_type: str) -> str:
 def _sa_allegiance_label(allegiance: str) -> str:
     labels = {
         "friendly": "Friendly",
-        "neutral": "Neutral",
-        "enemy": "Enemy",
+        "neutral": "Unknown",
+        "enemy": "Hostile",
+        "unknown": "Unknown",
     }
     return labels.get(str(allegiance), str(allegiance).title())
+
+
+_SA_TOKEN_ALIASES = {
+    "FRIENDLY": "FRIENDLY",
+    "YELLOW": "FRIENDLY",
+    "HOSTILE": "HOSTILE",
+    "ENEMY": "HOSTILE",
+    "RED": "HOSTILE",
+    "UNKNOWN": "UNKNOWN",
+    "WHITE": "UNKNOWN",
+    "NEUTRAL": "UNKNOWN",
+}
+
+_SA_TOKEN_SCORE_VALUES = {
+    "FRIENDLY": 1,
+    "HOSTILE": 2,
+    "UNKNOWN": 3,
+}
+
+
+def _sa_allegiance_answer_token(allegiance: str) -> str:
+    canonical = {
+        "friendly": "FRIENDLY",
+        "enemy": "HOSTILE",
+        "hostile": "HOSTILE",
+        "neutral": "UNKNOWN",
+        "unknown": "UNKNOWN",
+    }
+    return canonical.get(str(allegiance).strip().lower(), str(allegiance).strip().upper())
+
+
+def _sa_normalize_token(raw: str, *, accepted_tokens: Sequence[str] = ()) -> str | None:
+    token = " ".join(str(raw).strip().upper().replace("_", " ").replace("-", " ").split())
+    if token == "":
+        return None
+    canonical = _SA_TOKEN_ALIASES.get(token, token)
+    if accepted_tokens:
+        allowed = {
+            _SA_TOKEN_ALIASES.get(" ".join(str(item).strip().upper().split()), " ".join(str(item).strip().upper().split()))
+            for item in accepted_tokens
+            if str(item).strip() != ""
+        }
+        if canonical not in allowed:
+            return None
+    return canonical
 
 
 def _sa_direction_from_delta(dx: float, dy: float) -> str:
@@ -3012,6 +3089,14 @@ def _sa_waypoints() -> tuple[SituationalAwarenessWaypoint, ...]:
             continue
         points.append(SituationalAwarenessWaypoint(name=token, x=xy[0], y=xy[1]))
     return tuple(points)
+
+
+_SA_CARDINAL_HEADINGS = (0, 90, 180, 270)
+
+
+def _sa_round_heading_deg(*, seed: int, round_index: int, is_practice: bool) -> int:
+    base = (int(seed) + (0 if is_practice else 1)) % len(_SA_CARDINAL_HEADINGS)
+    return _SA_CARDINAL_HEADINGS[(base + max(0, int(round_index) - 1)) % len(_SA_CARDINAL_HEADINGS)]
 
 
 class _SituationalAwarenessScenarioGenerator:
@@ -3069,9 +3154,11 @@ class _SituationalAwarenessScenarioGenerator:
             SituationalAwarenessQueryKind.ASSIST_SELECTION: SituationalAwarenessScenarioFamily.MERGE_CONFLICT,
             SituationalAwarenessQueryKind.RULE_ACTION: SituationalAwarenessScenarioFamily.FUEL_PRIORITY,
             SituationalAwarenessQueryKind.REPORT_VARIATION: SituationalAwarenessScenarioFamily.FUEL_PRIORITY,
+            SituationalAwarenessQueryKind.ALTITUDE: SituationalAwarenessScenarioFamily.FUEL_PRIORITY,
             SituationalAwarenessQueryKind.SIGHTING_GRID: SituationalAwarenessScenarioFamily.CHANNEL_WAYPOINT_CHANGE,
             SituationalAwarenessQueryKind.CURRENT_ALLEGIANCE: SituationalAwarenessScenarioFamily.CHANNEL_WAYPOINT_CHANGE,
             SituationalAwarenessQueryKind.VEHICLE_TYPE: SituationalAwarenessScenarioFamily.CHANNEL_WAYPOINT_CHANGE,
+            SituationalAwarenessQueryKind.COMMUNICATION_CHANNEL: SituationalAwarenessScenarioFamily.CHANNEL_WAYPOINT_CHANGE,
             SituationalAwarenessQueryKind.INSTRUCTED_DESTINATION: SituationalAwarenessScenarioFamily.ROUTE_HANDOFF,
             SituationalAwarenessQueryKind.ACTUAL_DESTINATION: SituationalAwarenessScenarioFamily.ROUTE_HANDOFF,
         }
@@ -3153,6 +3240,7 @@ class _SituationalAwarenessScenarioGenerator:
                 SituationalAwarenessQueryKind.REPORT_VARIATION,
                 SituationalAwarenessQueryKind.RULE_ACTION,
                 SituationalAwarenessQueryKind.SIGHTING_GRID,
+                SituationalAwarenessQueryKind.ALTITUDE,
             ),
             SituationalAwarenessScenarioFamily.ROUTE_HANDOFF: (
                 SituationalAwarenessQueryKind.CURRENT_LOCATION,
@@ -3163,6 +3251,7 @@ class _SituationalAwarenessScenarioGenerator:
                 SituationalAwarenessQueryKind.CURRENT_ALLEGIANCE,
                 SituationalAwarenessQueryKind.VEHICLE_TYPE,
                 SituationalAwarenessQueryKind.SIGHTING_GRID,
+                SituationalAwarenessQueryKind.COMMUNICATION_CHANNEL,
             ),
         }
         base = mapping[family]
@@ -3171,6 +3260,7 @@ class _SituationalAwarenessScenarioGenerator:
         return base + (
             SituationalAwarenessQueryKind.CURRENT_LOCATION,
             SituationalAwarenessQueryKind.RULE_ACTION,
+            SituationalAwarenessQueryKind.COMMUNICATION_CHANNEL,
         )
 
     def _make_query_slots(
@@ -3533,7 +3623,7 @@ class SituationalAwarenessTest:
         self._instructions = (
             "Build and hold a changing tactical picture from radio chatter, map flashes, coded panels, and short reports.",
             "Keep track of allegiance, vehicle type, current grid, ordered destination, actual movement, reports, and rule calls.",
-            "Some answers are 5-choice. Others need a grid cell like E5.",
+            "Answers can be 5-choice, grid-cell, numeric, or typed colour/label responses.",
         )
         self._generator = _SituationalAwarenessScenarioGenerator(seed=self._seed, config=self._config)
         self._practice_segments = self._normalize_segments(practice_segments)
@@ -3561,6 +3651,7 @@ class SituationalAwarenessTest:
         self._live_assets: dict[str, _SaLiveAssetState] = {}
         self._visible_contacts: dict[str, _SaVisibleContactState] = {}
         self._cue_card_state: _SaCueCardState | None = None
+        self._info_panel_state: _SaInfoPanelState | None = None
         self._top_strip_state: _SaTopStripState | None = None
         self._radio_log: list[tuple[int, str]] = []
         self._announcement_serial = 0
@@ -3662,10 +3753,7 @@ class SituationalAwarenessTest:
             self._begin_segment(is_practice=False)
             return
         self._scenario_index = 0
-        total = int(self._config.scored_duration_s // max(1.0, self._config.scored_scenario_duration_s))
-        if total * float(self._config.scored_scenario_duration_s) < float(self._config.scored_duration_s):
-            total += 1
-        self._scenario_total = max(1, total)
+        self._scenario_total = 3
         self._begin_scored_scenario()
 
     def can_exit(self) -> bool:
@@ -3702,7 +3790,11 @@ class SituationalAwarenessTest:
             return False
         if self._current_query is None or self._scenario_started_at_s is None:
             return False
-        normalized = self._normalize_submission(raw, answer_mode=self._current_query.answer_mode)
+        normalized = self._normalize_submission(
+            raw,
+            answer_mode=self._current_query.answer_mode,
+            accepted_tokens=self._current_query.accepted_tokens,
+        )
         if normalized is None:
             return False
         event = self._record_query_result(raw=normalized, is_timeout=False)
@@ -3846,9 +3938,10 @@ class SituationalAwarenessTest:
             self._current_query = None
             return
         self._practice_feedback = None
+        remaining_rounds = max(1, self._scenario_total - self._scenario_index)
+        remaining = int(round(self.time_remaining_s() or 0.0))
         self._scenario_index += 1
-        remaining = int(self.time_remaining_s() or 0.0)
-        duration = min(int(self._config.scored_scenario_duration_s), max(1, remaining))
+        duration = max(1, (remaining + remaining_rounds - 1) // remaining_rounds)
         self._start_scenario(duration_s=duration, practice_focus=None)
 
     def _start_scenario(
@@ -3859,7 +3952,10 @@ class SituationalAwarenessTest:
         segment: SituationalAwarenessTrainingSegment | None = None,
     ) -> None:
         self._current_segment = segment
-        self._scenario_plan = self._generator.next_scenario(
+        is_practice = self._phase is Phase.PRACTICE
+        round_seed = self._scenario_seed(is_practice=is_practice)
+        generator = _SituationalAwarenessScenarioGenerator(seed=round_seed, config=self._config)
+        self._scenario_plan = generator.next_scenario(
             difficulty=self._difficulty,
             scenario_index=self._scenario_index,
             total_scenarios=self._scenario_total,
@@ -3868,6 +3964,12 @@ class SituationalAwarenessTest:
             allowed_families=None if segment is None else segment.scenario_families,
             active_query_kinds=None if segment is None else segment.active_query_kinds,
             training_profile=None if segment is None else segment.profile,
+        )
+        self._scenario_plan.context["round_seed"] = round_seed
+        self._scenario_plan.context["north_heading_deg"] = _sa_round_heading_deg(
+            seed=self._seed,
+            round_index=self._scenario_index,
+            is_practice=is_practice,
         )
         self._scenario_started_at_s = self._clock.now()
         self._processed_ticks = 0
@@ -3897,6 +3999,7 @@ class SituationalAwarenessTest:
         }
         self._visible_contacts = {}
         self._cue_card_state = None
+        self._info_panel_state = None
         self._radio_log = []
         self._top_strip_state = None
         self._clear_announcement()
@@ -4021,9 +4124,8 @@ class SituationalAwarenessTest:
         if update.modality in {"audio_plus_visual", "visual_only"}:
             if "pictorial" in self._active_channels():
                 self._reveal_contact(asset.callsign, tick=tick)
-            if "coded" in self._active_channels() or "numerical" in self._active_channels():
-                self._show_cue_card(asset.callsign, tick=tick)
-        if "coded" in self._active_channels() or "numerical" in self._active_channels():
+        if self._can_show_info_panel():
+            self._show_cue_card(asset.callsign, tick=tick)
             self._show_top_strip(update.line, tick=tick)
         self._radio_log.append((tick, update.line))
         self._radio_log = self._radio_log[-4:]
@@ -4063,11 +4165,58 @@ class SituationalAwarenessTest:
             visible_until_s=int(tick) + self._contact_ttl_s(),
         )
 
+    def _can_show_info_panel(self) -> bool:
+        channels = self._active_channels()
+        return "coded" in channels or "numerical" in channels
+
+    def _set_info_panel_focus(
+        self,
+        callsign: str,
+        *,
+        tick: int,
+        trigger_source: str,
+        flash: bool,
+    ) -> None:
+        if not self._can_show_info_panel():
+            return
+        if callsign not in self._live_assets:
+            return
+        existing = self._info_panel_state
+        shown_at_s = int(tick)
+        if existing is not None and existing.callsign == callsign:
+            shown_at_s = int(existing.shown_at_s)
+        flash_until_s = int(tick) + self._cue_card_ttl_s() if flash else int(tick)
+        self._info_panel_state = _SaInfoPanelState(
+            callsign=callsign,
+            shown_at_s=shown_at_s,
+            flash_until_s=flash_until_s,
+            trigger_source=str(trigger_source),
+        )
+
+    def _focus_next_info_panel_asset(self, *, tick: int, exclude_callsign: str) -> None:
+        for asset in sorted(self._live_assets.values(), key=lambda item: item.index):
+            if asset.callsign == exclude_callsign:
+                continue
+            self._set_info_panel_focus(
+                asset.callsign,
+                tick=tick,
+                trigger_source="fallback",
+                flash=False,
+            )
+            return
+        self._info_panel_state = None
+
     def _show_cue_card(self, callsign: str, *, tick: int) -> None:
         self._cue_card_state = _SaCueCardState(
             callsign=callsign,
             shown_at_s=int(tick),
             visible_until_s=int(tick) + self._cue_card_ttl_s(),
+        )
+        self._set_info_panel_focus(
+            callsign,
+            tick=tick,
+            trigger_source="cue_card",
+            flash=True,
         )
 
     def _show_top_strip(self, text: str, *, tick: int) -> None:
@@ -4098,6 +4247,8 @@ class SituationalAwarenessTest:
             self._visible_contacts.pop(query.subject_callsign, None)
             if self._cue_card_state is not None and self._cue_card_state.callsign == query.subject_callsign:
                 self._cue_card_state = None
+            if self._info_panel_state is not None and self._info_panel_state.callsign == query.subject_callsign:
+                self._focus_next_info_panel_asset(tick=tick, exclude_callsign=query.subject_callsign)
         self._current_query = query
         self._clear_announcement()
 
@@ -4120,6 +4271,8 @@ class SituationalAwarenessTest:
             SituationalAwarenessQueryKind.RULE_ACTION: self._build_rule_action_query,
             SituationalAwarenessQueryKind.INTERCEPT_DIRECTION: self._build_intercept_direction_query,
             SituationalAwarenessQueryKind.ASSIST_SELECTION: self._build_assist_selection_query,
+            SituationalAwarenessQueryKind.ALTITUDE: self._build_altitude_query,
+            SituationalAwarenessQueryKind.COMMUNICATION_CHANNEL: self._build_communication_channel_query,
         }
         query = builders[slot.kind](query_id=query_id, tick=tick, expires_at_s=expires_at_s)
         if query is not None:
@@ -4194,21 +4347,19 @@ class SituationalAwarenessTest:
         if not assets:
             return None
         target = self._pick_asset_for_query(assets)
-        choices, correct = self._fixed_choice_card(
-            query_id=query_id,
-            options=_SA_ALLEGIANCE_OPTIONS,
-            correct_text=_sa_allegiance_label(target.allegiance),
-        )
         return _SaActiveQueryState(
             query_id=query_id,
             asked_at_s=tick,
             expires_at_s=expires_at_s,
             kind=SituationalAwarenessQueryKind.CURRENT_ALLEGIANCE,
-            answer_mode=SituationalAwarenessAnswerMode.CHOICE,
-            prompt=f"Is {target.callsign} friendly, neutral, or enemy?",
-            correct_answer_token=correct,
+            answer_mode=SituationalAwarenessAnswerMode.TOKEN,
+            prompt=f"Is {target.callsign} friendly, hostile, or unknown?",
+            correct_answer_token=_sa_allegiance_answer_token(target.allegiance),
             subject_callsign=target.callsign,
-            answer_choices=choices,
+            accepted_tokens=("FRIENDLY", "HOSTILE", "UNKNOWN"),
+            entry_label="Affiliation",
+            entry_placeholder="yellow / red / white",
+            entry_max_chars=10,
         )
 
     def _build_vehicle_type_query(
@@ -4238,6 +4389,59 @@ class SituationalAwarenessTest:
             correct_answer_token=correct,
             subject_callsign=target.callsign,
             answer_choices=choices,
+        )
+
+    def _build_altitude_query(
+        self,
+        *,
+        query_id: int,
+        tick: int,
+        expires_at_s: int,
+    ) -> _SaActiveQueryState | None:
+        assets = sorted(self._live_assets.values(), key=lambda item: item.index)
+        if not assets:
+            return None
+        target = self._pick_asset_for_query(
+            assets,
+            preferred_callsign=self._scenario_context("lead_callsign"),
+        )
+        return _SaActiveQueryState(
+            query_id=query_id,
+            asked_at_s=tick,
+            expires_at_s=expires_at_s,
+            kind=SituationalAwarenessQueryKind.ALTITUDE,
+            answer_mode=SituationalAwarenessAnswerMode.NUMERIC,
+            prompt=f"What altitude is {target.callsign} at?",
+            correct_answer_token=str(int(target.altitude_fl)),
+            subject_callsign=target.callsign,
+            entry_label="Altitude",
+            entry_placeholder="180",
+            entry_max_chars=3,
+        )
+
+    def _build_communication_channel_query(
+        self,
+        *,
+        query_id: int,
+        tick: int,
+        expires_at_s: int,
+    ) -> _SaActiveQueryState | None:
+        assets = sorted(self._live_assets.values(), key=lambda item: item.index)
+        if not assets:
+            return None
+        target = self._pick_asset_for_query(assets)
+        return _SaActiveQueryState(
+            query_id=query_id,
+            asked_at_s=tick,
+            expires_at_s=expires_at_s,
+            kind=SituationalAwarenessQueryKind.COMMUNICATION_CHANNEL,
+            answer_mode=SituationalAwarenessAnswerMode.NUMERIC,
+            prompt=f"What communications channel is {target.callsign} on?",
+            correct_answer_token=str(int(target.channel)),
+            subject_callsign=target.callsign,
+            entry_label="Communications",
+            entry_placeholder="3",
+            entry_max_chars=2,
         )
 
     def _build_instructed_destination_query(
@@ -4503,6 +4707,9 @@ class SituationalAwarenessTest:
         token = str(raw).strip().upper()
         if token.isdigit():
             return int(token)
+        canonical = _SA_TOKEN_ALIASES.get(token, token)
+        if canonical in _SA_TOKEN_SCORE_VALUES:
+            return _SA_TOKEN_SCORE_VALUES[canonical]
         cell = cell_xy_from_label(token)
         if cell is None:
             return 0
@@ -4511,6 +4718,14 @@ class SituationalAwarenessTest:
     def _format_expected_answer(self, query: _SaActiveQueryState) -> str:
         if query.answer_mode is SituationalAwarenessAnswerMode.GRID_CELL:
             return query.correct_answer_token
+        if query.answer_mode is SituationalAwarenessAnswerMode.NUMERIC:
+            if query.kind is SituationalAwarenessQueryKind.ALTITUDE:
+                return f"FL{query.correct_answer_token}"
+            if query.kind is SituationalAwarenessQueryKind.COMMUNICATION_CHANNEL:
+                return f"CH {query.correct_answer_token}"
+            return query.correct_answer_token
+        if query.answer_mode is SituationalAwarenessAnswerMode.TOKEN:
+            return query.correct_answer_token.title()
         for choice in query.answer_choices:
             if str(choice.code) == query.correct_answer_token:
                 return choice.text
@@ -4521,14 +4736,19 @@ class SituationalAwarenessTest:
         raw: str,
         *,
         answer_mode: SituationalAwarenessAnswerMode,
+        accepted_tokens: Sequence[str] = (),
     ) -> str | None:
         token = str(raw).strip().upper()
         if answer_mode is SituationalAwarenessAnswerMode.GRID_CELL:
             return normalize_grid_cell_token(token)
-        if not token.isdigit():
-            return None
-        value = int(token)
-        return str(value) if 1 <= value <= 5 else None
+        if answer_mode is SituationalAwarenessAnswerMode.CHOICE:
+            if not token.isdigit():
+                return None
+            value = int(token)
+            return str(value) if 1 <= value <= 5 else None
+        if answer_mode is SituationalAwarenessAnswerMode.NUMERIC:
+            return token if token.isdigit() else None
+        return _sa_normalize_token(token, accepted_tokens=accepted_tokens)
 
     def _active_channels(self) -> tuple[str, ...]:
         if self._current_segment is None:
@@ -4554,6 +4774,25 @@ class SituationalAwarenessTest:
         if self._current_segment is None:
             return self._scenario_plan.label if self._scenario_plan is not None else self._title
         return self._current_segment.label
+
+    def _scenario_seed(self, *, is_practice: bool) -> int:
+        phase_offset = 0 if is_practice else 100_000
+        return int(self._seed + phase_offset + (self._scenario_index * 7_919))
+
+    def _asset_eta_clock_text(self, asset: _SaLiveAssetState) -> str:
+        target = cell_xy_from_label(asset.actual_destination)
+        if target is None:
+            return "--"
+        distance = _sa_distance((asset.x, asset.y), (float(target[0]), float(target[1])))
+        cells_per_second = max(0.05, float(asset.speed_cells_per_min) / 60.0)
+        eta_s = max(0, int(round(distance / cells_per_second)))
+        return _clock_text(int(self._scenario_clock_s()) + eta_s)
+
+    @staticmethod
+    def _asset_comms_text(asset: _SaLiveAssetState) -> str:
+        if asset.last_report_text:
+            return asset.last_report_text
+        return f"CH {asset.channel} | {asset.task_text}"
 
     def _scenario_clock_s(self) -> float:
         assert self._scenario_plan is not None
@@ -4598,10 +4837,21 @@ class SituationalAwarenessTest:
         contacts.sort(key=lambda item: item.callsign)
 
         cue_card = None
-        if self._cue_card_state is not None and int(self._cue_card_state.visible_until_s) > int(scenario_elapsed_s):
-            asset = self._live_assets.get(self._cue_card_state.callsign)
+        if self._can_show_info_panel():
+            focus_callsign = self._info_panel_state.callsign if self._info_panel_state is not None else None
+            if focus_callsign is None and self._live_assets:
+                focus_callsign = sorted(self._live_assets.values(), key=lambda item: item.index)[0].callsign
+            asset = self._live_assets.get(focus_callsign) if focus_callsign is not None else None
             if asset is not None:
-                ttl_card = max(1.0, float(self._cue_card_ttl_s()))
+                flash_base = 0.56
+                fade = flash_base
+                if self._info_panel_state is not None and int(self._info_panel_state.flash_until_s) > int(scenario_elapsed_s):
+                    ttl_card = max(1.0, float(self._cue_card_ttl_s()))
+                    flash_ratio = max(
+                        0.0,
+                        min(1.0, (float(self._info_panel_state.flash_until_s) - scenario_elapsed_s) / ttl_card),
+                    )
+                    fade = min(1.0, flash_base + (0.44 * flash_ratio))
                 cue_card = SituationalAwarenessCueCard(
                     callsign=asset.callsign,
                     spoken_callsign=asset.spoken_callsign,
@@ -4612,10 +4862,11 @@ class SituationalAwarenessTest:
                     last_report_text=asset.last_report_text,
                     task_text=asset.task_text,
                     channel_text=f"CH {asset.channel}",
-                    fade=max(
-                        0.0,
-                        min(1.0, (float(self._cue_card_state.visible_until_s) - scenario_elapsed_s) / ttl_card),
-                    ),
+                    fade=fade,
+                    next_waypoint=asset.actual_destination,
+                    next_waypoint_at_text=self._asset_eta_clock_text(asset),
+                    altitude_text=f"FL{asset.altitude_fl}",
+                    communications_text=self._asset_comms_text(asset),
                 )
 
         top_strip_text = ""
@@ -4649,6 +4900,10 @@ class SituationalAwarenessTest:
                 subject_callsign=self._current_query.subject_callsign,
                 future_offset_s=self._current_query.future_offset_s,
                 answer_choices=self._current_query.answer_choices,
+                accepted_tokens=self._current_query.accepted_tokens,
+                entry_label=self._current_query.entry_label,
+                entry_placeholder=self._current_query.entry_placeholder,
+                entry_max_chars=self._current_query.entry_max_chars,
             )
             answer_mode = self._current_query.answer_mode
             correct_answer_token = self._current_query.correct_answer_token
@@ -4681,6 +4936,9 @@ class SituationalAwarenessTest:
             announcement_lines=self._announcement_lines,
             radio_log=self._radio_log_lines(scenario_elapsed_s=scenario_elapsed_s),
             speech_prefetch_lines=self._scenario_plan.speech_prefetch_lines,
+            round_index=self._scenario_index,
+            round_total=self._scenario_total,
+            north_heading_deg=int(self._scenario_context("north_heading_deg") or 0),
         )
 
     def _input_hint(self, payload: SituationalAwarenessPayload) -> str:
@@ -4688,7 +4946,11 @@ class SituationalAwarenessTest:
             return "Monitor the radio log, fading cue card, map sweeps, and tactical rule calls."
         if payload.answer_mode is SituationalAwarenessAnswerMode.GRID_CELL:
             return "Click a grid cell or type row+column, then press Enter."
-        return "Click a choice or press 1-5."
+        if payload.answer_mode is SituationalAwarenessAnswerMode.CHOICE:
+            return "Click a choice or press 1-5."
+        if payload.answer_mode is SituationalAwarenessAnswerMode.NUMERIC:
+            return "Type digits, then press Enter."
+        return "Type a colour or label answer, then press Enter."
 
     def _set_announcement(self, *, lines: tuple[str, ...], reason: tuple[object, ...]) -> None:
         self._announcement_serial += 1

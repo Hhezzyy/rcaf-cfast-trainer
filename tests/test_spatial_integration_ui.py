@@ -26,6 +26,7 @@ from cfast_trainer.si_drills import SiDrillConfig, build_si_landmark_anchor_dril
 from cfast_trainer.spatial_integration import (
     SpatialIntegrationAnswerMode,
     SpatialIntegrationConfig,
+    SpatialIntegrationLandmark,
     SpatialIntegrationPart,
     SpatialIntegrationPayload,
     SpatialIntegrationTrialStage,
@@ -169,10 +170,12 @@ def test_study_screen_renders_three_reference_panes_without_answer_hitboxes() ->
     try:
         surface = pygame.display.get_surface()
         assert surface is not None
+        captured = _install_recording_fonts(screen)
         screen.render(surface)
 
         assert screen._spatial_grid_hitboxes == {}
         assert screen._spatial_option_hitboxes == {}
+        assert not {text for text in captured if text in {landmark.label for landmark in payload.landmarks}}
         assert pygame.transform.average_color(surface)[:3] != (0, 0, 0)
     finally:
         pygame.quit()
@@ -199,7 +202,7 @@ def test_study_scene_is_static_across_renders(monkeypatch) -> None:
         pygame.quit()
 
 
-def test_study_scene_opengl_overlay_renders_landmark_callouts() -> None:
+def test_study_scene_opengl_overlay_keeps_landmark_callouts_hidden() -> None:
     payload = _payload_for(part=SpatialIntegrationPart.STATIC, study=True, question_index=1)
     app, screen = _build_screen(_FakeSpatialEngine(payload))
     captured = _install_recording_fonts(screen)
@@ -213,7 +216,7 @@ def test_study_scene_opengl_overlay_renders_landmark_callouts() -> None:
         screen.render(surface)
 
         rendered_labels = {text for text in captured if text in {landmark.label for landmark in payload.landmarks}}
-        assert len(rendered_labels) >= 3
+        assert rendered_labels == set()
         assert queued
     finally:
         pygame.quit()
@@ -267,7 +270,7 @@ def test_study_scene_falls_back_to_builtin_renderer_when_external_3d_is_unavaila
 ) -> None:
     payload = _payload_for(part=SpatialIntegrationPart.STATIC, study=True, question_index=1)
     _app, screen = _build_screen(_FakeSpatialEngine(payload))
-    asset_calls = {"count": 0}
+    asset_calls = {"count": 0, "kinds": set()}
     try:
         surface = pygame.display.get_surface()
         assert surface is not None
@@ -287,12 +290,22 @@ def test_study_scene_falls_back_to_builtin_renderer_when_external_3d_is_unavaila
 
         def wrapped_asset(*args, **kwargs):
             asset_calls["count"] += 1
+            asset_calls["kinds"].add(str(kwargs.get("kind", "")))
             return original_asset(*args, **kwargs)
 
         screen._draw_spatial_scene_asset = wrapped_asset  # type: ignore[method-assign]
         screen.render(surface)
 
         assert asset_calls["count"] > 0
+        assert {
+            "building",
+            "tower",
+            "truck",
+            "foot_soldiers",
+            "forest",
+            "tent",
+            "sheep",
+        } <= asset_calls["kinds"]
         assert pygame.transform.average_color(surface.subsurface(crop))[:3] != (0, 0, 0)
     finally:
         pygame.quit()
@@ -333,6 +346,43 @@ def test_grid_question_click_submits_cell_token() -> None:
         )
 
         assert engine.submissions == [payload.correct_answer_token]
+    finally:
+        pygame.quit()
+
+
+def test_grid_question_answer_map_prefers_icons_over_context_label_text() -> None:
+    payload = _payload_for(part=SpatialIntegrationPart.STATIC, study=False, question_index=1)
+    _app, screen = _build_screen(_FakeSpatialEngine(payload))
+    try:
+        surface = pygame.display.get_surface()
+        assert surface is not None
+        captured = _install_recording_fonts(screen)
+        screen.render(surface)
+
+        context_labels = {landmark.label for landmark in payload.answer_map_landmarks}
+        assert not any(text in context_labels for text in captured)
+    finally:
+        pygame.quit()
+
+
+def test_grid_question_answer_map_uses_secondary_labels_when_duplicate_context_would_be_ambiguous() -> None:
+    payload = _payload_for(part=SpatialIntegrationPart.STATIC, study=False, question_index=1)
+    duplicate_payload = replace(
+        payload,
+        answer_map_landmarks=(
+            SpatialIntegrationLandmark(label="AUX1", x=2, y=2, kind="building"),
+            SpatialIntegrationLandmark(label="AUX2", x=2, y=2, kind="building"),
+            SpatialIntegrationLandmark(label="WOOD", x=4, y=4, kind="forest"),
+        ),
+    )
+    _app, screen = _build_screen(_FakeSpatialEngine(duplicate_payload))
+    try:
+        surface = pygame.display.get_surface()
+        assert surface is not None
+        captured = _install_recording_fonts(screen)
+        screen.render(surface)
+
+        assert any("AUX1" in text or "AUX2" in text for text in captured)
     finally:
         pygame.quit()
 

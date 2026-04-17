@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from importlib.machinery import ModuleSpec
 from types import ModuleType
 
@@ -75,6 +75,19 @@ class _FakeSituationAwarenessEngine:
         return
 
 
+class _RecordingFont:
+    def __init__(self, base: pygame.font.Font, sink: list[str]) -> None:
+        self._base = base
+        self._sink = sink
+
+    def render(self, text: str, antialias: bool, color: object) -> pygame.Surface:
+        self._sink.append(str(text))
+        return self._base.render(text, antialias, color)
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._base, name)
+
+
 def _sample_payload(*, answer_mode: SituationalAwarenessAnswerMode) -> SituationalAwarenessPayload:
     action_choices = (
         SituationalAwarenessAnswerChoice(1, "Escort and hold"),
@@ -83,24 +96,56 @@ def _sample_payload(*, answer_mode: SituationalAwarenessAnswerMode) -> Situation
         SituationalAwarenessAnswerChoice(4, "Intercept now"),
         SituationalAwarenessAnswerChoice(5, "Hold position"),
     )
+    if answer_mode is SituationalAwarenessAnswerMode.GRID_CELL:
+        kind = SituationalAwarenessQueryKind.ACTUAL_DESTINATION
+        prompt = "Where is LEEDS actually heading?"
+        correct_answer = "E5"
+        answer_choices = ()
+        accepted_tokens = ()
+        entry_label = ""
+        entry_placeholder = ""
+        entry_max_chars = 0
+    elif answer_mode is SituationalAwarenessAnswerMode.CHOICE:
+        kind = SituationalAwarenessQueryKind.RULE_ACTION
+        prompt = "Based on the chatter and rule call, what should LEEDS do?"
+        correct_answer = "2"
+        answer_choices = action_choices
+        accepted_tokens = ()
+        entry_label = ""
+        entry_placeholder = ""
+        entry_max_chars = 0
+    elif answer_mode is SituationalAwarenessAnswerMode.NUMERIC:
+        kind = SituationalAwarenessQueryKind.ALTITUDE
+        prompt = "What altitude is LEEDS at?"
+        correct_answer = "180"
+        answer_choices = ()
+        accepted_tokens = ()
+        entry_label = "Altitude"
+        entry_placeholder = "180"
+        entry_max_chars = 3
+    else:
+        kind = SituationalAwarenessQueryKind.CURRENT_ALLEGIANCE
+        prompt = "Is LEEDS friendly, hostile, or unknown?"
+        correct_answer = "FRIENDLY"
+        answer_choices = ()
+        accepted_tokens = ("FRIENDLY", "HOSTILE", "UNKNOWN")
+        entry_label = "Affiliation"
+        entry_placeholder = "yellow / red / white"
+        entry_max_chars = 10
     active_query = SituationalAwarenessActiveQuery(
         query_id=101,
-        kind=(
-            SituationalAwarenessQueryKind.RULE_ACTION
-            if answer_mode is SituationalAwarenessAnswerMode.CHOICE
-            else SituationalAwarenessQueryKind.ACTUAL_DESTINATION
-        ),
+        kind=kind,
         answer_mode=answer_mode,
-        prompt=(
-            "Where is LEEDS actually heading?"
-            if answer_mode is SituationalAwarenessAnswerMode.GRID_CELL
-            else "Based on the chatter and rule call, what should LEEDS do?"
-        ),
-        correct_answer_token="E5" if answer_mode is SituationalAwarenessAnswerMode.GRID_CELL else "2",
+        prompt=prompt,
+        correct_answer_token=correct_answer,
         expires_in_s=9.0,
         subject_callsign="LEEDS",
         future_offset_s=None,
-        answer_choices=action_choices if answer_mode is SituationalAwarenessAnswerMode.CHOICE else (),
+        answer_choices=answer_choices,
+        accepted_tokens=accepted_tokens,
+        entry_label=entry_label,
+        entry_placeholder=entry_placeholder,
+        entry_max_chars=entry_max_chars,
     )
     return SituationalAwarenessPayload(
         scenario_family=SituationalAwarenessScenarioFamily.MERGE_CONFLICT,
@@ -132,6 +177,10 @@ def _sample_payload(*, answer_mode: SituationalAwarenessAnswerMode) -> Situation
             "Shadow only",
             "CH 3",
             0.82,
+            next_waypoint="E5",
+            next_waypoint_at_text="11:00:46",
+            altitude_text="FL180",
+            communications_text="RAVEN TWO at D4 | Variation 3 - shadow only",
         ),
         waypoints=(
             SituationalAwarenessWaypoint("C7", 7, 2),
@@ -153,6 +202,9 @@ def _sample_payload(*, answer_mode: SituationalAwarenessAnswerMode) -> Situation
             "LEEDS is friendly helicopter, check in channel 3.",
             "RAVEN TWO is enemy tank, trending D4.",
         ),
+        round_index=2,
+        round_total=3,
+        north_heading_deg=90,
     )
 
 
@@ -168,16 +220,36 @@ def _build_screen(engine: _FakeSituationAwarenessEngine) -> CognitiveTestScreen:
     return screen
 
 
+def _install_recording_fonts(*fonts: object) -> list[str]:
+    captured: list[str] = []
+    for obj in fonts:
+        for attr in ("_small_font", "_tiny_font", "_mid_font", "_big_font"):
+            font = getattr(obj, attr, None)
+            if isinstance(font, _RecordingFont) or font is None:
+                continue
+            setattr(obj, attr, _RecordingFont(font, captured))
+    return captured
+
+
 def test_situational_awareness_renderer_uses_sparse_grid_and_query_layout() -> None:
     engine = _FakeSituationAwarenessEngine(payload=_sample_payload(answer_mode=SituationalAwarenessAnswerMode.GRID_CELL))
     screen = _build_screen(engine)
     try:
         surface = pygame.display.get_surface()
         assert surface is not None
+        captured = _install_recording_fonts(screen)
         screen.render(surface)
 
         assert len(screen._sa_grid_hitboxes) == 100
         assert screen._sa_option_hitboxes == {}
+        assert "INCOMING INFORMATION" in captured
+        assert "ASSET INFORMATION" in captured
+        assert "yellow = friendly   red = hostile   white = unknown   cell = 2 km" in captured
+        assert "NEXT WAYPOINT" in captured
+        assert "NEXT WAYPOINT AT" in captured
+        assert "ALTITUDE" in captured
+        assert "COMMUNICATIONS" in captured
+        assert "Round 2/3" in captured
     finally:
         pygame.quit()
 
@@ -236,5 +308,85 @@ def test_situational_awareness_keyboard_choice_submission_is_immediate() -> None
         screen.handle_event(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_2, "unicode": "2"}))
 
         assert engine.submissions == ["2"]
+    finally:
+        pygame.quit()
+
+
+def test_situational_awareness_keyboard_numeric_submission_is_immediate() -> None:
+    engine = _FakeSituationAwarenessEngine(payload=_sample_payload(answer_mode=SituationalAwarenessAnswerMode.NUMERIC))
+    screen = _build_screen(engine)
+    try:
+        surface = pygame.display.get_surface()
+        assert surface is not None
+        screen.render(surface)
+
+        for key, char in (
+            (pygame.K_1, "1"),
+            (pygame.K_8, "8"),
+            (pygame.K_0, "0"),
+        ):
+            screen.handle_event(pygame.event.Event(pygame.KEYDOWN, {"key": key, "unicode": char}))
+        screen.handle_event(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""}))
+
+        assert engine.submissions == ["180"]
+    finally:
+        pygame.quit()
+
+
+def test_situational_awareness_keyboard_token_submission_is_immediate() -> None:
+    engine = _FakeSituationAwarenessEngine(payload=_sample_payload(answer_mode=SituationalAwarenessAnswerMode.TOKEN))
+    screen = _build_screen(engine)
+    try:
+        surface = pygame.display.get_surface()
+        assert surface is not None
+        screen.render(surface)
+
+        for key, char in (
+            (pygame.K_y, "y"),
+            (pygame.K_e, "e"),
+            (pygame.K_l, "l"),
+            (pygame.K_l, "l"),
+            (pygame.K_o, "o"),
+            (pygame.K_w, "w"),
+        ):
+            screen.handle_event(pygame.event.Event(pygame.KEYDOWN, {"key": key, "unicode": char}))
+        screen.handle_event(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""}))
+
+        assert engine.submissions == ["YELLOW"]
+    finally:
+        pygame.quit()
+
+
+def test_situational_awareness_renderer_updates_focused_panel_callsign() -> None:
+    engine = _FakeSituationAwarenessEngine(payload=_sample_payload(answer_mode=SituationalAwarenessAnswerMode.GRID_CELL))
+    screen = _build_screen(engine)
+    try:
+        surface = pygame.display.get_surface()
+        assert surface is not None
+        captured = _install_recording_fonts(screen)
+        screen.render(surface)
+
+        assert "LEEDS" in captured
+        assert "RAVEN TWO" not in captured
+
+        assert engine.payload.cue_card is not None
+        engine.payload = replace(
+            engine.payload,
+            cue_card=replace(
+                engine.payload.cue_card,
+                callsign="RAVEN TWO",
+                spoken_callsign="Raven Two",
+                allegiance="enemy",
+                asset_type="tank",
+                next_waypoint="D4",
+                next_waypoint_at_text="11:01:02",
+                altitude_text="FL220",
+                communications_text="CH 4 | Break south",
+            ),
+        )
+        captured.clear()
+        screen.render(surface)
+
+        assert "RAVEN TWO" in captured
     finally:
         pygame.quit()

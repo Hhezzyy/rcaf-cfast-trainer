@@ -77,7 +77,7 @@ def test_trace_test_2_projected_aircraft_centers_move_between_observe_samples() 
         assert early != pytest.approx(late)
 
 
-def test_trace_test_2_projected_turning_tracks_move_during_turn_window() -> None:
+def test_trace_test_2_projected_turning_tracks_hold_position_while_pivoting_then_move() -> None:
     payload = _sample_payload()
 
     for track in payload.aircraft:
@@ -104,8 +104,16 @@ def test_trace_test_2_projected_turning_tracks_move_during_turn_window() -> None
             ),
             size=(640, 360),
         )
+        late = project_point(
+            trace_test_2_track_position(
+                track=track,
+                progress=(float(turn_index) + 0.60) / float(step_count),
+            ),
+            size=(640, 360),
+        )
 
-        assert mid != pytest.approx(early)
+        assert mid == pytest.approx(early)
+        assert late != pytest.approx(mid)
 
 
 def test_trace_test_2_screen_pose_matches_projected_motion_for_representative_tracks() -> None:

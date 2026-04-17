@@ -17,6 +17,13 @@ class TraceLatticeAction(StrEnum):
     PULL = "pull"
 
 
+class TraceLatticeMotionPhase(StrEnum):
+    IDLE = "idle"
+    ROTATING = "rotating"
+    TRANSLATING = "translating"
+    COMPLETE = "complete"
+
+
 @dataclass(frozen=True, slots=True)
 class TraceLatticeNode:
     col: int
@@ -77,8 +84,25 @@ class TraceLatticePose:
     rotated: bool
 
 
+@dataclass(frozen=True, slots=True)
+class TraceLatticeMotionConfig:
+    command_duration_s: float = 1.0
+    turn_phase_ratio: float = 0.35
+    max_update_dt_s: float = 0.25
+
+
+@dataclass(frozen=True, slots=True)
+class TraceLatticeMotionSnapshot:
+    pose: TraceLatticePose
+    phase: TraceLatticeMotionPhase
+    completed_commands: int
+    command_count: int
+    command_progress: float
+    phase_progress: float
+
+
 DEFAULT_TRACE_LATTICE_SPEC = TraceLatticeSpec(cols=7, rows=7, levels=5)
-_TRACE_LATTICE_TURN_CURVE_TANGENT_SCALE = 0.4
+_TRACE_LATTICE_EPSILON = 1e-9
 
 
 def _cross(a: Point3, b: Point3) -> Point3:
@@ -334,31 +358,242 @@ def _point_lerp(a: Point3, b: Point3, t: float) -> Point3:
     )
 
 
-def _cubic_hermite_point(
-    start_point: Point3,
-    end_point: Point3,
-    start_tangent: Point3,
-    end_tangent: Point3,
-    t: float,
-) -> Point3:
-    h00 = (2.0 * t * t * t) - (3.0 * t * t) + 1.0
-    h10 = (t * t * t) - (2.0 * t * t) + t
-    h01 = (-2.0 * t * t * t) + (3.0 * t * t)
-    h11 = (t * t * t) - (t * t)
-    return (
-        (h00 * float(start_point[0]))
-        + (h10 * float(start_tangent[0]))
-        + (h01 * float(end_point[0]))
-        + (h11 * float(end_tangent[0])),
-        (h00 * float(start_point[1]))
-        + (h10 * float(start_tangent[1]))
-        + (h01 * float(end_point[1]))
-        + (h11 * float(end_tangent[1])),
-        (h00 * float(start_point[2]))
-        + (h10 * float(start_tangent[2]))
-        + (h01 * float(end_point[2]))
-        + (h11 * float(end_tangent[2])),
+def _clamped_turn_phase_ratio(value: float) -> float:
+    return max(0.05, min(0.95, float(value)))
+
+
+def _clamped_command_duration_s(value: float) -> float:
+    return max(_TRACE_LATTICE_EPSILON, float(value))
+
+
+def _motion_config(config: TraceLatticeMotionConfig | None) -> TraceLatticeMotionConfig:
+    if config is None:
+        return TraceLatticeMotionConfig()
+    return TraceLatticeMotionConfig(
+        command_duration_s=_clamped_command_duration_s(config.command_duration_s),
+        turn_phase_ratio=_clamped_turn_phase_ratio(config.turn_phase_ratio),
+        max_update_dt_s=max(0.0, float(config.max_update_dt_s)),
     )
+
+
+def _step_command_progress_from_phase(
+    *,
+    step: TraceLatticeStep,
+    phase: TraceLatticeMotionPhase,
+    phase_progress: float,
+    turn_phase_ratio: float,
+) -> float:
+    phase_t = max(0.0, min(1.0, float(phase_progress)))
+    if phase is TraceLatticeMotionPhase.COMPLETE:
+        return 1.0
+    if step.effective_action is TraceLatticeAction.STRAIGHT:
+        return phase_t if phase is TraceLatticeMotionPhase.TRANSLATING else 0.0
+    turn_ratio = _clamped_turn_phase_ratio(turn_phase_ratio)
+    if phase is TraceLatticeMotionPhase.ROTATING:
+        return turn_ratio * phase_t
+    if phase is TraceLatticeMotionPhase.TRANSLATING:
+        return turn_ratio + ((1.0 - turn_ratio) * phase_t)
+    return 0.0
+
+
+def _trace_lattice_step_pose(
+    *,
+    step: TraceLatticeStep,
+    spec: TraceLatticeSpec,
+    local_t: float,
+    step_index: int,
+    turn_phase_ratio: float,
+) -> TraceLatticePose:
+    start_point = trace_lattice_node_point(step.start_state.node, spec=spec)
+    end_point = trace_lattice_node_point(step.end_state.node, spec=spec)
+    progress = max(0.0, min(1.0, float(local_t)))
+    if step.effective_action is TraceLatticeAction.STRAIGHT:
+        position = _point_lerp(start_point, end_point, progress)
+        forward = tuple(float(v) for v in step.rotated_orientation.forward)
+        up = tuple(float(v) for v in step.rotated_orientation.up)
+        rotated = True
+    else:
+        turn_ratio = _clamped_turn_phase_ratio(turn_phase_ratio)
+        if progress <= turn_ratio:
+            position = start_point
+            pivot_t = 0.0 if turn_ratio <= _TRACE_LATTICE_EPSILON else progress / turn_ratio
+            forward, up = _interpolated_orientation(step, turn_progress=pivot_t)
+            rotated = progress > 0.0
+        else:
+            move_t = (progress - turn_ratio) / max(_TRACE_LATTICE_EPSILON, 1.0 - turn_ratio)
+            position = _point_lerp(start_point, end_point, move_t)
+            forward = tuple(float(v) for v in step.rotated_orientation.forward)
+            up = tuple(float(v) for v in step.rotated_orientation.up)
+            rotated = True
+
+    return TraceLatticePose(
+        position=position,
+        forward=_normalize(forward),
+        up=_normalize(up),
+        active_step_index=int(step_index),
+        effective_action=step.effective_action,
+        rotated=rotated,
+    )
+
+
+def _final_path_pose(path: TraceLatticePath) -> TraceLatticePose:
+    if not path.steps:
+        node_point = trace_lattice_node_point(path.start_state.node, spec=path.spec)
+        return TraceLatticePose(
+            position=node_point,
+            forward=tuple(float(v) for v in path.start_state.orientation.forward),
+            up=tuple(float(v) for v in path.start_state.orientation.up),
+            active_step_index=0,
+            effective_action=TraceLatticeAction.STRAIGHT,
+            rotated=False,
+        )
+    step = path.steps[-1]
+    return TraceLatticePose(
+        position=trace_lattice_node_point(step.end_state.node, spec=path.spec),
+        forward=tuple(float(v) for v in step.end_state.orientation.forward),
+        up=tuple(float(v) for v in step.end_state.orientation.up),
+        active_step_index=len(path.steps) - 1,
+        effective_action=step.effective_action,
+        rotated=True,
+    )
+
+
+class TraceLatticeMotionPlayer:
+    def __init__(
+        self,
+        *,
+        start_state: TraceLatticeState | None = None,
+        actions: tuple[TraceLatticeAction, ...] = (),
+        spec: TraceLatticeSpec = DEFAULT_TRACE_LATTICE_SPEC,
+        path: TraceLatticePath | None = None,
+        config: TraceLatticeMotionConfig | None = None,
+    ) -> None:
+        if path is None:
+            if start_state is None:
+                raise ValueError("start_state is required when path is not provided")
+            path = trace_lattice_build_path(
+                start_state=start_state,
+                actions=tuple(actions),
+                spec=spec,
+            )
+        self._path = path
+        self._config = _motion_config(config)
+        self._step_index = 0
+        self._phase_elapsed_s = 0.0
+        self._phase = self._initial_phase_for_step(0)
+
+    @property
+    def path(self) -> TraceLatticePath:
+        return self._path
+
+    @property
+    def completed(self) -> bool:
+        return self._phase is TraceLatticeMotionPhase.COMPLETE
+
+    def snapshot(self) -> TraceLatticeMotionSnapshot:
+        command_count = len(self._path.steps)
+        if command_count == 0:
+            return TraceLatticeMotionSnapshot(
+                pose=_final_path_pose(self._path),
+                phase=TraceLatticeMotionPhase.IDLE,
+                completed_commands=0,
+                command_count=0,
+                command_progress=1.0,
+                phase_progress=1.0,
+            )
+        if self._phase is TraceLatticeMotionPhase.COMPLETE:
+            return TraceLatticeMotionSnapshot(
+                pose=_final_path_pose(self._path),
+                phase=TraceLatticeMotionPhase.COMPLETE,
+                completed_commands=command_count,
+                command_count=command_count,
+                command_progress=1.0,
+                phase_progress=1.0,
+            )
+
+        step = self._path.steps[self._step_index]
+        duration = self._phase_duration_s(step=step, phase=self._phase)
+        phase_progress = 1.0 if duration <= _TRACE_LATTICE_EPSILON else self._phase_elapsed_s / duration
+        command_progress = _step_command_progress_from_phase(
+            step=step,
+            phase=self._phase,
+            phase_progress=phase_progress,
+            turn_phase_ratio=self._config.turn_phase_ratio,
+        )
+        return TraceLatticeMotionSnapshot(
+            pose=_trace_lattice_step_pose(
+                step=step,
+                spec=self._path.spec,
+                local_t=command_progress,
+                step_index=self._step_index,
+                turn_phase_ratio=self._config.turn_phase_ratio,
+            ),
+            phase=self._phase,
+            completed_commands=self._step_index,
+            command_count=command_count,
+            command_progress=max(0.0, min(1.0, float(command_progress))),
+            phase_progress=max(0.0, min(1.0, float(phase_progress))),
+        )
+
+    def update(self, dt_s: float) -> TraceLatticeMotionSnapshot:
+        if self.completed or not self._path.steps:
+            return self.snapshot()
+        remaining = max(0.0, float(dt_s))
+        max_dt = float(self._config.max_update_dt_s)
+        if max_dt > 0.0:
+            remaining = min(remaining, max_dt)
+        while remaining > _TRACE_LATTICE_EPSILON and not self.completed:
+            step = self._path.steps[self._step_index]
+            duration = self._phase_duration_s(step=step, phase=self._phase)
+            if duration <= _TRACE_LATTICE_EPSILON:
+                self._advance_phase()
+                continue
+            phase_remaining = max(0.0, duration - self._phase_elapsed_s)
+            consumed = min(remaining, phase_remaining)
+            self._phase_elapsed_s += consumed
+            remaining -= consumed
+            if self._phase_elapsed_s + _TRACE_LATTICE_EPSILON >= duration:
+                self._phase_elapsed_s = duration
+                self._advance_phase()
+        return self.snapshot()
+
+    def _initial_phase_for_step(self, step_index: int) -> TraceLatticeMotionPhase:
+        if step_index >= len(self._path.steps):
+            return TraceLatticeMotionPhase.COMPLETE
+        step = self._path.steps[step_index]
+        if step.effective_action is TraceLatticeAction.STRAIGHT:
+            return TraceLatticeMotionPhase.TRANSLATING
+        return TraceLatticeMotionPhase.ROTATING
+
+    def _phase_duration_s(
+        self,
+        *,
+        step: TraceLatticeStep,
+        phase: TraceLatticeMotionPhase,
+    ) -> float:
+        command_duration = _clamped_command_duration_s(self._config.command_duration_s)
+        if phase is TraceLatticeMotionPhase.ROTATING:
+            if step.effective_action is TraceLatticeAction.STRAIGHT:
+                return 0.0
+            return command_duration * _clamped_turn_phase_ratio(self._config.turn_phase_ratio)
+        if phase is TraceLatticeMotionPhase.TRANSLATING:
+            if step.effective_action is TraceLatticeAction.STRAIGHT:
+                return command_duration
+            return command_duration * (1.0 - _clamped_turn_phase_ratio(self._config.turn_phase_ratio))
+        return 0.0
+
+    def _advance_phase(self) -> None:
+        if self._phase is TraceLatticeMotionPhase.ROTATING:
+            self._phase = TraceLatticeMotionPhase.TRANSLATING
+            self._phase_elapsed_s = 0.0
+            return
+        if self._phase is TraceLatticeMotionPhase.TRANSLATING:
+            self._step_index += 1
+            self._phase = self._initial_phase_for_step(self._step_index)
+            self._phase_elapsed_s = 0.0
+            return
+        self._phase = TraceLatticeMotionPhase.COMPLETE
+        self._phase_elapsed_s = 0.0
 
 
 def trace_lattice_sample_path(
@@ -368,68 +603,20 @@ def trace_lattice_sample_path(
     turn_phase_ratio: float = 0.35,
 ) -> TraceLatticePose:
     if not path.steps:
-        node_point = trace_lattice_node_point(path.start_state.node, spec=path.spec)
-        forward = tuple(float(v) for v in path.start_state.orientation.forward)
-        up = tuple(float(v) for v in path.start_state.orientation.up)
-        return TraceLatticePose(
-            position=node_point,
-            forward=forward,
-            up=up,
-            active_step_index=0,
-            effective_action=TraceLatticeAction.STRAIGHT,
-            rotated=False,
-        )
+        return _final_path_pose(path)
 
     t = max(0.0, min(1.0, float(progress)))
     step_count = len(path.steps)
     if t >= 1.0:
-        step = path.steps[-1]
-        node_point = trace_lattice_node_point(step.end_state.node, spec=path.spec)
-        return TraceLatticePose(
-            position=node_point,
-            forward=tuple(float(v) for v in step.end_state.orientation.forward),
-            up=tuple(float(v) for v in step.end_state.orientation.up),
-            active_step_index=step_count - 1,
-            effective_action=step.effective_action,
-            rotated=True,
-        )
+        return _final_path_pose(path)
 
     scaled = t * float(step_count)
     index = min(step_count - 1, int(math.floor(scaled)))
     local_t = scaled - float(index)
-    step = path.steps[index]
-    start_point = trace_lattice_node_point(step.start_state.node, spec=path.spec)
-    end_point = trace_lattice_node_point(step.end_state.node, spec=path.spec)
-    if step.effective_action is TraceLatticeAction.STRAIGHT:
-        position = _point_lerp(start_point, end_point, local_t)
-        forward = tuple(float(v) for v in step.rotated_orientation.forward)
-        up = tuple(float(v) for v in step.rotated_orientation.up)
-        rotated = True
-    else:
-        _ = turn_phase_ratio
-        start_forward = tuple(float(v) for v in step.start_state.orientation.forward)
-        end_forward = tuple(float(v) for v in step.rotated_orientation.forward)
-        position = _cubic_hermite_point(
-            start_point,
-            end_point,
-            tuple(
-                float(component) * float(_TRACE_LATTICE_TURN_CURVE_TANGENT_SCALE)
-                for component in start_forward
-            ),
-            tuple(
-                float(component) * float(_TRACE_LATTICE_TURN_CURVE_TANGENT_SCALE)
-                for component in end_forward
-            ),
-            local_t,
-        )
-        forward, up = _interpolated_orientation(step, turn_progress=local_t)
-        rotated = local_t > 0.0
-
-    return TraceLatticePose(
-        position=position,
-        forward=_normalize(forward),
-        up=_normalize(up),
-        active_step_index=index,
-        effective_action=step.effective_action,
-        rotated=rotated,
+    return _trace_lattice_step_pose(
+        step=path.steps[index],
+        spec=path.spec,
+        local_t=local_t,
+        step_index=index,
+        turn_phase_ratio=turn_phase_ratio,
     )

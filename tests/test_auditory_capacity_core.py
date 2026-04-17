@@ -19,7 +19,7 @@ from cfast_trainer.auditory_capacity import (
     score_sequence_answer,
     tube_contact_ratio,
 )
-from cfast_trainer.auditory_capacity_view import BALL_FORWARD_IDLE_NORM, GATE_DEPTH_SLOTS_NORM, TUNNEL_EXIT_NORM
+from cfast_trainer.auditory_capacity_view import BALL_FORWARD_IDLE_NORM, GATE_DEPTH_SLOTS_NORM
 from cfast_trainer.cognitive_core import Phase
 
 
@@ -896,6 +896,7 @@ def test_gate_scoring_plane_does_not_move_with_ball_horizontal_offset() -> None:
     assert payload.gates[0].gate_id == 9
 
     engine._gates[0].x_norm = 0.0
+    engine._gates[0].world_distance = engine._gate_world_distance_from_x_norm(0.0)
     engine._update_gates(0.0)
 
     payload = engine.snapshot().payload
@@ -921,6 +922,51 @@ def test_spawned_gates_receive_persistent_visual_slots_in_payload() -> None:
         len(GATE_DEPTH_SLOTS_NORM) - 1,
         len(GATE_DEPTH_SLOTS_NORM) - 2,
     )
+
+
+def test_gate_keeps_fixed_world_distance_while_follower_approaches() -> None:
+    _, engine = _build_engine()
+    engine._next_gate_at_s = 0.0
+    engine._update_gates(0.0)
+    gate = engine._gates[0]
+    start_x = float(gate.x_norm)
+    assert gate.world_distance is not None
+    world_distance = float(gate.world_distance)
+
+    engine._tunnel_snapshot = engine._tunnel_follower.update(0.25)
+    engine._update_gates(0.0)
+
+    assert gate.world_distance == pytest.approx(world_distance)
+    assert gate.x_norm < start_x
+
+
+def test_wall_bound_collision_counts_once_per_boundary_episode() -> None:
+    _, engine = _build_engine()
+    engine._dist_x = 0.0
+    engine._dist_y = 0.0
+    engine._dist_until_s = 9999.0
+    engine._ball_x = engine._effective_tube_half_width() * 0.99
+    engine._ball_y = 0.0
+    engine.set_control(horizontal=1.0, vertical=0.0)
+
+    engine._step(0.10)
+    engine._step(0.10)
+
+    assert engine._collisions == 1
+    assert engine._ball_contact_ratio >= 1.0
+    assert sum(1 for event in engine.events() if event.kind.value == "collision") == 1
+
+    engine.set_control(horizontal=0.0, vertical=0.0)
+    engine._ball_x = 0.0
+    engine._ball_y = 0.0
+    engine._step(0.01)
+    assert engine._outside_tube is False
+
+    engine._ball_x = engine._effective_tube_half_width() * 0.99
+    engine.set_control(horizontal=1.0, vertical=0.0)
+    engine._step(0.10)
+
+    assert engine._collisions == 2
 
 
 def test_visual_slots_do_not_shift_when_earlier_gate_retires() -> None:
@@ -966,7 +1012,7 @@ def test_visual_slots_do_not_shift_when_earlier_gate_retires() -> None:
     assert tuple(gate.visual_slot_index for gate in payload.gates) == (6, 5)
 
 
-def test_ball_forward_norm_advances_toward_nearest_visible_gate_deterministically() -> None:
+def test_ball_forward_norm_stays_anchored_while_tunnel_progress_remains_deterministic() -> None:
     _, engine = _build_engine()
     engine._gates = [
         _LiveGate(
@@ -984,13 +1030,12 @@ def test_ball_forward_norm_advances_toward_nearest_visible_gate_deterministicall
     initial_payload = engine.snapshot().payload
     assert initial_payload is not None
     initial_forward = float(initial_payload.ball_forward_norm)
-    assert BALL_FORWARD_IDLE_NORM <= initial_forward < TUNNEL_EXIT_NORM
+    assert initial_forward == pytest.approx(float(BALL_FORWARD_IDLE_NORM))
 
     engine._update_gates(0.50)
     first_payload = engine.snapshot().payload
     assert first_payload is not None
-    assert first_payload.ball_forward_norm > initial_forward
-    assert first_payload.ball_forward_norm < TUNNEL_EXIT_NORM
+    assert first_payload.ball_forward_norm == pytest.approx(float(BALL_FORWARD_IDLE_NORM))
 
     _, engine_b = _build_engine()
     engine_b._gates = [

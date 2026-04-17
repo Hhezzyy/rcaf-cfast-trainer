@@ -31,6 +31,10 @@ from cfast_trainer.rapid_tracking_gl import (
     select_building_scenery,
 )
 from cfast_trainer.rapid_tracking_view import camera_pose_compat, target_projection
+from cfast_trainer.rapid_tracking_view import (
+    RAPID_TRACKING_PITCH_MAX_DEG,
+    RAPID_TRACKING_PITCH_MIN_DEG,
+)
 
 
 class _FakeClock:
@@ -103,6 +107,42 @@ def test_camera_rig_uses_direct_camera_pose_without_recentering() -> None:
 
     assert rig.heading_deg == pytest.approx(132.0)
     assert rig.pitch_deg == pytest.approx(-18.5)
+
+
+def test_camera_rig_clamps_requested_and_shaken_pitch_to_shared_bounds() -> None:
+    steep_up = camera_rig_state(
+        elapsed_s=20.0,
+        seed=551,
+        progress=0.45,
+        camera_yaw_deg=132.0,
+        camera_pitch_deg=88.0,
+        zoom=0.0,
+        target_kind="truck",
+        target_world_x=42.0,
+        target_world_y=96.0,
+        focus_world_x=8.0,
+        focus_world_y=78.0,
+        turbulence_strength=1.8,
+    )
+    steep_down = camera_rig_state(
+        elapsed_s=20.0,
+        seed=551,
+        progress=0.45,
+        camera_yaw_deg=132.0,
+        camera_pitch_deg=-88.0,
+        zoom=0.0,
+        target_kind="truck",
+        target_world_x=42.0,
+        target_world_y=96.0,
+        focus_world_x=8.0,
+        focus_world_y=78.0,
+        turbulence_strength=1.8,
+    )
+
+    assert steep_up.pitch_deg == pytest.approx(RAPID_TRACKING_PITCH_MAX_DEG)
+    assert steep_down.pitch_deg == pytest.approx(RAPID_TRACKING_PITCH_MIN_DEG)
+    assert RAPID_TRACKING_PITCH_MIN_DEG <= steep_up.view_pitch_deg <= RAPID_TRACKING_PITCH_MAX_DEG
+    assert RAPID_TRACKING_PITCH_MIN_DEG <= steep_down.view_pitch_deg <= RAPID_TRACKING_PITCH_MAX_DEG
 
 
 def test_camera_rig_uses_wide_default_fov_and_narrow_hold_zoom() -> None:
@@ -500,14 +540,14 @@ def test_rapid_tracking_backdrop_plan_lightens_ground_and_clamps_steep_up_horizo
     neutral = _rapid_tracking_backdrop_plan(viewport_size=(960, 540), payload=payload)
     steep_up = _rapid_tracking_backdrop_plan(
         viewport_size=(960, 540),
-        payload=replace(payload, camera_pitch_deg=82.0),
+        payload=replace(payload, camera_pitch_deg=RAPID_TRACKING_PITCH_MAX_DEG + 22.0),
     )
 
     assert 180.0 <= neutral.horizon_y <= 320.0
-    assert steep_up.horizon_y <= 0.0
+    assert steep_up.horizon_y >= 90.0
     assert steep_up.horizon_y < neutral.horizon_y
-    assert min(neutral.ground_base_rgb) > 0.35
-    assert min(neutral.ground_horizon_rgb) > 0.25
+    assert min(neutral.ground_base_rgb) > 0.40
+    assert min(neutral.ground_horizon_rgb) > 0.30
 
 
 def test_rapid_tracking_scene_plan_emits_world_geometry_at_representative_camera_pose() -> None:
@@ -529,4 +569,5 @@ def test_rapid_tracking_scene_plan_emits_world_geometry_at_representative_camera
 
     assert renderer._last_rt_world_debug["world_triangles_emitted"] > 0
     assert renderer._last_rt_world_debug["world_triangles_rejected"] >= 0
+    assert set(scene_plan.backdrop_groups).isdisjoint(scene_plan.playfield_groups)
     assert len(renderer._batch.scene_triangles) > 0

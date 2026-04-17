@@ -36,18 +36,27 @@ from cfast_trainer.tr_drills import build_tr_mixed_tempo_drill
 
 
 class _FakeTREngine:
-    def __init__(self, payload: TargetRecognitionPayload, *, title: str) -> None:
+    def __init__(
+        self,
+        payload: TargetRecognitionPayload,
+        *,
+        title: str,
+        phase: Phase = Phase.PRACTICE,
+        scored_duration_s: float = 90.0,
+    ) -> None:
         self._payload = payload
         self._title = title
+        self._phase = phase
+        self.scored_duration_s = float(scored_duration_s)
         self.submit_calls: list[str] = []
 
     def snapshot(self) -> SnapshotModel:
         return SnapshotModel(
             title=self._title,
-            phase=Phase.PRACTICE,
+            phase=self._phase,
             prompt="Register matches only in the active panels.",
             input_hint="",
-            time_remaining_s=None,
+            time_remaining_s=self.scored_duration_s if self._phase is Phase.SCORED else None,
             attempted_scored=0,
             correct_scored=0,
             payload=self._payload,
@@ -60,7 +69,7 @@ class _FakeTREngine:
         pass
 
     def start_scored(self) -> None:
-        pass
+        self._phase = Phase.SCORED
 
     def submit_answer(self, raw: str) -> bool:
         self.submit_calls.append(str(raw))
@@ -187,6 +196,19 @@ def _scene_glyph_signature(screen: CognitiveTestScreen, glyph_id: int) -> tuple[
     )
 
 
+def _find_scene_clear_point(screen: CognitiveTestScreen) -> tuple[int, int]:
+    panel = screen._tr_scene_panel_hitbox
+    assert panel is not None
+    occupied = tuple(rect for rect, _glyph_id in screen._tr_scene_symbol_hitboxes)
+    for y in range(panel.y + 8, panel.bottom - 8, 8):
+        for x in range(panel.x + 8, panel.right - 8, 8):
+            point = (x, y)
+            if any(rect.collidepoint(point) for rect in occupied):
+                continue
+            return point
+    raise AssertionError("missing clear point in scene panel")
+
+
 def test_target_recognition_drill_title_still_routes_to_real_renderer(monkeypatch) -> None:
     clock = _FakeClock()
     engine = build_tr_mixed_tempo_drill(
@@ -225,7 +247,7 @@ def test_target_recognition_focused_drill_only_exposes_active_hitboxes_and_dims_
         assert surface is not None
         screen.render(surface)
 
-        assert set(screen._tr_selector_hitboxes) == {"scene"}
+        assert screen._tr_scene_panel_hitbox is not None
         assert screen._tr_light_button_hitbox is None
         assert screen._tr_scan_button_hitbox is None
         assert not screen._tr_system_string_hitboxes
@@ -290,8 +312,87 @@ def test_target_recognition_workout_block_uses_real_runtime_screen() -> None:
 
         runtime = screen._runtime_screen
         assert runtime is not None
-        assert runtime._tr_selector_hitboxes
-        assert set(runtime._tr_selector_hitboxes) == {"scene"}
+        assert runtime._tr_scene_panel_hitbox is not None
+        assert runtime._tr_light_button_hitbox is None
+        assert runtime._tr_scan_button_hitbox is None
+    finally:
+        pygame.quit()
+
+
+def test_target_recognition_map_targets_strip_is_display_only() -> None:
+    payload = _build_payload(active_panels=("scene",))
+    engine = _FakeTREngine(payload, title="Target Recognition: Scene Anchor")
+    _app, screen = _build_screen(engine)
+    try:
+        surface = pygame.display.get_surface()
+        assert surface is not None
+        screen.render(surface)
+
+        selector = screen._tr_selector_hitboxes.get("scene")
+        assert selector is not None
+
+        screen.handle_event(
+            pygame.event.Event(
+                pygame.MOUSEBUTTONDOWN,
+                {"button": 1, "pos": selector.center},
+            )
+        )
+
+        assert engine.submit_calls == []
+        assert screen._tr_selected_panels == set()
+    finally:
+        pygame.quit()
+
+
+def test_target_recognition_scene_absent_map_click_submits_clear_confirmation() -> None:
+    payload = replace(_build_payload(active_panels=("scene",)), scene_has_target=False)
+    engine = _FakeTREngine(payload, title="Target Recognition: Scene Anchor")
+    _app, screen = _build_screen(engine)
+    try:
+        surface = pygame.display.get_surface()
+        assert surface is not None
+        screen.render(surface)
+
+        clear_point = _find_scene_clear_point(screen)
+        screen.handle_event(
+            pygame.event.Event(
+                pygame.MOUSEBUTTONDOWN,
+                {"button": 1, "pos": clear_point},
+            )
+        )
+
+        assert engine.submit_calls == ["0"]
+    finally:
+        pygame.quit()
+
+
+def test_target_recognition_info_panel_status_reflects_live_scene_state() -> None:
+    inactive_payload = _build_payload(active_panels=("light",))
+    active_payload = _build_payload(active_panels=("scene",))
+    engine = _FakeTREngine(inactive_payload, title="Target Recognition")
+    app, screen = _build_screen(engine)
+    clock = _FakeClock()
+    screen._review_clock = clock
+    try:
+        surface = pygame.display.get_surface()
+        assert surface is not None
+        captured = _install_recording_fonts(app, screen)
+
+        screen.render(surface)
+        rendered_inactive = "\n".join(captured)
+        assert "Scene visible for context only; click active panels." in rendered_inactive
+
+        screen._engine = _FakeTREngine(active_payload, title="Target Recognition: Scene Anchor")
+        captured.clear()
+        screen.render(surface)
+        rendered_clear = "\n".join(captured)
+        assert "Scene active: currently clear." in rendered_clear
+
+        clock.advance(1.25)
+        captured.clear()
+        screen.render(surface)
+        rendered_live = "\n".join(captured)
+        assert "Scene active: Friendly Truck live." in rendered_live
     finally:
         pygame.quit()
 
@@ -366,6 +467,9 @@ def test_target_recognition_live_screen_hides_scored_counter() -> None:
         screen.render(surface)
 
         assert not any(text.startswith("Scored") for text in captured)
+        assert "Mouse only: active panels" not in captured
+        assert not any("Scene Pts:" in text for text in captured)
+        assert "Scene Target" in captured
     finally:
         pygame.quit()
 
@@ -433,7 +537,7 @@ def test_target_recognition_scene_guidance_and_runtime_no_longer_use_filler_targ
 
         assert "Beacon" not in captured
         assert "Unknown" not in captured
-        assert any("non-clickable" in text.lower() for text in captured)
+        assert any(text.startswith("Scene active:") for text in captured)
         assert {glyph.kind for glyph in screen._tr_scene_glyphs.values()} == {"entity"}
     finally:
         pygame.quit()
@@ -501,7 +605,7 @@ def test_target_recognition_scene_clear_all_objective_waits_for_last_target() ->
         def point_for_label(label: str) -> tuple[tuple[int, int], int]:
             for hit_rect, glyph_id in screen._tr_scene_symbol_hitboxes:
                 glyph = screen._tr_scene_glyphs[glyph_id]
-                if label in glyph.matching_labels:
+                if glyph.live_target_label == label:
                     return (hit_rect.right - 2, hit_rect.centery), glyph_id
             raise AssertionError(f"missing scene glyph for {label}")
 
@@ -568,14 +672,23 @@ def test_target_recognition_scene_correct_click_only_reseeds_clicked_glyph() -> 
         clock.advance(1.25)
         screen.render(surface)
 
-        matching = [
+        clicked = [
             (hit_rect, glyph_id)
             for hit_rect, glyph_id in screen._tr_scene_symbol_hitboxes
-            if "Friendly Truck" in screen._tr_scene_glyphs[glyph_id].matching_labels
+            if screen._tr_scene_glyphs[glyph_id].live_target_label == "Friendly Truck"
         ]
-        assert len(matching) == 2
-        clicked_hit, clicked_id = matching[0]
-        untouched_id = matching[1][1]
+        untouched = [
+            glyph_id
+            for _hit_rect, glyph_id in screen._tr_scene_symbol_hitboxes
+            if (
+                "Friendly Truck" in screen._tr_scene_glyphs[glyph_id].matching_labels
+                and screen._tr_scene_glyphs[glyph_id].live_target_label == ""
+            )
+        ]
+        assert len(clicked) == 1
+        assert untouched
+        clicked_hit, clicked_id = clicked[0]
+        untouched_id = untouched[0]
         clicked_before = _scene_glyph_signature(screen, clicked_id)
         untouched_before = _scene_glyph_signature(screen, untouched_id)
 
@@ -607,12 +720,11 @@ def test_target_recognition_scene_wrong_click_keeps_non_target_shape_visible() -
 
         clock.advance(1.25)
         screen.render(surface)
-        active_targets = set(screen._tr_scene_active_targets)
         wrong_hit = None
         wrong_id = None
         for hit_rect, glyph_id in screen._tr_scene_symbol_hitboxes:
             glyph = screen._tr_scene_glyphs[glyph_id]
-            if not active_targets.intersection(glyph.matching_labels):
+            if str(glyph.live_target_label).strip() == "":
                 wrong_hit = hit_rect
                 wrong_id = glyph_id
                 break
@@ -692,7 +804,10 @@ def test_target_recognition_system_hitbox_uses_full_row_band_and_registers_click
 
 
 def test_target_recognition_light_press_shows_registered_feedback() -> None:
-    payload = _build_payload(active_panels=("light",))
+    payload = replace(
+        _build_payload(active_panels=("light",)),
+        developer_answer_review=True,
+    )
     engine = _FakeTREngine(payload, title="Target Recognition: Light Anchor")
     _app, screen = _build_screen(engine)
     clock = _FakeClock()
@@ -731,7 +846,10 @@ def test_target_recognition_light_press_shows_registered_feedback() -> None:
 
 
 def test_target_recognition_scan_press_shows_registered_feedback() -> None:
-    payload = _build_payload(active_panels=("scan",))
+    payload = replace(
+        _build_payload(active_panels=("scan",)),
+        developer_answer_review=True,
+    )
     engine = _FakeTREngine(payload, title="Target Recognition: Scan Anchor")
     _app, screen = _build_screen(engine)
     clock = _FakeClock()
@@ -765,6 +883,142 @@ def test_target_recognition_scan_press_shows_registered_feedback() -> None:
 
         assert screen._tr_scan_target_pattern_live != initial_target
         assert screen._tr_scan_current_pattern != initial_target
+    finally:
+        pygame.quit()
+
+
+def test_target_recognition_feedback_text_is_hidden_without_developer_review() -> None:
+    light_payload = _build_payload(active_panels=("light",))
+    light_engine = _FakeTREngine(light_payload, title="Target Recognition: Light Anchor")
+    _app, screen = _build_screen(light_engine)
+    clock = _FakeClock()
+    screen._review_clock = clock
+    try:
+        surface = pygame.display.get_surface()
+        assert surface is not None
+        screen.render(surface)
+        assert screen._tr_light_button_hitbox is not None
+
+        screen.handle_event(
+            pygame.event.Event(
+                pygame.MOUSEBUTTONDOWN,
+                {"button": 1, "pos": screen._tr_light_button_hitbox.center},
+            )
+        )
+
+        captured = _install_recording_fonts(screen)
+        screen.render(surface)
+
+        assert screen._tr_light_feedback_state == "ok"
+        assert all("Registered" not in text for text in captured)
+        assert all("Too Early" not in text for text in captured)
+    finally:
+        pygame.quit()
+
+    scan_payload = _build_payload(active_panels=("scan",))
+    scan_engine = _FakeTREngine(scan_payload, title="Target Recognition: Scan Anchor")
+    _app, screen = _build_screen(scan_engine)
+    clock = _FakeClock()
+    screen._review_clock = clock
+    try:
+        surface = pygame.display.get_surface()
+        assert surface is not None
+        screen.render(surface)
+        assert screen._tr_scan_button_hitbox is not None
+
+        screen._tr_scan_current_pattern = screen._tr_scan_target_pattern_live
+        screen.handle_event(
+            pygame.event.Event(
+                pygame.MOUSEBUTTONDOWN,
+                {"button": 1, "pos": screen._tr_scan_button_hitbox.center},
+            )
+        )
+
+        captured = _install_recording_fonts(screen)
+        screen.render(surface)
+
+        assert screen._tr_scan_feedback_state == "ok"
+        assert all("Registered" not in text for text in captured)
+        assert all("Too Early" not in text for text in captured)
+    finally:
+        pygame.quit()
+
+
+def test_target_recognition_selection_highlight_only_draws_in_developer_review() -> None:
+    base_payload = replace(
+        _build_payload(active_panels=("light",)),
+        light_has_target=False,
+    )
+
+    _app, screen = _build_screen(_FakeTREngine(base_payload, title="Target Recognition"))
+    try:
+        surface = pygame.display.get_surface()
+        assert surface is not None
+        screen.render(surface)
+        selector = screen._tr_selector_hitboxes["light"]
+        sample = (selector.x + 8, selector.bottom - 8)
+        before = surface.get_at(sample)
+
+        screen.handle_event(
+            pygame.event.Event(
+                pygame.MOUSEBUTTONDOWN,
+                {"button": 1, "pos": selector.center},
+            )
+        )
+        screen.render(surface)
+        after = surface.get_at(sample)
+
+        assert before == after
+    finally:
+        pygame.quit()
+
+    review_payload = replace(base_payload, developer_answer_review=True)
+    _app, screen = _build_screen(_FakeTREngine(review_payload, title="Target Recognition"))
+    try:
+        surface = pygame.display.get_surface()
+        assert surface is not None
+        screen.render(surface)
+        selector = screen._tr_selector_hitboxes["light"]
+        sample = (selector.x + 8, selector.bottom - 8)
+        before = surface.get_at(sample)
+
+        screen.handle_event(
+            pygame.event.Event(
+                pygame.MOUSEBUTTONDOWN,
+                {"button": 1, "pos": selector.center},
+            )
+        )
+        screen.render(surface)
+        after = surface.get_at(sample)
+
+        assert before != after
+    finally:
+        pygame.quit()
+
+
+def test_target_recognition_scored_countdown_uses_local_runtime_timer() -> None:
+    payload = _build_payload(active_panels=("scene",))
+    engine = _FakeTREngine(
+        payload,
+        title="Target Recognition: Scene Anchor",
+        phase=Phase.SCORED,
+        scored_duration_s=90.0,
+    )
+    _app, screen = _build_screen(engine)
+    clock = _FakeClock()
+    screen._review_clock = clock
+    try:
+        surface = pygame.display.get_surface()
+        assert surface is not None
+        captured = _install_recording_fonts(screen)
+
+        screen.render(surface)
+        assert "01:30" in captured
+
+        clock.advance(15.0)
+        captured.clear()
+        screen.render(surface)
+        assert "01:15" in captured
     finally:
         pygame.quit()
 
@@ -803,5 +1057,125 @@ def test_target_recognition_scene_targets_fade_in_over_time() -> None:
             if glyph.live_target_label == label
         )
         assert second_alpha > first_alpha
+    finally:
+        pygame.quit()
+
+
+def test_target_recognition_scene_spawn_timer_tracks_duplicate_live_counts_until_final_clear() -> None:
+    payload = replace(
+        _build_payload(active_panels=("scene",)),
+        scene_rows=2,
+        scene_cols=2,
+        scene_cells=("TRK:F", "TRK:F", "BLD:N", "TNK:H"),
+        scene_entities=(
+            TargetRecognitionSceneEntity("truck", "friendly", False, False),
+            TargetRecognitionSceneEntity("truck", "friendly", False, False),
+            TargetRecognitionSceneEntity("building", "neutral", False, False),
+            TargetRecognitionSceneEntity("tank", "hostile", False, False),
+        ),
+        scene_target="Friendly Truck",
+        scene_has_target=True,
+        scene_target_options=("Friendly Truck",),
+    )
+    engine = _FakeTREngine(payload, title="Target Recognition: Scene Anchor")
+    _app, screen = _build_screen(engine)
+    clock = _FakeClock()
+    screen._review_clock = clock
+    try:
+        surface = pygame.display.get_surface()
+        assert surface is not None
+        screen.render(surface)
+
+        clock.advance(1.25)
+        screen.render(surface)
+        assert screen._tr_scene_live_counts_by_label == {"Friendly Truck": 1}
+        interval = float(screen._tr_scene_next_spawn_after_s)
+        assert 10.0 <= interval <= 40.0
+
+        clock.advance(interval - 0.1)
+        screen.render(surface)
+        assert screen._tr_scene_live_counts_by_label == {"Friendly Truck": 1}
+
+        clock.advance(0.2)
+        screen.render(surface)
+        assert screen._tr_scene_live_counts_by_label == {"Friendly Truck": 2}
+        assert screen._tr_scene_active_targets == ["Friendly Truck"]
+
+        live_hits = [
+            (hit_rect, glyph_id)
+            for hit_rect, glyph_id in screen._tr_scene_symbol_hitboxes
+            if screen._tr_scene_glyphs[glyph_id].live_target_label == "Friendly Truck"
+        ]
+        assert len(live_hits) == 2
+
+        first_hit, _first_id = live_hits[0]
+        second_hit, _second_id = live_hits[1]
+        screen.handle_event(
+            pygame.event.Event(
+                pygame.MOUSEBUTTONDOWN,
+                {"button": 1, "pos": (first_hit.right - 2, first_hit.centery)},
+            )
+        )
+
+        assert engine.submit_calls == []
+        assert screen._tr_scene_live_counts_by_label == {"Friendly Truck": 1}
+        assert screen._tr_scene_points == 0
+
+        screen.handle_event(
+            pygame.event.Event(
+                pygame.MOUSEBUTTONDOWN,
+                {"button": 1, "pos": (second_hit.right - 2, second_hit.centery)},
+            )
+        )
+
+        assert screen._tr_scene_live_counts_by_label == {}
+        assert screen._tr_scene_points == 1
+        assert engine.submit_calls == ["1"]
+    finally:
+        pygame.quit()
+
+
+def test_target_recognition_scene_ambient_and_fog_animate_over_time() -> None:
+    payload = _build_payload(active_panels=("scene",))
+    engine = _FakeTREngine(payload, title="Target Recognition: Scene Anchor")
+    _app, screen = _build_screen(engine)
+    clock = _FakeClock()
+    screen._review_clock = clock
+    try:
+        surface = pygame.display.get_surface()
+        assert surface is not None
+        screen.render(surface)
+        initial_alphas = tuple(round(shape.alpha, 3) for shape in screen._tr_scene_ambient_shapes)
+        initial_fog = (screen._tr_scene_fog_offset_x, screen._tr_scene_fog_offset_y)
+
+        clock.advance(0.5)
+        screen.render(surface)
+
+        later_alphas = tuple(round(shape.alpha, 3) for shape in screen._tr_scene_ambient_shapes)
+        later_fog = (screen._tr_scene_fog_offset_x, screen._tr_scene_fog_offset_y)
+
+        assert initial_alphas != later_alphas
+        assert later_fog != initial_fog
+    finally:
+        pygame.quit()
+
+
+def test_target_recognition_priority_marker_keeps_center_gap() -> None:
+    _app, screen = _build_screen(_FakeTREngine(_build_payload(active_panels=("scene",)), title="Target Recognition"))
+    try:
+        marker_surface = pygame.Surface((48, 48), pygame.SRCALPHA)
+        target = TargetRecognitionSceneEntity("truck", "friendly", False, True)
+        screen._draw_target_recognition_symbol(
+            marker_surface,
+            entity=target,
+            cx=20,
+            cy=20,
+            size=8,
+            color=(255, 255, 255, 255),
+            heading=0.0,
+        )
+
+        assert marker_surface.get_at((30, 20)).a == 0
+        assert marker_surface.get_at((33, 20)).a > 0
     finally:
         pygame.quit()

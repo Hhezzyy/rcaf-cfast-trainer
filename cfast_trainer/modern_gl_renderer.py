@@ -21,6 +21,11 @@ from .auditory_capacity import (
     AUDITORY_GATE_SPAWN_X_NORM,
     AUDITORY_TRIANGLE_GATE_POINTS,
 )
+from .auditory_capacity_motion import (
+    AuditoryTunnelFollowerSnapshot,
+    auditory_ball_roll_deg,
+    auditory_gate_world_distance_from_x_norm,
+)
 from .auditory_capacity_view import (
     AUDITORY_BALL_ANCHOR_DISTANCE,
     AUDITORY_GATE_BEHIND_DISTANCE,
@@ -30,7 +35,6 @@ from .auditory_capacity_view import (
     TUNNEL_GEOMETRY_START_DISTANCE,
     fixed_camera_pose_at_distance,
     gate_depth_ratio_from_distance,
-    gate_distance_from_x_norm,
     run_travel_distance,
 )
 from .auditory_capacity_view import (
@@ -53,6 +57,8 @@ from .rapid_tracking import (
 from .rapid_tracking_gl import build_scene_target as build_rapid_tracking_scene_target
 from .rapid_tracking_gl import camera_rig_state as rapid_tracking_camera_rig_state
 from .rapid_tracking_view import (
+    RAPID_TRACKING_PITCH_MAX_DEG,
+    RAPID_TRACKING_PITCH_MIN_DEG,
     TARGET_VIEW_LIMIT as RAPID_TRACKING_TARGET_VIEW_LIMIT,
 )
 from .rapid_tracking_view import (
@@ -73,6 +79,15 @@ from .spatial_integration_gl import (
     build_scene_layout as build_spatial_integration_scene_layout,
 )
 from .spatial_integration_gl import landmark_visual_cell_offsets
+from .spatial_integration_visuals import (
+    spatial_integration_landmark_asset_id as shared_spatial_landmark_asset_id,
+)
+from .spatial_integration_visuals import (
+    spatial_integration_landmark_gl_scale as shared_spatial_landmark_gl_scale,
+)
+from .spatial_integration_visuals import (
+    spatial_integration_landmark_heading_deg as shared_spatial_landmark_heading_deg,
+)
 from .trace_scene_3d import (
     TraceAircraftPose,
     TraceCameraPose,
@@ -188,6 +203,7 @@ class _ScenePlan:
     static_groups: tuple[_RapidTrackingStaticGroup, ...] = ()
     backdrop_groups: tuple[_RapidTrackingStaticGroup, ...] = ()
     playfield_groups: tuple[_RapidTrackingStaticGroup, ...] = ()
+    debug: dict[str, object] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -270,6 +286,7 @@ _AUDITORY_TUBE_SEGMENT_LENGTH = 4.0
 _AUDITORY_TUBE_RIB_STEP = 4.0
 _AUDITORY_TUBE_RX = 2.24
 _AUDITORY_TUBE_RZ = 1.64
+_AUDITORY_BALL_RADIUS = 0.11
 _AUDITORY_TUBE_GEOMETRY_START = float(TUNNEL_GEOMETRY_START_DISTANCE)
 _AUDITORY_TUBE_GEOMETRY_END = float(TUNNEL_GEOMETRY_END_DISTANCE)
 
@@ -350,6 +367,10 @@ def _vec_scale(v: Point3, scale: float) -> Point3:
     return (v[0] * scale, v[1] * scale, v[2] * scale)
 
 
+def _vec_dot(a: Point3, b: Point3) -> float:
+    return (a[0] * b[0]) + (a[1] * b[1]) + (a[2] * b[2])
+
+
 def _vec_norm(v: Point3) -> float:
     return math.sqrt((v[0] * v[0]) + (v[1] * v[1]) + (v[2] * v[2]))
 
@@ -371,6 +392,21 @@ def _vec_cross(a: Point3, b: Point3) -> Point3:
         (a[2] * b[0]) - (a[0] * b[2]),
         (a[0] * b[1]) - (a[1] * b[0]),
     )
+
+
+def _signed_angle_about_axis_deg(a: Point3, b: Point3, axis: Point3) -> float:
+    axis_n = _vec_normalize(axis)
+    if _vec_norm(axis_n) <= 1e-6:
+        return 0.0
+    a_proj = _vec_sub(a, _vec_scale(axis_n, _vec_dot(a, axis_n)))
+    b_proj = _vec_sub(b, _vec_scale(axis_n, _vec_dot(b, axis_n)))
+    a_unit = _vec_normalize(a_proj)
+    b_unit = _vec_normalize(b_proj)
+    if _vec_norm(a_unit) <= 1e-6 or _vec_norm(b_unit) <= 1e-6:
+        return 0.0
+    sin_v = _vec_dot(axis_n, _vec_cross(a_unit, b_unit))
+    cos_v = max(-1.0, min(1.0, _vec_dot(a_unit, b_unit)))
+    return math.degrees(math.atan2(sin_v, cos_v))
 
 
 def _triangle_normal(points: tuple[Point3, Point3, Point3]) -> Point3:
@@ -1567,43 +1603,84 @@ def _rapid_tracking_target_asset_id(target_kind: str, variant: str) -> str:
     return "plane_yellow"
 
 
-def _build_auditory_scene_plan(scene: AuditoryGlScene) -> _ScenePlan:
-    payload = scene.payload
+def _auditory_local_ball_offsets(payload: object | None) -> tuple[float, float]:
     if payload is None:
-        travel_distance = run_travel_distance(session_seed=0, phase_elapsed_s=0.0)
-    else:
-        travel_distance = float(
-            getattr(
-                payload,
-                "presentation_travel_distance",
-                run_travel_distance(
-                    session_seed=int(payload.session_seed),
-                    phase_elapsed_s=float(payload.phase_elapsed_s),
-                ),
-            )
-        )
-    ball_distance = travel_distance + AUDITORY_BALL_ANCHOR_DISTANCE
-    local_x = 0.0
-    local_z = 0.0
-    ball_color = (0.94, 0.96, 1.0, 0.98)
-    if payload is not None:
-        x_half_span = max(0.08, float(payload.tube_half_width))
-        z_half_span = max(0.08, float(payload.tube_half_height))
-        local_x = max(-1.0, min(1.0, float(payload.ball_x) / x_half_span)) * (
-            _AUDITORY_TUBE_RX * 0.72
-        )
-        local_z = max(-1.0, min(1.0, float(payload.ball_y) / z_half_span)) * (
-            _AUDITORY_TUBE_RZ * 0.72
-        )
-        if float(payload.ball_contact_ratio) >= 1.0:
-            ball_color = (0.95, 0.35, 0.38, 0.98)
+        return (0.0, 0.0)
+    x_half_span = max(0.08, float(getattr(payload, "tube_half_width", 0.82)))
+    z_half_span = max(0.08, float(getattr(payload, "tube_half_height", 0.60)))
+    local_x = max(-1.0, min(1.0, float(getattr(payload, "ball_x", 0.0)) / x_half_span)) * (
+        _AUDITORY_TUBE_RX * 0.72
+    )
+    local_z = max(-1.0, min(1.0, float(getattr(payload, "ball_y", 0.0)) / z_half_span)) * (
+        _AUDITORY_TUBE_RZ * 0.72
+    )
+    return (local_x, local_z)
+
+
+def _auditory_ball_color_rgba(
+    payload: object | None,
+    *,
+    collision_active: bool = False,
+) -> tuple[float, float, float, float]:
+    if payload is None:
+        return (0.94, 0.96, 1.0, 0.98)
+    if collision_active or float(getattr(payload, "ball_contact_ratio", 0.0)) >= 1.0:
+        return (0.95, 0.35, 0.38, 0.98)
+    return {
+        "RED": (0.92, 0.34, 0.38, 0.98),
+        "GREEN": (0.34, 0.88, 0.56, 0.98),
+        "BLUE": (0.36, 0.62, 0.94, 0.98),
+        "YELLOW": (0.94, 0.82, 0.34, 0.98),
+    }.get(str(getattr(payload, "ball_visual_color", "")).upper(), (0.94, 0.96, 1.0, 0.98))
+
+
+def _build_auditory_scene_plan(
+    scene: AuditoryGlScene,
+    *,
+    tunnel_follower: AuditoryTunnelFollowerSnapshot | None = None,
+) -> _ScenePlan:
+    payload = scene.payload
+    if tunnel_follower is None:
+        if payload is None:
+            travel_distance = run_travel_distance(session_seed=0, phase_elapsed_s=0.0)
         else:
-            ball_color = {
-                "RED": (0.92, 0.34, 0.38, 0.98),
-                "GREEN": (0.34, 0.88, 0.56, 0.98),
-                "BLUE": (0.36, 0.62, 0.94, 0.98),
-                "YELLOW": (0.94, 0.82, 0.34, 0.98),
-            }.get(str(payload.ball_visual_color).upper(), (0.94, 0.96, 1.0, 0.98))
+            travel_distance = float(
+                getattr(
+                    payload,
+                    "presentation_travel_distance",
+                    run_travel_distance(
+                        session_seed=int(payload.session_seed),
+                        phase_elapsed_s=float(payload.phase_elapsed_s),
+                    ),
+                )
+            )
+        ball_distance = travel_distance + AUDITORY_BALL_ANCHOR_DISTANCE
+        centerline, ball_tangent, right, up = _tube_frame(ball_distance)
+        ball_roll_deg = auditory_ball_roll_deg(
+            ball_distance=ball_distance,
+            roll_deg_per_distance=9.0,
+        )
+        collision_active = (
+            False
+            if payload is None
+            else float(getattr(payload, "ball_contact_ratio", 0.0)) >= 1.0
+        )
+        collision_penalties = 0 if payload is None else int(getattr(payload, "collisions", 0))
+    else:
+        travel_distance = float(tunnel_follower.travel_distance)
+        ball_distance = float(tunnel_follower.ball_distance)
+        centerline = tuple(float(value) for value in tunnel_follower.center)
+        ball_tangent = tuple(float(value) for value in tunnel_follower.tangent)
+        right = tuple(float(value) for value in tunnel_follower.right)
+        up = tuple(float(value) for value in tunnel_follower.up)
+        ball_roll_deg = float(tunnel_follower.ball_roll_deg)
+        collision_active = bool(tunnel_follower.collision_active)
+        collision_penalties = int(tunnel_follower.collision_penalties)
+    local_x, local_z = _auditory_local_ball_offsets(payload)
+    ball_color = _auditory_ball_color_rgba(
+        payload,
+        collision_active=collision_active,
+    )
     cam_pos, look_target = fixed_camera_pose_at_distance(ball_distance)
     camera = _look_at_camera(
         position=cam_pos,
@@ -1647,18 +1724,17 @@ def _build_auditory_scene_plan(scene: AuditoryGlScene) -> _ScenePlan:
         )
         distance += _AUDITORY_TUBE_RIB_STEP
 
-    ball_center, _ball_tangent, right, up = _tube_frame(ball_distance)
     gate_asset_ids: set[str] = set()
-    if payload is not None:
-        ball_center = _vec_add(
-            ball_center, _vec_add(_vec_scale(right, local_x), _vec_scale(up, local_z))
-        )
+    ball_center = _vec_add(
+        centerline,
+        _vec_add(_vec_scale(right, local_x), _vec_scale(up, local_z)),
+    )
     instances.append(
         _AssetInstance(
             asset_id="auditory_ball",
             position=ball_center,
-            hpr_deg=((travel_distance * 9.0) % 360.0, 0.0, 0.0),
-            scale=(0.11, 0.11, 0.11),
+            hpr_deg=_world_hpr_from_tangent(ball_tangent, roll_deg=ball_roll_deg),
+            scale=(_AUDITORY_BALL_RADIUS, _AUDITORY_BALL_RADIUS, _AUDITORY_BALL_RADIUS),
             color=ball_color,
         )
     )
@@ -1667,7 +1743,7 @@ def _build_auditory_scene_plan(scene: AuditoryGlScene) -> _ScenePlan:
         y_half_span = max(0.08, float(payload.tube_half_height))
         visible_gates: list[tuple[float, object]] = []
         for gate in payload.gates:
-            distance = gate_distance_from_x_norm(
+            distance = auditory_gate_world_distance_from_x_norm(
                 float(gate.x_norm),
                 travel_distance=travel_distance,
                 spawn_x_norm=float(AUDITORY_GATE_SPAWN_X_NORM),
@@ -1718,6 +1794,16 @@ def _build_auditory_scene_plan(scene: AuditoryGlScene) -> _ScenePlan:
             "auditory_tunnel_segment",
         ),
         entity_count=len(instances),
+        debug={
+            "auditory_travel_distance": float(travel_distance),
+            "auditory_ball_distance": float(ball_distance),
+            "auditory_ball_roll_deg": float(ball_roll_deg),
+            "auditory_collision_penalties": int(collision_penalties),
+            "auditory_collision_active": bool(collision_active),
+            "auditory_core_collisions": 0
+            if payload is None
+            else int(getattr(payload, "collisions", collision_penalties)),
+        },
     )
 
 
@@ -1927,21 +2013,21 @@ def _rapid_tracking_backdrop_plan(
             focus_world_y=float(getattr(payload, "focus_world_y", 70.0)),
             turbulence_strength=float(getattr(payload, "turbulence_strength", 0.0)),
         )
-        clamped_pitch = max(-82.0, min(82.0, float(rig.view_pitch_deg)))
-        pitch_t = (clamped_pitch + 82.0) / 164.0
-        horizon_ratio = _lerp(0.76, 0.08, pitch_t)
-        if clamped_pitch >= 68.0:
-            # Let the skyline move fully off-screen when the player looks almost straight up.
-            horizon_ratio = _lerp(horizon_ratio, -0.08, (clamped_pitch - 68.0) / 14.0)
-        elif clamped_pitch <= -68.0:
-            horizon_ratio = _lerp(horizon_ratio, 0.82, (-68.0 - clamped_pitch) / 14.0)
-    horizon_y = max(-(vh * 0.12), min(vh * 0.82, vh * horizon_ratio))
+        clamped_pitch = max(
+            RAPID_TRACKING_PITCH_MIN_DEG,
+            min(RAPID_TRACKING_PITCH_MAX_DEG, float(rig.view_pitch_deg)),
+        )
+        pitch_t = (clamped_pitch - RAPID_TRACKING_PITCH_MIN_DEG) / (
+            RAPID_TRACKING_PITCH_MAX_DEG - RAPID_TRACKING_PITCH_MIN_DEG
+        )
+        horizon_ratio = _lerp(0.80, 0.18, pitch_t)
+    horizon_y = max(vh * 0.18, min(vh * 0.82, vh * horizon_ratio))
     return _RapidTrackingBackdropPlan(
         horizon_y=float(horizon_y),
         sky_top_rgb=(0.56, 0.68, 0.82),
         sky_bottom_rgb=(0.22, 0.38, 0.46),
-        ground_horizon_rgb=(0.34, 0.42, 0.26),
-        ground_base_rgb=(0.56, 0.64, 0.38),
+        ground_horizon_rgb=(0.40, 0.48, 0.32),
+        ground_base_rgb=(0.64, 0.72, 0.44),
     )
 
 
@@ -2784,63 +2870,36 @@ def _spatial_grid_to_world(
     return wx, wy, wz, terrain
 
 
-def _spatial_landmark_seed(*tokens: object) -> int:
-    joined = "|".join(str(token) for token in tokens)
-    return sum((idx + 1) * ord(ch) for idx, ch in enumerate(joined))
-
-
 def _spatial_landmark_asset_id(landmark: SpatialIntegrationLandmark) -> str:
-    token = str(landmark.kind).strip().lower()
-    if token == "building":
-        return "building_hangar"
-    if token == "tower":
-        return "building_tower"
-    if token == "truck":
-        return "truck_olive"
-    if token == "foot_soldiers":
-        return "soldiers_patrol"
-    if token == "forest":
-        return (
-            "trees_field_cluster"
-            if (_spatial_landmark_seed(landmark.label, landmark.kind) % 2) == 0
-            else "forest_canopy_patch"
+    try:
+        return shared_spatial_landmark_asset_id(
+            label=str(landmark.label),
+            kind=str(landmark.kind),
         )
-    if token == "tent":
-        return "spatial_tent_canvas"
-    if token == "sheep":
-        return "spatial_sheep_flock"
-    raise RendererBootstrapError(f"Unsupported Spatial Integration landmark kind: {landmark.kind}")
+    except KeyError as exc:
+        raise RendererBootstrapError(str(exc)) from exc
 
 
 def _spatial_landmark_scale(asset_id: str, *, label: str, kind: str) -> tuple[float, float, float]:
-    base = {
-        "building_hangar": 2.4,
-        "building_tower": 3.2,
-        "truck_olive": 1.9,
-        "soldiers_patrol": 1.8,
-        "trees_field_cluster": 2.8,
-        "forest_canopy_patch": 3.1,
-        "spatial_tent_canvas": 1.7,
-        "spatial_sheep_flock": 1.5,
-    }.get(asset_id)
-    if base is None:
-        raise RendererBootstrapError(f"Unsupported Spatial Integration landmark asset: {asset_id}")
-    variation = 0.94 + ((_spatial_landmark_seed(label, kind, asset_id) % 11) * 0.012)
-    scale = base * variation
-    return (scale, scale, scale)
+    try:
+        return shared_spatial_landmark_gl_scale(
+            label=label,
+            kind=kind,
+            asset_id=asset_id,
+        )
+    except KeyError as exc:
+        raise RendererBootstrapError(str(exc)) from exc
 
 
 def _spatial_landmark_heading_deg(asset_id: str, *, label: str, kind: str) -> tuple[float, float, float]:
-    seed = _spatial_landmark_seed(label, kind, asset_id)
-    if asset_id in {"building_hangar", "spatial_tent_canvas"}:
-        heading = float((seed % 4) * 90)
-    elif asset_id == "truck_olive":
-        heading = float((seed % 8) * 45)
-    elif asset_id == "soldiers_patrol":
-        heading = float((seed % 12) * 30)
-    else:
-        heading = float(seed % 360)
-    return (heading, 0.0, 0.0)
+    try:
+        return shared_spatial_landmark_heading_deg(
+            label=label,
+            kind=kind,
+            asset_id=asset_id,
+        )
+    except KeyError as exc:
+        raise RendererBootstrapError(str(exc)) from exc
 
 
 def _build_spatial_integration_scene_plan(scene: SpatialIntegrationGlScene) -> _ScenePlan:
@@ -3192,6 +3251,10 @@ class ModernSceneRenderer:
 
         self._ui_texture: moderngl.Texture | None = None
         self._ui_tex_size: tuple[int, int] = (0, 0)
+        self._scene_color_texture: moderngl.Texture | None = None
+        self._scene_depth_renderbuffer: moderngl.Renderbuffer | None = None
+        self._scene_framebuffer: moderngl.Framebuffer | None = None
+        self._scene_fb_size: tuple[int, int] = (0, 0)
 
     def resize(self, *, window_size: tuple[int, int]) -> None:
         self._win_w = max(1, int(window_size[0]))
@@ -3199,6 +3262,7 @@ class ModernSceneRenderer:
         self._color_program["u_viewport"].value = (float(self._win_w), float(self._win_h))
         self._scene_program["u_viewport"].value = (float(self._win_w), float(self._win_h))
         self._texture_program["u_viewport"].value = (float(self._win_w), float(self._win_h))
+        self._release_scene_framebuffer()
 
     def debug_last_scene(self) -> dict[str, object]:
         return dict(self._last_scene_debug)
@@ -3207,11 +3271,16 @@ class ModernSceneRenderer:
         try:
             self._ctx.screen.use()
             self._ctx.viewport = (0, 0, self._win_w, self._win_h)
-            self._ctx.clear(0.01, 0.02, 0.06, 1.0)
+            self._restore_alpha_blend()
+            self._ctx.disable(moderngl.DEPTH_TEST)
+            self._ctx.clear(0.01, 0.02, 0.06, 1.0, depth=1.0)
             self._batch.clear()
 
             if scene is not None:
-                self._draw_scene(scene=scene)
+                self._render_scene_target(scene=scene)
+                self._ctx.screen.use()
+                self._ctx.viewport = (0, 0, self._win_w, self._win_h)
+                self._composite_scene_target()
             else:
                 self._last_scene_debug = {
                     "kind": "none",
@@ -3219,8 +3288,8 @@ class ModernSceneRenderer:
                     "viewport": (self._win_w, self._win_h),
                 }
 
-            self._flush_scene_textures()
-            self._flush_color_geometry()
+            self._restore_alpha_blend()
+            self._ctx.disable(moderngl.DEPTH_TEST)
             self._draw_ui_surface(ui_surface=ui_surface)
         except RenderAssetResolutionError:
             raise
@@ -3228,6 +3297,104 @@ class ModernSceneRenderer:
             raise RendererRenderError(
                 f"ModernGL frame render failed with {type(exc).__name__}: {exc}"
             ) from exc
+
+    def _restore_alpha_blend(self) -> None:
+        self._ctx.enable(moderngl.BLEND)
+        self._ctx.blend_func = (
+            moderngl.SRC_ALPHA,
+            moderngl.ONE_MINUS_SRC_ALPHA,
+            moderngl.ONE,
+            moderngl.ONE_MINUS_SRC_ALPHA,
+        )
+
+    def _release_scene_framebuffer(self) -> None:
+        framebuffer = self._scene_framebuffer
+        depth = self._scene_depth_renderbuffer
+        texture = self._scene_color_texture
+        self._scene_framebuffer = None
+        self._scene_depth_renderbuffer = None
+        self._scene_color_texture = None
+        self._scene_fb_size = (0, 0)
+        for resource in (framebuffer, depth, texture):
+            if resource is not None:
+                resource.release()
+
+    def _ensure_scene_framebuffer(self) -> None:
+        size = (max(1, int(self._win_w)), max(1, int(self._win_h)))
+        if (
+            self._scene_framebuffer is not None
+            and self._scene_color_texture is not None
+            and self._scene_depth_renderbuffer is not None
+            and self._scene_fb_size == size
+        ):
+            return
+        self._release_scene_framebuffer()
+        color_texture = self._ctx.texture(size, 4)
+        color_texture.filter = (moderngl.LINEAR, moderngl.LINEAR)
+        depth_renderbuffer = self._ctx.depth_renderbuffer(size)
+        framebuffer = self._ctx.framebuffer(
+            color_attachments=[color_texture],
+            depth_attachment=depth_renderbuffer,
+        )
+        self._scene_color_texture = color_texture
+        self._scene_depth_renderbuffer = depth_renderbuffer
+        self._scene_framebuffer = framebuffer
+        self._scene_fb_size = size
+
+    def _scene_scissor_rect(self, rect: pygame.Rect) -> tuple[int, int, int, int]:
+        scene_rect = pygame.Rect(rect).clip(pygame.Rect(0, 0, self._win_w, self._win_h))
+        if scene_rect.w <= 0 or scene_rect.h <= 0:
+            return (0, 0, 0, 0)
+        return (
+            int(scene_rect.x),
+            int(self._win_h - scene_rect.bottom),
+            int(scene_rect.w),
+            int(scene_rect.h),
+        )
+
+    @staticmethod
+    def _scene_needs_scissor(scene: GlScene) -> bool:
+        return isinstance(scene, (RapidTrackingGlScene, SpatialIntegrationGlScene))
+
+    def _render_scene_target(self, *, scene: GlScene) -> None:
+        self._ensure_scene_framebuffer()
+        assert self._scene_framebuffer is not None
+        self._scene_framebuffer.use()
+        self._ctx.viewport = (0, 0, self._win_w, self._win_h)
+        self._restore_alpha_blend()
+        self._ctx.disable(moderngl.DEPTH_TEST)
+        self._ctx.clear(0.0, 0.0, 0.0, 0.0, depth=1.0)
+
+        scissor_enabled = self._scene_needs_scissor(scene)
+        if scissor_enabled:
+            self._ctx.scissor = self._scene_scissor_rect(scene.world)
+            self._ctx.enable(moderngl.SCISSOR_TEST)
+        try:
+            self._draw_scene(scene=scene)
+            self._flush_scene_textures()
+            self._flush_color_geometry()
+        finally:
+            if scissor_enabled:
+                self._ctx.disable(moderngl.SCISSOR_TEST)
+                self._ctx.scissor = None
+            self._ctx.disable(moderngl.DEPTH_TEST)
+            self._restore_alpha_blend()
+            self._batch.clear()
+
+    def _composite_scene_target(self) -> None:
+        if self._scene_color_texture is None:
+            return
+        self._restore_alpha_blend()
+        self._ctx.disable(moderngl.DEPTH_TEST)
+        quad = [
+            _TexVertex(0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0),
+            _TexVertex(float(self._win_w), 0.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0),
+            _TexVertex(float(self._win_w), float(self._win_h), 1.0, 1.0, 1.0, 1.0, 1.0, 1.0),
+            _TexVertex(0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0),
+            _TexVertex(float(self._win_w), float(self._win_h), 1.0, 1.0, 1.0, 1.0, 1.0, 1.0),
+            _TexVertex(0.0, float(self._win_h), 0.0, 1.0, 1.0, 1.0, 1.0, 1.0),
+        ]
+        self._flush_textured(self._scene_color_texture, vertices=quad)
 
     def _draw_scene(self, *, scene: GlScene) -> None:
         kind = gl_scene_name(scene)
@@ -3254,6 +3421,8 @@ class ModernSceneRenderer:
             scene_plan = _build_trace_test_2_scene_plan(scene)
             self._scene_assets.require_many(scene_plan.asset_ids)
             entity_count = self._draw_trace_test_2_scene(scene=scene, scene_plan=scene_plan)
+        if scene_plan.debug is not None:
+            scene_debug.update(scene_plan.debug)
         self._last_scene_debug = {
             "kind": kind,
             "entity_count": int(entity_count),
@@ -3416,6 +3585,8 @@ class ModernSceneRenderer:
     def _flush_color_geometry(self) -> None:
         if not self._batch.triangles:
             return
+        self._restore_alpha_blend()
+        self._ctx.disable(moderngl.DEPTH_TEST)
         tri_data = numpy.array(
             [[v.x, v.y, v.r, v.g, v.b, v.a] for v in self._batch.triangles],
             dtype="f4",
@@ -3442,10 +3613,10 @@ class ModernSceneRenderer:
             self._scene_program,
             [(buffer, "2f 1f 4f", "in_pos", "in_depth", "in_color")],
         )
-        self._ctx.clear(depth=1.0)
         self._ctx.enable(moderngl.DEPTH_TEST)
         vao.render(moderngl.TRIANGLES)
         self._ctx.disable(moderngl.DEPTH_TEST)
+        self._restore_alpha_blend()
         vao.release()
         buffer.release()
         self._batch.scene_triangles.clear()
@@ -3489,6 +3660,8 @@ class ModernSceneRenderer:
         data_vertices = self._batch.textured if vertices is None else vertices
         if not data_vertices:
             return
+        self._restore_alpha_blend()
+        self._ctx.disable(moderngl.DEPTH_TEST)
         data = numpy.array(
             [[v.x, v.y, v.u, v.v, v.r, v.g, v.b, v.a] for v in data_vertices],
             dtype="f4",
@@ -3628,7 +3801,11 @@ class ModernSceneRenderer:
     def _render_scene_plan(self, *, scene_plan: _ScenePlan) -> None:
         camera = scene_plan.camera
         use_depth_world = scene_plan.kind == "rapid_tracking"
-        clip_world_triangles = scene_plan.kind in {"rapid_tracking", "auditory"}
+        clip_world_triangles = scene_plan.kind in {
+            "rapid_tracking",
+            "spatial_integration",
+            "auditory",
+        }
         rt_world_debug = {
             "world_triangles_input": 0,
             "world_triangles_emitted": 0,
@@ -3745,9 +3922,9 @@ class ModernSceneRenderer:
                     else:
                         depth_t = max(0.0, min(1.0, (sum(depths) / 3.0 - 120.0) / 700.0))
                         if use_depth_world:
-                            shade = 0.70 + (light * 0.32)
+                            shade = 0.76 + (light * 0.24)
                             base_rgb = _mix_rgb(
-                                triangle.base_rgb, (0.52, 0.60, 0.48), 0.16 + (0.12 * depth_t)
+                                triangle.base_rgb, (0.56, 0.64, 0.50), 0.20 + (0.14 * depth_t)
                             )
                             alpha = triangle.alpha
                         else:
@@ -3858,8 +4035,8 @@ class ModernSceneRenderer:
                     base_rgb = tuple(float(channel) for channel in base_override[:3])
                     alpha = float(base_override[3])
                 if use_depth_world:
-                    base_rgb = _mix_rgb(base_rgb, (0.50, 0.58, 0.46), 0.12)
-                    shade = 0.64 + (light * 0.32)
+                    base_rgb = _mix_rgb(base_rgb, (0.56, 0.64, 0.50), 0.16)
+                    shade = 0.70 + (light * 0.26)
                 fill_color = (
                     max(0.0, min(1.0, base_rgb[0] * shade)),
                     max(0.0, min(1.0, base_rgb[1] * shade)),

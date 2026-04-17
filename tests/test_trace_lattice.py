@@ -5,6 +5,9 @@ import pytest
 from cfast_trainer.trace_lattice import (
     DEFAULT_TRACE_LATTICE_SPEC,
     TraceLatticeAction,
+    TraceLatticeMotionConfig,
+    TraceLatticeMotionPhase,
+    TraceLatticeMotionPlayer,
     TraceLatticeOrientation,
     trace_lattice_build_path,
     trace_lattice_center_state,
@@ -36,7 +39,7 @@ def test_trace_lattice_rotations_are_self_relative() -> None:
     )
 
 
-def test_trace_lattice_samples_non_straight_steps_with_continuous_motion() -> None:
+def test_trace_lattice_samples_non_straight_steps_with_clear_pivot_then_translation() -> None:
     path = trace_lattice_build_path(
         start_state=trace_lattice_center_state(),
         actions=(TraceLatticeAction.RIGHT,),
@@ -46,19 +49,127 @@ def test_trace_lattice_samples_non_straight_steps_with_continuous_motion() -> No
     mid_pose = trace_lattice_sample_path(path, progress=0.30, turn_phase_ratio=0.35)
     late_pose = trace_lattice_sample_path(path, progress=0.70, turn_phase_ratio=0.35)
 
-    assert early_pose.position[0] > 0.0
-    assert early_pose.position[1] > 3.0
+    assert early_pose.position == pytest.approx((0.0, 3.0, 0.0))
     assert early_pose.rotated is True
     assert early_pose.forward[0] > 0.0
     assert early_pose.forward[1] > 0.0
 
-    assert mid_pose.position[0] > early_pose.position[0]
-    assert mid_pose.position[1] >= early_pose.position[1]
+    assert mid_pose.position == pytest.approx(early_pose.position)
+    assert mid_pose.forward[0] > early_pose.forward[0]
     assert late_pose.position[0] > mid_pose.position[0]
-    assert late_pose.position[1] > 3.0
+    assert late_pose.position[1] == pytest.approx(3.0)
     assert late_pose.rotated is True
     assert late_pose.forward[0] > 0.0
     assert abs(late_pose.forward[0]) > abs(late_pose.forward[1])
+
+
+def test_trace_lattice_sample_reaches_exact_cardinal_orientation_before_translation() -> None:
+    path = trace_lattice_build_path(
+        start_state=trace_lattice_center_state(),
+        actions=(TraceLatticeAction.RIGHT,),
+    )
+
+    pivot_pose = trace_lattice_sample_path(path, progress=0.35, turn_phase_ratio=0.35)
+    after_pivot_pose = trace_lattice_sample_path(path, progress=0.36, turn_phase_ratio=0.35)
+
+    assert pivot_pose.position == pytest.approx((0.0, 3.0, 0.0))
+    assert pivot_pose.forward == pytest.approx((1.0, 0.0, 0.0), abs=1e-6)
+    assert after_pivot_pose.position[0] > pivot_pose.position[0]
+    assert after_pivot_pose.position[1] == pytest.approx(pivot_pose.position[1])
+    assert after_pivot_pose.forward == pytest.approx(pivot_pose.forward, abs=1e-6)
+
+
+def test_trace_lattice_motion_player_rotates_then_moves_one_cell() -> None:
+    player = TraceLatticeMotionPlayer(
+        start_state=trace_lattice_center_state(),
+        actions=(TraceLatticeAction.RIGHT,),
+        config=TraceLatticeMotionConfig(
+            command_duration_s=2.0,
+            turn_phase_ratio=0.25,
+            max_update_dt_s=10.0,
+        ),
+    )
+
+    halfway_rotation = player.update(0.25)
+    assert halfway_rotation.phase is TraceLatticeMotionPhase.ROTATING
+    assert halfway_rotation.pose.position == pytest.approx((0.0, 3.0, 0.0))
+    assert halfway_rotation.pose.forward[0] > 0.0
+    assert halfway_rotation.pose.forward[1] > 0.0
+
+    finished_rotation = player.update(0.25)
+    assert finished_rotation.phase is TraceLatticeMotionPhase.TRANSLATING
+    assert finished_rotation.pose.position == pytest.approx((0.0, 3.0, 0.0))
+    assert finished_rotation.pose.forward == pytest.approx((1.0, 0.0, 0.0), abs=1e-6)
+
+    complete = player.update(1.50)
+    assert complete.phase is TraceLatticeMotionPhase.COMPLETE
+    assert complete.pose.position == pytest.approx((1.0, 3.0, 0.0))
+    assert complete.pose.forward == pytest.approx((1.0, 0.0, 0.0), abs=1e-6)
+    assert complete.completed_commands == 1
+
+
+def test_trace_lattice_motion_player_queues_commands_sequentially() -> None:
+    player = TraceLatticeMotionPlayer(
+        start_state=trace_lattice_center_state(),
+        actions=(TraceLatticeAction.RIGHT, TraceLatticeAction.LEFT),
+        config=TraceLatticeMotionConfig(
+            command_duration_s=1.0,
+            turn_phase_ratio=0.25,
+            max_update_dt_s=10.0,
+        ),
+    )
+
+    after_first_command = player.update(1.0)
+    assert after_first_command.completed_commands == 1
+    assert after_first_command.phase is TraceLatticeMotionPhase.ROTATING
+    assert after_first_command.pose.active_step_index == 1
+    assert after_first_command.pose.position == pytest.approx((1.0, 3.0, 0.0))
+
+    finished = player.update(1.0)
+    assert finished.phase is TraceLatticeMotionPhase.COMPLETE
+    assert finished.pose.position == pytest.approx((1.0, 4.0, 0.0))
+    assert finished.completed_commands == 2
+
+
+def test_trace_lattice_motion_player_clamps_large_delta_to_one_command() -> None:
+    player = TraceLatticeMotionPlayer(
+        start_state=trace_lattice_center_state(),
+        actions=(
+            TraceLatticeAction.RIGHT,
+            TraceLatticeAction.STRAIGHT,
+            TraceLatticeAction.STRAIGHT,
+        ),
+        config=TraceLatticeMotionConfig(
+            command_duration_s=1.0,
+            turn_phase_ratio=0.25,
+            max_update_dt_s=1.0,
+        ),
+    )
+
+    snapshot = player.update(10.0)
+
+    assert snapshot.completed_commands == 1
+    assert snapshot.pose.active_step_index == 1
+    assert snapshot.pose.position == pytest.approx((1.0, 3.0, 0.0))
+
+
+def test_trace_lattice_motion_player_uses_boundary_override_commands() -> None:
+    player = TraceLatticeMotionPlayer(
+        start_state=trace_lattice_state(col=3, row=3, level=0, forward=(0, 1, 0), up=(0, 0, 1)),
+        actions=(TraceLatticeAction.STRAIGHT,),
+        config=TraceLatticeMotionConfig(
+            command_duration_s=1.0,
+            turn_phase_ratio=0.25,
+            max_update_dt_s=10.0,
+        ),
+    )
+
+    assert player.path.steps[0].effective_action is TraceLatticeAction.PULL
+    complete = player.update(1.0)
+
+    assert complete.phase is TraceLatticeMotionPhase.COMPLETE
+    assert complete.pose.position == pytest.approx((0.0, 3.0, -1.0))
+    assert player.path.end_state.node.level == 1
 
 
 def test_trace_lattice_boundary_overrides_force_inward_actions() -> None:

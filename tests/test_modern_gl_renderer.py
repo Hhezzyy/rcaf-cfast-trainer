@@ -15,6 +15,20 @@ if "moderngl" not in sys.modules:
     moderngl_stub = ModuleType("moderngl")
     moderngl_stub.__spec__ = ModuleSpec("moderngl", loader=None)
     sys.modules["moderngl"] = moderngl_stub
+moderngl_for_tests = sys.modules["moderngl"]
+for _name, _value in {
+    "BLEND": 1,
+    "CULL_FACE": 2,
+    "DEPTH_TEST": 3,
+    "SCISSOR_TEST": 4,
+    "SRC_ALPHA": 5,
+    "ONE_MINUS_SRC_ALPHA": 6,
+    "ONE": 7,
+    "LINEAR": 8,
+    "TRIANGLES": 9,
+}.items():
+    if not hasattr(moderngl_for_tests, _name):
+        setattr(moderngl_for_tests, _name, _value)
 
 from cfast_trainer.aircraft_art import (
     apply_fixed_wing_view_rotation,
@@ -57,6 +71,7 @@ from cfast_trainer.modern_gl_renderer import (
     _RapidTrackingStaticGroup,
     _RapidTrackingStaticScene,
     _scene_local_top_left_to_screen,
+    _scene_screen_bounds,
     _SceneAssetLibrary,
     _SceneCamera,
     _ScenePlan,
@@ -69,7 +84,11 @@ from cfast_trainer.render_assets import RenderAssetCatalog
 from cfast_trainer.spatial_integration import (
     SpatialIntegrationLandmark,
     SpatialIntegrationPart,
+    SpatialIntegrationSceneView,
     build_spatial_integration_test,
+)
+from cfast_trainer.spatial_integration_visuals import (
+    spatial_integration_landmark_asset_id,
 )
 from cfast_trainer.trace_test_1 import (
     TraceTest1Generator,
@@ -93,18 +112,165 @@ class _FakeClock:
 
 
 class _FakeScreen:
+    def __init__(self, ctx: "_FakeContext") -> None:
+        self._ctx = ctx
+
     def use(self) -> None:
-        return None
+        self._ctx.active_target = "screen"
+        self._ctx.events.append(("use", "screen"))
+
+
+class _FakeResource:
+    def __init__(self, ctx: "_FakeContext", label: str) -> None:
+        self._ctx = ctx
+        self.label = label
+        self.released = False
+
+    def release(self) -> None:
+        self.released = True
+        self._ctx.events.append(("release", self.label))
+
+
+class _FakeTexture(_FakeResource):
+    def __init__(self, ctx: "_FakeContext", label: str, size: tuple[int, int]) -> None:
+        super().__init__(ctx, label)
+        self.size = size
+        self.filter: tuple[int, int] | None = None
+        self.repeat_x = False
+        self.repeat_y = False
+        self.writes: list[bytes] = []
+
+    def use(self, *, location: int = 0) -> None:
+        self._ctx.events.append(("texture_use", self.label, int(location)))
+
+    def write(self, pixels: bytes) -> None:
+        self.writes.append(pixels)
+        self._ctx.events.append(("texture_write", self.label, len(pixels)))
+
+
+class _FakeFramebuffer(_FakeResource):
+    def __init__(self, ctx: "_FakeContext", label: str) -> None:
+        super().__init__(ctx, label)
+
+    def use(self) -> None:
+        self._ctx.active_target = self.label
+        self._ctx.events.append(("use", self.label))
+
+
+class _FakeBuffer(_FakeResource):
+    pass
+
+
+class _FakeVertexArray(_FakeResource):
+    def render(self, mode: int) -> None:
+        self._ctx.events.append(("render", self.label, int(mode)))
 
 
 class _FakeContext:
     def __init__(self) -> None:
-        self.screen = _FakeScreen()
-        self.viewport: tuple[int, int, int, int] | None = None
-        self.clear_calls: list[tuple[float, float, float, float]] = []
+        self.events: list[tuple[object, ...]] = []
+        self.active_target = "screen"
+        self.screen = _FakeScreen(self)
+        self._viewport: tuple[int, int, int, int] | None = None
+        self._scissor: tuple[int, int, int, int] | None = None
+        self._blend_func: tuple[int, ...] | None = None
+        self.clear_calls: list[
+            tuple[str, tuple[float, float, float, float], dict[str, object]]
+        ] = []
+        self.created_textures: list[_FakeTexture] = []
+        self.created_depth_renderbuffers: list[_FakeResource] = []
+        self.created_framebuffers: list[_FakeFramebuffer] = []
 
-    def clear(self, r: float, g: float, b: float, a: float) -> None:
-        self.clear_calls.append((r, g, b, a))
+    @property
+    def viewport(self) -> tuple[int, int, int, int] | None:
+        return self._viewport
+
+    @viewport.setter
+    def viewport(self, value: tuple[int, int, int, int] | None) -> None:
+        self._viewport = value
+        self.events.append(("viewport", value))
+
+    @property
+    def scissor(self) -> tuple[int, int, int, int] | None:
+        return self._scissor
+
+    @scissor.setter
+    def scissor(self, value: tuple[int, int, int, int] | None) -> None:
+        self._scissor = value
+        self.events.append(("scissor", value))
+
+    @property
+    def blend_func(self) -> tuple[int, ...] | None:
+        return self._blend_func
+
+    @blend_func.setter
+    def blend_func(self, value: tuple[int, ...]) -> None:
+        self._blend_func = tuple(value)
+        self.events.append(("blend_func", tuple(value)))
+
+    def clear(
+        self,
+        r: float = 0.0,
+        g: float = 0.0,
+        b: float = 0.0,
+        a: float = 0.0,
+        **kwargs: object,
+    ) -> None:
+        rgba = (float(r), float(g), float(b), float(a))
+        self.clear_calls.append((self.active_target, rgba, dict(kwargs)))
+        self.events.append(("clear", self.active_target, rgba, dict(kwargs)))
+
+    def enable(self, flag: int) -> None:
+        self.events.append(("enable", int(flag)))
+
+    def disable(self, flag: int) -> None:
+        self.events.append(("disable", int(flag)))
+
+    def texture(
+        self,
+        size: tuple[int, int],
+        components: int,
+        data: bytes | None = None,
+    ) -> _FakeTexture:
+        label = f"texture:{len(self.created_textures)}"
+        texture = _FakeTexture(self, label, tuple(size))
+        self.created_textures.append(texture)
+        self.events.append(("texture", label, tuple(size), int(components), data is not None))
+        return texture
+
+    def depth_renderbuffer(self, size: tuple[int, int]) -> _FakeResource:
+        label = f"depth:{len(self.created_depth_renderbuffers)}"
+        depth = _FakeResource(self, label)
+        self.created_depth_renderbuffers.append(depth)
+        self.events.append(("depth_renderbuffer", label, tuple(size)))
+        return depth
+
+    def framebuffer(
+        self,
+        *,
+        color_attachments: list[_FakeTexture],
+        depth_attachment: _FakeResource,
+    ) -> _FakeFramebuffer:
+        label = f"framebuffer:{len(self.created_framebuffers)}"
+        framebuffer = _FakeFramebuffer(self, label)
+        self.created_framebuffers.append(framebuffer)
+        self.events.append(
+            (
+                "framebuffer",
+                label,
+                tuple(texture.label for texture in color_attachments),
+                depth_attachment.label,
+            )
+        )
+        return framebuffer
+
+    def buffer(self, data: bytes) -> _FakeBuffer:
+        self.events.append(("buffer", len(data)))
+        return _FakeBuffer(self, "buffer")
+
+    def vertex_array(self, _program: object, _bindings: list[object]) -> _FakeVertexArray:
+        self.events.append(("vertex_array", len(_bindings)))
+        return _FakeVertexArray(self, "vao")
 
 
 def _auditory_payload():
@@ -306,6 +472,13 @@ def _build_pipeline_probe_renderer() -> ModernSceneRenderer:
     renderer._vortex_texture = object()
     renderer._ui_texture = None
     renderer._ui_tex_size = (0, 0)
+    renderer._scene_color_texture = None
+    renderer._scene_depth_renderbuffer = None
+    renderer._scene_framebuffer = None
+    renderer._scene_fb_size = (0, 0)
+    renderer._color_program = object()
+    renderer._scene_program = object()
+    renderer._texture_program = object()
     return renderer
 
 
@@ -462,6 +635,59 @@ def test_auditory_scene_plan_ball_advances_with_presentation_travel() -> None:
     assert far_ball.position[1] > near_ball.position[1]
 
 
+def test_auditory_scene_plan_uses_core_collision_count_and_roll() -> None:
+    payload = replace(
+        _auditory_payload(),
+        presentation_travel_distance=20.0,
+        ball_contact_ratio=1.05,
+        collisions=3,
+    )
+
+    plan = _build_auditory_scene_plan(
+        AuditoryGlScene(
+            world=pygame.Rect(0, 0, 640, 360),
+            payload=payload,
+            time_remaining_s=18.0,
+            time_fill_ratio=0.44,
+        )
+    )
+    ball = next(instance for instance in plan.asset_instances if instance.asset_id == "auditory_ball")
+
+    assert plan.debug is not None
+    assert ball.hpr_deg[2] == pytest.approx(plan.debug["auditory_ball_roll_deg"])
+    assert abs(float(ball.hpr_deg[2])) > 1.0
+    assert ball.color is not None
+    assert ball.color[0] > ball.color[1]
+    assert plan.debug["auditory_collision_active"] is True
+    assert plan.debug["auditory_collision_penalties"] == 3
+    assert plan.debug["auditory_core_collisions"] == 3
+
+
+def test_auditory_draw_scene_exposes_follower_debug_fields() -> None:
+    renderer = _build_pipeline_probe_renderer()
+    payload = replace(
+        _auditory_payload(),
+        presentation_travel_distance=24.0,
+        ball_contact_ratio=1.01,
+        collisions=2,
+    )
+    scene = AuditoryGlScene(
+        world=pygame.Rect(0, 0, 640, 360),
+        payload=payload,
+        time_remaining_s=18.0,
+        time_fill_ratio=0.44,
+    )
+
+    renderer._draw_auditory_scene = lambda *, scene, scene_plan: scene_plan.entity_count
+    renderer._draw_scene(scene=scene)
+    debug = renderer.debug_last_scene()
+
+    assert debug["kind"] == "auditory"
+    assert debug["auditory_travel_distance"] == pytest.approx(24.0)
+    assert debug["auditory_collision_active"] is True
+    assert debug["auditory_core_collisions"] == 2
+
+
 def test_auditory_scene_plan_gate_flash_overrides_base_gate_color() -> None:
     payload = replace(
         _auditory_payload(),
@@ -543,7 +769,7 @@ def test_auditory_scene_plan_keeps_far_end_tunnel_ring_in_front_of_camera() -> N
     assert farthest_rib.position[1] < plan.camera.far_clip
 
 
-def test_render_frame_flushes_scene_textures_before_color_and_ui() -> None:
+def test_render_frame_flushes_scene_target_before_color_composite_and_ui() -> None:
     renderer = _build_pipeline_probe_renderer()
     order: list[object] = []
 
@@ -566,6 +792,7 @@ def test_render_frame_flushes_scene_textures_before_color_and_ui() -> None:
     renderer._draw_scene = fake_draw_scene
     renderer._flush_scene_textures = fake_flush_scene_textures
     renderer._flush_color_geometry = fake_flush_color_geometry
+    renderer._composite_scene_target = lambda: order.append("composite")
     renderer._draw_ui_surface = fake_draw_ui_surface
 
     renderer.render_frame(
@@ -577,8 +804,122 @@ def test_render_frame_flushes_scene_textures_before_color_and_ui() -> None:
         "draw_scene",
         ("scene_textures", 1),
         ("color", 0, 1),
+        "composite",
         ("ui", 0, (640, 360)),
     ]
+
+
+def test_render_frame_clears_default_and_scene_framebuffers_before_ui() -> None:
+    renderer = _build_pipeline_probe_renderer()
+    ctx = renderer._ctx
+    assert isinstance(ctx, _FakeContext)
+    order: list[str] = []
+
+    def fake_draw_scene(*, scene) -> None:
+        assert isinstance(scene, RapidTrackingGlScene)
+        order.append("draw_scene")
+
+    renderer._draw_scene = fake_draw_scene
+    renderer._flush_scene_textures = lambda: order.append("scene_textures")
+    renderer._flush_color_geometry = lambda: order.append("color")
+    renderer._composite_scene_target = lambda: order.append("composite")
+    renderer._draw_ui_surface = lambda *, ui_surface: order.append("ui")
+
+    scene = RapidTrackingGlScene(
+        world=pygame.Rect(10, 20, 300, 180),
+        payload=None,
+        active_phase=True,
+    )
+    renderer.render_frame(
+        ui_surface=pygame.Surface((640, 360), pygame.SRCALPHA),
+        scene=scene,
+    )
+
+    assert ctx.clear_calls[0] == ("screen", (0.01, 0.02, 0.06, 1.0), {"depth": 1.0})
+    assert ctx.clear_calls[1] == ("framebuffer:0", (0.0, 0.0, 0.0, 0.0), {"depth": 1.0})
+    assert order == ["draw_scene", "scene_textures", "color", "composite", "ui"]
+    assert len(ctx.created_textures) == 1
+    assert len(ctx.created_depth_renderbuffers) == 1
+    assert len(ctx.created_framebuffers) == 1
+
+
+def test_scene_target_scissors_rapid_tracking_and_restores_state() -> None:
+    renderer = _build_pipeline_probe_renderer()
+    ctx = renderer._ctx
+    assert isinstance(ctx, _FakeContext)
+    scene = RapidTrackingGlScene(
+        world=pygame.Rect(12, 28, 320, 144),
+        payload=None,
+        active_phase=True,
+    )
+    expected_scissor = renderer._scene_scissor_rect(scene.world)
+
+    def fake_draw_scene(*, scene: object) -> None:
+        ctx.events.append(("draw_scene", scene.__class__.__name__))
+
+    renderer._draw_scene = fake_draw_scene
+    renderer._flush_scene_textures = lambda: ctx.events.append(("scene_textures",))
+    renderer._flush_color_geometry = lambda: ctx.events.append(("color",))
+
+    renderer._render_scene_target(scene=scene)
+
+    assert ("scissor", expected_scissor) in ctx.events
+    assert ctx.scissor is None
+    scissor_on = ctx.events.index(("enable", moderngl_for_tests.SCISSOR_TEST))
+    draw_idx = ctx.events.index(("draw_scene", "RapidTrackingGlScene"))
+    scissor_off = ctx.events.index(("disable", moderngl_for_tests.SCISSOR_TEST))
+    assert scissor_on < draw_idx < scissor_off
+    assert ctx.blend_func == (
+        moderngl_for_tests.SRC_ALPHA,
+        moderngl_for_tests.ONE_MINUS_SRC_ALPHA,
+        moderngl_for_tests.ONE,
+        moderngl_for_tests.ONE_MINUS_SRC_ALPHA,
+    )
+    assert ("disable", moderngl_for_tests.DEPTH_TEST) in ctx.events
+
+
+def test_scene_target_scissors_spatial_integration_before_ui_composite() -> None:
+    renderer = _build_pipeline_probe_renderer()
+    ctx = renderer._ctx
+    assert isinstance(ctx, _FakeContext)
+    order: list[str] = []
+    scene = SpatialIntegrationGlScene(
+        world=pygame.Rect(28, 36, 420, 220),
+        payload=None,
+    )
+    expected_scissor = renderer._scene_scissor_rect(scene.world)
+
+    renderer._draw_scene = lambda *, scene: order.append("draw_scene")
+    renderer._flush_scene_textures = lambda: order.append("scene_textures")
+    renderer._flush_color_geometry = lambda: order.append("color")
+    renderer._composite_scene_target = lambda: order.append("composite")
+    renderer._draw_ui_surface = lambda *, ui_surface: order.append("ui")
+
+    renderer.render_frame(
+        ui_surface=pygame.Surface((640, 360), pygame.SRCALPHA),
+        scene=scene,
+    )
+
+    assert ("scissor", expected_scissor) in ctx.events
+    assert order == ["draw_scene", "scene_textures", "color", "composite", "ui"]
+
+
+def test_world_geometry_flush_does_not_clear_backdrop_color() -> None:
+    renderer = _build_pipeline_probe_renderer()
+    renderer._batch.scene_triangles.extend(
+        [
+            SimpleNamespace(x=0.0, y=0.0, depth=0.3, r=0.2, g=0.4, b=0.6, a=1.0),
+            SimpleNamespace(x=1.0, y=0.0, depth=0.4, r=0.2, g=0.4, b=0.6, a=1.0),
+            SimpleNamespace(x=0.0, y=1.0, depth=0.5, r=0.2, g=0.4, b=0.6, a=1.0),
+        ]
+    )
+
+    renderer._flush_world_geometry()
+
+    ctx = renderer._ctx
+    assert isinstance(ctx, _FakeContext)
+    assert ctx.clear_calls == []
+    assert not renderer._batch.scene_triangles
 
 
 def test_auditory_render_frame_does_not_defer_vortex_flush_until_ui() -> None:
@@ -971,6 +1312,52 @@ def test_rapid_tracking_world_projection_clips_near_plane_to_finite_triangles() 
     assert renderer._last_rt_world_debug["max_projected_extent_px"] <= 640.0
 
 
+def test_spatial_integration_world_projection_clips_horizontal_frustum_spill() -> None:
+    renderer = _build_pipeline_probe_renderer()
+    rect = pygame.Rect(40, 30, 240, 160)
+    camera = _SceneCamera(
+        position=(0.0, 0.0, 0.0),
+        heading_deg=0.0,
+        pitch_deg=0.0,
+        h_fov_deg=60.0,
+        v_fov_deg=40.0,
+    )
+    triangle = _PreparedWorldTriangle(
+        points=((18.0, 40.0, -4.0), (40.0, 40.0, 4.0), (18.0, 80.0, 2.0)),
+        normal=(0.0, 0.0, 1.0),
+        base_rgb=(0.44, 0.56, 0.48),
+    )
+    scene_plan = _ScenePlan(
+        kind="spatial_integration",
+        rect=rect,
+        camera=camera,
+        asset_instances=(),
+        overlay_primitives=(),
+        asset_ids=(),
+        entity_count=1,
+        static_groups=(
+            _RapidTrackingStaticGroup(
+                group_id="spatial-clip",
+                layer="near",
+                center=(25.0, 53.0, 0.0),
+                radius=36.0,
+                triangles=(triangle,),
+                instance_count=1,
+            ),
+        ),
+    )
+
+    renderer._render_scene_plan(scene_plan=scene_plan)
+
+    bounds = _scene_screen_bounds(rect=rect, window_height=renderer._win_h)
+    assert renderer._batch.triangles
+    assert all(
+        (bounds[0] - 1e-4) <= vertex.x <= (bounds[2] + 1e-4)
+        and (bounds[1] - 1e-4) <= vertex.y <= (bounds[3] + 1e-4)
+        for vertex in renderer._batch.triangles
+    )
+
+
 def test_rapid_tracking_playfield_groups_stay_within_radius_cap_for_seed_551() -> None:
     bundle = _rapid_tracking_static_bundle(551)
     playfield_groups = [group for group in bundle.groups if group.layer != "far"]
@@ -1173,6 +1560,30 @@ def test_spatial_integration_scene_plan_includes_aircraft_and_landmarks() -> Non
     assert plan.entity_count == len(plan.asset_instances)
 
 
+def test_spatial_integration_backdrops_are_nonblack_for_oblique_and_topdown() -> None:
+    payload = _spatial_integration_payload()
+    for scene_view in (
+        SpatialIntegrationSceneView.OBLIQUE,
+        SpatialIntegrationSceneView.TOPDOWN,
+    ):
+        renderer = _build_pipeline_probe_renderer()
+        renderer._render_scene_plan = lambda *, scene_plan: None
+        scene = SpatialIntegrationGlScene(
+            world=pygame.Rect(0, 0, 640, 360),
+            payload=replace(payload, scene_view=scene_view),
+        )
+        plan = _build_spatial_integration_scene_plan(scene)
+
+        renderer._draw_spatial_integration_scene(scene=scene, scene_plan=plan)
+
+        backdrop_colors = [
+            (vertex.r, vertex.g, vertex.b)
+            for vertex in renderer._batch.triangles[:12]
+        ]
+        assert backdrop_colors
+        assert min(sum(color) for color in backdrop_colors) > 0.5
+
+
 def test_spatial_integration_scene_plan_maps_landmark_kinds_to_asset_inventory() -> None:
     payload = replace(
         _spatial_integration_payload(),
@@ -1193,19 +1604,17 @@ def test_spatial_integration_scene_plan_maps_landmark_kinds_to_asset_inventory()
         SpatialIntegrationGlScene(world=pygame.Rect(0, 0, 640, 360), payload=payload)
     )
     instance_ids = {instance.asset_id for instance in plan.asset_instances}
+    expected_landmark_assets = {
+        spatial_integration_landmark_asset_id(label=landmark.label, kind=landmark.kind)
+        for landmark in payload.landmarks
+    }
 
     assert {
         "plane_blue",
         "plane_green",
         "plane_yellow",
-        "building_hangar",
-        "building_tower",
-        "truck_olive",
-        "soldiers_patrol",
-        "spatial_tent_canvas",
-        "spatial_sheep_flock",
     } <= instance_ids
-    assert {"trees_field_cluster", "forest_canopy_patch"} & instance_ids
+    assert expected_landmark_assets <= instance_ids
     assert set(plan.asset_ids) == instance_ids
 
 

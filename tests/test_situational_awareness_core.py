@@ -58,12 +58,19 @@ def _payload_signature(payload: SituationalAwarenessPayload | None) -> object:
             cue_card.last_report_text,
             cue_card.task_text,
             cue_card.channel_text,
+            cue_card.next_waypoint,
+            cue_card.next_waypoint_at_text,
+            cue_card.altitude_text,
+            cue_card.communications_text,
             round(cue_card.fade, 2),
         ),
         payload.top_strip_text,
         round(payload.top_strip_fade, 2),
         tuple(payload.radio_log),
         tuple(payload.speech_prefetch_lines),
+        payload.round_index,
+        payload.round_total,
+        payload.north_heading_deg,
         None
         if query is None
         else (
@@ -73,6 +80,10 @@ def _payload_signature(payload: SituationalAwarenessPayload | None) -> object:
             query.correct_answer_token,
             query.subject_callsign,
             tuple((choice.code, choice.text) for choice in query.answer_choices),
+            tuple(query.accepted_tokens),
+            query.entry_label,
+            query.entry_placeholder,
+            query.entry_max_chars,
         ),
         tuple(payload.announcement_lines),
         payload.display_clock_text,
@@ -94,6 +105,43 @@ def _advance_until_query(
         clock.advance(1.0)
         engine.update()
     raise AssertionError(f"Failed to find query kind={required_kind!r} within bounded steps.")
+
+
+def _build_targeted_query_engine(
+    *,
+    query_kind: SituationalAwarenessQueryKind,
+    seed: int = 515,
+    difficulty: float = 0.7,
+    profile: SituationalAwarenessTrainingProfile | None = None,
+):
+    return build_situational_awareness_test(
+        clock=FakeClock(),
+        seed=seed,
+        difficulty=difficulty,
+        config=SituationalAwarenessConfig(
+            practice_scenarios=0,
+            scored_duration_s=45.0,
+            scored_scenario_duration_s=45.0,
+            query_interval_min_s=10,
+            query_interval_max_s=10,
+        ),
+        practice_segments=(),
+        scored_segments=(
+            SituationalAwarenessTrainingSegment(
+                label="Targeted",
+                duration_s=45.0,
+                active_channels=("pictorial", "coded", "numerical", "aural"),
+                active_query_kinds=(query_kind.value,),
+                focus_label=query_kind.value,
+                profile=profile
+                or SituationalAwarenessTrainingProfile(
+                    query_interval_min_s=10,
+                    query_interval_max_s=10,
+                    response_window_s=10,
+                ),
+            ),
+        ),
+    )
 
 
 def test_situational_awareness_determinism_same_seed_same_answers() -> None:
@@ -385,7 +433,27 @@ def test_rule_action_scoring_is_binary_and_timeout_counts_as_miss() -> None:
         query_interval_max_s=10,
     )
     clock = FakeClock()
-    engine = build_situational_awareness_test(clock=clock, seed=515, difficulty=0.8, config=cfg)
+    engine = build_situational_awareness_test(
+        clock=clock,
+        seed=515,
+        difficulty=0.8,
+        config=cfg,
+        practice_segments=(),
+        scored_segments=(
+            SituationalAwarenessTrainingSegment(
+                label="Rule Action",
+                duration_s=75.0,
+                active_channels=("pictorial", "coded", "numerical", "aural"),
+                active_query_kinds=(SituationalAwarenessQueryKind.RULE_ACTION.value,),
+                focus_label="Rule action only",
+                profile=SituationalAwarenessTrainingProfile(
+                    query_interval_min_s=10,
+                    query_interval_max_s=10,
+                    response_window_s=10,
+                ),
+            ),
+        ),
+    )
     engine.start_scored()
 
     payload = _advance_until_query(
@@ -452,3 +520,204 @@ def test_custom_segment_payload_exposes_focus_metadata_and_restricts_query_kinds
     assert payload.segment_label == "Route Focus"
     assert payload.active_query is not None
     assert payload.active_query.kind is SituationalAwarenessQueryKind.ACTUAL_DESTINATION
+
+
+def test_default_scored_run_uses_three_rounds_and_fixed_cardinal_north_per_round() -> None:
+    clock = FakeClock()
+    engine = build_situational_awareness_test(
+        clock=clock,
+        seed=515,
+        difficulty=0.65,
+        config=SituationalAwarenessConfig(
+            practice_scenarios=0,
+            scored_duration_s=60.0,
+            scored_scenario_duration_s=60.0,
+            query_interval_min_s=10,
+            query_interval_max_s=10,
+        ),
+    )
+    engine.start_scored()
+
+    seen_rounds: list[int] = []
+    seen_headings: list[int] = []
+    active_heading: int | None = None
+    for _ in range(80):
+        payload = engine.snapshot().payload
+        if isinstance(payload, SituationalAwarenessPayload):
+            assert payload.round_total == 3
+            assert payload.north_heading_deg in (0, 90, 180, 270)
+            if payload.round_index not in seen_rounds:
+                seen_rounds.append(payload.round_index)
+                seen_headings.append(payload.north_heading_deg)
+                active_heading = payload.north_heading_deg
+            else:
+                assert payload.north_heading_deg == active_heading
+        if engine.phase is Phase.RESULTS:
+            break
+        clock.advance(1.0)
+        engine.update()
+
+    assert seen_rounds == [1, 2, 3]
+    assert len(set(seen_headings)) == 3
+
+
+def test_scored_round_seeds_are_fresh_and_repeat_for_same_seed() -> None:
+    def _round_trace(seed: int) -> list[tuple[int, int, int]]:
+        clock = FakeClock()
+        engine = build_situational_awareness_test(
+            clock=clock,
+            seed=seed,
+            difficulty=0.65,
+            config=SituationalAwarenessConfig(
+                practice_scenarios=0,
+                scored_duration_s=60.0,
+                scored_scenario_duration_s=60.0,
+                query_interval_min_s=30,
+                query_interval_max_s=30,
+            ),
+        )
+        engine.start_scored()
+        seen: list[tuple[int, int, int]] = []
+        for _ in range(80):
+            payload = engine.snapshot().payload
+            if isinstance(payload, SituationalAwarenessPayload):
+                current = (
+                    payload.round_index,
+                    int(engine._scenario_plan.context["round_seed"]),
+                    payload.north_heading_deg,
+                )
+                if not seen or seen[-1][0] != current[0]:
+                    seen.append(current)
+            if engine.phase is Phase.RESULTS:
+                break
+            clock.advance(1.0)
+            engine.update()
+        return seen
+
+    first = _round_trace(515)
+    second = _round_trace(515)
+    assert first == second
+    assert [round_index for round_index, _round_seed, _heading in first] == [1, 2, 3]
+    assert len({round_seed for _round_index, round_seed, _heading in first}) == 3
+
+
+def test_info_panel_focus_switches_on_updates_and_top_strip_expires_cleanly() -> None:
+    clock = FakeClock()
+    engine = build_situational_awareness_test(
+        clock=clock,
+        seed=111,
+        difficulty=0.7,
+        config=SituationalAwarenessConfig(
+            practice_scenarios=0,
+            scored_duration_s=20.0,
+            scored_scenario_duration_s=20.0,
+            query_interval_min_s=30,
+            query_interval_max_s=30,
+        ),
+        practice_segments=(),
+        scored_segments=(
+            SituationalAwarenessTrainingSegment(
+                label="Panel",
+                duration_s=20.0,
+                active_channels=("pictorial", "coded", "numerical", "aural"),
+                active_query_kinds=(SituationalAwarenessQueryKind.CURRENT_LOCATION.value,),
+                focus_label="Panel",
+                profile=SituationalAwarenessTrainingProfile(
+                    query_interval_min_s=30,
+                    query_interval_max_s=30,
+                    cue_card_ttl_s=2,
+                    top_strip_ttl_s=2,
+                ),
+            ),
+        ),
+    )
+    engine.start_scored()
+
+    initial_payload = engine.snapshot().payload
+    assert isinstance(initial_payload, SituationalAwarenessPayload)
+    assert initial_payload.cue_card is not None
+    initial_callsign = initial_payload.cue_card.callsign
+
+    for _ in range(9):
+        clock.advance(1.0)
+        engine.update()
+
+    switched_payload = engine.snapshot().payload
+    assert isinstance(switched_payload, SituationalAwarenessPayload)
+    assert switched_payload.cue_card is not None
+    assert switched_payload.cue_card.callsign != initial_callsign
+    assert switched_payload.top_strip_text != ""
+    focused_asset = engine._live_assets[switched_payload.cue_card.callsign]
+    assert switched_payload.cue_card.altitude_text == f"FL{focused_asset.altitude_fl}"
+    assert switched_payload.cue_card.communications_text == engine._asset_comms_text(focused_asset)
+
+    for _ in range(3):
+        clock.advance(1.0)
+        engine.update()
+
+    expired_payload = engine.snapshot().payload
+    assert isinstance(expired_payload, SituationalAwarenessPayload)
+    assert expired_payload.top_strip_text == ""
+    assert expired_payload.cue_card is not None
+    assert expired_payload.cue_card.callsign == switched_payload.cue_card.callsign
+
+
+def test_altitude_query_uses_numeric_input_and_rejects_invalid_tokens() -> None:
+    engine = _build_targeted_query_engine(query_kind=SituationalAwarenessQueryKind.ALTITUDE)
+    clock = engine._clock
+    engine.start_scored()
+
+    payload = _advance_until_query(
+        engine,
+        clock,
+        required_kind=SituationalAwarenessQueryKind.ALTITUDE,
+    )
+    query = payload.active_query
+    assert query is not None
+    assert query.answer_mode is SituationalAwarenessAnswerMode.NUMERIC
+    assert query.entry_label == "Altitude"
+    assert query.entry_placeholder == "180"
+    assert engine.submit_answer("FL180") is False
+    assert engine.submit_answer(query.correct_answer_token) is True
+
+
+def test_communications_query_uses_numeric_input_and_matches_active_channel() -> None:
+    engine = _build_targeted_query_engine(query_kind=SituationalAwarenessQueryKind.COMMUNICATION_CHANNEL)
+    clock = engine._clock
+    engine.start_scored()
+
+    payload = _advance_until_query(
+        engine,
+        clock,
+        required_kind=SituationalAwarenessQueryKind.COMMUNICATION_CHANNEL,
+    )
+    query = payload.active_query
+    assert query is not None
+    assert query.answer_mode is SituationalAwarenessAnswerMode.NUMERIC
+    subject = engine._live_assets[query.subject_callsign]
+    assert query.correct_answer_token == str(subject.channel)
+    assert engine.submit_answer("CHANNEL 3") is False
+    assert engine.submit_answer(query.correct_answer_token) is True
+
+
+def test_current_allegiance_query_uses_token_input_and_normalizes_colour_synonyms() -> None:
+    engine = _build_targeted_query_engine(query_kind=SituationalAwarenessQueryKind.CURRENT_ALLEGIANCE)
+    clock = engine._clock
+    engine.start_scored()
+
+    payload = _advance_until_query(
+        engine,
+        clock,
+        required_kind=SituationalAwarenessQueryKind.CURRENT_ALLEGIANCE,
+    )
+    query = payload.active_query
+    assert query is not None
+    assert query.answer_mode is SituationalAwarenessAnswerMode.TOKEN
+    assert query.accepted_tokens == ("FRIENDLY", "HOSTILE", "UNKNOWN")
+    assert engine.submit_answer("BLUE") is False
+    synonym = {
+        "FRIENDLY": "YELLOW",
+        "HOSTILE": "RED",
+        "UNKNOWN": "WHITE",
+    }[query.correct_answer_token]
+    assert engine.submit_answer(synonym) is True

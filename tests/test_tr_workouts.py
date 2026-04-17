@@ -126,3 +126,4 @@ def test_real_tr_workout_matches_standard_90_minute_structure() -> None:
         "Panel switching",
         "Pressure tolerance",
     }.issubset(set(plan.focus_skills))
+    assert any("map panel staying live" in note.lower() for note in plan.notes)

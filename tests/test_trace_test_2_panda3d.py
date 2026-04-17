@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import os
 import sys
 from importlib.machinery import ModuleSpec
@@ -14,7 +15,8 @@ if "moderngl" not in sys.modules:
     sys.modules["moderngl"] = moderngl_stub
 
 from cfast_trainer.app import App, CognitiveTestScreen, MenuItem, MenuScreen
-from cfast_trainer.aircraft_art import fixed_wing_heading_from_screen_heading
+from cfast_trainer.trace_scene_3d import _project_world_point as project_trace_scene_world_point
+from cfast_trainer.trace_scene_3d import build_trace_test_2_scene3d
 from cfast_trainer.trace_test_2 import (
     TraceTest2AircraftTrack,
     TraceTest2Generator,
@@ -24,7 +26,7 @@ from cfast_trainer.trace_test_2 import (
     build_trace_test_2_test,
     trace_test_2_track_tangent,
 )
-from cfast_trainer.trace_test_2_gl import project_point, screen_heading_deg
+from cfast_trainer.trace_test_2_gl import project_point
 from cfast_trainer.trace_test_2_panda3d import (
     TraceTest2Panda3DRenderer,
     panda3d_trace_test_2_rendering_available,
@@ -177,24 +179,19 @@ def test_trace_test_2_aircraft_hpr_rejects_zero_motion() -> None:
         TraceTest2Panda3DRenderer._aircraft_hpr_from_tangent(tangent=(0.0, 0.0, 0.0))
 
 
-def test_trace_test_2_panda_hpr_uses_trace_screen_heading_contract() -> None:
+def test_trace_test_2_panda_hpr_uses_world_tangent_contract() -> None:
     track = _turn_track(motion_kind=TraceTest2MotionKind.RIGHT)
     progress = 0.5
-    size = (960, 540)
     tangent = trace_test_2_track_tangent(track=track, progress=progress)
     world_hpr = TraceTest2Panda3DRenderer._aircraft_hpr_from_tangent(tangent=tangent)
     hpr = TraceTest2Panda3DRenderer._aircraft_hpr_for_track(
         track=track,
         progress=progress,
-        size=size,
+        size=(960, 540),
         tangent=tangent,
     )
-    expected_heading = fixed_wing_heading_from_screen_heading(
-        screen_heading_deg(track=track, progress=progress, size=size)
-    )
 
-    assert hpr[0] == pytest.approx(expected_heading)
-    assert abs(hpr[0] - world_hpr[0]) >= 1.0
+    assert hpr[0] == pytest.approx(world_hpr[0])
     assert hpr[1] == pytest.approx(world_hpr[1])
     assert hpr[2] == pytest.approx(world_hpr[2])
 
@@ -296,11 +293,8 @@ def test_trace_test_2_panda_multi_aircraft_orientation_matches_lattice_motion_ki
             size=(960, 540),
             tangent=tangent,
         )
-        expected_heading = fixed_wing_heading_from_screen_heading(
-            screen_heading_deg(track=track, progress=0.5, size=(960, 540))
-        )
 
-        assert hpr[0] == pytest.approx(expected_heading)
+        assert hpr[0] == pytest.approx(world_hpr[0])
         assert hpr[1] == pytest.approx(world_hpr[1])
         assert hpr[2] == pytest.approx(0.0, abs=0.01)
         if track.motion_kind is TraceTest2MotionKind.LEFT:
@@ -378,6 +372,24 @@ def test_trace_test_2_panda_hpr_sampling_is_deterministic_for_same_seed() -> Non
     assert samples_a == samples_b
 
 
+def test_trace_test_2_shared_scene_camera_keeps_start_positions_inside_frame_with_padding() -> None:
+    payload = TraceTest2Generator(seed=71).next_problem(difficulty=0.58).payload
+    assert isinstance(payload, TraceTest2Payload)
+    snapshot = TraceTest2Panda3DRenderer._scene_snapshot(
+        payload=replace(payload, observe_progress=0.0)
+    )
+
+    for pose in snapshot.aircraft:
+        screen_x, screen_y, in_front = project_trace_scene_world_point(
+            camera=snapshot.camera,
+            point=pose.position,
+            size=(960, 540),
+        )
+        assert in_front is True
+        assert 40.0 <= screen_x <= 920.0
+        assert 40.0 <= screen_y <= 500.0
+
+
 def test_trace_test_2_camera_matches_gl_centering_and_ordering_contract() -> None:
     if not panda3d_trace_test_2_rendering_available():
         pytest.skip("Panda3D unavailable")
@@ -385,30 +397,24 @@ def test_trace_test_2_camera_matches_gl_centering_and_ordering_contract() -> Non
     pygame.init()
     renderer = TraceTest2Panda3DRenderer(size=(960, 540))
     try:
-        center = TraceTest2Point3(0.0, 96.0, 9.0)
-        left = TraceTest2Point3(-30.0, 96.0, 9.0)
-        right = TraceTest2Point3(30.0, 96.0, 9.0)
-        low = TraceTest2Point3(0.0, 96.0, 0.0)
-        high = TraceTest2Point3(0.0, 96.0, 20.0)
+        payload = TraceTest2Generator(seed=71).next_problem(difficulty=0.58).payload
+        assert isinstance(payload, TraceTest2Payload)
+        snapshot = build_trace_test_2_scene3d(payload=payload)
+        renderer.render(payload=payload)
 
-        panda_center = _project_world_point(renderer, point=center)
-        panda_left = _project_world_point(renderer, point=left)
-        panda_right = _project_world_point(renderer, point=right)
-        panda_low = _project_world_point(renderer, point=low)
-        panda_high = _project_world_point(renderer, point=high)
+        for pose in snapshot.aircraft:
+            panda_projection = _project_world_point(
+                renderer,
+                point=TraceTest2Point3(*pose.position),
+            )
+            shared_projection = project_trace_scene_world_point(
+                camera=snapshot.camera,
+                point=pose.position,
+                size=renderer.size,
+            )
 
-        gl_center = project_point(center, size=(960, 540))
-        gl_left = project_point(left, size=(960, 540))
-        gl_right = project_point(right, size=(960, 540))
-        gl_low = project_point(low, size=(960, 540))
-        gl_high = project_point(high, size=(960, 540))
-
-        assert abs(panda_center[0] - (renderer.size[0] * 0.5)) <= 24.0
-        assert abs(gl_center[0] - 480.0) <= 0.01
-        assert panda_left[0] < panda_center[0] < panda_right[0]
-        assert gl_left[0] < gl_center[0] < gl_right[0]
-        assert panda_high[1] < panda_low[1]
-        assert gl_high[1] < gl_low[1]
+            assert panda_projection[0] == pytest.approx(shared_projection[0], abs=22.0)
+            assert panda_projection[1] == pytest.approx(shared_projection[1], abs=22.0)
     finally:
         renderer.close()
         pygame.quit()

@@ -3,6 +3,8 @@ from __future__ import annotations
 import importlib.util
 import math
 import os
+from dataclasses import dataclass
+from pathlib import Path
 
 import pygame
 
@@ -11,10 +13,22 @@ from .aircraft_art import (
     build_panda3d_fixed_wing_model,
     panda3d_fixed_wing_hpr_from_world_tangent,
 )
+from .panda3d_assets import Panda3DAssetCatalog
 from .spatial_integration import (
+    SpatialIntegrationLandmark,
     SpatialIntegrationPayload,
     SpatialIntegrationSceneView,
 )
+from .spatial_integration_visuals import spatial_integration_landmark_asset_id
+from .spatial_integration_visuals import spatial_integration_landmark_heading_deg
+from .spatial_integration_visuals import spatial_integration_landmark_panda_scale
+from .spatial_integration_visuals import spatial_integration_visual_spec
+
+
+@dataclass(slots=True)
+class _SpatialLandmarkNodeState:
+    node: object | None = None
+    signature: tuple[str, str] | None = None
 
 
 def panda3d_spatial_integration_rendering_available() -> bool:
@@ -41,9 +55,12 @@ class SpatialIntegrationPanda3DRenderer:
         width = max(320, int(size[0]))
         height = max(220, int(size[1]))
         self._size = (width, height)
+        self._catalog = Panda3DAssetCatalog()
+        self._loaded_asset_ids: set[str] = set()
+        self._fallback_asset_ids: set[str] = set()
         self._grid_signature = (0, 0)
         self._grid_node = None
-        self._landmark_nodes: list[tuple[object, object]] = []
+        self._landmark_nodes: list[_SpatialLandmarkNodeState] = []
         self._aircraft_hpr = (0.0, 0.0, 0.0)
 
         loadPrcFileData("", "window-type offscreen")
@@ -95,6 +112,12 @@ class SpatialIntegrationPanda3DRenderer:
     def size(self) -> tuple[int, int]:
         return self._size
 
+    def loaded_asset_ids(self) -> tuple[str, ...]:
+        return tuple(sorted(self._loaded_asset_ids))
+
+    def fallback_asset_ids(self) -> tuple[str, ...]:
+        return tuple(sorted(self._fallback_asset_ids))
+
     def close(self) -> None:
         try:
             self._base.destroy()
@@ -107,7 +130,12 @@ class SpatialIntegrationPanda3DRenderer:
             grid_cols = 5
             grid_rows = 5
             alt_levels = 4
-            landmarks = (("HGR", 1, 0), ("TWR", 3, 1), ("WDM", 4, 2), ("VLG", 0, 3))
+            landmarks = (
+                ("HGR", "building", 1, 0),
+                ("TWR", "tower", 3, 1),
+                ("WOOD", "forest", 4, 2),
+                ("TRK1", "truck", 0, 3),
+            )
             query_label = "TWR"
             now_point = (2, 1, 1)
             prev_point = (1, 0, 1)
@@ -119,7 +147,12 @@ class SpatialIntegrationPanda3DRenderer:
             grid_rows = max(1, int(payload.grid_rows))
             alt_levels = max(1, int(payload.alt_levels))
             landmarks = tuple(
-                (str(landmark.label), int(landmark.x), int(landmark.y))
+                (
+                    str(landmark.label),
+                    str(landmark.kind),
+                    int(landmark.x),
+                    int(landmark.y),
+                )
                 for landmark in payload.landmarks
             )
             query_label = str(payload.query_label)
@@ -258,19 +291,17 @@ class SpatialIntegrationPanda3DRenderer:
     def _update_landmarks(
         self,
         *,
-        landmarks: tuple[tuple[str, int, int], ...],
+        landmarks: tuple[tuple[str, str, int, int], ...],
         query_label: str,
         grid_cols: int,
         grid_rows: int,
         alt_levels: int,
     ) -> None:
         while len(self._landmark_nodes) < len(landmarks):
-            marker, label_node = self._build_landmark_marker()
-            marker.reparentTo(self._landmark_root)
-            self._landmark_nodes.append((marker, label_node))
+            self._landmark_nodes.append(_SpatialLandmarkNodeState())
 
-        for idx, (label, gx, gy) in enumerate(landmarks):
-            marker, label_node = self._landmark_nodes[idx]
+        for idx, (label, kind, gx, gy) in enumerate(landmarks):
+            marker = self._ensure_landmark_node(idx=idx, label=label, kind=kind)
             wx, wy, _, terrain = self._grid_to_world(
                 x=gx,
                 y=gy,
@@ -283,15 +314,53 @@ class SpatialIntegrationPanda3DRenderer:
             marker.setPos(wx, wy, terrain + 0.16)
             is_query = str(label).upper() == str(query_label).upper()
             if is_query:
-                marker.setColorScale(1.06, 1.00, 0.74, 1.0)
-                label_node.node().setTextColor(0.98, 0.94, 0.70, 1.0)
+                marker.setColorScale(1.08, 1.02, 0.74, 1.0)
             else:
-                marker.setColorScale(0.96, 0.98, 1.0, 1.0)
-                label_node.node().setTextColor(0.94, 0.97, 1.0, 1.0)
-            label_node.node().setText(str(label))
+                marker.setColorScale(1.0, 1.0, 1.0, 1.0)
 
-        for marker, _label_node in self._landmark_nodes[len(landmarks) :]:
-            marker.hide()
+        for state in self._landmark_nodes[len(landmarks) :]:
+            if state.node is not None:
+                state.node.hide()
+
+    def _ensure_landmark_node(self, *, idx: int, label: str, kind: str):
+        asset_id = spatial_integration_landmark_asset_id(label=label, kind=kind)
+        signature = (asset_id, str(kind).strip().lower())
+        state = self._landmark_nodes[idx]
+        if state.node is not None and state.signature == signature:
+            return state.node
+        if state.node is not None:
+            try:
+                state.node.removeNode()
+            except Exception:
+                pass
+        node = self._build_landmark_node(label=label, kind=kind)
+        node.reparentTo(self._landmark_root)
+        state.node = node
+        state.signature = signature
+        return node
+
+    def _build_landmark_node(self, *, label: str, kind: str):
+        from panda3d.core import NodePath
+
+        spec = spatial_integration_visual_spec(kind)
+        if spec is None:
+            raise KeyError(f"Unsupported Spatial Integration landmark kind: {kind}")
+        asset_id = spatial_integration_landmark_asset_id(label=label, kind=kind)
+        heading = spatial_integration_landmark_heading_deg(
+            label=label,
+            kind=kind,
+            asset_id=asset_id,
+        )
+        root = NodePath(f"spatial-landmark-{kind}")
+        self._load_asset_or_fallback(
+            asset_id=asset_id,
+            fallback=spec.panda_fallback_kind,
+            color=self._rgba(spec.scene_fill_rgb),
+            scale=spatial_integration_landmark_panda_scale(label=label, kind=kind),
+            parent=root,
+            hpr=heading,
+        )
+        return root
 
     def _update_aircraft(
         self,
@@ -420,25 +489,151 @@ class SpatialIntegrationPanda3DRenderer:
         root.setScale(scale)
         return root
 
-    def _build_landmark_marker(self):
-        from panda3d.core import TextNode
+    @staticmethod
+    def _rgba(rgb: tuple[int, int, int], alpha: float = 1.0) -> tuple[float, float, float, float]:
+        return (
+            float(rgb[0]) / 255.0,
+            float(rgb[1]) / 255.0,
+            float(rgb[2]) / 255.0,
+            float(alpha),
+        )
 
-        marker = self._make_box(size=(2.2, 2.2, 0.7), color=(0.92, 0.94, 0.98, 1.0))
-        pole = self._make_box(size=(0.32, 0.32, 2.4), color=(0.94, 0.88, 0.52, 1.0))
-        pole.setPos(0.0, 0.0, 1.4)
-        pole.reparentTo(marker)
+    def _load_asset_or_fallback(
+        self,
+        *,
+        asset_id: str,
+        fallback: str,
+        color: tuple[float, float, float, float],
+        scale: float,
+        parent,
+        pos: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        hpr: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    ):
+        entry = self._catalog.entry(asset_id)
+        resolved = self._catalog.resolve_path(asset_id)
+        fallback_kind = fallback
+        if entry is not None and str(getattr(entry, "fallback", "box")).strip().lower() not in {"", "box"}:
+            fallback_kind = str(entry.fallback)
+        node = None
+        used_loaded_model = False
+        if resolved is not None:
+            try:
+                node = self._load_model(resolved)
+            except Exception:
+                node = None
+        if node is None:
+            self._fallback_asset_ids.add(asset_id)
+            node = self._build_fallback_model(kind=fallback_kind, color=color)
+        else:
+            self._loaded_asset_ids.add(asset_id)
+            used_loaded_model = True
+        node.reparentTo(parent)
+        if resolved is not None and entry is not None and used_loaded_model:
+            entry.apply_loaded_model_transform(node, pos=pos, hpr=hpr, scale=scale)
+        else:
+            node.setPos(*pos)
+            node.setHpr(*hpr)
+            node.setScale(scale)
+        return node
 
-        label = TextNode("spatial-landmark-label")
-        label.setText("LMK")
-        label.setAlign(TextNode.ACenter)
-        label.setTextColor(0.94, 0.97, 1.0, 1.0)
-        label_np = marker.attachNewNode(label)
-        label_np.setPos(0.0, 0.0, 4.8)
-        label_np.setScale(8.0)
-        label_np.setBillboardPointEye()
-        label_np.setDepthTest(False)
-        label_np.setDepthWrite(False)
-        return marker, label_np
+    def _load_model(self, path: Path):
+        suffix = path.suffix.lower()
+        if suffix in {".glb", ".gltf"}:
+            import gltf
+
+            return gltf.load_model(path)
+        return self._base.loader.loadModel(str(path))
+
+    def _build_fallback_model(
+        self,
+        *,
+        kind: str,
+        color: tuple[float, float, float, float],
+    ):
+        from panda3d.core import CardMaker, NodePath
+
+        root = NodePath(f"spatial-{kind}")
+
+        if kind == "hangar":
+            body = self._make_box(size=(4.0, 5.2, 2.6), color=color)
+            roof = self._make_box(size=(4.4, 5.6, 0.7), color=(0.36, 0.38, 0.36, 1.0))
+            roof.setPos(0.0, 0.0, 1.7)
+            for child in (body, roof):
+                child.reparentTo(root)
+            return root
+
+        if kind == "tower":
+            shaft = self._make_box(size=(0.9, 0.9, 6.2), color=color)
+            cap = self._make_box(size=(1.8, 1.8, 0.7), color=(0.36, 0.38, 0.40, 1.0))
+            cap.setPos(0.0, 0.0, 3.3)
+            for child in (shaft, cap):
+                child.reparentTo(root)
+            return root
+
+        if kind == "truck":
+            body = self._make_box(size=(1.6, 3.2, 0.9), color=color)
+            cab = self._make_box(size=(1.2, 1.0, 1.0), color=(0.58, 0.64, 0.48, 1.0))
+            cab.setPos(0.0, 1.0, 0.2)
+            for child in (body, cab):
+                child.reparentTo(root)
+            return root
+
+        if kind == "soldiers":
+            offsets = (-0.7, 0.0, 0.7)
+            for offset in offsets:
+                body = self._make_box(size=(0.18, 0.18, 0.7), color=color)
+                body.setPos(offset, 0.0, 0.35)
+                head = self._make_box(size=(0.16, 0.16, 0.16), color=(0.72, 0.68, 0.58, 1.0))
+                head.setPos(offset, 0.0, 0.82)
+                body.reparentTo(root)
+                head.reparentTo(root)
+            return root
+
+        if kind in {"trees", "forest"}:
+            for idx, offset in enumerate((-1.2, 0.0, 1.2) if kind == "trees" else (-1.8, -0.6, 0.6, 1.8)):
+                trunk = self._make_box(size=(0.20, 0.20, 1.1), color=(0.34, 0.26, 0.16, 1.0))
+                trunk.setPos(offset, (idx % 2) * 0.4, 0.55)
+                canopy = self._make_box(
+                    size=(1.1 if kind == "trees" else 1.4, 1.1 if kind == "trees" else 1.4, 1.0),
+                    color=(0.16, 0.42, 0.20, 1.0),
+                )
+                canopy.setPos(offset, (idx % 2) * 0.4, 1.4 if kind == "trees" else 1.7)
+                trunk.reparentTo(root)
+                canopy.reparentTo(root)
+            return root
+
+        if kind == "spatial_tent":
+            left = self._make_box(size=(0.10, 2.0, 1.3), color=color)
+            right = self._make_box(size=(0.10, 2.0, 1.3), color=color)
+            floor = self._make_box(size=(1.8, 2.0, 0.06), color=(0.36, 0.28, 0.18, 1.0))
+            left.setHpr(0.0, 0.0, 34.0)
+            right.setHpr(0.0, 0.0, -34.0)
+            left.setPos(-0.55, 0.0, 0.64)
+            right.setPos(0.55, 0.0, 0.64)
+            floor.setPos(0.0, 0.0, 0.03)
+            for child in (left, right, floor):
+                child.reparentTo(root)
+            return root
+
+        if kind == "spatial_sheep":
+            for idx, offset in enumerate((-0.8, 0.0, 0.8)):
+                body = self._make_box(size=(0.7, 0.5, 0.5), color=color)
+                head = self._make_box(size=(0.22, 0.22, 0.22), color=(0.26, 0.26, 0.24, 1.0))
+                body.setPos(offset, 0.0, 0.28)
+                head.setPos(offset + 0.28, 0.0, 0.34 if idx % 2 == 0 else 0.22)
+                body.reparentTo(root)
+                head.reparentTo(root)
+            return root
+
+        if kind == "box":
+            return self._make_box(size=(2.0, 2.0, 0.8), color=color)
+
+        maker = CardMaker("spatial-fallback-card")
+        maker.setFrame(-0.8, 0.8, -0.5, 0.5)
+        card = root.attachNewNode(maker.generate())
+        card.setColor(*color)
+        card.setTwoSided(True)
+        return root
 
     def _build_aircraft_model(self, *, color: tuple[float, float, float, float]):
         return build_panda3d_fixed_wing_model(

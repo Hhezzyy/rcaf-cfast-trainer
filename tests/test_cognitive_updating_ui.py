@@ -346,3 +346,92 @@ def test_cognitive_updating_messages_page_removes_stale_sensor_line_after_sensor
         assert "Ground Sensor due in: 10s" in rendered_after
     finally:
         pygame.quit()
+
+
+def test_cognitive_updating_controls_page_shows_current_code_and_rollover_timer() -> None:
+    clock = _FakeClock()
+    payload = replace(
+        _sample_payload(active_domains=("controls", "state_code"), focus_label="Controls"),
+        comms_time_limit_s=30,
+    )
+    engine = _FakeCognitiveUpdatingEngine(
+        payload,
+        title="Cognitive Updating: Controls Anchor",
+        clock=clock,
+    )
+    app, screen = _build_screen(engine)
+    try:
+        surface = pygame.display.get_surface()
+        assert surface is not None
+        captured = _install_recording_fonts(app, screen)
+
+        screen.render(surface)
+        screen._cognitive_updating_upper_tab_index = 2
+        screen._cognitive_updating_lower_tab_index = 2
+        captured.clear()
+        screen.render(surface)
+
+        rendered = "\n".join(captured)
+        assert f"Current code: {payload.comms_code}" in rendered
+        assert "Code changes in: 00:30" in rendered
+
+        runtime = screen._cognitive_updating_runtime
+        assert runtime is not None
+
+        clock.advance(29.5)
+        captured.clear()
+        screen.render(surface)
+        rendered_pending = "\n".join(captured)
+        assert f"Current code: {payload.comms_code}" in rendered_pending
+        assert "Code changes in: 00:01" in rendered_pending
+
+        clock.advance(0.5)
+        captured.clear()
+        screen.render(surface)
+        rendered_rolled = "\n".join(captured)
+        rolled = runtime.snapshot()
+        assert rolled.current_comms_code != payload.comms_code
+        assert f"Current code: {rolled.current_comms_code}" in rendered_rolled
+        assert "Code changes in: 00:30" in rendered_rolled
+    finally:
+        pygame.quit()
+
+
+def test_cognitive_updating_upcoming_comms_code_renders_only_on_messages_page() -> None:
+    clock = _FakeClock()
+    payload = replace(
+        _sample_payload(active_domains=("controls", "state_code"), focus_label="Controls"),
+        comms_time_limit_s=30,
+        message_reveal_comms_s=5.0,
+    )
+    engine = _FakeCognitiveUpdatingEngine(
+        payload,
+        title="Cognitive Updating: Controls Anchor",
+        clock=clock,
+    )
+    app, screen = _build_screen(engine)
+    try:
+        surface = pygame.display.get_surface()
+        assert surface is not None
+        captured = _install_recording_fonts(app, screen)
+
+        screen.render(surface)
+        clock.advance(25.0)
+
+        screen._cognitive_updating_upper_tab_index = 0
+        screen._cognitive_updating_lower_tab_index = 0
+        captured.clear()
+        screen.render(surface)
+        rendered_messages = "\n".join(captured)
+        assert "New Comms Code:" in rendered_messages
+
+        screen._cognitive_updating_upper_tab_index = 2
+        screen._cognitive_updating_lower_tab_index = 2
+        captured.clear()
+        screen.render(surface)
+        rendered_controls = "\n".join(captured)
+        assert "New Comms Code:" not in rendered_controls
+        assert f"Current code: {payload.comms_code}" in rendered_controls
+        assert "Code changes in: 00:05" in rendered_controls
+    finally:
+        pygame.quit()

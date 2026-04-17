@@ -110,7 +110,7 @@ def build_tr_workout_plan(*, duration_scale: float = 1.0) -> AntWorkoutPlan:
         notes=(
             "Typed reflections and block setup screens do not count toward the 90-minute drill clock.",
             "Every block reuses the live four-panel Target Recognition layout and mouse-first interaction flow.",
-            "Focused blocks keep inactive panels visible but OFF so the layout stays familiar while only the intended panels score.",
+            "Focused blocks keep the full layout visible, with the map panel staying live whenever Scene is part of the active search task.",
         ),
         blocks=blocks,
     )

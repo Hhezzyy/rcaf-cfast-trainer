@@ -18,9 +18,13 @@ from cfast_trainer.auditory_capacity import (
 )
 from cfast_trainer.auditory_capacity_panda3d import AuditoryCapacityPanda3DRenderer
 from cfast_trainer.auditory_capacity_view import (
+    AUDITORY_BALL_ANCHOR_DISTANCE,
+    BALL_FORWARD_IDLE_NORM,
+    TUNNEL_GEOMETRY_END_DISTANCE,
     gate_distance_from_x_norm,
     run_start_distance,
     run_travel_distance,
+    tube_center_at_distance,
 )
 
 
@@ -117,7 +121,7 @@ def test_spawned_gate_uses_shared_far_spawn_anchor() -> None:
     assert engine._gates[0].x_norm == pytest.approx(AUDITORY_GATE_SPAWN_X_NORM)
 
 
-def test_live_tunnel_travel_stays_monotonic_even_when_ball_forward_norm_relaxes() -> None:
+def test_live_tunnel_travel_stays_monotonic_with_ball_depth_anchored() -> None:
     clock = _FakeClock()
     engine = build_auditory_capacity_test(clock=clock, seed=17, difficulty=0.58)
     engine.start_practice()
@@ -134,17 +138,11 @@ def test_live_tunnel_travel_stays_monotonic_even_when_ball_forward_norm_relaxes(
             (
                 float(payload.phase_elapsed_s),
                 float(payload.ball_forward_norm),
-                run_travel_distance(
-                    session_seed=int(payload.session_seed),
-                    phase_elapsed_s=float(payload.phase_elapsed_s),
-                ),
+                float(payload.presentation_travel_distance),
             )
         )
 
-    assert any(
-        samples[idx + 1][1] + 0.20 < samples[idx][1]
-        for idx in range(len(samples) - 1)
-    )
+    assert all(sample[1] == pytest.approx(float(BALL_FORWARD_IDLE_NORM)) for sample in samples)
     assert all(
         samples[idx + 1][2] >= samples[idx][2]
         for idx in range(len(samples) - 1)
@@ -161,6 +159,20 @@ def test_live_tunnel_run_start_is_seeded_repeatable_and_varies_between_runs() ->
     assert other != pytest.approx(first)
 
 
+def test_seeded_travel_changes_visible_tunnel_curve_relative_to_ball_anchor() -> None:
+    start_travel = run_travel_distance(session_seed=17, phase_elapsed_s=0.0)
+    later_travel = run_travel_distance(session_seed=17, phase_elapsed_s=42.0)
+
+    def relative_curve(travel_distance: float) -> tuple[float, float]:
+        ball_distance = float(travel_distance) + float(AUDITORY_BALL_ANCHOR_DISTANCE)
+        ring_distance = float(travel_distance) + (float(TUNNEL_GEOMETRY_END_DISTANCE) * 0.54)
+        ring_x, ring_z = tube_center_at_distance(ring_distance)
+        ball_x, ball_z = tube_center_at_distance(ball_distance)
+        return (ring_x - ball_x, ring_z - ball_z)
+
+    assert relative_curve(later_travel) != pytest.approx(relative_curve(start_travel))
+
+
 def test_correct_pass_gate_flashes_white_on_the_gate() -> None:
     clock = _FakeClock()
     engine = build_auditory_capacity_test(clock=clock, seed=17, difficulty=0.58)
@@ -171,6 +183,7 @@ def test_correct_pass_gate_flashes_white_on_the_gate() -> None:
     assert len(engine._gates) == 1
     gate = engine._gates[0]
     gate.x_norm = float(AUDITORY_GATE_PLAYER_X_NORM)
+    gate.world_distance = engine._gate_world_distance_from_x_norm(AUDITORY_GATE_PLAYER_X_NORM)
     gate.y_norm = float(engine._ball_y)
     gate.aperture_norm = 0.22
 
@@ -197,6 +210,7 @@ def test_forbidden_pass_flashes_distinct_error_red_on_the_gate() -> None:
     gate = engine._gates[0]
     engine._forbidden_gate_color = str(gate.color)
     gate.x_norm = float(AUDITORY_GATE_PLAYER_X_NORM)
+    gate.world_distance = engine._gate_world_distance_from_x_norm(AUDITORY_GATE_PLAYER_X_NORM)
     gate.y_norm = float(engine._ball_y)
     gate.aperture_norm = 0.22
 

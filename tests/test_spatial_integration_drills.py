@@ -25,6 +25,9 @@ from cfast_trainer.spatial_integration import (
     SpatialIntegrationQuestionKind,
     SpatialIntegrationTrialStage,
 )
+from cfast_trainer.spatial_integration_visuals import (
+    supported_spatial_integration_landmark_kinds,
+)
 
 
 @dataclass
@@ -246,3 +249,21 @@ def test_wave2_spatial_drills_levels_l2_l5_l8_are_materially_different(builder) 
     assert low_secondary >= mid_secondary >= high_secondary
     assert (low_primary, low_secondary) != (mid_primary, mid_secondary)
     assert (mid_primary, mid_secondary) != (high_primary, high_secondary)
+
+
+def test_si_drills_expose_only_shared_supported_landmark_kinds() -> None:
+    clock = FakeClock()
+    drill = build_si_mixed_tempo_drill(
+        clock=clock,
+        seed=144,
+        difficulty=0.55,
+        mode=AntDrillMode.BUILD,
+        config=SiDrillConfig(scored_duration_s=24.0),
+    )
+
+    drill.start_practice()
+    payload = _wait_for_question(drill=drill, clock=clock)
+    assert payload is not None
+
+    supported = set(supported_spatial_integration_landmark_kinds())
+    assert {str(landmark.kind) for landmark in payload.landmarks} <= supported

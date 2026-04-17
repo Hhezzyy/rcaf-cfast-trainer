@@ -6,6 +6,7 @@ import pytest
 
 from cfast_trainer.cognitive_core import Phase
 from cfast_trainer.situational_awareness import (
+    SituationalAwarenessAnswerMode,
     SituationalAwarenessConfig,
     SituationalAwarenessPayload,
     SituationalAwarenessQueryKind,
@@ -71,13 +72,18 @@ def test_headless_scripted_run_tracks_attempts_correct_and_timeouts() -> None:
 
     first = _advance_until_payload(engine, clock, with_query=True)
     assert first.active_query is not None
+    assert first.round_total == 3
+    assert first.north_heading_deg in (0, 90, 180, 270)
     assert engine.submit_answer(first.active_query.correct_answer_token) is True
 
     second = _advance_until_payload(engine, clock, with_query=True)
     assert second.active_query is not None
-    wrong = "1"
-    if wrong == second.active_query.correct_answer_token:
-        wrong = "2"
+    if second.active_query.answer_mode is SituationalAwarenessAnswerMode.GRID_CELL:
+        wrong = "A0" if second.active_query.correct_answer_token != "A0" else "B1"
+    else:
+        wrong = "1"
+        if wrong == second.active_query.correct_answer_token:
+            wrong = "2"
     assert engine.submit_answer(wrong) is True
 
     third = _advance_until_payload(engine, clock, with_query=True)

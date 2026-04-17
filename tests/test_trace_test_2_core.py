@@ -270,7 +270,7 @@ def test_generated_tracks_preserve_role_specific_smooth_tangent_behavior() -> No
             assert end_tangent[2] > 0.0
 
 
-def test_generated_turning_tracks_continue_moving_during_turn_steps() -> None:
+def test_generated_turning_tracks_pivot_before_translating_on_turn_steps() -> None:
     payload = TraceTest2Generator(seed=29).next_problem(difficulty=0.55).payload
     assert isinstance(payload, TraceTest2Payload)
 
@@ -292,15 +292,19 @@ def test_generated_turning_tracks_continue_moving_during_turn_steps() -> None:
             track=track,
             progress=(float(turn_index) + 0.20) / float(step_count),
         )
+        late = trace_test_2_track_position(
+            track=track,
+            progress=(float(turn_index) + 0.60) / float(step_count),
+        )
 
-        assert mid != pytest.approx(early)
+        assert mid == pytest.approx(early)
         if track.motion_kind in (TraceTest2MotionKind.LEFT, TraceTest2MotionKind.RIGHT):
             expected_sign = -1.0 if track.motion_kind is TraceTest2MotionKind.LEFT else 1.0
-            assert (mid.x - early.x) * expected_sign > 0.0
-            assert mid.y > early.y
+            assert (late.x - mid.x) * expected_sign > 0.0
+            assert late.y == pytest.approx(mid.y)
         else:
-            assert mid.z > early.z
-            assert mid.y > early.y
+            assert late.z > mid.z
+            assert late.y == pytest.approx(mid.y)
 
 
 def test_generated_turning_tracks_keep_tangent_direction_consistent_with_motion_family() -> None:
@@ -331,6 +335,17 @@ def test_generated_turning_tracks_keep_tangent_direction_consistent_with_motion_
             assert mid_tangent[0] > 0.0
         elif track.motion_kind is TraceTest2MotionKind.CLIMB:
             assert mid_tangent[2] > 0.0
+
+
+def test_trace_test_2_start_positions_project_inside_the_visible_window() -> None:
+    payload = TraceTest2Generator(seed=71).next_problem(difficulty=0.58).payload
+    assert isinstance(payload, TraceTest2Payload)
+
+    for track in payload.aircraft:
+        start = trace_test_2_track_position(track=track, progress=0.0)
+        assert -70.0 <= start.x <= 70.0
+        assert start.y >= 40.0
+        assert 0.0 <= start.z <= 40.0
 
 
 def test_track_position_uses_quadratic_control_polygon_for_three_point_tracks() -> None:

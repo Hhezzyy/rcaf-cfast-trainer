@@ -128,6 +128,7 @@ def test_real_sa_workout_matches_standard_90_minute_structure() -> None:
     plan = build_sa_workout_plan()
 
     assert plan.scored_duration_s == 90.0 * 60.0
+    assert any("incoming bar" in note for note in plan.notes)
     assert tuple(block.drill_code for block in plan.blocks) == (
         "sa_picture_anchor",
         "sa_contact_identification_prime",
@@ -146,3 +147,32 @@ def test_real_sa_workout_matches_standard_90_minute_structure() -> None:
         "Action selection",
         "Pressure tolerance",
     }.issubset(set(plan.focus_skills))
+
+
+def test_sa_workout_block_payload_keeps_shared_round_metadata() -> None:
+    clock = FakeClock()
+    session = AntWorkoutSession(
+        clock=clock,
+        seed=911,
+        plan=_build_small_sa_workout_plan(),
+        starting_level=5,
+    )
+
+    while session.stage is not AntWorkoutStage.BLOCK:
+        if session.stage in (AntWorkoutStage.INTRO, AntWorkoutStage.BLOCK_SETUP, AntWorkoutStage.BLOCK_RESULTS):
+            session.activate()
+            continue
+        if session.stage in (AntWorkoutStage.PRE_REFLECTION, AntWorkoutStage.POST_REFLECTION):
+            session.append_text("ready")
+            session.activate()
+            continue
+        raise AssertionError(f"Unexpected stage before block: {session.stage}")
+
+    assert session.stage is AntWorkoutStage.BLOCK
+    engine = session.current_engine()
+    assert engine is not None
+    payload = engine.snapshot().payload
+    assert isinstance(payload, SituationalAwarenessPayload)
+    assert payload.round_index >= 1
+    assert payload.round_total >= 1
+    assert payload.north_heading_deg in (0, 90, 180, 270)

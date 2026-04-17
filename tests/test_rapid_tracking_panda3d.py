@@ -14,6 +14,10 @@ from cfast_trainer.rapid_tracking_panda3d import (
     panda3d_rapid_tracking_rendering_available,
 )
 from cfast_trainer.rapid_tracking_view import RapidTrackingCameraRigState, camera_pose_compat
+from cfast_trainer.rapid_tracking_view import (
+    RAPID_TRACKING_PITCH_MAX_DEG,
+    RAPID_TRACKING_PITCH_MIN_DEG,
+)
 
 
 def _angle_delta_deg(a: float, b: float) -> float:
@@ -204,6 +208,42 @@ def test_camera_rig_uses_direct_camera_pose_without_recentering() -> None:
 
     assert rig.heading_deg == pytest.approx(132.0)
     assert rig.pitch_deg == pytest.approx(-18.5)
+
+
+def test_panda_camera_rig_clamps_requested_and_shaken_pitch_to_shared_bounds() -> None:
+    steep_up = RapidTrackingPanda3DRenderer._camera_rig_state(
+        elapsed_s=20.0,
+        seed=551,
+        progress=0.45,
+        camera_yaw_deg=132.0,
+        camera_pitch_deg=88.0,
+        zoom=0.0,
+        target_kind="truck",
+        target_world_x=42.0,
+        target_world_y=96.0,
+        focus_world_x=8.0,
+        focus_world_y=78.0,
+        turbulence_strength=1.8,
+    )
+    steep_down = RapidTrackingPanda3DRenderer._camera_rig_state(
+        elapsed_s=20.0,
+        seed=551,
+        progress=0.45,
+        camera_yaw_deg=132.0,
+        camera_pitch_deg=-88.0,
+        zoom=0.0,
+        target_kind="truck",
+        target_world_x=42.0,
+        target_world_y=96.0,
+        focus_world_x=8.0,
+        focus_world_y=78.0,
+        turbulence_strength=1.8,
+    )
+
+    assert steep_up.pitch_deg == pytest.approx(RAPID_TRACKING_PITCH_MAX_DEG)
+    assert steep_down.pitch_deg == pytest.approx(RAPID_TRACKING_PITCH_MIN_DEG)
+    assert RAPID_TRACKING_PITCH_MIN_DEG <= steep_up.view_pitch_deg <= RAPID_TRACKING_PITCH_MAX_DEG
+    assert RAPID_TRACKING_PITCH_MIN_DEG <= steep_down.view_pitch_deg <= RAPID_TRACKING_PITCH_MAX_DEG
 
 
 def test_camera_rig_uses_wide_default_fov_and_narrow_hold_zoom() -> None:

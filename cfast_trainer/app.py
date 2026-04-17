@@ -138,11 +138,14 @@ from .auditory_capacity import (
     build_auditory_capacity_test,
 )
 from .auditory_capacity_view import (
+    AUDITORY_BALL_ANCHOR_DISTANCE,
     AUDITORY_GATE_BEHIND_DISTANCE,
     BALL_FORWARD_IDLE_NORM,
+    TUNNEL_GEOMETRY_END_DISTANCE,
     TUNNEL_EXIT_NORM,
     gate_depth_ratio_from_distance,
     gate_distance_from_x_norm,
+    tube_center_at_distance,
 )
 from .ac_workouts import ac_workout_menu_entries, build_ac_workout_plan
 from .adaptive_difficulty import (
@@ -384,6 +387,7 @@ from .spatial_integration import (
     build_spatial_integration_test,
 )
 from .spatial_integration_gl import build_scene_layout as build_spatial_integration_scene_layout
+from .spatial_integration_visuals import spatial_integration_visual_spec
 from .system_logic import (
     SystemLogicAnswerChoice,
     SystemLogicDocument,
@@ -1116,6 +1120,20 @@ class _TargetRecognitionSceneGlyph:
     max_alpha: float
     matching_labels: tuple[str, ...]
     live_target_label: str = ""
+
+
+@dataclass(slots=True)
+class _TargetRecognitionAmbientShape:
+    kind: str
+    nx: float
+    ny: float
+    scale: float
+    rotation: float
+    color: tuple[int, int, int]
+    alpha: float
+    min_alpha: float
+    max_alpha: float
+    alpha_velocity: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -5061,6 +5079,8 @@ class App:
         payload: AuditoryCapacityPayload | None,
         time_remaining_s: float | None,
         time_fill_ratio: float | None,
+        frame_dt_s: float = 0.0,
+        advance_animation: bool = True,
     ) -> None:
         self.queue_gl_scene(
             AuditoryGlScene(
@@ -5068,6 +5088,8 @@ class App:
                 payload=payload,
                 time_remaining_s=time_remaining_s,
                 time_fill_ratio=time_fill_ratio,
+                frame_dt_s=float(frame_dt_s),
+                advance_animation=bool(advance_animation),
             )
         )
 
@@ -11640,6 +11662,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         # Spatial Integration interaction hitboxes.
         self._spatial_option_hitboxes: dict[int, pygame.Rect] = {}
         self._spatial_grid_hitboxes: dict[str, pygame.Rect] = {}
+        self._spatial_map_icon_cache: dict[tuple[str, int, int, bool], pygame.Surface] = {}
 
         # Vigilance row/column capture controls.
         self._vigilance_row_input = ""
@@ -11652,6 +11675,11 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         self._tr_selection_payload_id: int | None = None
         self._tr_selected_panels: set[str] = set()
         self._tr_selector_hitboxes: dict[str, pygame.Rect] = {}
+        self._tr_timer_payload_id: int | None = None
+        self._tr_timer_last_frame_s = 0.0
+        self._tr_timer_time_s = 0.0
+        self._tr_timer_dt_s = 0.0
+        self._tr_timer_scored_started_time_s: float | None = None
         self._tr_light_payload_id: int | None = None
         self._tr_light_rng: random.Random | None = None
         self._tr_light_next_change_ms = 0
@@ -11705,12 +11733,17 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         self._tr_scene_glyphs: dict[int, _TargetRecognitionSceneGlyph] = {}
         self._tr_scene_glyph_order: list[int] = []
         self._tr_scene_symbol_hitboxes: list[tuple[pygame.Rect, int]] = []
+        self._tr_scene_panel_hitbox: pygame.Rect | None = None
         self._tr_scene_next_glyph_id = 1
         self._tr_scene_target_queue: list[str] = []
         self._tr_scene_active_targets: list[str] = []
+        self._tr_scene_live_counts_by_label: dict[str, int] = {}
         self._tr_scene_target_alpha_by_label: dict[str, float] = {}
         self._tr_scene_target_cap = 5
         self._tr_scene_next_target_add_ms = 0
+        self._tr_scene_spawn_accum_s = 0.0
+        self._tr_scene_next_spawn_after_s = 0.0
+        self._tr_scene_spawn_timer_armed = False
         self._tr_scene_points = 0
         self._tr_scene_hits = 0
         self._tr_scene_misses = 0
@@ -11718,6 +11751,13 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         self._tr_scene_unknown_hits = 0
         self._tr_scene_anim_frame = 0.0
         self._tr_scene_last_update_ms = 0
+        self._tr_scene_ambient_shapes: list[_TargetRecognitionAmbientShape] = []
+        self._tr_scene_fog_offset_x = 0.0
+        self._tr_scene_fog_offset_y = 0.0
+        self._tr_scene_fog_velocity_x = 0.0
+        self._tr_scene_fog_velocity_y = 0.0
+        self._tr_scene_fog_tile: pygame.Surface | None = None
+        self._tr_scene_fog_tile_seed = 0
         self._tr_scene_base_cache: pygame.Surface | None = None
         self._tr_scene_base_cache_size: tuple[int, int] = (0, 0)
         self._tr_scene_base_cache_seed = 0
@@ -11753,6 +11793,8 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         self._auditory_live_world_frame: pygame.Surface | None = None
         self._auditory_frozen_world_frame: pygame.Surface | None = None
         self._auditory_freeze_key: tuple[str, Phase, tuple[int, int]] | None = None
+        self._auditory_gl_timer_seed: int | None = None
+        self._auditory_gl_timer_last_frame_s: float | None = None
         self._rapid_tracking_panda_renderer: RapidTrackingPanda3DRenderer | None = None
         self._rapid_tracking_panda_failed = False
         self._rapid_tracking_panda_requirement = _AuditoryPandaRequirementState()
@@ -12939,16 +12981,23 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                         if "scene" in expected:
                             if scene_success:
                                 self._tr_selected_panels.add("scene")
-                            if scene_success and self._tr_selected_panels == expected:
-                                selected_snapshot = set(self._tr_selected_panels)
-                                accepted = self._engine.submit_answer(str(len(selected_snapshot)))
-                                if accepted:
-                                    if snap.phase is Phase.PRACTICE:
-                                        self._target_recognition_record_practice_trial(
-                                            selected=selected_snapshot,
-                                            expected=expected,
-                                        )
-                                    self._tr_selected_panels.clear()
+                            if scene_success:
+                                self._target_recognition_submit_if_complete(
+                                    snap,
+                                    expected=expected,
+                                )
+                        return
+
+                    if (
+                        self._tr_scene_panel_hitbox is not None
+                        and self._tr_scene_panel_hitbox.collidepoint(pos)
+                    ):
+                        if "scene" not in expected and not self._tr_scene_active_targets:
+                            self._tr_selected_panels.discard("scene")
+                            self._target_recognition_submit_if_complete(
+                                snap,
+                                expected=expected,
+                            )
                         return
 
                 if (
@@ -12962,16 +13011,11 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                             self._tr_selected_panels.add("light")
                         else:
                             self._tr_selected_panels.discard("light")
-                        if light_success and self._tr_selected_panels == expected:
-                            selected_snapshot = set(self._tr_selected_panels)
-                            accepted = self._engine.submit_answer(str(len(selected_snapshot)))
-                            if accepted:
-                                if snap.phase is Phase.PRACTICE:
-                                    self._target_recognition_record_practice_trial(
-                                        selected=selected_snapshot,
-                                        expected=expected,
-                                    )
-                                self._tr_selected_panels.clear()
+                        if light_success:
+                            self._target_recognition_submit_if_complete(
+                                snap,
+                                expected=expected,
+                            )
                     return
 
                 if (
@@ -12986,16 +13030,11 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                             self._tr_selected_panels.add("scan")
                         else:
                             self._tr_selected_panels.discard("scan")
-                        if scan_success and self._tr_selected_panels == expected:
-                            selected_snapshot = set(self._tr_selected_panels)
-                            accepted = self._engine.submit_answer(str(len(selected_snapshot)))
-                            if accepted:
-                                if snap.phase is Phase.PRACTICE:
-                                    self._target_recognition_record_practice_trial(
-                                        selected=selected_snapshot,
-                                        expected=expected,
-                                    )
-                                self._tr_selected_panels.clear()
+                        if scan_success:
+                            self._target_recognition_submit_if_complete(
+                                snap,
+                                expected=expected,
+                            )
                     return
 
                 if "system" in active_panels:
@@ -13010,41 +13049,25 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                                     self._tr_selected_panels.add("system")
                                 else:
                                     self._tr_selected_panels.discard("system")
-                                if system_success and self._tr_selected_panels == expected:
-                                    selected_snapshot = set(self._tr_selected_panels)
-                                    accepted = self._engine.submit_answer(str(len(selected_snapshot)))
-                                    if accepted:
-                                        if snap.phase is Phase.PRACTICE:
-                                            self._target_recognition_record_practice_trial(
-                                                selected=selected_snapshot,
-                                                expected=expected,
-                                            )
-                                        self._tr_selected_panels.clear()
+                                if system_success:
+                                    self._target_recognition_submit_if_complete(
+                                        snap,
+                                        expected=expected,
+                                    )
                             return
 
                 for panel, rect in self._tr_selector_hitboxes.items():
                     if rect.collidepoint(pos):
                         if panel == "scene":
-                            if bool(tr_payload.scene_has_target):
-                                self._tr_selected_panels.add("scene")
-                            else:
-                                self._tr_selected_panels.discard("scene")
+                            return
+                        if panel in self._tr_selected_panels:
+                            self._tr_selected_panels.remove(panel)
                         else:
-                            if panel in self._tr_selected_panels:
-                                self._tr_selected_panels.remove(panel)
-                            else:
-                                self._tr_selected_panels.add(panel)
-
-                        if self._tr_selected_panels == expected:
-                            selected_snapshot = set(self._tr_selected_panels)
-                            accepted = self._engine.submit_answer(str(len(selected_snapshot)))
-                            if accepted:
-                                if snap.phase is Phase.PRACTICE:
-                                    self._target_recognition_record_practice_trial(
-                                        selected=selected_snapshot,
-                                        expected=expected,
-                                    )
-                                self._tr_selected_panels.clear()
+                            self._tr_selected_panels.add(panel)
+                        self._target_recognition_submit_if_complete(
+                            snap,
+                            expected=expected,
+                        )
                         return
 
         if (
@@ -13124,16 +13147,17 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                             self._math_choice = 1
                         return
 
-                for code, rect in self._sa_option_hitboxes.items():
-                    if not rect.collidepoint(pos):
-                        continue
-                    self._math_choice = int(code)
-                    self._input = str(code)
-                    accepted = self._submit_answer_with_review(self._input)
-                    if accepted and not self._review_state_active():
-                        self._input = ""
-                        self._math_choice = 1
-                    return
+                if active_query.answer_mode is SituationalAwarenessAnswerMode.CHOICE:
+                    for code, rect in self._sa_option_hitboxes.items():
+                        if not rect.collidepoint(pos):
+                            continue
+                        self._math_choice = int(code)
+                        self._input = str(code)
+                        accepted = self._submit_answer_with_review(self._input)
+                        if accepted and not self._review_state_active():
+                            self._input = ""
+                            self._math_choice = 1
+                        return
 
         if (
             event.type == pygame.MOUSEBUTTONDOWN
@@ -13401,11 +13425,19 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                     raw_submission = normalize_grid_cell_token(self._input)
                     if raw_submission is None:
                         return
-                else:
+                elif active_query.answer_mode is SituationalAwarenessAnswerMode.CHOICE:
                     raw_submission = self._input.strip()
                     if raw_submission == "":
                         raw_submission = str(self._math_choice)
                     if not raw_submission.isdigit():
+                        return
+                elif active_query.answer_mode is SituationalAwarenessAnswerMode.NUMERIC:
+                    raw_submission = self._input.strip()
+                    if not raw_submission.isdigit():
+                        return
+                else:
+                    raw_submission = self._input.strip()
+                    if raw_submission == "":
                         return
                 accepted = self._submit_answer_with_review(raw_submission)
                 if accepted and not self._review_state_active():
@@ -13725,6 +13757,20 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                         digits += ch
                         self._input = f"{base}{digits[:2]}"
                     return
+                return
+
+            if active_query.answer_mode is SituationalAwarenessAnswerMode.NUMERIC:
+                ch = event.unicode
+                max_chars = max(1, int(active_query.entry_max_chars or 4))
+                if ch and ch.isdigit() and len(self._input) < max_chars:
+                    self._input += ch
+                return
+
+            if active_query.answer_mode is SituationalAwarenessAnswerMode.TOKEN:
+                ch = (event.unicode or "").upper()
+                max_chars = max(1, int(active_query.entry_max_chars or 16))
+                if ch and (ch.isalpha() or ch == " ") and len(self._input) < max_chars:
+                    self._input += ch
                 return
 
             option_count = max(1, int(len(active_query.answer_choices)))
@@ -14305,12 +14351,43 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         summary = self._auditory_panda_requirement.failure_summary.strip()
         return summary or "Auditory Capacity requires the Panda3D renderer."
 
+    def _reset_auditory_gl_frame_timer(self) -> None:
+        self._auditory_gl_timer_seed = None
+        self._auditory_gl_timer_last_frame_s = None
+
+    def _next_auditory_gl_frame_dt(
+        self,
+        *,
+        payload: AuditoryCapacityPayload | None,
+        advance_animation: bool,
+    ) -> float:
+        if payload is None:
+            self._reset_auditory_gl_frame_timer()
+            return 0.0
+
+        seed = int(payload.session_seed)
+        now_s = self._review_now_s()
+        if (
+            self._auditory_gl_timer_seed != seed
+            or self._auditory_gl_timer_last_frame_s is None
+        ):
+            self._auditory_gl_timer_seed = seed
+            self._auditory_gl_timer_last_frame_s = now_s
+            return 0.0
+
+        dt_s = max(0.0, float(now_s) - float(self._auditory_gl_timer_last_frame_s))
+        self._auditory_gl_timer_last_frame_s = now_s
+        if not advance_animation:
+            return 0.0
+        return min(0.25, dt_s)
+
     def _clear_auditory_panda_requirement(self) -> None:
         self._auditory_panda_requirement = _AuditoryPandaRequirementState()
         self._auditory_panda_failed = False
         self._auditory_live_world_frame = None
         self._auditory_frozen_world_frame = None
         self._auditory_freeze_key = None
+        self._reset_auditory_gl_frame_timer()
         self._dispose_auditory_panda_renderer()
 
     def _fail_auditory_panda_requirement(
@@ -14332,6 +14409,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         self._auditory_live_world_frame = None
         self._auditory_frozen_world_frame = None
         self._auditory_freeze_key = None
+        self._reset_auditory_gl_frame_timer()
         self._dispose_auditory_panda_renderer()
 
     def _run_auditory_panda_preflight(self) -> tuple[bool, str, str]:
@@ -18369,6 +18447,11 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         freeze_mode: str | None,
         gl_scene_world: pygame.Rect | None = None,
     ) -> pygame.Surface:
+        advance_animation = freeze_mode is None
+        frame_dt_s = self._next_auditory_gl_frame_dt(
+            payload=payload,
+            advance_animation=advance_animation,
+        )
         if freeze_mode is None:
             frame = pygame.Surface(size, pygame.SRCALPHA if self._app.opengl_enabled else 0)
             if self._app.opengl_enabled:
@@ -18380,6 +18463,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 time_remaining_s=time_remaining_s,
                 time_fill_ratio=time_fill_ratio,
                 advance_animation=True,
+                frame_dt_s=frame_dt_s,
                 gl_scene_world=gl_scene_world,
             )
             self._auditory_live_world_frame = frame.copy()
@@ -18405,6 +18489,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                     time_remaining_s=time_remaining_s,
                     time_fill_ratio=time_fill_ratio,
                     advance_animation=False,
+                    frame_dt_s=frame_dt_s,
                     gl_scene_world=gl_scene_world,
                 )
                 self._auditory_frozen_world_frame = frame
@@ -18708,6 +18793,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         payload: AuditoryCapacityPayload | None,
         time_remaining_s: float | None,
         time_fill_ratio: float | None,
+        frame_dt_s: float = 0.0,
         advance_animation: bool = True,
         gl_scene_world: pygame.Rect | None = None,
     ) -> None:
@@ -18721,6 +18807,8 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 payload=payload,
                 time_remaining_s=time_remaining_s,
                 time_fill_ratio=time_fill_ratio,
+                frame_dt_s=float(frame_dt_s),
+                advance_animation=bool(advance_animation),
             )
             return
         self._draw_auditory_capacity_fixed_tunnel(surface, world=world, payload=payload)
@@ -18797,6 +18885,19 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
     ) -> float:
         depth = max(0.0, min(1.0, float(depth_norm)))
         return -(z_near + ((z_far - z_near) * depth))
+
+    @staticmethod
+    def _auditory_tube_offset_at_distance(
+        *,
+        distance: float,
+        ball_distance: float,
+    ) -> tuple[float, float]:
+        center_x, center_z = tube_center_at_distance(float(distance))
+        ball_x, ball_z = tube_center_at_distance(float(ball_distance))
+        return (
+            max(-1.0, min(1.0, (center_x - ball_x) / 5.8)),
+            max(-1.0, min(1.0, (center_z - ball_z) / 3.6)),
+        )
 
     @staticmethod
     def _draw_auditory_gate_2d(
@@ -18951,12 +19052,17 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         panel = pygame.Surface(world.size, pygame.SRCALPHA)
         z_near = 2.0
         z_far = 26.0
+        travel_distance = 0.0 if payload is None else float(payload.presentation_travel_distance)
+        ball_distance = float(travel_distance) + float(AUDITORY_BALL_ANCHOR_DISTANCE)
         depth_samples = (0.02, 0.10, 0.18, 0.28, 0.40, 0.54, 0.68, 0.82, float(TUNNEL_EXIT_NORM))
         ring_poses: list[tuple[float, tuple[int, int], tuple[int, int]]] = []
         for depth_norm in depth_samples:
             t = max(0.0, min(1.0, float(depth_norm)))
-            z = self._auditory_depth_to_scene_z(t, z_near=z_near, z_far=z_far)
-            off_x, off_y = self._tube_offset_at_depth(z=z, z_near=z_near, z_far=z_far)
+            tunnel_distance = float(travel_distance) + (float(TUNNEL_GEOMETRY_END_DISTANCE) * t)
+            off_x, off_y = self._auditory_tube_offset_at_distance(
+                distance=tunnel_distance,
+                ball_distance=ball_distance,
+            )
             cx = world.w // 2 + int(round(off_x * world.w * 0.18))
             cy = world.h // 2 - int(round(off_y * world.h * 0.15))
             rx = max(12, int(round(world.w * (0.41 - (0.34 * t)))))
@@ -18989,7 +19095,6 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         if payload is not None:
             y_half_span = max(0.08, float(payload.tube_half_height))
             x_half_span = max(0.08, float(payload.tube_half_width))
-            travel_distance = float(payload.presentation_travel_distance)
             visible_gates: list[tuple[float, AuditoryCapacityGate]] = []
             for gate in payload.gates:
                 distance = gate_distance_from_x_norm(
@@ -19008,8 +19113,10 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                     distance=distance,
                     travel_distance=travel_distance,
                 )
-                z = self._auditory_depth_to_scene_z(depth_norm, z_near=z_near, z_far=z_far)
-                off_x, off_y = self._tube_offset_at_depth(z=z, z_near=z_near, z_far=z_far)
+                off_x, off_y = self._auditory_tube_offset_at_distance(
+                    distance=distance,
+                    ball_distance=ball_distance,
+                )
                 cx = world.w // 2 + int(round(off_x * world.w * 0.18))
                 cy = world.h // 2 - int(round(off_y * world.h * 0.15))
                 rx = max(12, int(round(world.w * (0.41 - (0.34 * depth_norm)))))
@@ -19028,8 +19135,10 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 )
 
             ball_depth_norm = float(BALL_FORWARD_IDLE_NORM)
-            z = self._auditory_depth_to_scene_z(ball_depth_norm, z_near=z_near, z_far=z_far)
-            off_x, off_y = self._tube_offset_at_depth(z=z, z_near=z_near, z_far=z_far)
+            off_x, off_y = self._auditory_tube_offset_at_distance(
+                distance=ball_distance,
+                ball_distance=ball_distance,
+            )
             cx = world.w // 2 + int(round(off_x * world.w * 0.18))
             cy = world.h // 2 - int(round(off_y * world.h * 0.15))
             rx = max(12, int(round(world.w * (0.41 - (0.34 * ball_depth_norm)))))
@@ -20281,6 +20390,9 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 air_time_left_s=payload.air_sensor_due_s,
                 ground_time_left_s=payload.ground_sensor_due_s,
                 comms_time_left_s=payload.comms_time_limit_s,
+                comms_swap_in_s=payload.comms_time_limit_s,
+                current_comms_code=payload.comms_code,
+                next_comms_code=None,
                 objective_deadline_left_s=payload.objective_deadline_s,
                 state_code=payload.comms_code,
                 operation_score_hint=0.0,
@@ -20380,7 +20492,12 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             if page_idx == 0:
                 lines_rect = panel_rect.inflate(-22, -20)
                 line_y = lines_rect.y
-                for line in runtime_snap.message_lines:
+                message_lines = tuple(
+                    str(line).strip()
+                    for line in runtime_snap.message_lines
+                    if str(line).strip() != ""
+                )
+                for line in message_lines:
                     if line == "":
                         continue
                     rendered = self._app.font.render(
@@ -20671,11 +20788,19 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 )
                 pygame.draw.rect(surface, submit_color, submit, border_radius=4)
                 _set_hitbox(scope, "comms_submit", submit)
-                if runtime_visible_timers_enabled():
-                    time_txt = self._small_font.render(
-                        f"Time remaining: {comms_left}", True, text_main
-                    )
-                    surface.blit(time_txt, (box.x, box.bottom + 8))
+                # The revealed upcoming comms code is rendered on the Messages page only.
+                current_code_txt = self._small_font.render(
+                    f"Current code: {runtime_snap.current_comms_code}",
+                    True,
+                    text_main,
+                )
+                countdown_txt = self._tiny_font.render(
+                    f"Code changes in: {_mmss(runtime_snap.comms_swap_in_s)}",
+                    True,
+                    text_muted,
+                )
+                surface.blit(current_code_txt, (box.x, box.bottom + 6))
+                surface.blit(countdown_txt, (box.x, box.bottom + 6 + current_code_txt.get_height()))
 
                 key_y = comms_rect.bottom - 44
                 key_w = max(26, min(72, (comms_rect.w - 28) // 4))
@@ -21304,6 +21429,60 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         surface.blit(lbl, (target[0] + 8, target[1] - 12))
         pygame.draw.circle(surface, (235, 235, 245), (cx, cy), 6)
 
+    def _target_recognition_reset_runtime_timer(self) -> None:
+        self._tr_timer_payload_id = None
+        self._tr_timer_last_frame_s = 0.0
+        self._tr_timer_time_s = 0.0
+        self._tr_timer_dt_s = 0.0
+        self._tr_timer_scored_started_time_s = None
+
+    def _target_recognition_sync_runtime_timer(
+        self,
+        payload: TargetRecognitionPayload,
+        snap: TestSnapshot,
+    ) -> None:
+        now_s = self._review_now_s()
+        pid = id(payload)
+        if self._tr_timer_payload_id != pid:
+            self._tr_timer_payload_id = pid
+            self._tr_timer_last_frame_s = now_s
+            self._tr_timer_time_s = 0.0
+            self._tr_timer_dt_s = 0.0
+            self._tr_timer_scored_started_time_s = None
+        else:
+            dt_s = max(0.0, float(now_s) - float(self._tr_timer_last_frame_s))
+            self._tr_timer_last_frame_s = now_s
+            self._tr_timer_dt_s = dt_s
+            self._tr_timer_time_s += dt_s
+        if snap.phase is Phase.SCORED:
+            if self._tr_timer_scored_started_time_s is None:
+                self._tr_timer_scored_started_time_s = self._tr_timer_time_s
+        else:
+            self._tr_timer_scored_started_time_s = None
+
+    def _target_recognition_time_remaining_s(
+        self,
+        snap: TestSnapshot,
+    ) -> float | None:
+        if snap.phase is not Phase.SCORED:
+            return None
+        started_at_s = self._tr_timer_scored_started_time_s
+        if started_at_s is None:
+            return snap.time_remaining_s
+        duration = getattr(self._engine, "scored_duration_s", None)
+        if duration is None:
+            duration = getattr(self._engine, "_scored_duration_s", None)
+        if duration is None:
+            return snap.time_remaining_s
+        elapsed_s = max(0.0, self._tr_timer_time_s - float(started_at_s))
+        return max(0.0, float(duration) - elapsed_s)
+
+    @staticmethod
+    def _target_recognition_developer_review_enabled(
+        payload: TargetRecognitionPayload,
+    ) -> bool:
+        return bool(getattr(payload, "developer_answer_review", False))
+
     def _render_target_recognition_screen(
         self,
         surface: pygame.Surface,
@@ -21344,8 +21523,13 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         left = self._tiny_font.render(f"Target Recognition - {phase_label}", True, text_main)
         surface.blit(left, left.get_rect(midleft=(header.x + 10, header.centery)))
 
-        if runtime_visible_timers_enabled() and snap.time_remaining_s is not None:
-            rem = int(round(snap.time_remaining_s))
+        remaining_timer_s = snap.time_remaining_s
+        if payload is not None and snap.phase in (Phase.PRACTICE, Phase.SCORED):
+            self._target_recognition_sync_runtime_timer(payload, snap)
+            remaining_timer_s = self._target_recognition_time_remaining_s(snap)
+
+        if remaining_timer_s is not None:
+            rem = int(round(remaining_timer_s))
             timer = self._small_font.render(f"{rem // 60:02d}:{rem % 60:02d}", True, text_main)
             surface.blit(timer, timer.get_rect(topright=(frame.right - 12, header.bottom + 6)))
 
@@ -21358,6 +21542,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             self._tr_scan_button_hitbox = None
             self._tr_system_string_hitboxes = []
             self._tr_scene_symbol_hitboxes = []
+            self._tr_scene_panel_hitbox = None
             card = content.inflate(-8, -8)
             pygame.draw.rect(surface, panel_bg, card)
             pygame.draw.rect(surface, border, card, 1)
@@ -21406,6 +21591,8 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         self._tr_scan_button_hitbox = None
         self._tr_system_string_hitboxes = []
         self._tr_scene_symbol_hitboxes = []
+        self._tr_scene_panel_hitbox = None
+        developer_review = self._target_recognition_developer_review_enabled(payload)
         self._target_recognition_sync_scene_stream(payload)
         self._target_recognition_sync_light_stream(payload)
         self._target_recognition_sync_scan_stream(payload)
@@ -21421,7 +21608,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         )
         active_panels = self._target_recognition_active_panels(payload)
 
-        target_strip_h = max(92, min(130, h // 4))
+        target_strip_h = max(108, min(146, h // 4))
         panels_h = max(140, content.h - target_strip_h - 6)
         panels = pygame.Rect(content.x, content.y, content.w, panels_h)
         targets = pygame.Rect(content.x, panels.bottom + 6, content.w, target_strip_h)
@@ -21463,10 +21650,15 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         info_inner = draw_panel(info_rect, "Information")
         light_inner = draw_panel(light_rect, "Light Panel")
         scan_inner = draw_panel(scan_rect, "Scan Panel")
-        scene_inner = draw_panel(scene_rect, "Map Panel")
+        scene_inner = draw_panel(scene_rect, "Scene Panel")
         system_inner = draw_panel(right_rect, "System Panel")
 
-        self._draw_target_recognition_info_legend(surface, info_inner)
+        self._draw_target_recognition_info_legend(
+            surface,
+            info_inner,
+            payload,
+            scene_active="scene" in active_panels,
+        )
 
         light_bg = light_inner.inflate(-1, -2)
         pygame.draw.rect(surface, (44, 44, 52), light_bg)
@@ -21476,6 +21668,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             if now_ms < int(self._tr_light_feedback_until_ms)
             else ""
         )
+        light_feedback_label_state = light_feedback_state if developer_review else ""
         bulb_y = light_bg.centery
         bulb_r = max(8, min(12, (light_bg.h // 2) - 4))
         step = max(20, light_bg.w // 4)
@@ -21495,7 +21688,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             light_btn_h,
         )
         light_btn_fill, light_btn_edge, light_btn_text, light_feedback_label = (
-            self._target_recognition_feedback_style(light_feedback_state)
+            self._target_recognition_feedback_style(light_feedback_label_state)
         )
         pygame.draw.rect(surface, light_btn_fill, light_btn)
         pygame.draw.rect(surface, light_btn_edge, light_btn, 1)
@@ -21517,6 +21710,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             if now_ms < int(self._tr_scan_feedback_until_ms)
             else ""
         )
+        scan_feedback_label_state = scan_feedback_state if developer_review else ""
         scan_token_w = max(22, min(32, (scan_bg.w - 84) // 4))
         scan_token_h = max(18, min(24, scan_bg.h - 8))
         scan_gap = 4
@@ -21544,7 +21738,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             scan_btn_h,
         )
         scan_btn_fill, scan_btn_edge, scan_btn_text, scan_feedback_label = (
-            self._target_recognition_feedback_style(scan_feedback_state)
+            self._target_recognition_feedback_style(scan_feedback_label_state)
         )
         pygame.draw.rect(surface, scan_btn_fill, scan_btn)
         pygame.draw.rect(surface, scan_btn_edge, scan_btn, 1)
@@ -21559,6 +21753,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         self._tr_scan_button_hitbox = scan_btn if "scan" in active_panels else None
 
         self._draw_target_recognition_scene(surface, scene_inner, payload)
+        self._tr_scene_panel_hitbox = scene_inner if "scene" in active_panels else None
         if "scene" not in active_panels:
             self._tr_scene_symbol_hitboxes = []
 
@@ -21592,7 +21787,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 system_feedback_hit = (
                     system_feedback_active and str(row) == str(self._tr_system_feedback_code)
                 )
-                if system_feedback_hit:
+                if developer_review and system_feedback_hit:
                     fill, edge, _text, _label = self._target_recognition_feedback_style(
                         self._tr_system_feedback_state
                     )
@@ -21615,16 +21810,12 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         pygame.draw.rect(surface, panel_bg, targets)
         pygame.draw.rect(surface, border, targets, 1)
 
-        controls_h = 26
-        boxes_area = pygame.Rect(
-            targets.x + 2, targets.y + 2, targets.w - 4, max(24, targets.h - controls_h - 4)
-        )
-        controls = pygame.Rect(targets.x + 2, boxes_area.bottom + 2, targets.w - 4, controls_h)
+        boxes_area = pygame.Rect(targets.x + 2, targets.y + 2, targets.w - 4, targets.h - 4)
 
         target_gap = 6
         target_w = max(80, (boxes_area.w - target_gap * 3) // 4)
         target_labels = (
-            ("scene", "Map Targets", ""),
+            ("scene", "Scene Target", ""),
             ("light", "Light Target", "-".join(live_light_target)),
             ("scan", "Scan Target", " ".join(live_scan_target)),
             ("system", "System Target", active_system_target),
@@ -21639,6 +21830,11 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             box = pygame.Rect(x, boxes_area.y, box_w, boxes_area.h)
             pygame.draw.rect(surface, (4, 9, 36), box)
             pygame.draw.rect(surface, border, box, 1)
+            if developer_review and panel_key in self._tr_selected_panels:
+                highlight = pygame.Surface((box.w - 2, box.h - 2), pygame.SRCALPHA)
+                highlight.fill((68, 124, 214, 46))
+                surface.blit(highlight, (box.x + 1, box.y + 1))
+                pygame.draw.rect(surface, (196, 228, 255), box, 2)
             bar = pygame.Rect(box.x + 1, box.y + 1, box.w - 2, 16)
             pygame.draw.rect(surface, strip_header, bar)
             label_surf = self._tiny_font.render(label, True, text_main)
@@ -21650,7 +21846,13 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 off_surf = self._small_font.render("OFF", True, text_main)
                 surface.blit(off_surf, off_surf.get_rect(center=value_rect.center))
             elif panel_key == "scene":
-                lines = list(self._tr_scene_active_targets)
+                lines = []
+                for line in self._tr_scene_active_targets:
+                    count = int(self._tr_scene_live_counts_by_label.get(line, 0))
+                    if count > 1:
+                        lines.append(f"{line} x{count}")
+                    else:
+                        lines.append(str(line))
                 objective_label = str(getattr(payload, "scene_objective_label", "")).strip()
                 y = value_rect.y
                 line_h = self._tiny_font.get_linesize() + 1
@@ -21665,7 +21867,8 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 else:
                     lines = lines[: self._tr_scene_target_cap]
                 for line in lines:
-                    fade = float(self._tr_scene_target_alpha_by_label.get(line, 1.0))
+                    alpha_key = str(line).split(" x", 1)[0]
+                    fade = float(self._tr_scene_target_alpha_by_label.get(alpha_key, 1.0))
                     line_color = self._target_recognition_blend_color(text_muted, text_main, fade)
                     surf = self._tiny_font.render(line, True, line_color)
                     surface.blit(surf, (value_rect.x, y))
@@ -21700,26 +21903,6 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 surface.blit(value_surf, value_pos)
             if is_active_panel:
                 self._tr_selector_hitboxes[panel_key] = box
-
-        pygame.draw.rect(surface, (5, 12, 42), controls)
-        pygame.draw.rect(surface, (72, 92, 138), controls, 1)
-
-        active_label_text = ", ".join(
-            label.title() for label in ("scene", "light", "scan", "system") if label in active_panels
-        )
-        hint = self._tiny_font.render(
-            (
-                f"Mouse only: active panels {active_label_text}. "
-                f"Auto-advance on exact match.  "
-                f"Scene Pts: {self._tr_scene_points}  "
-                f"Light Pts: {self._tr_light_points}  "
-                f"Scan Pts: {self._tr_scan_points}  "
-                f"Sys Pts: {self._tr_system_points}"
-            ),
-            True,
-            text_muted,
-        )
-        surface.blit(hint, (controls.x + 8, controls.y + 5))
 
         if "light" not in active_panels:
             draw_inactive_overlay(light_rect)
@@ -21780,8 +21963,42 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             int(round(start[idx] + ((end[idx] - start[idx]) * t))) for idx in range(3)
         )
 
+    def _target_recognition_scene_status_text(
+        self,
+        payload: TargetRecognitionPayload,
+        *,
+        scene_active: bool,
+    ) -> str:
+        if not scene_active:
+            return "Scene visible for context only; click active panels."
+
+        active_targets = tuple(
+            label for label in (str(item).strip() for item in self._tr_scene_active_targets) if label != ""
+        )
+        if active_targets:
+            total_live = sum(
+                max(0, int(self._tr_scene_live_counts_by_label.get(label, 0)))
+                for label in active_targets
+            )
+            objective_label = str(getattr(payload, "scene_objective_label", "")).strip()
+            if objective_label != "":
+                return f"{objective_label}: {total_live} live."
+            if len(active_targets) == 1:
+                label = active_targets[0]
+                count = max(1, int(self._tr_scene_live_counts_by_label.get(label, 1)))
+                suffix = f" x{count}" if count > 1 else ""
+                return f"Scene active: {label}{suffix} live."
+            return f"Scene active: {total_live} live targets."
+
+        return "Scene active: currently clear."
+
     def _draw_target_recognition_info_legend(
-        self, surface: pygame.Surface, rect: pygame.Rect
+        self,
+        surface: pygame.Surface,
+        rect: pygame.Rect,
+        payload: TargetRecognitionPayload,
+        *,
+        scene_active: bool,
     ) -> None:
         text = (220, 230, 246)
         muted = (156, 176, 206)
@@ -21830,7 +22047,8 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         surface.blit(pri, (x_r - 8, flags_y))
 
         bot_y = y0 + (3 * row_h) + 6
-        clutter = self._tiny_font.render("Map clutter is muted and non-clickable.", True, muted)
+        status = self._target_recognition_scene_status_text(payload, scene_active=scene_active)
+        clutter = self._tiny_font.render(status, True, muted)
         surface.blit(clutter, (x_l, bot_y - 1))
 
     def _draw_target_recognition_scene(
@@ -21857,8 +22075,8 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         assert self._tr_scene_base_cache is not None
         scene = self._tr_scene_base_cache.copy()
         self._draw_target_recognition_scene_compass(scene)
+        self._draw_target_recognition_scene_ambient(scene)
         self._tr_scene_symbol_hitboxes = []
-        active_targets = set(self._tr_scene_active_targets)
 
         for glyph_id in self._tr_scene_glyph_order:
             glyph = self._tr_scene_glyphs.get(glyph_id)
@@ -21880,7 +22098,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             )
 
             hit_scale = 1.9
-            if str(glyph.live_target_label).strip() or active_targets.intersection(glyph.matching_labels):
+            if str(glyph.live_target_label).strip():
                 hit_scale = 2.7
             hit_r = max(8, int(size * hit_scale))
             hit = pygame.Rect(rect.x + cx - hit_r, rect.y + cy - hit_r, hit_r * 2, hit_r * 2)
@@ -21889,8 +22107,9 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         self._draw_target_recognition_clouds(
             scene,
             payload,
-            phase_s=float(self._tr_scene_anim_frame) / 60.0,
+            phase_s=self._tr_timer_time_s,
         )
+        self._draw_target_recognition_scene_fog(scene)
 
         surface.blit(scene, rect.topleft)
         pygame.draw.rect(surface, (78, 98, 138), rect, 1)
@@ -22027,9 +22246,17 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             pygame.draw.line(surface, color, (cx - s + 1, cy - s + 1), (cx + s - 1, cy + s - 1), xw)
             pygame.draw.line(surface, color, (cx + s - 1, cy - s + 1), (cx - s + 1, cy + s - 1), xw)
         if entity.high_priority:
-            pw = max(1, line_w)
-            pygame.draw.line(surface, color, (cx - s - 3, cy), (cx + s + 3, cy), pw)
-            pygame.draw.line(surface, color, (cx, cy - s - 3), (cx, cy + s + 3), pw)
+            seg_len = max(4, int(round(s * 0.95)))
+            seg_thickness = max(2, line_w)
+            gap = s + 4
+            segments = (
+                pygame.Rect(cx - gap - seg_len, cy - (seg_thickness // 2), seg_len, seg_thickness),
+                pygame.Rect(cx + gap, cy - (seg_thickness // 2), seg_len, seg_thickness),
+                pygame.Rect(cx - (seg_thickness // 2), cy - gap - seg_len, seg_thickness, seg_len),
+                pygame.Rect(cx - (seg_thickness // 2), cy + gap, seg_thickness, seg_len),
+            )
+            for segment in segments:
+                pygame.draw.rect(surface, color, segment)
 
     @staticmethod
     def _draw_target_recognition_beacon(
@@ -22159,18 +22386,133 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         veil.fill((150, 154, 150, 14))
         scene.blit(veil, (0, 0))
 
+    def _target_recognition_build_scene_ambient_shapes(
+        self,
+        *,
+        seed: int,
+    ) -> list[_TargetRecognitionAmbientShape]:
+        rng = random.Random(seed ^ 0x51A9D317)
+        palette = (
+            (122, 108, 92),
+            (90, 104, 128),
+            (126, 116, 84),
+            (92, 120, 108),
+            (114, 92, 92),
+        )
+        kinds = ("arrow", "bar", "chevron", "diamond")
+        shapes: list[_TargetRecognitionAmbientShape] = []
+        for _ in range(18):
+            color = palette[int(rng.uniform(0, len(palette)))]
+            min_alpha = float(rng.uniform(18.0, 36.0))
+            max_alpha = float(rng.uniform(42.0, 84.0))
+            velocity = float(rng.uniform(18.0, 40.0))
+            if rng.random() < 0.5:
+                velocity = -velocity
+            shapes.append(
+                _TargetRecognitionAmbientShape(
+                    kind=str(rng.choice(kinds)),
+                    nx=float(rng.uniform(0.06, 0.94)),
+                    ny=float(rng.uniform(0.08, 0.94)),
+                    scale=float(rng.uniform(0.022, 0.052)),
+                    rotation=float(rng.uniform(0.0, math.tau)),
+                    color=color,
+                    alpha=float(rng.uniform(min_alpha, max_alpha)),
+                    min_alpha=min_alpha,
+                    max_alpha=max_alpha,
+                    alpha_velocity=velocity,
+                )
+            )
+        return shapes
+
+    def _draw_target_recognition_scene_ambient(self, scene: pygame.Surface) -> None:
+        w, h = scene.get_size()
+        for shape in self._tr_scene_ambient_shapes:
+            alpha = max(0, min(255, int(round(shape.alpha))))
+            color = (*shape.color, alpha)
+            cx = int(shape.nx * float(w))
+            cy = int(shape.ny * float(h))
+            size = max(7, int(min(w, h) * shape.scale))
+            if shape.kind == "bar":
+                rect = pygame.Rect(cx - size, cy - max(2, size // 5), size * 2, max(4, size // 2))
+                pygame.draw.rect(scene, color, rect, 1)
+                continue
+            if shape.kind == "diamond":
+                pts = ((cx, cy - size), (cx + size, cy), (cx, cy + size), (cx - size, cy))
+                pygame.draw.polygon(scene, color, pts, 1)
+                continue
+            if shape.kind == "chevron":
+                pts = (
+                    (cx - size, cy - size),
+                    (cx, cy),
+                    (cx - size, cy + size),
+                    (cx + size, cy + max(2, size // 3)),
+                    (cx + size - max(2, size // 3), cy),
+                    (cx + size, cy - max(2, size // 3)),
+                )
+                pygame.draw.polygon(scene, color, pts, 1)
+                continue
+            pts = (
+                (cx - size, cy + max(2, size // 3)),
+                (cx + max(2, size // 2), cy + max(2, size // 3)),
+                (cx + max(2, size // 2), cy + size),
+                (cx + size, cy),
+                (cx + max(2, size // 2), cy - size),
+                (cx + max(2, size // 2), cy - max(2, size // 3)),
+                (cx - size, cy - max(2, size // 3)),
+            )
+            pygame.draw.polygon(scene, color, pts, 1)
+
+    def _target_recognition_build_scene_fog_tile(self, *, seed: int) -> pygame.Surface:
+        rng = random.Random(seed ^ 0xA2F1E3C5)
+        tile = pygame.Surface((96, 96), pygame.SRCALPHA)
+        for _ in range(26):
+            cx = int(rng.uniform(0, 95))
+            cy = int(rng.uniform(0, 95))
+            radius = int(rng.uniform(10, 28))
+            alpha = int(rng.uniform(20, 52))
+            shade = int(rng.uniform(126, 164))
+            pygame.draw.circle(tile, (shade, shade + 6, shade + 2, alpha), (cx, cy), radius)
+        for _ in range(12):
+            x1 = int(rng.uniform(0, 95))
+            y1 = int(rng.uniform(0, 95))
+            x2 = int(x1 + rng.uniform(-18, 18))
+            y2 = int(y1 + rng.uniform(-18, 18))
+            pygame.draw.line(tile, (188, 194, 196, int(rng.uniform(12, 28))), (x1, y1), (x2, y2), 1)
+        return tile
+
+    def _draw_target_recognition_scene_fog(self, scene: pygame.Surface) -> None:
+        tile = self._tr_scene_fog_tile
+        if tile is None:
+            return
+        w, h = scene.get_size()
+        tile_w, tile_h = tile.get_size()
+        offset_x = int(round(self._tr_scene_fog_offset_x)) % tile_w
+        offset_y = int(round(self._tr_scene_fog_offset_y)) % tile_h
+        fog = pygame.Surface((w, h), pygame.SRCALPHA)
+        for y in range(-offset_y, h, tile_h):
+            for x in range(-offset_x, w, tile_w):
+                fog.blit(tile, (x, y))
+        fog.fill((138, 144, 146, 18), special_flags=pygame.BLEND_RGBA_ADD)
+        scene.blit(fog, (0, 0))
+
     def _target_recognition_reset_scene_subtask(self) -> None:
+        self._target_recognition_reset_runtime_timer()
         self._tr_scene_payload_id = None
         self._tr_scene_rng = None
         self._tr_scene_glyphs = {}
         self._tr_scene_glyph_order = []
         self._tr_scene_symbol_hitboxes = []
+        self._tr_scene_panel_hitbox = None
         self._tr_scene_next_glyph_id = 1
         self._tr_scene_target_queue = []
         self._tr_scene_active_targets = []
+        self._tr_scene_live_counts_by_label = {}
         self._tr_scene_target_alpha_by_label = {}
         self._tr_scene_target_cap = 5
         self._tr_scene_next_target_add_ms = 0
+        self._tr_scene_spawn_accum_s = 0.0
+        self._tr_scene_next_spawn_after_s = 0.0
+        self._tr_scene_spawn_timer_armed = False
         self._tr_scene_points = 0
         self._tr_scene_hits = 0
         self._tr_scene_misses = 0
@@ -22178,39 +22520,58 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         self._tr_scene_unknown_hits = 0
         self._tr_scene_anim_frame = 0.0
         self._tr_scene_last_update_ms = 0
+        self._tr_scene_ambient_shapes = []
+        self._tr_scene_fog_offset_x = 0.0
+        self._tr_scene_fog_offset_y = 0.0
+        self._tr_scene_fog_velocity_x = 0.0
+        self._tr_scene_fog_velocity_y = 0.0
+        self._tr_scene_fog_tile = None
+        self._tr_scene_fog_tile_seed = 0
         self._tr_scene_base_cache = None
         self._tr_scene_base_cache_size = (0, 0)
         self._tr_scene_base_cache_seed = 0
 
     def _target_recognition_sync_scene_stream(self, payload: TargetRecognitionPayload) -> None:
         now_ms = self._runtime_now_ms()
+        dt_s = max(0.0, float(self._tr_timer_dt_s))
         pid = id(payload)
         clear_all_targets = bool(getattr(payload, "scene_clear_all_targets", False))
         if self._tr_scene_payload_id != pid:
+            seed = self._target_recognition_scene_seed(payload)
             self._tr_scene_payload_id = pid
             self._tr_scene_rng = random.Random(
-                self._target_recognition_scene_seed(payload) ^ 0xC0FFEE17
+                seed ^ 0xC0FFEE17
             )
             self._tr_scene_glyphs = {}
             self._tr_scene_glyph_order = []
             self._tr_scene_next_glyph_id = 1
             self._tr_scene_symbol_hitboxes = []
-            self._tr_scene_target_queue = []
-            self._tr_scene_active_targets = (
-                list(payload.scene_target_options)
-                if payload.scene_has_target and clear_all_targets
-                else []
-            )
-            self._tr_scene_target_alpha_by_label = {
-                str(label): 1.0 for label in self._tr_scene_active_targets
-            }
+            self._tr_scene_target_queue = list(payload.scene_target_options)
+            self._tr_scene_active_targets = []
+            self._tr_scene_live_counts_by_label = {}
+            self._tr_scene_target_alpha_by_label = {}
             if payload.scene_has_target and not clear_all_targets:
                 self._tr_scene_target_queue = list(payload.scene_target_options)
                 self._tr_scene_next_target_add_ms = now_ms + 1200
             else:
                 self._tr_scene_next_target_add_ms = 0
+            self._tr_scene_spawn_accum_s = 0.0
+            self._tr_scene_next_spawn_after_s = 0.0
+            self._tr_scene_spawn_timer_armed = False
             self._tr_scene_anim_frame = 0.0
             self._tr_scene_last_update_ms = now_ms
+            effect_rng = random.Random(seed ^ 0x9135B6A7)
+            fog_heading = float(effect_rng.uniform(0.0, math.tau))
+            fog_speed = float(effect_rng.uniform(5.0, 14.0))
+            self._tr_scene_fog_offset_x = 0.0
+            self._tr_scene_fog_offset_y = 0.0
+            self._tr_scene_fog_velocity_x = math.cos(fog_heading) * fog_speed
+            self._tr_scene_fog_velocity_y = math.sin(fog_heading) * fog_speed
+            self._tr_scene_ambient_shapes = self._target_recognition_build_scene_ambient_shapes(
+                seed=seed
+            )
+            self._tr_scene_fog_tile = self._target_recognition_build_scene_fog_tile(seed=seed)
+            self._tr_scene_fog_tile_seed = seed
             self._tr_scene_base_cache = None
             self._tr_scene_base_cache_size = (0, 0)
             self._tr_scene_base_cache_seed = 0
@@ -22256,21 +22617,21 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 )
                 self._tr_scene_glyph_order.append(glyph_id)
 
-            if self._tr_scene_active_targets:
-                for label in tuple(self._tr_scene_active_targets):
+            if payload.scene_has_target and clear_all_targets:
+                for label in tuple(payload.scene_target_options):
                     self._target_recognition_scene_ensure_label_present(
                         payload,
                         label,
                         fade_in=False,
+                        arm_spawn_timer=False,
                     )
 
         if self._tr_scene_payload_id != pid:
             return
-        dt_ms = max(0, min(120, now_ms - self._tr_scene_last_update_ms))
         self._tr_scene_last_update_ms = now_ms
-        if dt_ms > 0:
-            self._tr_scene_anim_frame += float(dt_ms) / (1000.0 / 60.0)
-            fade = float(dt_ms) * 0.040
+        if dt_s > 0.0:
+            self._tr_scene_anim_frame += dt_s * 60.0
+            fade = dt_s * 40.0
             for glyph in self._tr_scene_glyphs.values():
                 if glyph.alpha < glyph.max_alpha:
                     glyph.alpha = min(glyph.max_alpha, glyph.alpha + fade)
@@ -22278,60 +22639,90 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 current = float(self._tr_scene_target_alpha_by_label.get(label, 1.0))
                 if current < 1.0:
                     self._tr_scene_target_alpha_by_label[label] = min(
-                        1.0, current + (float(dt_ms) / 320.0)
+                        1.0, current + (dt_s * 3.125)
                     )
+            for shape in self._tr_scene_ambient_shapes:
+                shape.alpha += shape.alpha_velocity * dt_s
+                if shape.alpha > shape.max_alpha:
+                    shape.alpha = shape.max_alpha
+                    shape.alpha_velocity = -abs(shape.alpha_velocity)
+                elif shape.alpha < shape.min_alpha:
+                    shape.alpha = shape.min_alpha
+                    shape.alpha_velocity = abs(shape.alpha_velocity)
+            self._tr_scene_fog_offset_x += self._tr_scene_fog_velocity_x * dt_s
+            self._tr_scene_fog_offset_y += self._tr_scene_fog_velocity_y * dt_s
 
         if payload.scene_has_target and not clear_all_targets:
-            while now_ms >= self._tr_scene_next_target_add_ms:
-                if (
-                    self._tr_scene_target_queue
-                    and len(self._tr_scene_active_targets) < self._tr_scene_target_cap
+            if self._tr_scene_spawn_timer_armed and self._tr_scene_next_spawn_after_s > 0.0:
+                self._tr_scene_spawn_accum_s += dt_s
+                spawn_loops = 0
+                while (
+                    self._tr_scene_spawn_accum_s >= self._tr_scene_next_spawn_after_s
+                    and spawn_loops < 8
                 ):
-                    attempts = 0
-                    queue_len = max(1, len(self._tr_scene_target_queue))
-                    added = False
-                    while attempts < queue_len:
-                        nxt = self._tr_scene_target_queue.pop(0)
-                        self._tr_scene_target_queue.append(nxt)
-                        attempts += 1
-                        if nxt in self._tr_scene_active_targets:
-                            continue
-                        self._tr_scene_active_targets.append(nxt)
+                    self._tr_scene_spawn_accum_s -= self._tr_scene_next_spawn_after_s
+                    spawn_label = self._target_recognition_scene_pick_spawn_label()
+                    if spawn_label is not None:
                         self._target_recognition_scene_ensure_label_present(
                             payload,
-                            nxt,
-                            fade_in=True,
+                            spawn_label,
+                            fade_in=(spawn_label not in self._tr_scene_live_counts_by_label),
+                            arm_spawn_timer=False,
                         )
-                        added = True
-                        break
-                    if not added and queue_len == 1 and not self._tr_scene_active_targets:
-                        only = self._tr_scene_target_queue[0]
-                        self._tr_scene_active_targets.append(only)
-                        self._target_recognition_scene_ensure_label_present(
-                            payload,
-                            only,
-                            fade_in=True,
-                        )
-                self._tr_scene_next_target_add_ms += (
-                    self._target_recognition_scene_spawn_interval_ms()
-                )
+                    self._tr_scene_next_spawn_after_s = (
+                        self._target_recognition_scene_spawn_interval_s()
+                    )
+                    spawn_loops += 1
+            if (
+                not self._tr_scene_spawn_timer_armed
+                and self._tr_scene_target_queue
+                and now_ms >= int(self._tr_scene_next_target_add_ms)
+            ):
+                initial_label = self._target_recognition_scene_pick_spawn_label()
+                if initial_label is not None:
+                    self._target_recognition_scene_ensure_label_present(
+                        payload,
+                        initial_label,
+                        fade_in=True,
+                        arm_spawn_timer=True,
+                    )
+                self._tr_scene_next_target_add_ms = 0
 
         self._target_recognition_scene_prune_completed_targets()
 
     def _target_recognition_scene_prune_completed_targets(self) -> None:
-        if not self._tr_scene_active_targets:
+        if not self._tr_scene_active_targets and not self._tr_scene_live_counts_by_label:
             return
         active: list[str] = []
+        counts: dict[str, int] = {}
         for label in self._tr_scene_active_targets:
-            has_any = any(
-                glyph.kind == "entity" and str(glyph.live_target_label) == str(label)
-                for glyph in self._tr_scene_glyphs.values()
-            )
-            if has_any:
+            count = max(0, int(self._tr_scene_live_counts_by_label.get(label, 0)))
+            if count > 0:
                 active.append(label)
+                counts[str(label)] = count
             else:
                 self._tr_scene_target_alpha_by_label.pop(str(label), None)
         self._tr_scene_active_targets = active
+        self._tr_scene_live_counts_by_label = counts
+
+    def _target_recognition_scene_pick_spawn_label(self) -> str | None:
+        if not self._tr_scene_target_queue:
+            return None
+        allow_new_unique = len(self._tr_scene_active_targets) < int(self._tr_scene_target_cap)
+        queue_len = max(1, len(self._tr_scene_target_queue))
+        for _ in range(queue_len):
+            label = str(self._tr_scene_target_queue.pop(0))
+            self._tr_scene_target_queue.append(label)
+            if allow_new_unique or label in self._tr_scene_live_counts_by_label:
+                return label
+        return str(self._tr_scene_target_queue[0]) if self._tr_scene_target_queue else None
+
+    def _target_recognition_scene_arm_spawn_timer(self) -> None:
+        if self._tr_scene_spawn_timer_armed:
+            return
+        self._tr_scene_spawn_timer_armed = True
+        self._tr_scene_spawn_accum_s = 0.0
+        self._tr_scene_next_spawn_after_s = self._target_recognition_scene_spawn_interval_s()
 
     def _target_recognition_handle_scene_press(
         self,
@@ -22344,35 +22735,38 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             return False
         if glyph.kind != "entity" or glyph.entity is None:
             return False
-        clear_all_targets = bool(getattr(payload, "scene_clear_all_targets", False))
-
-        active = set(self._tr_scene_active_targets)
         live_label = str(glyph.live_target_label).strip()
-        hit_labels = {live_label} if live_label in active else set()
-        if not hit_labels:
-            hit_labels = set(label for label in glyph.matching_labels if label in active)
-        hit_target = bool(hit_labels)
-        if hit_target:
-            self._tr_scene_points += 1
-            self._tr_scene_hits += 1
-            self._tr_scene_active_targets = [
-                label for label in self._tr_scene_active_targets if label not in hit_labels
-            ]
-            for label in hit_labels:
-                self._tr_scene_target_alpha_by_label.pop(str(label), None)
-            self._target_recognition_scene_reseed_glyph(
-                payload,
-                glyph,
-                kind="entity",
-                force_non_target=True,
-            )
-            self._target_recognition_scene_prune_completed_targets()
-            if clear_all_targets:
-                return not self._tr_scene_active_targets
-            return True
+        if live_label == "" or int(self._tr_scene_live_counts_by_label.get(live_label, 0)) <= 0:
+            self._tr_scene_misses += 1
+            return False
 
-        self._tr_scene_misses += 1
-        return False
+        remaining = max(0, int(self._tr_scene_live_counts_by_label.get(live_label, 0)) - 1)
+        glyph.live_target_label = ""
+        self._target_recognition_scene_reseed_glyph(
+            payload,
+            glyph,
+            kind="entity",
+            force_non_target=True,
+        )
+        if remaining > 0:
+            self._tr_scene_live_counts_by_label[live_label] = remaining
+            self._tr_selected_panels.discard("scene")
+            self._target_recognition_scene_prune_completed_targets()
+            return False
+
+        self._tr_scene_live_counts_by_label.pop(live_label, None)
+        self._tr_scene_active_targets = [
+            label for label in self._tr_scene_active_targets if str(label) != live_label
+        ]
+        self._tr_scene_target_alpha_by_label.pop(live_label, None)
+        self._tr_scene_points += 1
+        self._tr_scene_hits += 1
+        self._target_recognition_scene_prune_completed_targets()
+        if self._tr_scene_active_targets:
+            self._tr_selected_panels.discard("scene")
+            return False
+        self._tr_selected_panels.add("scene")
+        return True
 
     def _target_recognition_scene_reseed_glyph(
         self,
@@ -22424,10 +22818,10 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         glyph.entity = TargetRecognitionSceneEntity("truck", "neutral", False, False)
         glyph.matching_labels = ()
 
-    def _target_recognition_scene_spawn_interval_ms(self) -> int:
+    def _target_recognition_scene_spawn_interval_s(self) -> float:
         if self._tr_scene_rng is None:
-            return 1800
-        return int(round(self._tr_scene_rng.uniform(1400.0, 2400.0)))
+            return 18.0
+        return float(self._tr_scene_rng.uniform(10.0, 40.0))
 
     def _target_recognition_scene_ensure_label_present(
         self,
@@ -22435,6 +22829,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         label: str,
         *,
         fade_in: bool,
+        arm_spawn_timer: bool = True,
     ) -> None:
         target_entity = self._target_recognition_scene_entity_from_label(label)
         if target_entity is None:
@@ -22444,12 +22839,9 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         preferred: _TargetRecognitionSceneGlyph | None = None
         for glyph_id in self._tr_scene_glyph_order:
             glyph = self._tr_scene_glyphs.get(glyph_id)
-            if glyph is None or glyph.kind != "entity":
+            if glyph is None or glyph.kind != "entity" or str(glyph.live_target_label).strip():
                 continue
-            if str(glyph.live_target_label) == str(label):
-                preferred = glyph
-                break
-            if label in glyph.matching_labels and str(glyph.live_target_label).strip() == "":
+            if str(label) in glyph.matching_labels:
                 preferred = glyph
                 break
             if preferred is None and not active_set.intersection(glyph.matching_labels):
@@ -22459,12 +22851,6 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         if preferred is None:
             return
 
-        for glyph in self._tr_scene_glyphs.values():
-            if glyph is preferred or glyph.kind != "entity":
-                continue
-            if str(glyph.live_target_label) == str(label):
-                glyph.live_target_label = ""
-
         if preferred.entity is None or label not in preferred.matching_labels:
             preferred.kind = "entity"
             preferred.entity = target_entity
@@ -22472,13 +22858,24 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 entity=target_entity,
                 labels=payload.scene_target_options,
             )
-        preferred.live_target_label = str(label)
+        label_key = str(label)
+        current_count = int(self._tr_scene_live_counts_by_label.get(label_key, 0))
+        preferred.live_target_label = label_key
+        self._tr_scene_live_counts_by_label[label_key] = current_count + 1
+        if label_key not in self._tr_scene_active_targets:
+            self._tr_scene_active_targets.append(label_key)
         if fade_in:
             preferred.alpha = 0.0
-            self._tr_scene_target_alpha_by_label[str(label)] = 0.0
+            if current_count <= 0:
+                self._tr_scene_target_alpha_by_label[label_key] = 0.0
         else:
             preferred.alpha = preferred.max_alpha
-            self._tr_scene_target_alpha_by_label[str(label)] = 1.0
+            self._tr_scene_target_alpha_by_label[label_key] = 1.0
+        if current_count > 0:
+            self._tr_scene_target_alpha_by_label.setdefault(label_key, 1.0)
+        self._tr_selected_panels.discard("scene")
+        if arm_spawn_timer:
+            self._target_recognition_scene_arm_spawn_timer()
 
     def _target_recognition_scene_add_filler_glyph(self, *, kind: str) -> None:
         if self._tr_scene_rng is None:
@@ -23236,7 +23633,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             return ("No practice data recorded.",)
 
         labels = (
-            ("scene", "Map"),
+            ("scene", "Scene"),
             ("light", "Light"),
             ("scan", "Scan"),
             ("system", "System"),
@@ -23252,6 +23649,25 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             else:
                 lines.append(f"{label}: {correct}/{trials} ({acc:.0f}%)  Hits n/a")
         return tuple(lines)
+
+    def _target_recognition_submit_if_complete(
+        self,
+        snap: TestSnapshot,
+        *,
+        expected: set[str],
+    ) -> bool:
+        if self._tr_selected_panels != expected:
+            return False
+        selected_snapshot = set(self._tr_selected_panels)
+        accepted = self._engine.submit_answer(str(len(selected_snapshot)))
+        if accepted:
+            if snap.phase is Phase.PRACTICE:
+                self._target_recognition_record_practice_trial(
+                    selected=selected_snapshot,
+                    expected=expected,
+                )
+            self._tr_selected_panels.clear()
+        return accepted
 
     @staticmethod
     def _target_recognition_active_panels(payload: TargetRecognitionPayload) -> set[str]:
@@ -23306,21 +23722,22 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         self._sa_option_hitboxes = {}
         self._sa_grid_hitboxes = {}
 
-        bg = (11, 18, 80)
-        frame_fill = (84, 84, 92)
-        frame_edge = (212, 220, 236)
-        chrome_blue = (18, 28, 118)
-        strip_dark = (26, 26, 32)
-        strip_mid = (42, 42, 48)
-        strip_soft = (62, 62, 68)
-        grid_fill_a = (92, 124, 96)
-        grid_fill_b = (102, 134, 106)
-        grid_edge = (220, 228, 236)
-        text_main = (240, 244, 252)
-        text_muted = (198, 205, 220)
-        text_dark = (22, 24, 32)
-        accent_yellow = (250, 224, 126)
-        accent_red = (205, 90, 84)
+        bg = (9, 18, 82)
+        frame_fill = (52, 56, 68)
+        frame_edge = (220, 228, 240)
+        chrome_blue = (20, 32, 126)
+        strip_dark = (12, 14, 20)
+        strip_mid = (30, 34, 46)
+        strip_soft = (44, 48, 60)
+        grid_fill_a = (70, 94, 86)
+        grid_fill_b = (78, 104, 94)
+        grid_edge = (216, 224, 236)
+        text_main = (242, 246, 252)
+        text_muted = (198, 206, 220)
+        text_dark = (20, 24, 34)
+        accent_yellow = (248, 222, 110)
+        accent_red = (214, 92, 78)
+        accent_white = (236, 242, 248)
 
         w, h = surface.get_size()
         surface.fill(bg)
@@ -23337,10 +23754,6 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
 
         title = self._tiny_font.render("Situational Awareness Test", True, text_main)
         surface.blit(title, title.get_rect(midleft=(header.x + 10, header.centery)))
-        if runtime_visible_timers_enabled() and snap.time_remaining_s is not None:
-            rem = int(round(snap.time_remaining_s))
-            timer = self._tiny_font.render(f"{rem // 60:02d}:{rem % 60:02d}", True, text_main)
-            surface.blit(timer, timer.get_rect(midright=(header.right - 10, header.centery)))
 
         if payload is None:
             self._draw_wrapped_text(
@@ -23357,20 +23770,42 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             mix = max(floor, min(1.0, float(fade)))
             return tuple(max(0, min(255, int(round(channel * mix)))) for channel in color)
 
-        cue_strip = pygame.Rect(frame.x + 10, header.bottom + 8, frame.w - 20, 34)
+        round_render = self._tiny_font.render(
+            f"Round {payload.round_index}/{payload.round_total}",
+            True,
+            accent_yellow,
+        )
+        round_rect = round_render.get_rect(midright=(header.right - 86, header.centery))
+        surface.blit(round_render, round_rect)
+        clock_render = self._small_font.render(payload.display_clock_text, True, text_main)
+        surface.blit(clock_render, clock_render.get_rect(midright=(header.right - 10, header.centery)))
+        if runtime_visible_timers_enabled() and snap.time_remaining_s is not None:
+            rem = int(round(snap.time_remaining_s))
+            timer = self._tiny_font.render(f"{rem // 60:02d}:{rem % 60:02d}", True, text_main)
+            surface.blit(timer, timer.get_rect(midright=(round_rect.x - 12, header.centery)))
+
+        cue_strip = pygame.Rect(frame.x + 10, header.bottom + 8, frame.w - 20, 40)
         pygame.draw.rect(surface, strip_dark, cue_strip)
         pygame.draw.rect(surface, frame_edge, cue_strip, 1)
+        incoming_label = self._tiny_font.render("INCOMING INFORMATION", True, text_muted)
+        surface.blit(incoming_label, (cue_strip.x + 10, cue_strip.y + 4))
+        incoming_text = (
+            payload.announcement_lines[-1]
+            if payload.announcement_lines
+            else payload.top_strip_text
+            or "Stand by for changing information."
+        )
+        incoming_fade = 1.0 if payload.announcement_lines else payload.top_strip_fade if payload.top_strip_text else 0.45
+        incoming_render = self._small_font.render(
+            incoming_text,
+            True,
+            _fade_color(text_main, incoming_fade, floor=0.45),
+        )
+        surface.blit(incoming_render, incoming_render.get_rect(midleft=(cue_strip.x + 10, cue_strip.centery + 8)))
 
-        top_text = payload.top_strip_text or "Build the picture from the radio log, fading cues, and map flashes."
-        top_color = _fade_color(text_main, payload.top_strip_fade if payload.top_strip_text else 0.45, floor=0.45)
-        cue_render = self._tiny_font.render(top_text, True, top_color)
-        surface.blit(cue_render, cue_render.get_rect(midleft=(cue_strip.x + 10, cue_strip.centery)))
-        clock_render = self._small_font.render(payload.display_clock_text, True, text_main)
-        surface.blit(clock_render, clock_render.get_rect(midright=(cue_strip.right - 12, cue_strip.centery)))
-
-        query_h = 138
+        query_h = 146
         main_top = cue_strip.bottom + 10
-        right_w = max(210, min(280, int(frame.w * 0.30)))
+        right_w = max(228, min(292, int(frame.w * 0.31)))
         left_panel = pygame.Rect(
             frame.x + 10,
             main_top,
@@ -23388,18 +23823,36 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             except ValueError:
                 selected_code = int(self._math_choice)
         selected_cell = normalize_grid_cell_token(self._input)
+        typed_token = self._input.strip().upper()
         answer_mode = payload.answer_mode
-        active_channels = set(payload.active_channels)
+        north_heading_deg = int(payload.north_heading_deg) % 360
+        north_label = {
+            0: "North Up",
+            90: "North Right",
+            180: "North Down",
+            270: "North Left",
+        }.get(north_heading_deg, f"N {north_heading_deg}°")
 
         pygame.draw.rect(surface, frame_fill, left_panel)
         pygame.draw.rect(surface, frame_edge, left_panel, 1)
-        pygame.draw.rect(surface, accent_red, right_panel)
+        pygame.draw.rect(surface, frame_fill, right_panel)
         pygame.draw.rect(surface, frame_edge, right_panel, 1)
         pygame.draw.rect(surface, strip_dark, query_panel)
         pygame.draw.rect(surface, frame_edge, query_panel, 1)
 
-        grid_box = left_panel.inflate(-14, -14)
-        label_pad = 20
+        map_title = self._tiny_font.render("TACTICAL MAP", True, text_main)
+        surface.blit(map_title, (left_panel.x + 16, left_panel.y + 10))
+        round_note = self._tiny_font.render(
+            f"{payload.scenario_label}  |  {north_label}",
+            True,
+            text_muted,
+        )
+        surface.blit(round_note, (left_panel.x + 124, left_panel.y + 10))
+        compass_rect = pygame.Rect(left_panel.x + 12, left_panel.y + 4, 92, 82)
+        self._draw_spatial_compass(surface, compass_rect, north_deg=north_heading_deg)
+
+        grid_box = pygame.Rect(left_panel.x + 14, left_panel.y + 34, left_panel.w - 28, left_panel.h - 72)
+        label_pad = 24
         grid_size_px = min(grid_box.w - label_pad - 4, grid_box.h - label_pad - 4)
         cell_size = max(16, min(44, grid_size_px // 10))
         grid_w = cell_size * 10
@@ -23407,7 +23860,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         start_x = grid_box.x + label_pad + max(0, (grid_box.w - label_pad - grid_w) // 2)
         start_y = grid_box.y + label_pad + max(0, (grid_box.h - label_pad - grid_h) // 2)
         grid_rect = pygame.Rect(start_x, start_y, grid_w, grid_h)
-        pygame.draw.rect(surface, (50, 90, 66), grid_rect)
+        pygame.draw.rect(surface, (44, 62, 72), grid_rect)
         pygame.draw.rect(surface, grid_edge, grid_rect, 1)
 
         for x in range(10):
@@ -23449,14 +23902,23 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             "NW": (-1, -1),
         }
         affiliation_colors = {
-            "friendly": (236, 214, 78),
-            "neutral": (162, 212, 238),
-            "enemy": (212, 76, 74),
+            "friendly": accent_yellow,
+            "neutral": accent_white,
+            "unknown": accent_white,
+            "enemy": accent_red,
+        }
+        highlighted_callsigns = {
+            callsign
+            for callsign in (
+                payload.cue_card.callsign if payload.cue_card is not None else None,
+                active_query.subject_callsign if active_query is not None else None,
+            )
+            if callsign is not None
         }
         for contact in payload.visible_contacts:
             cx = grid_rect.x + int(round(contact.x * cell_size)) + (cell_size // 2)
             cy = grid_rect.y + int(round(contact.y * cell_size)) + (cell_size // 2)
-            color = _fade_color(affiliation_colors.get(contact.allegiance, (232, 236, 248)), contact.fade)
+            color = _fade_color(affiliation_colors.get(contact.allegiance, accent_white), contact.fade, floor=0.40)
             radius = max(5, min(10, cell_size // 4))
             pygame.draw.circle(surface, color, (cx, cy), radius)
             pygame.draw.circle(surface, text_dark, (cx, cy), radius, 1)
@@ -23465,33 +23927,54 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 line_len = max(7, cell_size // 3)
                 end = (cx + int(dx * line_len), cy + int(dy * line_len))
                 pygame.draw.line(surface, color, (cx, cy), end, 2)
-            label = self._tiny_font.render(str(contact.callsign), True, text_main)
-            surface.blit(label, label.get_rect(midbottom=(cx, cy - radius - 2)))
-            sublabel = self._tiny_font.render(
-                f"{contact.asset_type.replace('_', ' ').title()} / {contact.destination_cell}",
-                True,
-                _fade_color(text_muted, contact.fade, floor=0.52),
-            )
-            surface.blit(sublabel, sublabel.get_rect(midtop=(cx, cy + radius + 2)))
+            if contact.callsign in highlighted_callsigns:
+                pygame.draw.circle(surface, frame_edge, (cx, cy), radius + 4, 1)
+                label = self._tiny_font.render(str(contact.callsign), True, text_main)
+                surface.blit(label, label.get_rect(midbottom=(cx, cy - radius - 4)))
 
-        card_outer = right_panel.inflate(-18, -22)
-        card_inner = card_outer.inflate(-18, -24)
-        pygame.draw.rect(surface, frame_fill, card_inner)
-        pygame.draw.rect(surface, frame_edge, card_inner, 1)
+        legend_box = pygame.Rect(left_panel.x + 14, left_panel.bottom - 30, left_panel.w - 28, 18)
+        legend = self._tiny_font.render(
+            "yellow = friendly   red = hostile   white = unknown   cell = 2 km",
+            True,
+            text_muted,
+        )
+        surface.blit(legend, legend.get_rect(midleft=(legend_box.x, legend_box.centery)))
+
+        card_outer = right_panel.inflate(-16, -18)
+        cue_card = payload.cue_card
+        card_flash = 0.34 if cue_card is None else cue_card.fade
+        card_edge = _fade_color(accent_yellow if cue_card is not None else frame_edge, card_flash, floor=0.45)
+        pygame.draw.rect(surface, strip_mid, card_outer)
+        pygame.draw.rect(surface, card_edge, card_outer, 2)
+        status_title = self._tiny_font.render("ASSET INFORMATION", True, text_muted)
+        surface.blit(status_title, (card_outer.x + 12, card_outer.y + 10))
+        family_render = self._tiny_font.render(payload.segment_label, True, text_muted)
+        surface.blit(family_render, family_render.get_rect(midright=(card_outer.right - 12, card_outer.y + 16)))
+
+        card_inner = pygame.Rect(card_outer.x + 12, card_outer.y + 30, card_outer.w - 24, card_outer.h - 42)
         cue_card = payload.cue_card
         card_title = cue_card.callsign if cue_card is not None else "STANDBY"
-        title_render = self._small_font.render(card_title, True, text_main)
-        surface.blit(title_render, title_render.get_rect(midtop=(card_inner.centerx, card_inner.y + 10)))
-
-        family_render = self._tiny_font.render(payload.segment_label, True, text_muted)
-        surface.blit(family_render, family_render.get_rect(midtop=(card_inner.centerx, card_inner.y + 34)))
+        title_render = self._small_font.render(
+            card_title,
+            True,
+            _fade_color(text_main, card_flash, floor=0.45),
+        )
+        surface.blit(title_render, title_render.get_rect(midleft=(card_inner.x + 4, card_inner.y + 14)))
         focus_render = self._tiny_font.render(payload.focus_label, True, text_muted)
-        surface.blit(focus_render, focus_render.get_rect(midtop=(card_inner.centerx, card_inner.y + 50)))
+        surface.blit(focus_render, (card_inner.x + 4, card_inner.y + 38))
 
-        field_y = card_inner.y + 82
-        field_h = 42
+        field_y = card_inner.y + 62
+        field_h = 38
         field_gap = 8
-        card_fade = cue_card.fade if cue_card is not None else 0.3
+        card_fade = card_flash
+        side_value = ""
+        if cue_card is not None:
+            side_value = {
+                "friendly": "Friendly",
+                "enemy": "Hostile",
+                "neutral": "Unknown",
+                "unknown": "Unknown",
+            }.get(cue_card.allegiance, str(cue_card.allegiance).title())
 
         def _field(label: str, value: str) -> None:
             nonlocal field_y
@@ -23499,29 +23982,43 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             pygame.draw.rect(surface, strip_dark, box)
             pygame.draw.rect(surface, frame_edge, box, 1)
             label_render = self._tiny_font.render(label, True, text_muted)
-            surface.blit(label_render, label_render.get_rect(midtop=(box.centerx, box.y + 6)))
-            value_render = self._small_font.render(value or "--", True, _fade_color(text_main, card_fade, floor=0.45))
-            surface.blit(value_render, value_render.get_rect(center=(box.centerx, box.centery + 6)))
+            surface.blit(label_render, (box.x + 8, box.y + 5))
+            value_render = self._small_font.render(
+                value or "--",
+                True,
+                _fade_color(text_main, card_fade, floor=0.45),
+            )
+            surface.blit(value_render, value_render.get_rect(midright=(box.right - 8, box.centery + 4)))
             field_y += field_h + field_gap
 
         _field(
             "TYPE / SIDE",
             (
-                f"{cue_card.asset_type.replace('_', ' ').title()} / {cue_card.allegiance.title()}"
+                f"{cue_card.asset_type.replace('_', ' ').title()} / {side_value}"
                 if cue_card is not None
                 else ""
             ),
         )
-        _field("ORDERED TO", cue_card.instructed_destination if cue_card is not None else "")
-        _field("ACTUAL HEADING", cue_card.actual_destination if cue_card is not None else "")
-        _field("NET / TASK", f"{cue_card.channel_text}  {cue_card.task_text}" if cue_card is not None else "")
+        _field("NEXT WAYPOINT", cue_card.next_waypoint if cue_card is not None else "")
+        _field("NEXT WAYPOINT AT", cue_card.next_waypoint_at_text if cue_card is not None else "")
+        _field("ALTITUDE", cue_card.altitude_text if cue_card is not None else "")
 
-        radio_box = pygame.Rect(card_inner.x + 18, field_y + 2, card_inner.w - 36, max(92, card_inner.bottom - field_y - 54))
+        radio_box = pygame.Rect(
+            card_inner.x + 18,
+            field_y + 2,
+            card_inner.w - 36,
+            max(94, card_inner.bottom - field_y - 54),
+        )
         pygame.draw.rect(surface, strip_dark, radio_box)
         pygame.draw.rect(surface, frame_edge, radio_box, 1)
-        radio_title = self._tiny_font.render("RADIO LOG", True, text_muted)
+        radio_title = self._tiny_font.render("COMMUNICATIONS", True, text_muted)
         surface.blit(radio_title, radio_title.get_rect(midtop=(radio_box.centerx, radio_box.y + 6)))
-        radio_lines = payload.radio_log or ("Stand by for the next call.",)
+        radio_lines = (
+            (cue_card.communications_text,)
+            if cue_card is not None and cue_card.communications_text
+            else payload.radio_log[-2:]
+            or ("Stand by for the next call.",)
+        )
         self._draw_wrapped_text(
             surface,
             "\n".join(radio_lines[-4:]),
@@ -23547,11 +24044,13 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
 
         pygame.draw.rect(surface, strip_mid, query_panel.inflate(-12, -12))
         pygame.draw.rect(surface, frame_edge, query_panel.inflate(-12, -12), 1)
+        query_title = self._tiny_font.render("SITUATION QUERY", True, text_muted)
+        surface.blit(query_title, (query_panel.x + 18, query_panel.y + 10))
         if active_query is None:
             self._draw_wrapped_text(
                 surface,
-                f"Stand by. Next query in {int(round(payload.next_query_in_s or 0.0)):02d}s while the hidden picture keeps moving.",
-                pygame.Rect(query_panel.x + 18, query_panel.y + 18, query_panel.w - 36, 40),
+                f"Stand by. Next query in {int(round(payload.next_query_in_s or 0.0)):02d}s while the tactical picture keeps changing.",
+                pygame.Rect(query_panel.x + 18, query_panel.y + 30, query_panel.w - 36, 40),
                 color=text_main,
                 font=self._small_font,
                 max_lines=2,
@@ -23560,14 +24059,14 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             self._draw_wrapped_text(
                 surface,
                 active_query.prompt,
-                pygame.Rect(query_panel.x + 18, query_panel.y + 16, query_panel.w - 36, 40),
+                pygame.Rect(query_panel.x + 18, query_panel.y + 30, query_panel.w - 36, 40),
                 color=text_main,
                 font=self._small_font,
                 max_lines=2,
             )
 
             if answer_mode is SituationalAwarenessAnswerMode.GRID_CELL:
-                entry_box = pygame.Rect(query_panel.x + 22, query_panel.y + 70, 132, 36)
+                entry_box = pygame.Rect(query_panel.x + 22, query_panel.y + 76, 132, 36)
                 pygame.draw.rect(surface, (235, 242, 251), entry_box)
                 pygame.draw.rect(surface, accent_yellow, entry_box, 2)
                 token = normalize_grid_cell_token(self._input) or self._input.upper()
@@ -23576,11 +24075,11 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 surface.blit(value, value.get_rect(center=entry_box.center))
                 hint = self._tiny_font.render("Grid cell", True, text_muted)
                 surface.blit(hint, (entry_box.x, entry_box.y - 16))
-            else:
+            elif answer_mode is SituationalAwarenessAnswerMode.CHOICE:
                 choice_count = max(1, len(active_query.answer_choices))
                 gap = 6
                 card_w = max(104, (query_panel.w - 36 - (gap * (choice_count - 1))) // choice_count)
-                card_y = query_panel.y + 64
+                card_y = query_panel.y + 70
                 for choice in active_query.answer_choices:
                     row = pygame.Rect(
                         query_panel.x + 18 + (choice.code - 1) * (card_w + gap),
@@ -23604,6 +24103,29 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                         font=self._tiny_font,
                         max_lines=3,
                     )
+            else:
+                entry_box = pygame.Rect(query_panel.x + 22, query_panel.y + 76, 196, 36)
+                pygame.draw.rect(surface, (235, 242, 251), entry_box)
+                pygame.draw.rect(surface, accent_yellow, entry_box, 2)
+                entry_label = active_query.entry_label or (
+                    "Numeric input"
+                    if answer_mode is SituationalAwarenessAnswerMode.NUMERIC
+                    else "Type answer"
+                )
+                entry_placeholder = active_query.entry_placeholder or ("..." if answer_mode is SituationalAwarenessAnswerMode.TOKEN else "--")
+                value_text = typed_token[: max(1, int(active_query.entry_max_chars or 16))] or entry_placeholder
+                value_color = text_dark if typed_token != "" else text_muted
+                value = self._small_font.render(value_text, True, value_color)
+                surface.blit(value, value.get_rect(center=entry_box.center))
+                hint = self._tiny_font.render(entry_label, True, text_muted)
+                surface.blit(hint, (entry_box.x, entry_box.y - 16))
+                if answer_mode is SituationalAwarenessAnswerMode.TOKEN and active_query.accepted_tokens:
+                    accepted_hint = self._tiny_font.render(
+                        " / ".join(token.title() for token in active_query.accepted_tokens),
+                        True,
+                        text_muted,
+                    )
+                    surface.blit(accepted_hint, (entry_box.right + 14, entry_box.y + 10))
 
         footer_hint = snap.input_hint
         if snap.practice_feedback:
@@ -24839,6 +25361,103 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         label = self._tiny_font.render(f"N {north_deg}°", True, (236, 244, 255))
         surface.blit(label, (dial.x - 4, dial.bottom + 2))
 
+    def _spatial_map_icon_surface(
+        self,
+        *,
+        kind: str,
+        size: tuple[int, int],
+        highlighted: bool,
+    ) -> pygame.Surface:
+        width = max(8, int(size[0]))
+        height = max(8, int(size[1]))
+        key = (str(kind).strip().lower(), width, height, bool(highlighted))
+        cached = self._spatial_map_icon_cache.get(key)
+        if cached is not None:
+            return cached
+
+        spec = spatial_integration_visual_spec(kind)
+        surface = pygame.Surface((width, height), pygame.SRCALPHA)
+        if spec is None:
+            pygame.draw.circle(surface, (210, 214, 220), (width // 2, height // 2), max(2, min(width, height) // 3))
+            self._spatial_map_icon_cache[key] = surface
+            return surface
+
+        fill = spec.topdown_rgb
+        outline = tuple(max(0, channel - 56) for channel in fill)
+        accent = tuple(min(255, channel + 34) for channel in fill)
+        if highlighted:
+            accent = (244, 228, 126)
+
+        icon = spec.topdown_icon
+        if icon == "hangar":
+            body = pygame.Rect(width // 6, height // 3, width * 2 // 3, height // 2)
+            pygame.draw.rect(surface, fill, body, border_radius=2)
+            pygame.draw.rect(surface, outline, body, 1, border_radius=2)
+            roof = [
+                (body.x - 1, body.y),
+                (body.centerx, max(1, body.y - height // 4)),
+                (body.right + 1, body.y),
+            ]
+            pygame.draw.polygon(surface, accent, roof)
+            pygame.draw.polygon(surface, outline, roof, 1)
+        elif icon == "tower":
+            shaft = pygame.Rect((width // 2) - 1, height // 4, 3, height // 2)
+            pygame.draw.rect(surface, fill, shaft)
+            pygame.draw.rect(surface, outline, shaft, 1)
+            pygame.draw.circle(surface, accent, (width // 2, max(2, height // 5)), max(2, width // 7))
+        elif icon == "truck":
+            body = pygame.Rect(width // 6, height // 3, width // 2, height // 3)
+            cab = pygame.Rect(body.right - 1, body.y + 1, width // 4, max(4, body.h - 2))
+            pygame.draw.rect(surface, fill, body, border_radius=2)
+            pygame.draw.rect(surface, accent, cab, border_radius=2)
+            pygame.draw.rect(surface, outline, body, 1, border_radius=2)
+            pygame.draw.rect(surface, outline, cab, 1, border_radius=2)
+            wheel_y = body.bottom + 1
+            wheel_r = max(1, width // 10)
+            pygame.draw.circle(surface, outline, (body.x + wheel_r + 1, wheel_y), wheel_r)
+            pygame.draw.circle(surface, outline, (cab.right - wheel_r - 1, wheel_y), wheel_r)
+        elif icon == "soldiers":
+            for idx, x in enumerate((width // 4, width // 2, width * 3 // 4)):
+                y = height // 2 + (idx % 2)
+                pygame.draw.circle(surface, fill, (x, y - max(2, height // 5)), max(1, width // 10))
+                pygame.draw.line(surface, outline, (x, y - max(1, height // 8)), (x, y + max(2, height // 5)), 1)
+                pygame.draw.line(surface, outline, (x, y), (x - 2, y + 3), 1)
+                pygame.draw.line(surface, outline, (x, y), (x + 2, y + 3), 1)
+        elif icon == "trees":
+            for idx, x in enumerate((width // 4, width // 2, width * 3 // 4)):
+                trunk_h = max(2, height // 5)
+                pygame.draw.line(surface, outline, (x, height - 2), (x, height - 2 - trunk_h), 1)
+                canopy = [
+                    (x, max(1, height // 6) + (idx % 2)),
+                    (x - max(2, width // 7), height - 2 - trunk_h),
+                    (x + max(2, width // 7), height - 2 - trunk_h),
+                ]
+                pygame.draw.polygon(surface, fill, canopy)
+                pygame.draw.polygon(surface, outline, canopy, 1)
+        elif icon == "tent":
+            pts = [
+                (width // 6, height * 3 // 4),
+                (width * 5 // 6, height * 3 // 4),
+                (width // 2, height // 4),
+            ]
+            pygame.draw.polygon(surface, fill, pts)
+            pygame.draw.polygon(surface, outline, pts, 1)
+            flap = [(width // 2, height // 4), (width // 2, height * 3 // 4), (width * 2 // 3, height * 3 // 4)]
+            pygame.draw.polygon(surface, accent, flap)
+        elif icon == "sheep":
+            for idx, x in enumerate((width // 3, width * 2 // 3)):
+                body = pygame.Rect(x - width // 6, height // 3, width // 3, height // 3)
+                pygame.draw.ellipse(surface, fill, body)
+                pygame.draw.ellipse(surface, outline, body, 1)
+                head = (body.right - 1 if idx % 2 == 0 else body.x + 1, body.centery)
+                pygame.draw.circle(surface, outline, head, max(1, width // 12))
+        else:
+            pygame.draw.circle(surface, fill, (width // 2, height // 2), max(2, min(width, height) // 3))
+            pygame.draw.circle(surface, outline, (width // 2, height // 2), max(2, min(width, height) // 3), 1)
+
+        self._spatial_map_icon_cache[key] = surface
+        return surface
+
     def _spatial_map_cell_rect(
         self,
         rect: pygame.Rect,
@@ -24924,29 +25543,25 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 pygame.draw.circle(surface, (236, 244, 255), point, 4)
 
         grouped_landmarks: dict[tuple[int, int], list[Any]] = {}
+        kind_counts: dict[str, int] = {}
         for item in landmarks:
             lm = cast(Any, item)
+            kind_token = str(getattr(lm, "kind", "")).lower()
+            kind_counts[kind_token] = kind_counts.get(kind_token, 0) + 1
             grouped_landmarks.setdefault((int(lm.x), int(lm.y)), []).append(lm)
         for (gx, gy), cell_items in grouped_landmarks.items():
             cell = self._spatial_map_cell_rect(rect, grid_cols=grid_cols, grid_rows=grid_rows, x=gx, y=gy)
-            marker_w = max(6, cell.w // 4)
-            marker_h = max(5, cell.h // 4)
+            marker_w = max(10, cell.w // 3)
+            marker_h = max(10, cell.h // 3)
             offsets = (
                 (-marker_w, -marker_h),
                 (2, -marker_h),
                 (-marker_w, 2),
                 (2, 2),
             )
+            label_tokens: list[str] = []
             for idx, lm in enumerate(cell_items[:4]):
                 kind = str(getattr(lm, "kind", "")).lower()
-                color = {
-                    "forest": (72, 124, 66),
-                    "foot_soldiers": (92, 96, 56),
-                    "sheep": (214, 218, 220),
-                    "truck": (124, 110, 62),
-                    "tower": (166, 168, 156),
-                    "tent": (192, 170, 98),
-                }.get(kind, (130, 84, 44))
                 ox, oy = offsets[idx % len(offsets)]
                 marker = pygame.Rect(
                     cell.centerx + ox,
@@ -24954,13 +25569,22 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                     marker_w,
                     marker_h,
                 )
-                pygame.draw.rect(surface, color, marker, border_radius=2)
-                pygame.draw.rect(surface, (38, 42, 38), marker, 1, border_radius=2)
-            label_text = "/".join(str(item.label) for item in cell_items[:2])
-            if len(cell_items) > 2:
-                label_text += f"+{len(cell_items) - 2}"
-            label = self._tiny_font.render(label_text, True, (20, 20, 22))
-            surface.blit(label, (cell.x + 3, cell.bottom - 14))
+                icon = self._spatial_map_icon_surface(
+                    kind=kind,
+                    size=marker.size,
+                    highlighted=False,
+                )
+                surface.blit(icon, marker.topleft)
+                spec = spatial_integration_visual_spec(kind)
+                if spec is not None and spec.allow_answer_map_text:
+                    if len(cell_items) > 1 or kind_counts.get(kind, 0) > 1:
+                        label_tokens.append(str(lm.label))
+            if label_tokens:
+                label_text = "/".join(label_tokens[:2])
+                if len(label_tokens) > 2:
+                    label_text += f"+{len(label_tokens) - 2}"
+                label = self._tiny_font.render(label_text, True, (20, 20, 22))
+                surface.blit(label, (cell.x + 3, cell.bottom - 14))
 
         if aircraft_point is not None:
             cell = self._spatial_map_cell_rect(rect, grid_cols=grid_cols, grid_rows=grid_rows, x=int(aircraft_point.x), y=int(aircraft_point.y))
@@ -25193,7 +25817,6 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                         payload=payload,
                     )
                 )
-                self._draw_spatial_gl_landmark_callouts(surface, inner, payload=payload)
                 tag = self._tiny_font.render(
                     title_override or "3D air/ground picture", True, (224, 236, 252)
                 )
@@ -25380,6 +26003,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         def add_asset(
             kind: str, *, gx: int, gy: int, air: bool = False, scale_bias: float = 1.0
         ) -> None:
+            spec = spatial_integration_visual_spec(kind)
             wx, wy, _wz, terrain = self._spatial_grid_to_world(
                 x=gx,
                 y=gy,
@@ -25394,7 +26018,8 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             if air:
                 wz = terrain + rng.uniform(0.30, 1.00)
                 wy = max(0.72, min(7.8, wy + rng.uniform(-0.22, 0.24)))
-            scale = rng.uniform(0.76, 1.22) * float(scale_bias)
+            shared_bias = 1.0 if spec is None else float(spec.scene_scale_bias)
+            scale = rng.uniform(0.76, 1.22) * float(scale_bias) * shared_bias
             heading = rng.uniform(0.0, 359.0)
             anim_phase = rng.uniform(0.0, math.tau)
             anim_rate = rng.uniform(0.65, 1.85)
@@ -25429,7 +26054,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 gx=int(gx),
                 gy=int(gy),
                 air=False,
-                scale_bias=1.15 if kind in {"tower", "building"} else 1.0,
+                scale_bias=1.0,
             )
 
         extra_count = 6 + max(grid_cols, grid_rows)
@@ -25464,50 +26089,6 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 anim_phase=anim_phase,
                 anim_rate=anim_rate,
             )
-
-        landmark_data: list[tuple[float, str, tuple[int, int], tuple[int, int]]] = []
-        for label, _kind, gx, gy in landmarks:
-            wx, wy, wz, terrain = self._spatial_grid_to_world(
-                x=gx,
-                y=gy,
-                z=0,
-                grid_cols=grid_cols,
-                grid_rows=grid_rows,
-                alt_levels=alt_levels,
-            )
-            base = self._spatial_project_point(
-                rect=view,
-                horizon_y=horizon,
-                scene_view=scene_view,
-                heading_deg=view_heading_deg,
-                wx=wx,
-                wy=wy,
-                wz=terrain + 0.01,
-            )
-            top = self._spatial_project_point(
-                rect=view,
-                horizon_y=horizon,
-                scene_view=scene_view,
-                heading_deg=view_heading_deg,
-                wx=wx,
-                wy=wy,
-                wz=terrain + 0.22,
-            )
-            landmark_data.append((self._spatial_view_depth(wx=wx, wy=wy, heading_deg=view_heading_deg), label, base, top))
-
-        for _, label, base, top in sorted(landmark_data, key=lambda it: it[0]):
-            bx, by = base
-            tx, ty = top
-            if (
-                bx < view.x - 20
-                or bx > view.right + 20
-                or by < view.y - 20
-                or by > view.bottom + 20
-            ):
-                continue
-            pygame.draw.line(surface, (232, 226, 118), (bx, by), (tx, ty), 2)
-            pygame.draw.circle(surface, (244, 236, 130), (tx, ty), 3)
-            surface.blit(self._tiny_font.render(label, True, (236, 236, 176)), (tx + 4, ty - 6))
 
         show_aircraft_entity = payload is None or part is SpatialIntegrationPart.AIRCRAFT
         if show_aircraft_entity:
@@ -25626,6 +26207,11 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         if wy <= 0.01:
             return
 
+        shared_spec = spatial_integration_visual_spec(kind)
+        fill_rgb = (186, 198, 210) if shared_spec is None else shared_spec.scene_fill_rgb
+        accent_rgb = (148, 152, 158) if shared_spec is None else shared_spec.scene_accent_rgb
+        outline_rgb = (54, 60, 64) if shared_spec is None else shared_spec.scene_outline_rgb
+
         phase = float(anim_phase)
         wx_anim = float(wx)
         wy_anim = max(0.35, float(wy))
@@ -25706,14 +26292,14 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             bw = max(5, int(base * 1.15))
             bh = max(6, int(base * 1.48))
             body = pygame.Rect(ground[0] - (bw // 2), ground[1] - bh, bw, bh)
-            pygame.draw.rect(surface, (172, 180, 172), body)
-            pygame.draw.rect(surface, (88, 92, 86), body, 1)
+            pygame.draw.rect(surface, fill_rgb, body)
+            pygame.draw.rect(surface, outline_rgb, body, 1)
             roof = [
                 (body.x - 1, body.y),
                 (body.centerx, body.y - max(2, base // 2)),
                 (body.right + 1, body.y),
             ]
-            pygame.draw.polygon(surface, (134, 110, 96), roof)
+            pygame.draw.polygon(surface, accent_rgb, roof)
             if bw >= 8 and bh >= 8:
                 window = pygame.Rect(body.x + 2, body.y + 2, 2, 2)
                 while window.y < body.bottom - 2:
@@ -25728,19 +26314,17 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             tw = max(2, int(base * 0.40))
             th = max(10, int(base * 2.35))
             shaft = pygame.Rect(ground[0] - (tw // 2), ground[1] - th, tw, th)
-            pygame.draw.rect(surface, (204, 202, 172), shaft)
-            pygame.draw.rect(surface, (90, 88, 76), shaft, 1)
+            pygame.draw.rect(surface, fill_rgb, shaft)
+            pygame.draw.rect(surface, outline_rgb, shaft, 1)
             pygame.draw.line(
                 surface,
-                (238, 228, 132),
+                accent_rgb,
                 (shaft.centerx, shaft.y),
                 (shaft.centerx, shaft.y - max(3, base // 2)),
                 1,
             )
             if math.sin(phase * 6.0) >= 0.0:
-                pygame.draw.circle(
-                    surface, (250, 232, 132), (shaft.centerx, shaft.y - max(3, base // 2)), 2
-                )
+                pygame.draw.circle(surface, accent_rgb, (shaft.centerx, shaft.y - max(3, base // 2)), 2)
             return
 
         if kind == "forest":
@@ -25749,14 +26333,15 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 tx = ground[0] + dx
                 ty = ground[1] + (idx % 2)
                 th = max(5, int(base * (1.30 + (idx * 0.20))))
-                pygame.draw.line(surface, (90, 70, 40), (tx, ty), (tx, ty - max(2, th // 4)), 1)
+                pygame.draw.line(surface, accent_rgb, (tx, ty), (tx, ty - max(2, th // 4)), 1)
                 sway = int(round(math.sin((phase * 1.5) + idx) * max(1, th // 8)))
                 tree = [
                     (tx + sway, ty - th),
                     (tx - max(2, th // 3), ty - max(2, th // 4)),
                     (tx + max(2, th // 3), ty - max(2, th // 4)),
                 ]
-                pygame.draw.polygon(surface, (68, 128, 66), tree)
+                pygame.draw.polygon(surface, fill_rgb, tree)
+                pygame.draw.polygon(surface, outline_rgb, tree, 1)
             return
 
         if kind == "truck":
@@ -25764,14 +26349,14 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             bh = max(4, int(base * 0.62))
             bob = int(round(0.6 * math.sin(phase * 6.2)))
             body = pygame.Rect(ground[0] - (bw // 2), ground[1] - bh - 1 + bob, bw, bh)
-            pygame.draw.rect(surface, (112, 136, 92), body)
-            pygame.draw.rect(surface, (62, 78, 52), body, 1)
+            pygame.draw.rect(surface, fill_rgb, body)
+            pygame.draw.rect(surface, outline_rgb, body, 1)
             cab_w = max(3, bw // 3)
             if facing > 0:
                 cab = pygame.Rect(body.right - cab_w, body.y - 1, cab_w, bh - 1)
             else:
                 cab = pygame.Rect(body.x, body.y - 1, cab_w, bh - 1)
-            pygame.draw.rect(surface, (140, 158, 112), cab)
+            pygame.draw.rect(surface, accent_rgb, cab)
             wheel_r = 1 if base < 4 else 2
             pygame.draw.circle(surface, (26, 26, 28), (body.x + 2, body.bottom), wheel_r)
             pygame.draw.circle(surface, (26, 26, 28), (body.right - 2, body.bottom), wheel_r)
@@ -25784,14 +26369,14 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             p2 = (ground[0] + (tw // 2), ground[1])
             flap_wobble = int(round(math.sin(phase * 1.9) * max(1, th // 6)))
             p3 = (ground[0] + flap_wobble, ground[1] - th)
-            pygame.draw.polygon(surface, (198, 186, 112), [p1, p2, p3])
-            pygame.draw.polygon(surface, (110, 98, 62), [p1, p2, p3], 1)
+            pygame.draw.polygon(surface, fill_rgb, [p1, p2, p3])
+            pygame.draw.polygon(surface, outline_rgb, [p1, p2, p3], 1)
             flap = [
                 (ground[0], ground[1] - th),
                 (ground[0], ground[1]),
                 (ground[0] + (tw // 3), ground[1]),
             ]
-            pygame.draw.polygon(surface, (168, 156, 88), flap)
+            pygame.draw.polygon(surface, accent_rgb, flap)
             return
 
         if kind == "foot_soldiers":
@@ -25801,12 +26386,12 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 sy = ground[1]
                 body_h = max(3, int(base * 0.92))
                 head_r = 1 if base < 4 else 2
-                pygame.draw.circle(surface, (26, 30, 34), (sx, sy - body_h), head_r)
-                pygame.draw.line(surface, (26, 30, 34), (sx, sy - body_h + head_r), (sx, sy - 1), 1)
+                pygame.draw.circle(surface, fill_rgb, (sx, sy - body_h), head_r)
+                pygame.draw.line(surface, fill_rgb, (sx, sy - body_h + head_r), (sx, sy - 1), 1)
                 leg_phase = phase * 5.2 + idx
                 step = 1 if math.sin(leg_phase) >= 0.0 else -1
-                pygame.draw.line(surface, (26, 30, 34), (sx, sy - 1), (sx - step, sy + 1), 1)
-                pygame.draw.line(surface, (26, 30, 34), (sx, sy - 1), (sx + step, sy + 1), 1)
+                pygame.draw.line(surface, outline_rgb, (sx, sy - 1), (sx - step, sy + 1), 1)
+                pygame.draw.line(surface, outline_rgb, (sx, sy - 1), (sx + step, sy + 1), 1)
             return
 
         if kind == "sheep":
@@ -25820,13 +26405,13 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                     max(5, base),
                     max(4, int(base * 0.65)),
                 )
-                pygame.draw.ellipse(surface, (232, 234, 228), body)
-                pygame.draw.ellipse(surface, (126, 132, 128), body, 1)
+                pygame.draw.ellipse(surface, fill_rgb, body)
+                pygame.draw.ellipse(surface, outline_rgb, body, 1)
                 head_x = body.right - 1 if idx % 2 == 0 else body.x + 1
-                pygame.draw.circle(surface, (84, 88, 84), (head_x, body.y + body.h // 2), max(1, base // 5))
+                pygame.draw.circle(surface, accent_rgb, (head_x, body.y + body.h // 2), max(1, base // 5))
                 leg_y = body.bottom
-                pygame.draw.line(surface, (84, 88, 84), (body.x + 1, leg_y), (body.x + 1, leg_y + 2), 1)
-                pygame.draw.line(surface, (84, 88, 84), (body.right - 1, leg_y), (body.right - 1, leg_y + 2), 1)
+                pygame.draw.line(surface, accent_rgb, (body.x + 1, leg_y), (body.x + 1, leg_y + 2), 1)
+                pygame.draw.line(surface, accent_rgb, (body.right - 1, leg_y), (body.right - 1, leg_y + 2), 1)
             return
 
         if kind == "radar":

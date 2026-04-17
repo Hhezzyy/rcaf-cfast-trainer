@@ -15,16 +15,21 @@ if "moderngl" not in sys.modules:
     sys.modules["moderngl"] = moderngl_stub
 
 from cfast_trainer.app import App, CognitiveTestScreen, MenuItem, MenuScreen
+from cfast_trainer.aircraft_art import panda3d_fixed_wing_hpr_from_world_hpr
+from cfast_trainer.trace_scene_3d import build_trace_test_1_scene3d
 from cfast_trainer.trace_lattice import TraceLatticeAction, trace_lattice_state
 from cfast_trainer.trace_test_1 import (
     TraceTest1AircraftPlan,
     TraceTest1Attitude,
     TraceTest1Command,
     TraceTest1Generator,
+    TraceTest1Payload,
     TraceTest1PromptPlan,
+    TraceTest1TrialStage,
     _tt1_action_for_command,
     _tt1_aircraft_state_from_lattice_state,
     build_trace_test_1_test,
+    trace_test_1_aircraft_hpr,
     trace_test_1_scene_frames,
 )
 from cfast_trainer.trace_test_1_panda3d import (
@@ -89,6 +94,33 @@ def _panda_hpr_for_prompt(
         observe_progress=progress,
         answer_open_progress=prompt.answer_open_progress,
         size=(640, 640),
+    )
+
+
+def _payload_for_prompt(
+    prompt: TraceTest1PromptPlan,
+    *,
+    progress: float,
+) -> TraceTest1Payload:
+    stage = (
+        TraceTest1TrialStage.OBSERVE
+        if progress < prompt.answer_open_progress
+        else TraceTest1TrialStage.ANSWER_OPEN
+    )
+    return TraceTest1Payload(
+        trial_stage=stage,
+        stage_time_remaining_s=1.0,
+        observe_progress=float(progress),
+        prompt_index=int(prompt.prompt_index),
+        active_command=prompt.red_plan.command,
+        blue_commands=tuple(plan.command for plan in prompt.blue_plans),
+        scene=trace_test_1_scene_frames(prompt=prompt, progress=progress),
+        options=(),
+        correct_code=1,
+        prompt_window_s=1.0,
+        answer_open_progress=float(prompt.answer_open_progress),
+        speed_multiplier=float(prompt.speed_multiplier),
+        viewpoint_bearing_deg=180,
     )
 
 
@@ -157,16 +189,35 @@ def test_panda3d_trace_test_1_rendering_ignores_non_panda_preference(monkeypatch
     assert panda3d_trace_test_1_rendering_available() is True
 
 
-def test_trace_test_1_panda_hpr_tracks_trace_screen_pose_for_all_commands() -> None:
-    assert _panda_hpr_for_prompt(_manual_prompt(TraceTest1Command.LEFT), progress=0.68) == pytest.approx((270.0, 0.0, 0.0))
-    assert _panda_hpr_for_prompt(_manual_prompt(TraceTest1Command.RIGHT), progress=0.68) == pytest.approx((90.0, 0.0, 0.0))
-    assert _panda_hpr_for_prompt(_manual_prompt(TraceTest1Command.PUSH), progress=0.68) == pytest.approx((180.0, 90.0, 0.0))
-    assert _panda_hpr_for_prompt(_manual_prompt(TraceTest1Command.PULL), progress=0.68) == pytest.approx((0.0, -90.0, 0.0))
+def test_trace_test_1_panda_hpr_tracks_shared_world_hpr_for_all_commands() -> None:
+    for command in TraceTest1Command:
+        prompt = _manual_prompt(command)
+        frame = trace_test_1_scene_frames(prompt=prompt, progress=0.68).red_frame
+        expected = panda3d_fixed_wing_hpr_from_world_hpr(
+            heading_deg=trace_test_1_aircraft_hpr(frame)[0],
+            pitch_deg=trace_test_1_aircraft_hpr(frame)[1],
+            roll_deg=trace_test_1_aircraft_hpr(frame)[2],
+        )
+        assert _panda_hpr_for_prompt(prompt, progress=0.68) == pytest.approx(expected)
 
 
-def test_trace_test_1_panda_hpr_matches_shared_lead_in_screen_heading() -> None:
-    assert _panda_hpr_for_prompt(_manual_prompt(TraceTest1Command.LEFT), progress=0.18) == pytest.approx((19.536654938128393, 0.0, 0.0))
-    assert _panda_hpr_for_prompt(_manual_prompt(TraceTest1Command.PUSH), progress=0.18) == pytest.approx((19.536654938128393, 0.0, 0.0))
+def test_trace_test_1_panda_renderer_uses_shared_scene_snapshot_pose() -> None:
+    prompt = _manual_prompt(TraceTest1Command.LEFT)
+    payload = _payload_for_prompt(prompt, progress=0.68)
+    snapshot = TraceTest1Panda3DRenderer._scene_snapshot(payload=payload)
+
+    assert len(snapshot.aircraft) == 1
+    assert snapshot.camera.position[1] < snapshot.aircraft[0].position[1]
+    assert TraceTest1Panda3DRenderer._aircraft_hpr_for_pose(snapshot.aircraft[0]) == pytest.approx(
+        TraceTest1Panda3DRenderer._aircraft_hpr_for_frame(
+            frame=payload.scene.red_frame,
+            command=payload.active_command,
+            observe_progress=payload.observe_progress,
+            answer_open_progress=payload.answer_open_progress,
+            size=(640, 640),
+        )
+    )
+    assert snapshot == build_trace_test_1_scene3d(payload=payload)
 
 
 def test_panda3d_trace_test_1_rendering_returns_false_when_direct_is_missing(monkeypatch) -> None:
@@ -224,7 +275,7 @@ def test_trace_test_1_panda_hpr_sampling_is_deterministic_for_same_seed() -> Non
     assert samples_a == samples_b
 
 
-def test_trace_test_1_panda_hpr_uses_trace_command_fallback_when_frame_motion_decays() -> None:
+def test_trace_test_1_panda_hpr_uses_world_hpr_even_when_screen_motion_decays() -> None:
     prompt = _manual_prompt(TraceTest1Command.LEFT)
     progress = 0.68
     frame = trace_test_1_scene_frames(prompt=prompt, progress=progress).red_frame
@@ -243,7 +294,7 @@ def test_trace_test_1_panda_hpr_uses_trace_command_fallback_when_frame_motion_de
         size=(640, 640),
     )
 
-    assert hpr == pytest.approx((290.0, 0.0, 0.0))
+    assert hpr == pytest.approx((270.0, 0.0, 0.0))
 
 
 def test_trace_test_1_screen_queues_modern_gl_runtime() -> None:

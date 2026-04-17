@@ -141,7 +141,7 @@ def test_trace_test_1_projected_red_aircraft_center_moves_between_observe_sample
     assert early_center != pytest.approx(late_center)
 
 
-def test_trace_test_1_projected_red_aircraft_center_moves_during_turn_window() -> None:
+def test_trace_test_1_projected_red_aircraft_holds_position_while_pivoting_then_moves() -> None:
     prompt = _manual_prompt(TraceTest1Command.LEFT)
     step_count = len(prompt.red_plan.lattice_actions)
     early = trace_test_1_scene_frames(
@@ -152,12 +152,17 @@ def test_trace_test_1_projected_red_aircraft_center_moves_during_turn_window() -
         prompt=prompt,
         progress=(1.0 + 0.20) / float(step_count),
     ).red_frame
+    late = trace_test_1_scene_frames(
+        prompt=prompt,
+        progress=(1.0 + 0.60) / float(step_count),
+    ).red_frame
 
     early_center, _ = project_scene_position(early.position, size=(640, 360))
     mid_center, _ = project_scene_position(mid.position, size=(640, 360))
+    late_center, _ = project_scene_position(late.position, size=(640, 360))
 
-    assert mid_center[0] < early_center[0]
-    assert mid_center[1] < early_center[1]
+    assert mid_center == pytest.approx(early_center)
+    assert late_center[0] < mid_center[0]
 
 
 def test_trace_test_1_projected_motion_matches_manual_command_direction() -> None:

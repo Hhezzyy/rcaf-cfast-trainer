@@ -9,6 +9,8 @@ WORLD_EXTENT_SCALE = 5.0
 TERRAIN_HALF_SPAN = 260.0 * WORLD_EXTENT_SCALE
 CAMERA_SWEEP_LIMIT_DEG = 66.0
 CAMERA_VERTICAL_SWEEP_LIMIT_DEG = 34.0
+RAPID_TRACKING_PITCH_MIN_DEG = -70.0
+RAPID_TRACKING_PITCH_MAX_DEG = 60.0
 RAPID_TRACKING_WORLD_X_SCALE = 38.0
 RAPID_TRACKING_WORLD_Y_SCALE = 72.0
 RAPID_TRACKING_PATH_BIAS_SCALE = 18.0
@@ -315,9 +317,17 @@ def camera_rig_state(
 
     heading_deg = neutral_heading_deg if camera_yaw_deg is None else float(camera_yaw_deg)
     pitch_deg = neutral_pitch_deg if camera_pitch_deg is None else float(camera_pitch_deg)
-    pitch_deg = _clamp(pitch_deg, -89.0, 89.0)
+    pitch_deg = _clamp(
+        pitch_deg,
+        RAPID_TRACKING_PITCH_MIN_DEG,
+        RAPID_TRACKING_PITCH_MAX_DEG,
+    )
     view_heading_deg = heading_deg + heading_shake
-    view_pitch_deg = _clamp(pitch_deg + pitch_shake, -89.0, 89.0)
+    view_pitch_deg = _clamp(
+        pitch_deg + pitch_shake,
+        RAPID_TRACKING_PITCH_MIN_DEG,
+        RAPID_TRACKING_PITCH_MAX_DEG,
+    )
 
     orbit_bank = _lerp(7.5, 2.0, path_transition)
     roll_deg = orbit_bank + (

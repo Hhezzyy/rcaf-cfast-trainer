@@ -28,7 +28,10 @@ from .rapid_tracking_view import (
 def panda3d_rapid_tracking_rendering_available() -> bool:
     if os.environ.get("SDL_VIDEODRIVER", "").strip().lower() == "dummy":
         return False
-    return importlib.util.find_spec("direct.showbase.ShowBase") is not None
+    try:
+        return importlib.util.find_spec("direct.showbase.ShowBase") is not None
+    except ModuleNotFoundError:
+        return False
 
 
 @dataclass(slots=True)

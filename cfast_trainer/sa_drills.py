@@ -414,7 +414,7 @@ def build_sa_contact_identification_prime_drill(
             "Situational Awareness: Contact Identification Prime",
             f"Mode: {profile.label}",
             "Match callsigns to side and vehicle type without relying on a fully visible table.",
-            "Use the cue card and the last grid flash together, then answer before the picture clears.",
+            "Use the right-side status panel and the last grid flash together, then answer before the picture clears.",
             "Press Enter to begin.",
         ),
         scored_segments=(
@@ -528,7 +528,7 @@ def build_sa_future_projection_run_drill(
             "Situational Awareness: Future Projection Run",
             f"Mode: {profile.label}",
             "Separate ordered destination from actual movement after the last update fades.",
-            "Use the radio call and the cue card together; do not wait for another sweep.",
+            "Use the incoming-info bar and right-side status panel together; do not wait for another sweep.",
             "Press Enter to begin.",
         ),
         scored_segments=(
@@ -716,7 +716,7 @@ def build_sa_mixed_tempo_drill(
         instructions=(
             "Situational Awareness: Mixed Tempo",
             f"Mode: {profile.label}",
-            "Cycle the full query mix while the world keeps updating behind fading cues and radio chatter.",
+            "Cycle the full query mix while the world keeps updating behind the incoming bar, status panel, and radio chatter.",
             "Reset cleanly when the prompt changes, but keep the same mental picture running.",
             "Press Enter to begin.",
         ),

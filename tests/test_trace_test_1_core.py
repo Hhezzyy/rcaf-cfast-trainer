@@ -413,7 +413,7 @@ def test_left_and_right_lattice_paths_finish_in_expected_heading_family() -> Non
     assert abs(_angle_delta_deg(right_end.travel_heading_deg, 90.0)) <= 2.0
 
 
-def test_left_and_right_turn_paths_advance_during_turn_window() -> None:
+def test_left_and_right_turn_paths_pause_to_pivot_before_advancing() -> None:
     left_prompt = _manual_prompt(command=TraceTest1Command.LEFT)
     right_prompt = _manual_prompt(command=TraceTest1Command.RIGHT)
     left_step = _tt1_command_step_index(left_prompt.red_plan)
@@ -444,9 +444,9 @@ def test_left_and_right_turn_paths_advance_during_turn_window() -> None:
         progress=_plan_step_progress(right_prompt.red_plan, step_index=right_step, local_t=0.60),
     ).red_frame
 
-    assert left_mid.position[0] < left_early.position[0]
-    assert left_mid.position[1] > left_early.position[1]
+    assert left_mid.position == pytest.approx(left_early.position)
     assert left_late.position[0] < left_mid.position[0]
+    assert left_late.position[1] == pytest.approx(left_mid.position[1])
     assert abs(_angle_delta_deg(left_mid.travel_heading_deg, 270.0)) < abs(
         _angle_delta_deg(left_early.travel_heading_deg, 270.0)
     )
@@ -454,9 +454,9 @@ def test_left_and_right_turn_paths_advance_during_turn_window() -> None:
         _angle_delta_deg(left_mid.travel_heading_deg, 270.0)
     )
 
-    assert right_mid.position[0] > right_early.position[0]
-    assert right_mid.position[1] > right_early.position[1]
+    assert right_mid.position == pytest.approx(right_early.position)
     assert right_late.position[0] > right_mid.position[0]
+    assert right_late.position[1] == pytest.approx(right_mid.position[1])
     assert abs(_angle_delta_deg(right_mid.travel_heading_deg, 90.0)) < abs(
         _angle_delta_deg(right_early.travel_heading_deg, 90.0)
     )
@@ -465,7 +465,7 @@ def test_left_and_right_turn_paths_advance_during_turn_window() -> None:
     )
 
 
-def test_push_and_pull_pitch_continue_moving_while_pitch_changes() -> None:
+def test_push_and_pull_pitch_pivot_in_place_before_resuming_forward_motion() -> None:
     push_prompt = _manual_prompt(command=TraceTest1Command.PUSH)
     pull_prompt = _manual_prompt(command=TraceTest1Command.PULL)
     push_step = _tt1_command_step_index(push_prompt.red_plan)
@@ -496,14 +496,14 @@ def test_push_and_pull_pitch_continue_moving_while_pitch_changes() -> None:
         progress=_plan_step_progress(pull_prompt.red_plan, step_index=pull_step, local_t=0.60),
     ).red_frame
 
-    assert push_mid.position[1] > push_early.position[1]
-    assert push_mid.position[2] < push_early.position[2]
+    assert push_mid.position == pytest.approx(push_early.position)
+    assert push_late.position[1] == pytest.approx(push_mid.position[1])
     assert push_late.position[2] < push_mid.position[2]
     assert push_mid.attitude.pitch_deg < push_early.attitude.pitch_deg
     assert push_late.attitude.pitch_deg <= push_mid.attitude.pitch_deg
 
-    assert pull_mid.position[1] > pull_early.position[1]
-    assert pull_mid.position[2] > pull_early.position[2]
+    assert pull_mid.position == pytest.approx(pull_early.position)
+    assert pull_late.position[1] == pytest.approx(pull_mid.position[1])
     assert pull_late.position[2] > pull_mid.position[2]
     assert pull_mid.attitude.pitch_deg > pull_early.attitude.pitch_deg
     assert pull_late.attitude.pitch_deg >= pull_mid.attitude.pitch_deg

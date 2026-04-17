@@ -425,7 +425,7 @@ def test_camera_advances_with_presentation_travel_progress() -> None:
                 session_seed=int(near_payload.session_seed),
                 phase_elapsed_s=9.4,
             ),
-            ball_forward_norm=0.74,
+            ball_forward_norm=float(BALL_FORWARD_IDLE_NORM),
         )
 
         renderer._update_ball(payload=near_payload)
@@ -460,6 +460,35 @@ def test_travel_offset_no_longer_changes_ball_or_gate_positions() -> None:
         renderer._travel_offset = 87.0
         renderer._update_ball(payload=payload)
         renderer._update_gates(payload=payload)
+        gate_pos_b = renderer._gate_nodes[401].getPos()
+        ball_pos_b = renderer._ball_root.getPos()
+
+        assert tuple(gate_pos_b) == pytest.approx(tuple(gate_pos_a))
+        assert tuple(ball_pos_b) == pytest.approx(tuple(ball_pos_a))
+    finally:
+        renderer.close()
+
+
+def test_ball_forward_norm_no_longer_changes_ball_or_gate_positions() -> None:
+    if not panda3d_auditory_rendering_available():
+        pytest.skip("Panda3D unavailable")
+
+    renderer = AuditoryCapacityPanda3DRenderer(size=(640, 360))
+    try:
+        payload_a = _payload_with_gate(
+            x_norm=0.70,
+            slot_index=len(GATE_DEPTH_SLOTS_NORM) - 1,
+            ball_forward_norm=0.20,
+        )
+        payload_b = replace(payload_a, ball_forward_norm=0.74)
+
+        renderer._update_ball(payload=payload_a)
+        renderer._update_gates(payload=payload_a)
+        gate_pos_a = renderer._gate_nodes[401].getPos()
+        ball_pos_a = renderer._ball_root.getPos()
+
+        renderer._update_ball(payload=payload_b)
+        renderer._update_gates(payload=payload_b)
         gate_pos_b = renderer._gate_nodes[401].getPos()
         ball_pos_b = renderer._ball_root.getPos()
 

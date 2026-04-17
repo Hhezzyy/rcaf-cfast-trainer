@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 
 from .clock import Clock
 from .cognitive_core import AnswerScorer, Problem, SeededRng, TimedTextInputTest, clamp01, lerp_int
@@ -15,7 +16,7 @@ ACTIVE_TANK_DRAIN_PER_S = 1.00
 IDLE_TANK_DRAIN_PER_S = 0.00
 MESSAGE_REVEAL_LAT_S = 3.0
 MESSAGE_REVEAL_LON_S = 11.0
-MESSAGE_REVEAL_COMMS_S = 15.0
+MESSAGE_REVEAL_COMMS_S = 20.0
 MESSAGE_REVEAL_TIME_S = 23.0
 COGNITIVE_UPDATING_DOMAIN_ORDER = (
     "controls",
@@ -347,6 +348,9 @@ class CognitiveUpdatingRuntimeSnapshot:
     air_time_left_s: int
     ground_time_left_s: int
     comms_time_left_s: int
+    comms_swap_in_s: int
+    current_comms_code: str
+    next_comms_code: str | None
     objective_deadline_left_s: int
     state_code: str
     operation_score_hint: float
@@ -416,6 +420,10 @@ class CognitiveUpdatingRuntime:
         self._parcel_values = ["", "", ""]
         self._active_parcel_field = 0
         self._comms_input = ""
+        self._comms_cycle_duration_s = max(1, int(payload.comms_time_limit_s))
+        self._comms_cycle_index = 0
+        self._comms_seed_base = self._build_comms_seed_base()
+        self._comms_code_cache: dict[int, str] = {0: str(payload.comms_code)}
 
         self._objective_cycle_duration_s = max(1, int(payload.objective_deadline_s))
         self._objective_cycle_started_at_s = 0.0
@@ -434,6 +442,62 @@ class CognitiveUpdatingRuntime:
         self._engine_input_hits = 0
 
         self._events: list[CognitiveUpdatingActionEvent] = []
+
+    def _build_comms_seed_base(self) -> int:
+        seed = 17
+        seed_text = (
+            f"{self._payload.scenario_code}|{self._payload.clock_hms}|"
+            f"{self._payload.parcel_target}|{self._payload.required_knots}|"
+            f"{self._payload.pressure_low}:{self._payload.pressure_high}"
+        )
+        for ch in seed_text:
+            seed = ((seed * 131) + ord(ch)) % 9_000
+        return seed
+
+    def _comms_code_for_cycle(self, cycle_index: int) -> str:
+        idx = max(0, int(cycle_index))
+        cached = self._comms_code_cache.get(idx)
+        if cached is not None:
+            return cached
+        previous = self._comms_code_for_cycle(idx - 1)
+        code_value = ((self._comms_seed_base + (idx * 1379)) % 9_000) + 1_000
+        code = f"{code_value:04d}"
+        if code == previous:
+            code = f"{(((code_value + 173) % 9_000) + 1_000):04d}"
+        self._comms_code_cache[idx] = code
+        return code
+
+    def _advance_comms_cycle(self, at_s: float) -> None:
+        cycle_index = max(0, int(float(at_s) // float(self._comms_cycle_duration_s)))
+        if cycle_index == self._comms_cycle_index:
+            return
+        self._comms_cycle_index = cycle_index
+        self._comms_input = ""
+
+    def _current_comms_code(self) -> str:
+        return self._comms_code_for_cycle(self._comms_cycle_index)
+
+    def _next_comms_code(self) -> str:
+        return self._comms_code_for_cycle(self._comms_cycle_index + 1)
+
+    def _comms_cycle_end_s(self) -> float:
+        return float((self._comms_cycle_index + 1) * self._comms_cycle_duration_s)
+
+    def _comms_remaining_s(self, now_s: float) -> float:
+        return max(0.0, self._comms_cycle_end_s() - float(now_s))
+
+    def _comms_swap_in_s(self, now_s: float) -> int:
+        remaining = self._comms_remaining_s(now_s)
+        whole = int(math.floor(remaining))
+        if (remaining - float(whole)) <= 1e-9:
+            return max(0, whole)
+        return max(0, whole + 1)
+
+    def _comms_reveal_threshold_s(self) -> float:
+        return min(
+            float(self._comms_cycle_duration_s),
+            max(0.0, float(self._payload.message_reveal_comms_s)),
+        )
 
     def _now_elapsed_s(self) -> float:
         return max(0.0, float(self._clock.now()) - self._started_at_s)
@@ -618,6 +682,7 @@ class CognitiveUpdatingRuntime:
 
         self._advance_sensor_cycles(now_s)
         self._advance_objective_cycle(now_s)
+        self._advance_comms_cycle(now_s)
         self._last_advance_s = now_s
         return now_s
 
@@ -856,7 +921,7 @@ class CognitiveUpdatingRuntime:
         snap = self.snapshot()
         return (
             f"{self._comms_input}"
-            f"{snap.state_code}"
+            f"{snap.current_comms_code}"
             f"{snap.controls_score:03d}"
             f"{snap.navigation_score:03d}"
             f"{snap.engine_score:03d}"
@@ -924,6 +989,14 @@ class CognitiveUpdatingRuntime:
         warning_lines = self._collect_warnings(float(elapsed))
         air_left = max(0, int(round(self._air_next_due_s - now_s)))
         ground_left = max(0, int(round(self._ground_next_due_s - now_s)))
+        comms_remaining_s = self._comms_remaining_s(now_s)
+        comms_swap_in_s = self._comms_swap_in_s(now_s)
+        current_comms_code = self._current_comms_code()
+        next_comms_code = (
+            self._next_comms_code()
+            if comms_remaining_s <= self._comms_reveal_threshold_s()
+            else None
+        )
         target_lat, target_lon, target_time = self._parcel_target_tokens()
         objective_elapsed_s = max(0.0, now_s - float(self._objective_cycle_started_at_s))
         latitude_line = (
@@ -945,8 +1018,8 @@ class CognitiveUpdatingRuntime:
             else ""
         )
         comms_line = (
-            f"Comms Code: {self._payload.comms_code[:3]}"
-            if now_s >= float(self._payload.message_reveal_comms_s)
+            f"New Comms Code: {next_comms_code} in {comms_swap_in_s:02d}s"
+            if next_comms_code is not None
             else ""
         )
         sensor_domain_lines: list[str] = []
@@ -1037,7 +1110,10 @@ class CognitiveUpdatingRuntime:
             dispenser_lit=self._objective_lights(),
             air_time_left_s=air_left,
             ground_time_left_s=ground_left,
-            comms_time_left_s=max(0, int(self._payload.comms_time_limit_s) - elapsed),
+            comms_time_left_s=comms_swap_in_s,
+            comms_swap_in_s=comms_swap_in_s,
+            current_comms_code=current_comms_code,
+            next_comms_code=next_comms_code,
             objective_deadline_left_s=deadline_left,
             state_code=self.state_code(),
             operation_score_hint=float(overall_score) / 100.0,
@@ -1283,7 +1359,7 @@ class CognitiveUpdatingGenerator:
             parcel_target=(parcel_lat, parcel_lon, parcel_time),
             objective_deadline_s=objective_deadline_s,
             dispenser_lit=dispenser_lit,
-            question="Enter the 4-digit comms code from the live panel state.",
+            question="Enter the active 4-digit comms code from the live communications panel.",
             answer_unit="code",
             correct_value=answer,
             estimate_tolerance=tolerance,

@@ -421,19 +421,19 @@ class TraceTest2Generator:
         templates: dict[str, tuple[TraceTest2MotionKind, TraceLatticeState]] = {
             "steady": (
                 TraceTest2MotionKind.STRAIGHT,
-                trace_lattice_state(col=1, row=1, level=2, forward=(0, 1, 0), up=(0, 0, 1)),
+                trace_lattice_state(col=2, row=1, level=2, forward=(0, 1, 0), up=(0, 0, 1)),
             ),
             "left": (
                 TraceTest2MotionKind.LEFT,
-                trace_lattice_state(col=5, row=1, level=3, forward=(0, 1, 0), up=(0, 0, 1)),
+                trace_lattice_state(col=4, row=1, level=3, forward=(0, 1, 0), up=(0, 0, 1)),
             ),
             "right": (
                 TraceTest2MotionKind.RIGHT,
-                trace_lattice_state(col=1, row=2, level=1, forward=(0, 1, 0), up=(0, 0, 1)),
+                trace_lattice_state(col=2, row=2, level=1, forward=(0, 1, 0), up=(0, 0, 1)),
             ),
             "climb": (
                 TraceTest2MotionKind.CLIMB,
-                trace_lattice_state(col=4, row=1, level=1, forward=(0, 1, 0), up=(0, 0, 1)),
+                trace_lattice_state(col=4, row=2, level=1, forward=(0, 1, 0), up=(0, 0, 1)),
             ),
         }
         declared_motion_kind, start_state = templates[role_key]

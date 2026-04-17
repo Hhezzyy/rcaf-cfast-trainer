@@ -255,17 +255,11 @@ def gate_depth_ratio_from_distance(
 def fixed_camera_pose_at_distance(ball_distance: float) -> tuple[Point3, Point3]:
     cam_distance = max(
         TUNNEL_CAMERA_DISTANCE,
-        min(
-            TUNNEL_GEOMETRY_END_DISTANCE - 6.0,
-            float(ball_distance) - TUNNEL_CAMERA_FOLLOW_BACK_DISTANCE,
-        ),
+        float(ball_distance) - TUNNEL_CAMERA_FOLLOW_BACK_DISTANCE,
     )
     look_distance = max(
         cam_distance + 4.0,
-        min(
-            TUNNEL_GEOMETRY_END_DISTANCE - 0.4,
-            float(ball_distance) + TUNNEL_CAMERA_LOOK_AHEAD_DISTANCE,
-        ),
+        float(ball_distance) + TUNNEL_CAMERA_LOOK_AHEAD_DISTANCE,
     )
     cam_center, _cam_tangent, _cam_right, cam_up = tube_frame(cam_distance)
     look_center, tangent, _look_right, look_up = tube_frame(look_distance)

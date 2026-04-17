@@ -17,6 +17,8 @@ class AuditoryGlScene:
     payload: AuditoryCapacityPayload | None
     time_remaining_s: float | None
     time_fill_ratio: float | None
+    frame_dt_s: float = 0.0
+    advance_animation: bool = True
 
 
 @dataclass(frozen=True, slots=True)
