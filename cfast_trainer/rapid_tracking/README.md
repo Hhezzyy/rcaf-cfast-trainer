@@ -29,7 +29,7 @@ When app dev tools are enabled:
 - The simulation remains deterministic and renderer-agnostic.
 - The Modern GL path is still the canonical 3D scene renderer through the shared `RapidTrackingGlScene`.
 - The package renderer owns only presentation: queueing the GL scene, drawing the package-local schematic view, and drawing RT HUD/debug/dev overlays. Shared renderer startup failure policy and diagnostics live in `cfast_trainer/app.py`.
-- Rapid Tracking scenery now prefers file-backed OBJ assets through `assets/panda3d/manifest.json`; any asset-level primitive substitution there is separate from app-shell renderer bootstrap failure handling.
+- Rapid Tracking scenery now prefers file-backed OBJ assets through `assets/render/manifest.json`; any asset-level primitive substitution there is separate from app-shell renderer bootstrap failure handling.
 - Static RT roads, buildings, terrain, and distant backdrop features are cached twice: first as deterministic scene instances by `scene_seed`, then as pretransformed world-space triangle groups for coarse culling and cheaper far-scene rendering.
 - Dynamic RT renderables stay separate from that cache: active targets, filtered ambient movers, the capture box, reticle, and debug overlays are still evaluated per frame.
 

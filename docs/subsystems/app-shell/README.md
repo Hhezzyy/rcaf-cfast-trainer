@@ -34,7 +34,7 @@
 ## Input / Rendering Dependencies
 
 - Keyboard, mouse, joystick calibration, input profiles, and button bindings are all configured here.
-- Renderer bootstrap, explicit failure handling, diagnostic persistence, and Panda3D handoff start here.
+- Renderer bootstrap, explicit failure handling, diagnostic persistence, and ModernGL scene queueing start here.
 - Many subsystem payloads are rendered directly by `CognitiveTestScreen`, so shell changes can affect many tests at once.
 
 ## Persistence / Test Hooks

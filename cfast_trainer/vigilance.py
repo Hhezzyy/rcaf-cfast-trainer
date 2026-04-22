@@ -17,6 +17,49 @@ class VigilanceConfig:
     max_active_symbols: int = 7
 
 
+def _lerp_float(low: float, high: float, amount: float) -> float:
+    t = clamp01(amount)
+    return float(low) + ((float(high) - float(low)) * t)
+
+
+@dataclass(frozen=True, slots=True)
+class _VigilanceDifficultyParams:
+    max_active_symbols: int
+    spawn_interval_s: float
+    spawn_jitter_s: float
+    lifetime_scale: float
+    lifetime_floor_s: float
+    symbol_kind_thresholds: tuple[float, float, float]
+
+
+def _vigilance_difficulty_params(
+    difficulty: float, config: VigilanceConfig
+) -> _VigilanceDifficultyParams:
+    d = clamp01(difficulty)
+    max_active_limit = max(1, int(config.max_active_symbols))
+    easy_active_limit = min(2, max_active_limit)
+    spawn_interval_s = max(
+        0.18,
+        max(0.25, float(config.spawn_interval_s)) * _lerp_float(1.55, 0.62, d),
+    )
+    return _VigilanceDifficultyParams(
+        max_active_symbols=max(1, lerp_int(easy_active_limit, max_active_limit, d)),
+        spawn_interval_s=spawn_interval_s,
+        spawn_jitter_s=_clamp_float(spawn_interval_s * 0.12, 0.04, 0.16),
+        lifetime_scale=_lerp_float(1.35, 0.58, d),
+        lifetime_floor_s=_lerp_float(2.20, 0.95, d),
+        symbol_kind_thresholds=(
+            _lerp_float(0.88, 0.58, d),
+            _lerp_float(0.96, 0.78, d),
+            _lerp_float(0.99, 0.92, d),
+        ),
+    )
+
+
+def _clamp_float(value: float, low: float, high: float) -> float:
+    return max(float(low), min(float(high), float(value)))
+
+
 class VigilanceSymbolKind(StrEnum):
     STAR = "star"
     DIAMOND = "diamond"
@@ -108,6 +151,7 @@ class VigilanceEngine:
         self._seed = int(seed)
         self._difficulty = clamp01(difficulty)
         self._config = cfg
+        self._difficulty_params = _vigilance_difficulty_params(self._difficulty, cfg)
         self._rng = SeededRng(seed=self._seed)
 
         self._phase = Phase.INSTRUCTIONS
@@ -390,15 +434,12 @@ class VigilanceEngine:
         return (int(row) * 10) + int(col)
 
     def _max_active_symbols(self) -> int:
-        base = lerp_int(4, int(self._config.max_active_symbols), self._difficulty)
-        return max(1, int(base))
+        return int(self._difficulty_params.max_active_symbols)
 
     def _next_spawn_interval_s(self) -> float:
-        d = clamp01(self._difficulty)
-        baseline = max(0.25, float(self._config.spawn_interval_s))
-        target = max(0.25, baseline - (0.24 * d))
-        jitter = self._rng.uniform(-0.12, 0.12)
-        return max(0.20, target + jitter)
+        params = self._difficulty_params
+        jitter = self._rng.uniform(-params.spawn_jitter_s, params.spawn_jitter_s)
+        return max(0.18, params.spawn_interval_s + jitter)
 
     def _spawn_symbol(self, *, spawned_at_s: float) -> None:
         occupied = {(sym.row, sym.col) for sym in self._active}
@@ -430,11 +471,14 @@ class VigilanceEngine:
 
     def _pick_symbol_kind(self) -> VigilanceSymbolKind:
         roll = self._rng.random()
-        if roll < 0.72:
+        star_threshold, diamond_threshold, triangle_threshold = (
+            self._difficulty_params.symbol_kind_thresholds
+        )
+        if roll < star_threshold:
             return VigilanceSymbolKind.STAR
-        if roll < 0.88:
+        if roll < diamond_threshold:
             return VigilanceSymbolKind.DIAMOND
-        if roll < 0.96:
+        if roll < triangle_threshold:
             return VigilanceSymbolKind.TRIANGLE
         return VigilanceSymbolKind.HEXAGON
 
@@ -445,9 +489,9 @@ class VigilanceEngine:
             VigilanceSymbolKind.TRIANGLE: 4.4,
             VigilanceSymbolKind.HEXAGON: 4.9,
         }[kind]
-        penalty = 1.1 * clamp01(self._difficulty)
         jitter = self._rng.uniform(-0.25, 0.25)
-        return max(1.4, base - penalty + jitter)
+        params = self._difficulty_params
+        return max(params.lifetime_floor_s, (base * params.lifetime_scale) + jitter)
 
     def _build_payload(self, *, now: float) -> VigilancePayload:
         symbols = tuple(

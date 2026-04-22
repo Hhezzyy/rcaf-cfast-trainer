@@ -37,7 +37,7 @@ def _build_small_ic_workout_plan() -> AntWorkoutPlan:
         code="instrument_comprehension_workout",
         title="IC Workout Smoke",
         description="Short deterministic workout for tests.",
-        notes=("Reflections are untimed.",),
+        notes=("Block setup is untimed.",),
         blocks=(
             AntWorkoutBlockPlan(
                 block_id="heading",
@@ -89,9 +89,7 @@ def _complete_small_ic_workout(clock: FakeClock) -> AntWorkoutSession:
         starting_level=5,
     )
     session.activate()
-    session.append_text("Read the instruments cleanly")
     session.activate()
-    session.append_text("Reset on the next item")
     session.activate()
     session.activate()
     _finish_current_block_with_one_correct_answer(session, clock)
@@ -107,12 +105,9 @@ def _complete_small_ic_workout(clock: FakeClock) -> AntWorkoutSession:
     _finish_current_block_with_one_correct_answer(session, clock)
     assert session.stage is AntWorkoutStage.BLOCK_RESULTS
     session.activate()
-    assert session.stage is AntWorkoutStage.POST_REFLECTION
-    session.append_text("Descriptions slowed me down")
+    assert session.stage is AntWorkoutStage.RESULTS
     session.activate()
-    session.append_text("Reverse mapping felt better")
     session.activate()
-    session.append_text("Keep the read order stable")
     session.activate()
     assert session.stage is AntWorkoutStage.RESULTS
     return session

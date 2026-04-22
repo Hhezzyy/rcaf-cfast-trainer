@@ -56,6 +56,67 @@ class ColoursLettersNumbersConfig:
     lane_colors: tuple[str, ...] = CLN_STANDARD_LANE_COLORS
 
 
+def _lerp_float(low: float, high: float, difficulty: float) -> float:
+    d = clamp01(difficulty)
+    return float(low) + ((float(high) - float(low)) * d)
+
+
+@dataclass(frozen=True, slots=True)
+class _ColoursLettersNumbersDifficultyParams:
+    sequence_show_s: float
+    round_duration_s: float
+    memory_recall_delay_s: float
+    memory_recall_delay_max_s: float
+    diamond_spawn_interval_s: float
+    diamond_spawn_interval_max_s: float
+    diamond_speed_norm_per_s: float
+    diamond_speed_max_norm_per_s: float
+    max_live_diamonds: int
+
+
+def _colours_letters_numbers_difficulty_params(
+    difficulty: float, config: ColoursLettersNumbersConfig
+) -> _ColoursLettersNumbersDifficultyParams:
+    d = clamp01(difficulty)
+    window_scale = _lerp_float(1.35, 0.65, d)
+    recall_delay_scale = _lerp_float(0.75, 1.25, d)
+    diamond_interval_scale = _lerp_float(1.45, 0.55, d)
+    diamond_speed_scale = _lerp_float(0.65, 1.35, d)
+    max_live_limit = max(1, int(config.max_live_diamonds))
+    easy_live_limit = max(1, min(max_live_limit, int(round(max_live_limit * 0.65))))
+
+    diamond_spawn_interval_s = max(0.01, float(config.diamond_spawn_interval_s) * diamond_interval_scale)
+    diamond_spawn_interval_max_s = max(
+        diamond_spawn_interval_s,
+        float(config.diamond_spawn_interval_max_s) * diamond_interval_scale,
+    )
+    diamond_speed_norm_per_s = max(
+        0.001,
+        float(config.diamond_speed_norm_per_s) * diamond_speed_scale,
+    )
+    diamond_speed_max_norm_per_s = max(
+        diamond_speed_norm_per_s,
+        float(config.diamond_speed_max_norm_per_s) * diamond_speed_scale,
+    )
+    memory_recall_delay_s = max(0.0, float(config.memory_recall_delay_s) * recall_delay_scale)
+    memory_recall_delay_max_s = max(
+        memory_recall_delay_s,
+        float(config.memory_recall_delay_max_s) * recall_delay_scale,
+    )
+
+    return _ColoursLettersNumbersDifficultyParams(
+        sequence_show_s=max(0.05, float(config.sequence_show_s) * window_scale),
+        round_duration_s=max(0.05, float(config.round_duration_s) * window_scale),
+        memory_recall_delay_s=memory_recall_delay_s,
+        memory_recall_delay_max_s=memory_recall_delay_max_s,
+        diamond_spawn_interval_s=diamond_spawn_interval_s,
+        diamond_spawn_interval_max_s=diamond_spawn_interval_max_s,
+        diamond_speed_norm_per_s=diamond_speed_norm_per_s,
+        diamond_speed_max_norm_per_s=diamond_speed_max_norm_per_s,
+        max_live_diamonds=max(1, lerp_int(easy_live_limit, max_live_limit, d)),
+    )
+
+
 class ColoursLettersNumbersQuestionKind(StrEnum):
     MEMORY_SEQUENCE = "memory_sequence"
     MATH = "math"
@@ -100,9 +161,9 @@ class ColoursLettersNumbersMemoryChallenge:
 @dataclass(frozen=True, slots=True)
 class ColoursLettersNumbersGenerationProfile:
     sequence_min_easy: int = 5
-    sequence_min_hard: int = 5
+    sequence_min_hard: int = 6
     sequence_max_easy: int = 6
-    sequence_max_hard: int = 6
+    sequence_max_hard: int = 8
     memory_option_count: int = 5
     option_style: str = "default"
     math_profile: NumericalOperationsProblemProfile | None = None
@@ -360,6 +421,9 @@ class ColoursLettersNumbersTest:
         self._clock = clock
         self._difficulty = float(difficulty)
         self._cfg = cfg
+        self._difficulty_params = _colours_letters_numbers_difficulty_params(
+            self._difficulty, cfg
+        )
         self._lane_colors = tuple(str(color).upper() for color in cfg.lane_colors)
 
         self._gen = ColoursLettersNumbersGenerator(SeededRng(int(seed)))
@@ -496,13 +560,15 @@ class ColoursLettersNumbersTest:
         if self._memory_cycle_started_at_s is None:
             return False
         elapsed = self._clock.now() - self._memory_cycle_started_at_s
-        return elapsed >= (self._cfg.sequence_show_s + self._memory_recall_delay_s_current)
+        return elapsed >= (
+            self._difficulty_params.sequence_show_s + self._memory_recall_delay_s_current
+        )
 
     def _sequence_visible(self) -> bool:
         if self._memory_cycle_started_at_s is None:
             return False
         elapsed = self._clock.now() - self._memory_cycle_started_at_s
-        return elapsed < self._cfg.sequence_show_s
+        return elapsed < self._difficulty_params.sequence_show_s
 
     def _payload(self) -> ColoursLettersNumbersPayload | None:
         if self._phase not in (Phase.PRACTICE, Phase.SCORED):
@@ -553,7 +619,7 @@ class ColoursLettersNumbersTest:
                     "4) Solve math by typing a number then Enter (no math timer).",
                     "5) Clear moving diamonds with color keys while over matching zones:",
                     f"   {lane_help}.",
-                    "   Blank gap varies between 5 and 60 seconds.",
+                    "   Blank gap varies by difficulty and round.",
                     "Memory, math, and colours run on separate loops.",
                     "Letting diamonds pass reduces score.",
                     "",
@@ -603,11 +669,11 @@ class ColoursLettersNumbersTest:
         self._memory_current = trial
         self._memory_cycle_started_at_s = now
         self._memory_recall_delay_s_current = self._rng.uniform(
-            self._cfg.memory_recall_delay_s,
-            self._cfg.memory_recall_delay_max_s,
+            self._difficulty_params.memory_recall_delay_s,
+            self._difficulty_params.memory_recall_delay_max_s,
         )
         self._memory_prompted_at_s = (
-            now + self._cfg.sequence_show_s + self._memory_recall_delay_s_current
+            now + self._difficulty_params.sequence_show_s + self._memory_recall_delay_s_current
         )
         self._memory_answered = False
 
@@ -622,9 +688,9 @@ class ColoursLettersNumbersTest:
 
         elapsed = now - self._memory_cycle_started_at_s
         total_cycle_s = (
-            self._cfg.sequence_show_s
+            self._difficulty_params.sequence_show_s
             + self._memory_recall_delay_s_current
-            + self._cfg.round_duration_s
+            + self._difficulty_params.round_duration_s
         )
         if elapsed < total_cycle_s:
             return
@@ -668,7 +734,7 @@ class ColoursLettersNumbersTest:
             overdue = -self._spawn_cooldown_s
             self._spawn_cooldown_s = self._next_spawn_interval_s() - overdue
 
-            spawn_slots = max(0, self._cfg.max_live_diamonds - len(self._diamonds))
+            spawn_slots = max(0, self._difficulty_params.max_live_diamonds - len(self._diamonds))
             if spawn_slots > 0:
                 self._spawn_diamond()
 
@@ -692,8 +758,8 @@ class ColoursLettersNumbersTest:
             row=row,
             x_norm=0.02,
             speed_norm_per_s=self._rng.uniform(
-                self._cfg.diamond_speed_norm_per_s,
-                self._cfg.diamond_speed_max_norm_per_s,
+                self._difficulty_params.diamond_speed_norm_per_s,
+                self._difficulty_params.diamond_speed_max_norm_per_s,
             ),
         )
         self._next_diamond_id += 1
@@ -701,8 +767,8 @@ class ColoursLettersNumbersTest:
 
     def _next_spawn_interval_s(self) -> float:
         return self._rng.uniform(
-            self._cfg.diamond_spawn_interval_s,
-            self._cfg.diamond_spawn_interval_max_s,
+            self._difficulty_params.diamond_spawn_interval_s,
+            self._difficulty_params.diamond_spawn_interval_max_s,
         )
 
     def _sample_diamond_row(self) -> int:

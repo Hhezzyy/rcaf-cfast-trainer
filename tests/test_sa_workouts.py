@@ -30,7 +30,7 @@ def _build_small_sa_workout_plan() -> AntWorkoutPlan:
         code="situational_awareness_workout",
         title="Situational Awareness Workout Smoke",
         description="Short deterministic workout for tests.",
-        notes=("Reflections are untimed.",),
+        notes=("Block setup is untimed.",),
         blocks=(
             AntWorkoutBlockPlan(
                 block_id="picture-anchor",
@@ -77,33 +77,12 @@ def _complete_small_sa_workout(clock: FakeClock) -> AntWorkoutSession:
         plan=_build_small_sa_workout_plan(),
         starting_level=5,
     )
-    reflection_text = {
-        AntWorkoutStage.PRE_REFLECTION: (
-            "stay ahead of the picture",
-            "reset on every new query",
-        ),
-        AntWorkoutStage.POST_REFLECTION: (
-            "status recall stayed clean",
-            "mixed prompts needed faster resets",
-        ),
-    }
-    reflection_index = {
-        AntWorkoutStage.PRE_REFLECTION: 0,
-        AntWorkoutStage.POST_REFLECTION: 0,
-    }
-
     while session.stage is not AntWorkoutStage.RESULTS:
         if session.stage in (AntWorkoutStage.INTRO, AntWorkoutStage.BLOCK_SETUP, AntWorkoutStage.BLOCK_RESULTS):
             session.activate()
             continue
         if session.stage is AntWorkoutStage.BLOCK:
             _run_current_block(session, clock)
-            continue
-        if session.stage in (AntWorkoutStage.PRE_REFLECTION, AntWorkoutStage.POST_REFLECTION):
-            idx = reflection_index[session.stage]
-            session.append_text(reflection_text[session.stage][idx])
-            reflection_index[session.stage] = idx + 1
-            session.activate()
             continue
 
     assert session.stage is AntWorkoutStage.RESULTS
@@ -160,10 +139,6 @@ def test_sa_workout_block_payload_keeps_shared_round_metadata() -> None:
 
     while session.stage is not AntWorkoutStage.BLOCK:
         if session.stage in (AntWorkoutStage.INTRO, AntWorkoutStage.BLOCK_SETUP, AntWorkoutStage.BLOCK_RESULTS):
-            session.activate()
-            continue
-        if session.stage in (AntWorkoutStage.PRE_REFLECTION, AntWorkoutStage.POST_REFLECTION):
-            session.append_text("ready")
             session.activate()
             continue
         raise AssertionError(f"Unexpected stage before block: {session.stage}")

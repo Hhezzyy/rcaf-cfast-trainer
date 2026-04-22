@@ -41,11 +41,12 @@ from cfast_trainer.app import (
     MenuScreen,
 )
 from cfast_trainer.benchmark import BenchmarkSession, build_benchmark_plan
+from cfast_trainer.clock import PausableClock
 from cfast_trainer.cognitive_core import Phase
 from cfast_trainer.cognitive_core import TestSnapshot as SnapshotModel
 from cfast_trainer.persistence import AttemptHistoryEntry, ResultsStore
 from cfast_trainer.primitive_ranking import rank_primitives
-from cfast_trainer.results import attempt_result_from_engine
+from cfast_trainer.results import AttemptResult, attempt_result_from_engine
 from cfast_trainer.telemetry import TelemetryEvent
 
 
@@ -180,6 +181,67 @@ def _adaptive_history_entry(
     )
 
 
+def _priority_item(
+    primitive_id: str,
+    *,
+    priority: float,
+    eligible: bool = True,
+    selected_weight: float = 0.0,
+    weakness: float = 0.50,
+    fatigue: float = 0.10,
+    retention: float = 0.10,
+    unmeasured: bool = False,
+) -> adaptive_scheduler.AdaptivePriorityBreakdown:
+    primitive = adaptive_scheduler._PRIMITIVE_BY_ID[primitive_id]
+    return adaptive_scheduler.AdaptivePriorityBreakdown(
+        primitive_id=primitive_id,
+        label=primitive.label,
+        profile_multiplier=1.0,
+        weakness=float(weakness),
+        fatigue=float(fatigue),
+        post_error=0.10,
+        retention=float(retention),
+        lapse=0.10,
+        distractor=0.10,
+        switch=0.10,
+        control=0.10,
+        interference=0.10,
+        exploration_bonus=0.0,
+        priority=float(priority),
+        evidence_count=3,
+        benchmark_evidence_count=0,
+        direct_evidence_count=3,
+        mixed_evidence_count=0,
+        reason_tags=("weak",),
+        confidence=0.70,
+        recommended_level=5,
+        level_confidence=0.70,
+        unmeasured=bool(unmeasured),
+        eligible=bool(eligible),
+        selected_weight=float(selected_weight),
+        last_trained_at_utc=_iso(12),
+        last_source_code=None,
+    )
+
+
+def _recent_block(
+    primitive_id: str,
+    drill_code: str,
+    target_area: str,
+    *,
+    order: int,
+) -> adaptive_scheduler.AdaptiveRecentBlock:
+    primitive = adaptive_scheduler._PRIMITIVE_BY_ID[primitive_id]
+    return adaptive_scheduler.AdaptiveRecentBlock(
+        completed_at_utc=_iso(float(order)),
+        completed_at_epoch_s=10_000.0 - float(order),
+        primitive_id=primitive_id,
+        domain_id=primitive.domain_id,
+        drill_code=drill_code,
+        target_area=target_area,
+    )
+
+
 def _rank_map(entries: list[AttemptHistoryEntry]):
     ranked = rank_adaptive_primitives(entries)
     return {item.primitive_id: item for item in ranked}
@@ -235,6 +297,72 @@ def test_scheduler_candidate_prefers_registry_backed_catalog_metadata() -> None:
     assert candidate.primitive_id == "visual_scan_discipline"
     assert candidate.target_area == "class_search"
     assert candidate.form_factor == "micro"
+
+
+def test_fatigue_candidates_are_hidden_before_60_minutes() -> None:
+    before_threshold = adaptive_scheduler._FATIGUE_DRILL_ELIGIBILITY_S - 1.0
+
+    fatigue_candidates = adaptive_scheduler._catalog_candidates_for_primitive(
+        "dual_task_stability_fatigue",
+        active_elapsed_s=before_threshold,
+    )
+    non_fatigue_candidates = adaptive_scheduler._catalog_candidates_for_primitive(
+        "mental_arithmetic_automaticity",
+        active_elapsed_s=before_threshold,
+    )
+
+    assert fatigue_candidates == ()
+    assert non_fatigue_candidates
+    assert "dual_task_stability_fatigue" not in adaptive_scheduler._catalog_primitive_ids(
+        active_elapsed_s=before_threshold
+    )
+
+
+def test_fatigue_candidates_are_available_after_60_minutes() -> None:
+    candidates = adaptive_scheduler._catalog_candidates_for_primitive(
+        "dual_task_stability_fatigue",
+        active_elapsed_s=adaptive_scheduler._FATIGUE_DRILL_ELIGIBILITY_S,
+    )
+
+    assert {candidate.drill_code for candidate in candidates} == {
+        "dtb_tracking_recall",
+        "dtb_tracking_command_filter",
+        "dtb_tracking_filter_digit_report",
+        "dtb_tracking_interference_recovery",
+    }
+    assert all(candidate.requires_session_fatigue for candidate in candidates)
+
+
+def _fatigue_gate_history() -> list[AttemptHistoryEntry]:
+    return [
+        _history_entry(
+            test_code="dtb_tracking_command_filter",
+            hours_ago=10,
+            metrics=_base_metrics(
+                score_ratio=0.12,
+                first_half_accuracy=0.92,
+                second_half_accuracy=0.15,
+                first_half_timeout_rate=0.00,
+                second_half_timeout_rate=0.35,
+                post_error_inflation_ms=1400.0,
+            ),
+            activity_kind="drill",
+            attempt_id=301,
+        ),
+        _history_entry(
+            test_code="ma_one_step_fluency",
+            hours_ago=2,
+            metrics=_base_metrics(score_ratio=0.88),
+            activity_kind="drill",
+            attempt_id=302,
+        ),
+        _history_entry(
+            test_code="table_reading",
+            hours_ago=3,
+            metrics=_base_metrics(score_ratio=0.86),
+            attempt_id=303,
+        ),
+    ]
 
 
 def test_collect_adaptive_evidence_maps_new_symbolic_and_dual_task_drills() -> None:
@@ -607,10 +735,11 @@ def test_build_adaptive_session_plan_returns_single_live_block_and_top5_pool() -
     assert plan.blocks[0].duration_s == pytest.approx(150.0)
     assert plan.last_selected_primitive_id == "mental_arithmetic_automaticity"
     eligible = [item for item in plan.ranked_primitives if item.eligible]
-    assert len(eligible) == 5
+    assert len(eligible) == 4
     assert sum(item.selected_weight for item in eligible) == pytest.approx(1.0)
     assert plan.blocks[0].primitive_id != plan.last_selected_primitive_id
     assert plan.blocks[0].primitive_id in {item.primitive_id for item in eligible}
+    assert "dual_task_stability_fatigue" not in {item.primitive_id for item in eligible}
 
 
 def test_build_adaptive_session_plan_uses_unmeasured_pool_on_cold_start() -> None:
@@ -710,11 +839,328 @@ def test_build_adaptive_session_plan_marks_only_top5_primitives_as_eligible() ->
     assert plan is not None
     eligible = [item for item in plan.ranked_primitives if item.eligible]
     ineligible = [item for item in plan.ranked_primitives if not item.eligible]
-    assert len(eligible) == 5
+    assert len(eligible) == 4
     assert all(item.selected_weight > 0.0 for item in eligible)
     assert all(item.selected_weight == 0.0 for item in ineligible)
     assert eligible[0].priority >= eligible[-1].priority
     assert plan.blocks[0].primitive_id in {item.primitive_id for item in eligible}
+    assert "dual_task_stability_fatigue" not in {item.primitive_id for item in eligible}
+
+
+def test_live_adaptive_plan_excludes_fatigue_drills_before_threshold() -> None:
+    plan = build_adaptive_session_plan(
+        history=_fatigue_gate_history(),
+        seed=1,
+        variant="full",
+        active_elapsed_s=0.0,
+    )
+
+    assert plan is not None
+    assert plan.blocks
+    assert plan.blocks[0].primitive_id != "dual_task_stability_fatigue"
+    assert not plan.blocks[0].drill_code.startswith("dtb_")
+    dual_task = next(
+        item for item in plan.ranked_primitives if item.primitive_id == "dual_task_stability_fatigue"
+    )
+    assert dual_task.eligible is False
+    assert dual_task.selected_weight == pytest.approx(0.0)
+
+
+def test_live_adaptive_plan_allows_fatigue_drills_after_threshold() -> None:
+    plan = build_adaptive_session_plan(
+        history=_fatigue_gate_history(),
+        seed=1,
+        variant="full",
+        active_elapsed_s=adaptive_scheduler._FATIGUE_DRILL_ELIGIBILITY_S,
+    )
+
+    assert plan is not None
+    assert plan.blocks
+    assert plan.blocks[0].primitive_id == "dual_task_stability_fatigue"
+    assert plan.blocks[0].drill_code.startswith("dtb_")
+    assert plan.blocks[0].drill_mode is AntDrillMode.FATIGUE_PROBE
+    dual_task = next(
+        item for item in plan.ranked_primitives if item.primitive_id == "dual_task_stability_fatigue"
+    )
+    assert dual_task.eligible is True
+    assert dual_task.selected_weight > 0.0
+
+
+def test_fatigue_gate_preserves_seeded_determinism() -> None:
+    entries = _fatigue_gate_history()
+    for elapsed_s in (0.0, adaptive_scheduler._FATIGUE_DRILL_ELIGIBILITY_S):
+        first = build_adaptive_session_plan(
+            history=entries,
+            seed=12,
+            variant="full",
+            active_elapsed_s=elapsed_s,
+        )
+        second = build_adaptive_session_plan(
+            history=entries,
+            seed=12,
+            variant="full",
+            active_elapsed_s=elapsed_s,
+        )
+
+        assert first is not None
+        assert second is not None
+        assert [
+            (
+                block.primitive_id,
+                block.drill_code,
+                block.drill_mode,
+                block.seed,
+                block.target_area,
+            )
+            for block in first.blocks
+        ] == [
+            (
+                block.primitive_id,
+                block.drill_code,
+                block.drill_mode,
+                block.seed,
+                block.target_area,
+            )
+            for block in second.blocks
+        ]
+        assert [
+            (item.primitive_id, item.eligible, item.selected_weight)
+            for item in first.ranked_primitives
+        ] == [
+            (item.primitive_id, item.eligible, item.selected_weight)
+            for item in second.ranked_primitives
+        ]
+
+
+def test_variety_keeps_overwhelming_weakness_dominant() -> None:
+    ranking = (
+        _priority_item("mental_arithmetic_automaticity", priority=3.0, weakness=0.92),
+        _priority_item("table_cross_reference_speed", priority=0.80, weakness=0.35),
+        _priority_item("visual_scan_discipline", priority=0.70, weakness=0.30),
+    )
+    recent = [
+        _recent_block("mental_arithmetic_automaticity", "ma_percentage_snap", "quantitative_core", order=1),
+        _recent_block("mental_arithmetic_automaticity", "ma_rate_time_distance", "applied_rate_fuel", order=2),
+        _recent_block("mental_arithmetic_automaticity", "ma_fuel_endurance", "applied_rate_fuel", order=3),
+    ]
+
+    selected, weighted = adaptive_scheduler._select_weighted_adaptive_target(
+        ranking=ranking,
+        seed=1,
+        last_selected_primitive_id=None,
+        recent_blocks=recent,
+    )
+
+    assert selected is not None
+    assert selected.primitive_id == "mental_arithmetic_automaticity"
+    selected_weight = {
+        item.primitive_id: item.selected_weight for item in weighted
+    }["mental_arithmetic_automaticity"]
+    assert selected_weight > 0.70
+
+
+def test_variety_weights_close_recent_repeats_below_alternatives() -> None:
+    ranking = (
+        _priority_item("mental_arithmetic_automaticity", priority=1.00),
+        _priority_item("table_cross_reference_speed", priority=0.96),
+        _priority_item("visual_scan_discipline", priority=0.80),
+    )
+    recent = [
+        _recent_block("mental_arithmetic_automaticity", "ma_percentage_snap", "quantitative_core", order=1),
+        _recent_block("mental_arithmetic_automaticity", "ma_rate_time_distance", "applied_rate_fuel", order=2),
+        _recent_block("mental_arithmetic_automaticity", "ma_fuel_endurance", "applied_rate_fuel", order=3),
+    ]
+
+    selected, weighted = adaptive_scheduler._select_weighted_adaptive_target(
+        ranking=ranking,
+        seed=2,
+        last_selected_primitive_id=None,
+        recent_blocks=recent,
+    )
+    weights = {item.primitive_id: item.selected_weight for item in weighted}
+
+    assert selected is not None
+    assert selected.primitive_id != "mental_arithmetic_automaticity"
+    assert weights["table_cross_reference_speed"] > weights["mental_arithmetic_automaticity"]
+
+
+def test_recent_block_profile_reads_live_block_history_entries() -> None:
+    block = AdaptiveSessionBlock(
+        block_index=0,
+        primitive_id="mental_arithmetic_automaticity",
+        primitive_label="Mental Arithmetic Automaticity",
+        drill_code="ma_percentage_snap",
+        mode="adaptive_live",
+        duration_s=150.0,
+        difficulty_level=5,
+        seed=101,
+        reason_tags=("weak",),
+        priority=0.8,
+        drill_mode=AntDrillMode.TEMPO,
+        form_factor="micro",
+        target_area="quantitative_core",
+        linked_primitive_id=None,
+        comparable_level=None,
+    )
+    result = AttemptResult(
+        test_code="ma_percentage_snap",
+        test_version=1,
+        seed=101,
+        difficulty=0.5,
+        practice_questions=0,
+        scored_duration_s=150.0,
+        duration_s=150.0,
+        attempted=2,
+        correct=1,
+        accuracy=0.5,
+        throughput_per_min=0.8,
+        mean_rt_ms=700.0,
+        median_rt_ms=700.0,
+        total_score=1.0,
+        max_score=2.0,
+        score_ratio=0.5,
+        difficulty_level_start=5,
+        difficulty_level_end=5,
+        metrics={},
+        events=[],
+    )
+    attempt = adaptive_scheduler._history_entry_from_block_result(
+        block=block,
+        result=result,
+        completed_at_utc=_iso(0),
+        attempt_id=-1,
+    )
+
+    recent = adaptive_scheduler._recent_adaptive_blocks([attempt])
+
+    assert [(block.primitive_id, block.drill_code, block.target_area) for block in recent] == [
+        ("mental_arithmetic_automaticity", "ma_percentage_snap", "quantitative_core")
+    ]
+
+
+def test_drill_variety_avoids_recent_target_area_when_alternative_exists() -> None:
+    item = _priority_item("mental_arithmetic_automaticity", priority=1.0)
+    recent = [
+        _recent_block("mental_arithmetic_automaticity", "ma_percentage_snap", "quantitative_core", order=1),
+        _recent_block("mental_arithmetic_automaticity", "ma_one_step_fluency", "quantitative_core", order=2),
+    ]
+
+    candidate = adaptive_scheduler._pick_drill_candidate(
+        primitive_id="mental_arithmetic_automaticity",
+        item=item,
+        previous_drill_code="ma_percentage_snap",
+        seed=515,
+        recent_blocks=recent,
+    )
+
+    assert candidate.target_area != "quantitative_core"
+    assert candidate.drill_code != "ma_percentage_snap"
+
+
+def test_cross_train_insertion_uses_close_linked_primitive_after_recent_spam() -> None:
+    selected = _priority_item("mental_arithmetic_automaticity", priority=1.00)
+    linked = _priority_item(
+        "table_cross_reference_speed",
+        priority=0.92,
+        selected_weight=0.35,
+    )
+    ranking = (
+        selected,
+        linked,
+        _priority_item("visual_scan_discipline", priority=0.60, selected_weight=0.15),
+    )
+    recent = [
+        _recent_block("mental_arithmetic_automaticity", "ma_percentage_snap", "quantitative_core", order=1),
+        _recent_block("mental_arithmetic_automaticity", "ma_rate_time_distance", "applied_rate_fuel", order=2),
+    ]
+
+    chosen, linked_primitive_id, target_area = adaptive_scheduler._select_live_cross_train_target(
+        selected=selected,
+        ranking=ranking,
+        recent_blocks=recent,
+        active_elapsed_s=0.0,
+    )
+
+    assert chosen is not None
+    assert chosen.primitive_id == "table_cross_reference_speed"
+    assert linked_primitive_id == "mental_arithmetic_automaticity"
+    assert target_area == "single_lookup"
+
+
+def test_cross_train_insertion_respects_fatigue_gate_for_linked_candidates() -> None:
+    selected = _priority_item("tracking_stability_low_load", priority=1.00)
+    fatigue_link = _priority_item(
+        "dual_task_stability_fatigue",
+        priority=0.95,
+        eligible=True,
+        selected_weight=0.40,
+    )
+    recent = [
+        _recent_block("tracking_stability_low_load", "sma_split_axis_control", "split_axis_control", order=1),
+        _recent_block("tracking_stability_low_load", "sma_overshoot_recovery", "overshoot_recovery", order=2),
+    ]
+
+    chosen, linked_primitive_id, _target_area = adaptive_scheduler._select_live_cross_train_target(
+        selected=selected,
+        ranking=(selected, fatigue_link),
+        recent_blocks=recent,
+        active_elapsed_s=0.0,
+    )
+
+    assert chosen is selected
+    assert linked_primitive_id is None
+
+
+def test_variety_selection_is_deterministic_for_same_seed_and_history() -> None:
+    entries = [
+        _history_entry(
+            test_code="ma_percentage_snap",
+            hours_ago=3,
+            metrics=_base_metrics(score_ratio=0.34),
+            activity_kind="drill",
+            attempt_id=401,
+        ),
+        _history_entry(
+            test_code="tbl_single_lookup_anchor",
+            hours_ago=4,
+            metrics=_base_metrics(score_ratio=0.36),
+            activity_kind="drill",
+            attempt_id=402,
+        ),
+        _adaptive_history_entry(
+            hours_ago=1,
+            blocks=(
+                ("mental_arithmetic_automaticity", "ma_percentage_snap", "quantitative_core"),
+                ("mental_arithmetic_automaticity", "ma_rate_time_distance", "applied_rate_fuel"),
+            ),
+            attempt_id=403,
+        ),
+    ]
+
+    first = build_adaptive_session_plan(history=entries, seed=909, active_elapsed_s=0.0)
+    second = build_adaptive_session_plan(history=entries, seed=909, active_elapsed_s=0.0)
+
+    assert first is not None
+    assert second is not None
+    assert [
+        (
+            block.primitive_id,
+            block.drill_code,
+            block.target_area,
+            block.linked_primitive_id,
+            block.seed,
+        )
+        for block in first.blocks
+    ] == [
+        (
+            block.primitive_id,
+            block.drill_code,
+            block.target_area,
+            block.linked_primitive_id,
+            block.seed,
+        )
+        for block in second.blocks
+    ]
 
 
 def test_rank_adaptive_primitives_increases_priority_for_high_fatigue_history() -> None:
@@ -931,6 +1377,18 @@ def test_training_mode_for_role_uses_new_role_rules() -> None:
         "ma_one_step_fluency",
         role="target_pressure_fatigue",
         fatigue_dominant=True,
+    ) is AntDrillMode.FATIGUE_PROBE
+    assert _training_mode_for_role(
+        "ma_one_step_fluency",
+        role="target_pressure_fatigue",
+        fatigue_dominant=True,
+        active_elapsed_s=adaptive_scheduler._FATIGUE_DRILL_ELIGIBILITY_S - 1.0,
+    ) is AntDrillMode.PRESSURE
+    assert _training_mode_for_role(
+        "ma_one_step_fluency",
+        role="target_pressure_fatigue",
+        fatigue_dominant=True,
+        active_elapsed_s=adaptive_scheduler._FATIGUE_DRILL_ELIGIBILITY_S,
     ) is AntDrillMode.FATIGUE_PROBE
     assert _training_mode_for_role(
         "ma_one_step_fluency",
@@ -1176,6 +1634,36 @@ def _complete_adaptive_session(session: AdaptiveSession, clock: _FakeClock) -> N
     assert session.stage is AdaptiveStage.BLOCK_RESULTS
     session.finish_session()
     assert session.stage is AdaptiveStage.RESULTS
+
+
+def test_adaptive_session_active_elapsed_is_pause_aware() -> None:
+    base_clock = _FakeClock()
+    pausable_clock = PausableClock(base_clock)
+    session = AdaptiveSession(
+        clock=pausable_clock,
+        seed=444,
+        plan=_small_adaptive_plan(pausable_clock),
+    )
+    session.activate()
+    engine = session.current_engine()
+    assert engine is not None
+    starter = getattr(engine, "start_practice", None)
+    assert callable(starter)
+    starter()
+
+    base_clock.advance(0.4)
+    elapsed_before_pause = session._active_elapsed_s()
+    pausable_clock.pause()
+    base_clock.advance(adaptive_scheduler._FATIGUE_DRILL_ELIGIBILITY_S + 30.0)
+    session.update()
+
+    assert session.stage is AdaptiveStage.BLOCK
+    assert session._active_elapsed_s() == pytest.approx(elapsed_before_pause)
+
+    pausable_clock.resume()
+    base_clock.advance(0.2)
+
+    assert session._active_elapsed_s() == pytest.approx(elapsed_before_pause + 0.2)
 
 
 def _start_adaptive_block(screen: AdaptiveSessionScreen, surface: pygame.Surface) -> None:

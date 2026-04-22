@@ -29,7 +29,7 @@ def _build_small_no_workout_plan() -> AntWorkoutPlan:
         code="numerical_operations_workout",
         title="NO Workout Smoke",
         description="Short deterministic workout for tests.",
-        notes=("Reflections are untimed.",),
+        notes=("Block setup is untimed.",),
         blocks=(
             AntWorkoutBlockPlan(
                 block_id="prime",
@@ -72,9 +72,7 @@ def _complete_small_no_workout(clock: FakeClock) -> AntWorkoutSession:
         starting_level=5,
     )
     session.activate()
-    session.append_text("Prime patterns")
     session.activate()
-    session.append_text("Keep tempo after misses")
     session.activate()
     session.activate()
     _finish_current_block_with_one_correct_answer(session, clock)
@@ -85,16 +83,14 @@ def _complete_small_no_workout(clock: FakeClock) -> AntWorkoutSession:
     _finish_current_block_with_one_correct_answer(session, clock)
     assert session.stage is AntWorkoutStage.BLOCK_RESULTS
     session.activate()
-    assert session.stage is AntWorkoutStage.POST_REFLECTION
-    session.append_text("Division was slower")
+    assert session.stage is AntWorkoutStage.RESULTS
     session.activate()
-    session.append_text("Reset on the next item")
     session.activate()
     assert session.stage is AntWorkoutStage.RESULTS
     return session
 
 
-def test_no_workout_session_runs_and_omits_reflection_metrics() -> None:
+def test_no_workout_session_runs_and_omits_setup_metrics() -> None:
     clock = FakeClock()
     session = _complete_small_no_workout(clock)
     summary = session.scored_summary()

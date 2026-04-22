@@ -44,7 +44,7 @@ Include these alongside the screenshot:
 - exact branch and commit tested
 - subsystem or screen name
 - platform (`macOS`, `Windows`, or both)
-- requested renderer mode (`Modern GL`, `Panda3D`, or default app setting)
+- requested renderer mode (`ModernGL`, built-in pygame fallback, or default app setting)
 - whether a renderer failure screen appeared, plus any diagnostic code shown
 - window mode (`windowed`, `fullscreen`, or `borderless`)
 - whether the bug reproduces with keyboard/mouse only or also with joystick/rudder hardware

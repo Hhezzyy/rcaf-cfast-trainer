@@ -143,7 +143,9 @@ def test_ma_mixed_conversion_caps_use_payload_caps_and_keep_typed_hint() -> None
         payload = current.payload
         assert isinstance(payload, MaProblemPayload)
         assert payload.base_cap_s is not None
-        assert "Type answer then Enter" in engine.snapshot().input_hint
+        input_hint = engine.snapshot().input_hint
+        assert "Type answer then Enter" in input_hint
+        assert "Cap " not in input_hint
         assert engine._current_cap_s == pytest.approx(payload.base_cap_s * expected_scale)
         caps.append(float(engine._current_cap_s))
         assert engine.submit_answer(str(current.answer)) is True

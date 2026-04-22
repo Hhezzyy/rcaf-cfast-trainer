@@ -108,7 +108,7 @@ def build_cu_workout_plan(*, duration_scale: float = 1.0) -> AntWorkoutPlan:
             "a fixed mixed-tempo cycle, and a final pressure block."
         ),
         notes=(
-            "Typed reflections and block setup screens do not count toward the 90-minute drill clock.",
+            "Block setup screens do not count toward the 90-minute drill clock.",
             "All timed blocks stay on the live dual-MFD Cognitive Updating screen with the normal controls and page flow.",
             "Focused blocks dim inactive panels instead of removing them so the family still looks and feels like the full task.",
         ),

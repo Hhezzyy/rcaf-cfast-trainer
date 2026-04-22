@@ -1,11 +1,19 @@
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass
+from importlib.machinery import ModuleSpec
+from types import ModuleType
 from typing import cast
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+
+if "moderngl" not in sys.modules:
+    moderngl_stub = ModuleType("moderngl")
+    moderngl_stub.__spec__ = ModuleSpec("moderngl", loader=None)
+    sys.modules["moderngl"] = moderngl_stub
 
 import pygame
 
@@ -14,7 +22,13 @@ from cfast_trainer.app import App, AntWorkoutScreen, CognitiveTestScreen, MenuIt
 from cfast_trainer.ant_workouts import AntWorkoutBlockPlan, AntWorkoutPlan, AntWorkoutSession
 from cfast_trainer.cognitive_core import Phase
 from cfast_trainer.cognitive_core import TestSnapshot as SnapshotModel
-from cfast_trainer.table_reading import TableReadingPayload, TableReadingPart, TableReadingGenerator
+from cfast_trainer.table_reading import (
+    TableReadingAnswerMode,
+    TableReadingItemKind,
+    TableReadingPayload,
+    TableReadingPart,
+    TableReadingGenerator,
+)
 from cfast_trainer.tbl_drills import build_tbl_mixed_tempo_drill
 
 
@@ -77,9 +91,19 @@ class _RecordingFont:
         return getattr(self._base, name)
 
 
-def _sample_payload(*, part: TableReadingPart) -> TableReadingPayload:
+def _sample_payload(
+    *,
+    part: TableReadingPart | None = None,
+    item_kind: TableReadingItemKind | None = None,
+    answer_mode: TableReadingAnswerMode | None = None,
+) -> TableReadingPayload:
     generator = TableReadingGenerator(seed=202)
-    problem = generator.next_problem_for_selection(difficulty=0.5, part=part)
+    problem = generator.next_problem_for_selection(
+        difficulty=0.5,
+        part=part,
+        item_kind=item_kind,
+        answer_mode=answer_mode,
+    )
     return cast(TableReadingPayload, problem.payload)
 
 
@@ -130,7 +154,11 @@ def test_table_reading_drill_title_still_routes_to_real_renderer(monkeypatch) ->
 
 
 def test_table_reading_choice_keys_submit_immediately() -> None:
-    payload = _sample_payload(part=TableReadingPart.PART_TWO)
+    payload = _sample_payload(
+        part=TableReadingPart.PART_TWO,
+        item_kind=TableReadingItemKind.TWO_TABLE_LOOKUP,
+        answer_mode=TableReadingAnswerMode.MULTIPLE_CHOICE,
+    )
     engine = _FakeTableReadingEngine(payload, title="Table Reading: Part 2 Prime")
     _app, screen = _build_screen(engine)
     try:
@@ -139,6 +167,111 @@ def test_table_reading_choice_keys_submit_immediately() -> None:
         )
 
         assert engine.submissions == ["3"]
+    finally:
+        pygame.quit()
+
+
+def test_table_reading_renders_tabs_without_drawing_tables_on_question_tab(monkeypatch) -> None:
+    payload = _sample_payload(item_kind=TableReadingItemKind.THREE_TABLE_LOOKUP)
+    _app, screen = _build_screen(
+        _FakeTableReadingEngine(payload, title="Table Reading")
+    )
+    try:
+        surface = pygame.display.get_surface()
+        assert surface is not None
+        captured = _install_recording_fonts(screen)
+        drawn: list[str] = []
+
+        def record_table(_surface, _rect, table):
+            drawn.append(table.title)
+
+        monkeypatch.setattr(screen, "_draw_table_reading_table", record_table)
+        screen.render(surface)
+
+        assert "Question" in captured
+        assert "Table 1" in captured
+        assert "Tables 2-3" in captured
+        assert drawn == []
+    finally:
+        pygame.quit()
+
+
+def test_table_reading_data_tabs_draw_only_their_assigned_tables(monkeypatch) -> None:
+    payload = _sample_payload(item_kind=TableReadingItemKind.THREE_TABLE_LOOKUP)
+    _app, screen = _build_screen(
+        _FakeTableReadingEngine(payload, title="Table Reading")
+    )
+    try:
+        surface = pygame.display.get_surface()
+        assert surface is not None
+        drawn: list[str] = []
+
+        def record_table(_surface, _rect, table):
+            drawn.append(table.title)
+
+        monkeypatch.setattr(screen, "_draw_table_reading_table", record_table)
+        screen.render(surface)
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_TAB, "mod": 0, "unicode": "\t"})
+        )
+        screen.render(surface)
+        assert drawn == [payload.primary_table.title]
+
+        drawn.clear()
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_TAB, "mod": 0, "unicode": "\t"})
+        )
+        screen.render(surface)
+        assert drawn == [table.title for table in payload.data_tabs[1].tables]
+    finally:
+        pygame.quit()
+
+
+def test_table_reading_tab_state_changes_by_mouse() -> None:
+    payload = _sample_payload(item_kind=TableReadingItemKind.TWO_TABLE_LOOKUP)
+    _app, screen = _build_screen(
+        _FakeTableReadingEngine(payload, title="Table Reading")
+    )
+    try:
+        surface = pygame.display.get_surface()
+        assert surface is not None
+        screen.render(surface)
+        target = screen._table_reading_tab_hitboxes[2].center
+        screen.handle_event(
+            pygame.event.Event(pygame.MOUSEBUTTONDOWN, {"button": 1, "pos": target})
+        )
+
+        assert screen._table_reading_active_tab_index == 2
+    finally:
+        pygame.quit()
+
+
+def test_table_reading_numeric_and_letter_inputs_submit_by_mode() -> None:
+    numeric_payload = _sample_payload(
+        item_kind=TableReadingItemKind.SINGLE_TABLE_LOOKUP,
+        answer_mode=TableReadingAnswerMode.NUMERIC,
+    )
+    numeric_engine = _FakeTableReadingEngine(numeric_payload, title="Table Reading")
+    _app, screen = _build_screen(numeric_engine)
+    try:
+        screen.handle_event(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_1, "mod": 0, "unicode": "1"}))
+        screen.handle_event(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_2, "mod": 0, "unicode": "2"}))
+        screen.handle_event(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "mod": 0, "unicode": ""}))
+        assert numeric_engine.submissions == ["12"]
+    finally:
+        pygame.quit()
+
+    letter_payload = _sample_payload(
+        item_kind=TableReadingItemKind.LETTER_SEARCH,
+        answer_mode=TableReadingAnswerMode.SINGLE_LETTER,
+    )
+    letter_engine = _FakeTableReadingEngine(letter_payload, title="Table Reading")
+    _app, screen = _build_screen(letter_engine)
+    try:
+        screen.handle_event(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_a, "mod": 0, "unicode": "a"}))
+        screen.handle_event(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_b, "mod": 0, "unicode": "b"}))
+        screen.handle_event(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "mod": 0, "unicode": ""}))
+        assert letter_engine.submissions == ["A"]
     finally:
         pygame.quit()
 
@@ -157,7 +290,7 @@ def test_table_reading_workout_block_uses_real_runtime_screen() -> None:
             code="table_reading_workout",
             title="Table Reading Workout UI",
             description="UI regression workout.",
-            notes=("Untimed reflections.",),
+            notes=("Untimed block setup.",),
             blocks=(
                 AntWorkoutBlockPlan(
                     block_id="part1",
@@ -177,9 +310,7 @@ def test_table_reading_workout_block_uses_real_runtime_screen() -> None:
             starting_level=5,
         )
         session.activate()
-        session.append_text("focus")
         session.activate()
-        session.append_text("scan")
         session.activate()
         session.activate()
 

@@ -36,11 +36,11 @@ Offline-first training app for CFASC CFAST-style aircrew selection aptitude doma
   - `cfast_trainer/modern_gl_renderer.py`
   - `cfast_trainer/gl_scenes.py`
   - `cfast_trainer/render_assets.py`
-- Panda3D bridge and optional runtime:
-  - `cfast_trainer/panda3d_launcher.py`
-  - `cfast_trainer/panda3d_runtime.py`
-  - `cfast_trainer/panda3d_assets.py`
-  - `assets/panda3d/README.md`
+- ModernGL renderer and optional model assets:
+  - `cfast_trainer/modern_gl_renderer.py`
+  - `cfast_trainer/gl_scenes.py`
+  - `cfast_trainer/render_assets.py`
+  - `assets/render/README.md`
 - HOTAS/input calibration, profiles, and joystick bindings:
   - `cfast_trainer/app.py` (`InputProfilesStore`, `AxisCalibrationScreen`, `JoystickBindingsScreen`)
 - Persistence and history:
@@ -61,7 +61,7 @@ Offline-first training app for CFASC CFAST-style aircrew selection aptitude doma
 | Adaptive plan selection | `cfast_trainer/adaptive_scheduler.py`, `cfast_trainer/canonical_drill_registry.py`, `tests/test_adaptive_scheduler.py` | Ranking and drill selection are concentrated here. |
 | Benchmark battery order or summaries | `cfast_trainer/benchmark.py`, `tests/test_benchmark.py` | Probe order and session summary logic live together. |
 | Persistence/history regressions | `cfast_trainer/persistence.py`, `tests/test_persistence.py`, `tests/test_cognitive_test_screen_persistence.py` | DB schema, writes, and shell persistence hooks are covered there. |
-| OpenGL/Panda3D startup, bootstrap, or diagnostics issues | `cfast_trainer/app.py`, `cfast_trainer/modern_gl_renderer.py`, `cfast_trainer/panda3d_runtime.py`, `tests/test_3d_renderer_selection.py`, `tests/test_gl_bootstrap.py` | Bootstrap, failure handling, diagnostics, and renderer selection are shared infra. |
+| ModernGL startup, bootstrap, or diagnostics issues | `cfast_trainer/app.py`, `cfast_trainer/modern_gl_renderer.py`, `tests/test_3d_renderer_selection.py`, `tests/test_gl_bootstrap.py` | Bootstrap, failure handling, diagnostics, and renderer selection are shared infra. |
 | HOTAS/input binding problems | `cfast_trainer/app.py`, `tests/test_app_window_mode.py`, `tests/test_cognitive_test_screen_pause_menu.py`, `tests/test_sensory_motor_apparatus_ui.py` | Input stores and shell mapping screens live in `app.py`. |
 
 ### Major Test And Drill Subsystems
@@ -72,20 +72,20 @@ Offline-first training app for CFASC CFAST-style aircrew selection aptitude doma
 | Math Reasoning | `cfast_trainer/math_reasoning.py` | `cfast_trainer/mr_drills.py`, `cfast_trainer/mr_workouts.py` | `tests/test_math_reasoning_core.py`, `tests/test_math_reasoning_headless_sim.py`, `tests/test_mr_drills.py`, `tests/test_mr_workouts.py` |
 | Airborne Numerical | `cfast_trainer/airborne_numerical.py` | `cfast_trainer/ant_drills.py`, `cfast_trainer/ant_workouts.py` | `tests/test_airborne_numerical.py`, `tests/test_ant_drills.py`, `tests/test_ant_workouts.py` |
 | Angles / Bearings / Degrees | `cfast_trainer/angles_bearings_degrees.py` | `cfast_trainer/abd_drills.py`, `cfast_trainer/abd_workouts.py` | `tests/test_angles_bearings_degrees_core.py`, `tests/test_angles_bearings_degrees_headless_sim.py`, `tests/test_abd_drills.py`, `tests/test_abd_workouts.py` |
-| Auditory Capacity | `cfast_trainer/auditory_capacity.py`, `cfast_trainer/auditory_capacity_view.py` | `cfast_trainer/ac_drills.py`, `cfast_trainer/ac_workouts.py` | `tests/test_auditory_capacity.py`, `tests/test_auditory_capacity_core.py`, `tests/test_auditory_capacity_headless_sim.py`, `tests/test_auditory_capacity_panda3d.py`, `tests/test_ac_drills.py`, `tests/test_ac_workouts.py` |
+| Auditory Capacity | `cfast_trainer/auditory_capacity.py`, `cfast_trainer/auditory_capacity_view.py`, `cfast_trainer/auditory_capacity_motion.py` | `cfast_trainer/ac_drills.py`, `cfast_trainer/ac_workouts.py` | `tests/test_auditory_capacity.py`, `tests/test_auditory_capacity_core.py`, `tests/test_auditory_capacity_headless_sim.py`, `tests/test_auditory_capacity_motion.py`, `tests/test_ac_drills.py`, `tests/test_ac_workouts.py` |
 | Colours Letters Numbers | `cfast_trainer/colours_letters_numbers.py` | `cfast_trainer/cln_drills.py`, `cfast_trainer/cln_workouts.py` | `tests/test_colours_letters_numbers_core.py`, `tests/test_colours_letters_numbers_headless_sim.py`, `tests/test_cln_drills.py`, `tests/test_cln_workouts.py` |
 | Cognitive Updating | `cfast_trainer/cognitive_updating.py` | `cfast_trainer/cu_drills.py`, `cfast_trainer/cu_workouts.py` | `tests/test_cognitive_updating_core.py`, `tests/test_cognitive_updating_headless_sim.py`, `tests/test_cognitive_updating_ui.py`, `tests/test_cu_drills.py`, `tests/test_cu_workouts.py` |
 | Digit Recognition | `cfast_trainer/digit_recognition.py` | `cfast_trainer/dr_drills.py`, `cfast_trainer/dr_workouts.py` | `tests/test_digit_recognition_core.py`, `tests/test_digit_recognition_headless_sim.py`, `tests/test_dr_drills.py`, `tests/test_dr_workouts.py` |
 | Instrument Comprehension | `cfast_trainer/instrument_comprehension.py`, `cfast_trainer/instrument_aircraft_cards.py`, `cfast_trainer/instrument_orientation_solver.py` | `cfast_trainer/ic_drills.py`, `cfast_trainer/ic_workouts.py` | `tests/test_instrument_comprehension_core.py`, `tests/test_instrument_comprehension_headless_sim.py`, `tests/test_instrument_comprehension_ui.py`, `tests/test_instrument_aircraft_cards.py`, `tests/test_instrument_orientation_solver.py`, `tests/test_ic_drills.py`, `tests/test_ic_workouts.py` |
-| Rapid Tracking | `cfast_trainer/rapid_tracking/`, `cfast_trainer/rapid_tracking_view.py`, `cfast_trainer/rapid_tracking_gl.py`, `cfast_trainer/rapid_tracking_panda3d.py` | `cfast_trainer/rt_drills.py`, `cfast_trainer/rt_workouts.py` | `tests/test_rapid_tracking_core.py`, `tests/test_rapid_tracking_ui.py`, `tests/test_rapid_tracking_scene.py`, `tests/test_rapid_tracking_headless_sim.py`, `tests/test_rapid_tracking_gl.py`, `tests/test_rapid_tracking_panda3d.py`, `tests/test_rt_drills.py`, `tests/test_rt_workouts.py` |
+| Rapid Tracking | `cfast_trainer/rapid_tracking/`, `cfast_trainer/rapid_tracking_view.py`, `cfast_trainer/rapid_tracking_gl.py` | `cfast_trainer/rt_drills.py`, `cfast_trainer/rt_workouts.py` | `tests/test_rapid_tracking_core.py`, `tests/test_rapid_tracking_ui.py`, `tests/test_rapid_tracking_scene.py`, `tests/test_rapid_tracking_headless_sim.py`, `tests/test_rapid_tracking_gl.py`, `tests/test_rt_drills.py`, `tests/test_rt_workouts.py` |
 | Sensory Motor Apparatus | `cfast_trainer/sensory_motor_apparatus.py` | `cfast_trainer/sma_drills.py`, `cfast_trainer/sma_workouts.py` | `tests/test_sensory_motor_apparatus_core.py`, `tests/test_sensory_motor_apparatus_headless_sim.py`, `tests/test_sensory_motor_apparatus_ui.py`, `tests/test_sma_drills.py`, `tests/test_sma_workouts.py` |
 | Situational Awareness | `cfast_trainer/situational_awareness.py` | `cfast_trainer/sa_drills.py`, `cfast_trainer/sa_workouts.py` | `tests/test_situational_awareness_core.py`, `tests/test_situational_awareness_ui.py`, `tests/test_situational_awareness_headless_sim.py`, `tests/test_sa_drills.py`, `tests/test_sa_workouts.py` |
-| Spatial Integration | `cfast_trainer/spatial_integration.py`, `cfast_trainer/spatial_integration_gl.py`, `cfast_trainer/spatial_integration_panda3d.py` | `cfast_trainer/si_drills.py`, `cfast_trainer/si_workouts.py` | `tests/test_spatial_integration_core.py`, `tests/test_spatial_integration_ui.py`, `tests/test_spatial_integration_headless_sim.py`, `tests/test_spatial_integration_gl.py`, `tests/test_spatial_integration_panda3d.py`, `tests/test_spatial_integration_drills.py`, `tests/test_spatial_integration_workouts.py` |
+| Spatial Integration | `cfast_trainer/spatial_integration.py`, `cfast_trainer/spatial_integration_gl.py` | `cfast_trainer/si_drills.py`, `cfast_trainer/si_workouts.py` | `tests/test_spatial_integration_core.py`, `tests/test_spatial_integration_ui.py`, `tests/test_spatial_integration_headless_sim.py`, `tests/test_spatial_integration_gl.py`, `tests/test_spatial_integration_drills.py`, `tests/test_spatial_integration_workouts.py` |
 | System Logic | `cfast_trainer/system_logic.py` | `cfast_trainer/sl_drills.py`, `cfast_trainer/sl_workouts.py` | `tests/test_system_logic_core.py`, `tests/test_system_logic_headless_sim.py`, `tests/test_system_logic_ui.py`, `tests/test_sl_drills.py`, `tests/test_sl_workouts.py` |
 | Table Reading | `cfast_trainer/table_reading.py`, `cfast_trainer/table_reading_cards/` | `cfast_trainer/tbl_drills.py`, `cfast_trainer/tbl_workouts.py` | `tests/test_table_reading_core.py`, `tests/test_table_reading_ui.py`, `tests/test_table_reading_headless_sim.py`, `tests/test_tbl_drills.py`, `tests/test_tbl_workouts.py` |
 | Target Recognition | `cfast_trainer/target_recognition.py` | `cfast_trainer/tr_drills.py`, `cfast_trainer/tr_workouts.py` | `tests/test_target_recognition_core.py`, `tests/test_target_recognition_ui.py`, `tests/test_target_recognition_headless_sim.py`, `tests/test_tr_drills.py`, `tests/test_tr_workouts.py` |
-| Trace Test 1 | `cfast_trainer/trace_test_1.py`, `cfast_trainer/trace_test_1_gl.py`, `cfast_trainer/trace_test_1_panda3d.py` | `cfast_trainer/trace_drills.py`, `cfast_trainer/trace_workouts.py` | `tests/test_trace_test_1_core.py`, `tests/test_trace_test_1_headless_sim.py`, `tests/test_trace_test_1_gl.py`, `tests/test_trace_test_1_panda3d.py`, `tests/test_trace_drills.py`, `tests/test_trace_workouts.py` |
-| Trace Test 2 | `cfast_trainer/trace_test_2.py`, `cfast_trainer/trace_test_2_gl.py`, `cfast_trainer/trace_test_2_panda3d.py` | `cfast_trainer/trace_drills.py`, `cfast_trainer/trace_workouts.py` | `tests/test_trace_test_2_core.py`, `tests/test_trace_test_2_headless_sim.py`, `tests/test_trace_test_2_gl.py`, `tests/test_trace_test_2_panda3d.py`, `tests/test_trace_drills.py`, `tests/test_trace_workouts.py` |
+| Trace Test 1 | `cfast_trainer/trace_test_1.py`, `cfast_trainer/trace_test_1_gl.py` | `cfast_trainer/trace_drills.py`, `cfast_trainer/trace_workouts.py` | `tests/test_trace_test_1_core.py`, `tests/test_trace_test_1_headless_sim.py`, `tests/test_trace_test_1_gl.py`, `tests/test_trace_drills.py`, `tests/test_trace_workouts.py` |
+| Trace Test 2 | `cfast_trainer/trace_test_2.py`, `cfast_trainer/trace_test_2_gl.py` | `cfast_trainer/trace_drills.py`, `cfast_trainer/trace_workouts.py` | `tests/test_trace_test_2_core.py`, `tests/test_trace_test_2_headless_sim.py`, `tests/test_trace_test_2_gl.py`, `tests/test_trace_drills.py`, `tests/test_trace_workouts.py` |
 | Vigilance | `cfast_trainer/vigilance.py` | `cfast_trainer/vig_drills.py`, `cfast_trainer/vig_workouts.py` | `tests/test_vigilance_core.py`, `tests/test_vigilance_headless_sim.py`, `tests/test_vigilance_ui.py`, `tests/test_vigilance_smoke_ui.py`, `tests/test_vig_drills.py`, `tests/test_vig_workouts.py` |
 | Visual Search | `cfast_trainer/visual_search.py` | `cfast_trainer/vs_drills.py`, `cfast_trainer/vs_workouts.py` | `tests/test_visual_search_core.py`, `tests/test_visual_search_ui.py`, `tests/test_visual_search_headless_sim.py`, `tests/test_vs_drills.py`, `tests/test_vs_workouts.py` |
 
@@ -99,7 +99,7 @@ Offline-first training app for CFASC CFAST-style aircrew selection aptitude doma
 - Benchmark map: `docs/subsystems/benchmark/README.md`
 - Adaptive scheduler map: `docs/subsystems/adaptive-scheduler/README.md`
 - Rapid Tracking local map: `cfast_trainer/rapid_tracking/README.md`
-- Panda3D asset map: `assets/panda3d/README.md`
+- Render asset map: `assets/render/README.md`
 - Contributor workflow and branch selection: `docs/codex-playbook.md`
 - Test coverage overview: `docs/test-matrix.md`
 - Screenshot convention: `docs/screenshots/README.md`
@@ -152,7 +152,7 @@ GitHub may only visibly show `main` from the remote view, but branch selection i
 
 4. In VS Code, select the `.venv` interpreter.
 
-Optional: install `requirements-3d.txt` when working on the Panda3D or richer 3D paths.
+Optional: install `requirements-3d.txt` when working on richer 3D asset paths.
 
 ## VS Code
 

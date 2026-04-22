@@ -29,7 +29,7 @@ def _build_small_sl_workout_plan() -> AntWorkoutPlan:
         code="system_logic_workout",
         title="SL Workout Smoke",
         description="Short deterministic workout for tests.",
-        notes=("Reflections are untimed.",),
+        notes=("Block setup is untimed.",),
         blocks=(
             AntWorkoutBlockPlan(
                 block_id="quant",
@@ -72,9 +72,7 @@ def _complete_small_sl_workout(clock: FakeClock) -> AntWorkoutSession:
         starting_level=5,
     )
     session.activate()
-    session.append_text("Use the index deliberately")
     session.activate()
-    session.append_text("Keep the pane scan ordered")
     session.activate()
     session.activate()
     _finish_current_block_with_one_correct_answer(session, clock)
@@ -85,10 +83,8 @@ def _complete_small_sl_workout(clock: FakeClock) -> AntWorkoutSession:
     _finish_current_block_with_one_correct_answer(session, clock)
     assert session.stage is AntWorkoutStage.BLOCK_RESULTS
     session.activate()
-    assert session.stage is AntWorkoutStage.POST_REFLECTION
-    session.append_text("Switches stayed manageable")
+    assert session.stage is AntWorkoutStage.RESULTS
     session.activate()
-    session.append_text("Keep graph and rule tied together")
     session.activate()
     assert session.stage is AntWorkoutStage.RESULTS
     return session

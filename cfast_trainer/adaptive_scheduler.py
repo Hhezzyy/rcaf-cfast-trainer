@@ -47,6 +47,7 @@ from .training_modes import split_half_note_fragment, supports_training_mode
 
 _SCHEDULER_VERSION = 3
 _LIVE_BLOCK_DURATION_S = 150.0
+_FATIGUE_DRILL_ELIGIBILITY_S = 60.0 * 60.0
 _TOP_PICK_POOL_SIZE = 5
 _TOP_PICK_RANK_WEIGHTS = (5.0, 4.0, 3.0, 2.0, 1.0)
 _SOURCE_MULTIPLIERS = {
@@ -330,6 +331,7 @@ class AdaptiveDrillCandidate:
     form_factor: str
     role_support: tuple[str, ...]
     canonical_preferred: bool
+    requires_session_fatigue: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -346,6 +348,16 @@ class AdaptiveHistorySessionSummary:
     primary_domain_id: str | None
     drill_codes: tuple[str, ...]
     target_areas: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class AdaptiveRecentBlock:
+    completed_at_utc: str
+    completed_at_epoch_s: float
+    primitive_id: str
+    domain_id: str
+    drill_code: str
+    target_area: str
 
 
 ADAPTIVE_VARIANT_SPECS = {
@@ -531,6 +543,8 @@ def _candidate(
     target_area: str,
     form_factor: str,
     role_support: tuple[str, ...],
+    *,
+    requires_session_fatigue: bool = False,
 ) -> AdaptiveDrillCandidate:
     registry_spec = canonical_drill_spec(drill_code)
     mapped_primitive_id = guide_ranking_primitive_id_for_code(drill_code) or primitive_id
@@ -548,6 +562,7 @@ def _candidate(
         form_factor=str(mapped_form_factor).strip().lower(),
         role_support=tuple(role_support),
         canonical_preferred=(registry_spec is not None or str(drill_code).strip().lower() in CANONICAL_DRILL_BY_CODE),
+        requires_session_fatigue=bool(requires_session_fatigue),
     )
 
 
@@ -574,27 +589,54 @@ ADAPTIVE_DRILL_CATALOG: tuple[AdaptiveDrillCandidate, ...] = (
     _candidate("sma_split_axis_control", "tracking_stability_low_load", "split_axis_control", "micro", ("target_anchor", "target_tempo", "adjacent_cross_train", "reassessment_probe", "target_pressure_fatigue", "late_repeat_transfer")),
     _candidate("sma_overshoot_recovery", "tracking_stability_low_load", "overshoot_recovery", "short", ("target_tempo", "adjacent_cross_train", "target_pressure_fatigue", "late_repeat_transfer")),
     _candidate("rt_obscured_target_prediction", "tracking_stability_low_load", "obscured_prediction", "block_component", ("adjacent_cross_train", "target_pressure_fatigue", "late_repeat_transfer")),
-    _candidate("dtb_tracking_recall", "dual_task_stability_fatigue", "tracking_recall_bridge", "micro", ("target_anchor", "target_tempo", "adjacent_cross_train", "reassessment_probe", "target_pressure_fatigue", "late_repeat_transfer")),
-    _candidate("dtb_tracking_command_filter", "dual_task_stability_fatigue", "command_filter", "short", ("target_tempo", "adjacent_cross_train", "target_pressure_fatigue", "late_repeat_transfer")),
-    _candidate("dtb_tracking_filter_digit_report", "dual_task_stability_fatigue", "filtered_digit_report", "short", ("target_tempo", "adjacent_cross_train", "target_pressure_fatigue", "late_repeat_transfer")),
-    _candidate("dtb_tracking_interference_recovery", "dual_task_stability_fatigue", "interference_recovery", "block_component", ("adjacent_cross_train", "target_pressure_fatigue", "late_repeat_transfer")),
+    _candidate("dtb_tracking_recall", "dual_task_stability_fatigue", "tracking_recall_bridge", "micro", ("target_anchor", "target_tempo", "adjacent_cross_train", "reassessment_probe", "target_pressure_fatigue", "late_repeat_transfer"), requires_session_fatigue=True),
+    _candidate("dtb_tracking_command_filter", "dual_task_stability_fatigue", "command_filter", "short", ("target_tempo", "adjacent_cross_train", "target_pressure_fatigue", "late_repeat_transfer"), requires_session_fatigue=True),
+    _candidate("dtb_tracking_filter_digit_report", "dual_task_stability_fatigue", "filtered_digit_report", "short", ("target_tempo", "adjacent_cross_train", "target_pressure_fatigue", "late_repeat_transfer"), requires_session_fatigue=True),
+    _candidate("dtb_tracking_interference_recovery", "dual_task_stability_fatigue", "interference_recovery", "block_component", ("adjacent_cross_train", "target_pressure_fatigue", "late_repeat_transfer"), requires_session_fatigue=True),
 )
 
 
-def _catalog_primitive_ids() -> frozenset[str]:
-    return frozenset(candidate.primitive_id for candidate in ADAPTIVE_DRILL_CATALOG)
+def _fatigue_gate_open(active_elapsed_s: float | None) -> bool:
+    if active_elapsed_s is None:
+        return True
+    try:
+        elapsed_s = float(active_elapsed_s)
+    except Exception:
+        elapsed_s = 0.0
+    return elapsed_s >= _FATIGUE_DRILL_ELIGIBILITY_S
+
+
+def _candidate_allowed_for_elapsed(
+    candidate: AdaptiveDrillCandidate,
+    active_elapsed_s: float | None,
+) -> bool:
+    return not candidate.requires_session_fatigue or _fatigue_gate_open(active_elapsed_s)
+
+
+def _catalog_primitive_ids(
+    *,
+    active_elapsed_s: float | None = None,
+) -> frozenset[str]:
+    return frozenset(
+        candidate.primitive_id
+        for candidate in ADAPTIVE_DRILL_CATALOG
+        if _candidate_allowed_for_elapsed(candidate, active_elapsed_s)
+    )
 
 
 def _catalog_candidates_for_primitive(
     primitive_id: str,
     *,
     role: str | None = None,
+    active_elapsed_s: float | None = None,
 ) -> tuple[AdaptiveDrillCandidate, ...]:
     token = str(primitive_id).strip().lower()
     return tuple(
         candidate
         for candidate in ADAPTIVE_DRILL_CATALOG
-        if candidate.primitive_id == token and (role is None or role in candidate.role_support)
+        if candidate.primitive_id == token
+        and (role is None or role in candidate.role_support)
+        and _candidate_allowed_for_elapsed(candidate, active_elapsed_s)
     )
 
 
@@ -985,6 +1027,36 @@ def _seed_tiebreak(token: str, *, seed: int) -> float:
     return float((acc % 1000) / 1_000_000.0)
 
 
+def _candidate_for_drill_code(drill_code: str | None) -> AdaptiveDrillCandidate | None:
+    token = str(drill_code or "").strip().lower()
+    if token == "":
+        return None
+    resolved = resolved_canonical_drill_code(token, for_adaptive=True) or token
+    for candidate in ADAPTIVE_DRILL_CATALOG:
+        candidate_code = resolved_canonical_drill_code(
+            candidate.drill_code,
+            for_adaptive=True,
+        ) or candidate.drill_code
+        if candidate.drill_code == token or candidate_code == resolved:
+            return candidate
+    return None
+
+
+def _adaptive_metric_block_numbers(metrics: dict[str, str]) -> list[str]:
+    def _number_sort_key(value: str) -> tuple[int, str]:
+        try:
+            return (int(value), value)
+        except ValueError:
+            return (10_000, value)
+
+    numbers = {
+        key.split(".")[1]
+        for key in metrics
+        if key.startswith("block.") and len(key.split(".")) >= 3
+    }
+    return sorted(numbers, key=_number_sort_key)
+
+
 def _recent_adaptive_sessions(history: list[AttemptHistoryEntry]) -> list[AdaptiveHistorySessionSummary]:
     out: list[AdaptiveHistorySessionSummary] = []
     for entry in history:
@@ -993,13 +1065,7 @@ def _recent_adaptive_sessions(history: list[AttemptHistoryEntry]) -> list[Adapti
             continue
         drill_codes: list[str] = []
         target_areas: list[str] = []
-        block_numbers = sorted(
-            {
-                key.split(".")[1]
-                for key in entry.metrics
-                if key.startswith("block.") and len(key.split(".")) >= 3
-            }
-        )
+        block_numbers = _adaptive_metric_block_numbers(entry.metrics)
         primary_primitive_id = None
         for index, number in enumerate(block_numbers):
             prefix = f"block.{number}."
@@ -1027,6 +1093,90 @@ def _recent_adaptive_sessions(history: list[AttemptHistoryEntry]) -> list[Adapti
         )
     out.sort(key=lambda item: item.completed_at_epoch_s, reverse=True)
     return out
+
+
+def _recent_adaptive_blocks(history: list[AttemptHistoryEntry]) -> list[AdaptiveRecentBlock]:
+    out: list[AdaptiveRecentBlock] = []
+    for entry in history:
+        token = str(entry.test_code or "").strip().lower()
+        completed_at = str(entry.completed_at_utc)
+        try:
+            completed_epoch = _parse_utc_iso(completed_at).timestamp()
+        except Exception:
+            completed_epoch = 0.0
+
+        if token in ADAPTIVE_SESSION_CODES:
+            block_numbers = _adaptive_metric_block_numbers(entry.metrics)
+            block_count = max(1, len(block_numbers))
+            for index, number in enumerate(block_numbers, start=1):
+                prefix = f"block.{number}."
+                drill_code = str(entry.metrics.get(f"{prefix}drill_code", "")).strip().lower()
+                candidate = _candidate_for_drill_code(drill_code)
+                primitive_id = str(entry.metrics.get(f"{prefix}primitive_id", "")).strip().lower()
+                if primitive_id == "" and candidate is not None:
+                    primitive_id = candidate.primitive_id
+                if primitive_id not in _PRIMITIVE_BY_ID:
+                    continue
+                target_area = str(entry.metrics.get(f"{prefix}target_area", "")).strip().lower()
+                if target_area == "" and candidate is not None:
+                    target_area = candidate.target_area
+                out.append(
+                    AdaptiveRecentBlock(
+                        completed_at_utc=completed_at,
+                        completed_at_epoch_s=completed_epoch + (float(index) / float(block_count + 1)),
+                        primitive_id=primitive_id,
+                        domain_id=_PRIMITIVE_BY_ID[primitive_id].domain_id,
+                        drill_code=drill_code,
+                        target_area=target_area,
+                    )
+                )
+            continue
+
+        if str(entry.activity_kind or "").strip().lower() != "adaptive_session":
+            continue
+        drill_code = str(entry.test_code or entry.activity_code or "").strip().lower()
+        candidate = _candidate_for_drill_code(drill_code)
+        primitive_id = str(entry.metrics.get("adaptive.primitive_id", "")).strip().lower()
+        if primitive_id == "" and candidate is not None:
+            primitive_id = candidate.primitive_id
+        if primitive_id not in _PRIMITIVE_BY_ID:
+            continue
+        target_area = str(entry.metrics.get("adaptive.target_area", "")).strip().lower()
+        if target_area == "" and candidate is not None:
+            target_area = candidate.target_area
+        out.append(
+            AdaptiveRecentBlock(
+                completed_at_utc=completed_at,
+                completed_at_epoch_s=completed_epoch,
+                primitive_id=primitive_id,
+                domain_id=_PRIMITIVE_BY_ID[primitive_id].domain_id,
+                drill_code=drill_code,
+                target_area=target_area,
+            )
+        )
+    out.sort(key=lambda item: item.completed_at_epoch_s, reverse=True)
+    return out
+
+
+def _variety_weight_multiplier(
+    item: AdaptivePriorityBreakdown,
+    recent_blocks: list[AdaptiveRecentBlock],
+) -> float:
+    primitive_recent = sum(
+        1 for block in recent_blocks[:3] if block.primitive_id == item.primitive_id
+    )
+    domain_id = _PRIMITIVE_BY_ID[item.primitive_id].domain_id
+    domain_recent = sum(1 for block in recent_blocks[:3] if block.domain_id == domain_id)
+    multiplier = 1.0
+    if primitive_recent >= 2:
+        multiplier *= 0.55
+    elif primitive_recent == 1:
+        multiplier *= 0.78
+    if domain_recent >= 3:
+        multiplier *= 0.70
+    elif domain_recent == 2:
+        multiplier *= 0.84
+    return max(0.45, min(1.0, multiplier))
 
 
 def _domain_dominated_in_recent_sessions(
@@ -1345,6 +1495,7 @@ def _training_mode_for_role(
     fatigue_dominant: bool = False,
     retention_repeat: bool = False,
     fatigue_snapshot: AdaptiveFatigueSnapshot | None = None,
+    active_elapsed_s: float | None = None,
 ) -> AntDrillMode:
     fatigue_high = fatigue_snapshot is not None and fatigue_snapshot.is_high
     if role == "target_anchor":
@@ -1362,7 +1513,11 @@ def _training_mode_for_role(
     if role == "reassessment_probe":
         return AntDrillMode.BUILD
     if role == "target_pressure_fatigue":
-        if fatigue_dominant and supports_training_mode(drill_code, AntDrillMode.FATIGUE_PROBE):
+        if (
+            fatigue_dominant
+            and _fatigue_gate_open(active_elapsed_s)
+            and supports_training_mode(drill_code, AntDrillMode.FATIGUE_PROBE)
+        ):
             return AntDrillMode.FATIGUE_PROBE
         if fatigue_high:
             if supports_training_mode(drill_code, AntDrillMode.TEMPO):
@@ -1407,10 +1562,22 @@ def _select_candidate(
     recent_session: AdaptiveHistorySessionSummary | None,
     previous_target_area: str | None,
     retention_repeat: bool,
+    active_elapsed_s: float | None = None,
 ) -> AdaptiveDrillCandidate:
-    candidates = list(_catalog_candidates_for_primitive(primitive_id, role=role))
+    candidates = list(
+        _catalog_candidates_for_primitive(
+            primitive_id,
+            role=role,
+            active_elapsed_s=active_elapsed_s,
+        )
+    )
     if not candidates:
-        candidates = list(_catalog_candidates_for_primitive(primitive_id))
+        candidates = list(
+            _catalog_candidates_for_primitive(
+                primitive_id,
+                active_elapsed_s=active_elapsed_s,
+            )
+        )
     if not candidates:
         raise LookupError(f"no adaptive drill candidates available for primitive {primitive_id}")
     allowed = variant_spec.allowed_form_factors
@@ -1458,6 +1625,7 @@ def _build_adaptive_session_plan_core(
     start_block_index: int = 0,
     prior_blocks: tuple[AdaptiveSessionBlock, ...] = (),
     previous_target_area: str | None = None,
+    active_elapsed_s: float = 0.0,
 ) -> AdaptiveSessionPlan | None:
     ranking = rank_primitives(
         history,
@@ -1465,7 +1633,7 @@ def _build_adaptive_session_plan_core(
         seed=seed,
         policy=ADAPTIVE_WORKOUT_EVIDENCE_POLICY,
     )
-    eligible_primitive_ids = _catalog_primitive_ids()
+    eligible_primitive_ids = _catalog_primitive_ids(active_elapsed_s=active_elapsed_s)
     ranked = tuple(
         item
         for item in cast(tuple[AdaptivePriorityBreakdown, ...], ranking.weakest_primitives)
@@ -1570,6 +1738,7 @@ def _build_adaptive_session_plan_core(
             recent_session=recent_session,
             previous_target_area=previous_area,
             retention_repeat=candidate_retention_repeat,
+            active_elapsed_s=active_elapsed_s,
         )
         drill_code = resolved_canonical_drill_code(candidate.drill_code, for_adaptive=True) or candidate.drill_code
         drill_mode = _training_mode_for_role(
@@ -1579,6 +1748,7 @@ def _build_adaptive_session_plan_core(
             fatigue_dominant=_pressure_is_fatigue_dominant(target),
             retention_repeat=candidate_retention_repeat,
             fatigue_snapshot=fatigue_snapshot,
+            active_elapsed_s=active_elapsed_s,
         )
         blocks.append(
             AdaptiveSessionBlock(
@@ -1645,6 +1815,7 @@ def build_adaptive_session_plan(
     recommended_level: int | None = None,
     fixed_mode: bool = False,
     variant: str = "full",
+    active_elapsed_s: float = 0.0,
 ) -> AdaptiveSessionPlan | None:
     _ = (fixed_mode, variant)
     authoritative_history = _authoritative_history(history)
@@ -1657,10 +1828,19 @@ def build_adaptive_session_plan(
         policy=ADAPTIVE_WORKOUT_EVIDENCE_POLICY,
     )
     last_selected_primitive_id, last_selected_drill_code = _latest_adaptive_selection(authoritative_history)
+    recent_blocks = _recent_adaptive_blocks(authoritative_history)
     selected, ranked_with_pool = _select_weighted_adaptive_target(
         ranking=ranking,
         seed=seed,
         last_selected_primitive_id=last_selected_primitive_id,
+        active_elapsed_s=active_elapsed_s,
+        recent_blocks=recent_blocks,
+    )
+    selected, linked_primitive_id, target_area_override = _select_live_cross_train_target(
+        selected=selected,
+        ranking=ranked_with_pool,
+        recent_blocks=recent_blocks,
+        active_elapsed_s=active_elapsed_s,
     )
     block = None
     if selected is not None:
@@ -1671,6 +1851,10 @@ def build_adaptive_session_plan(
             seed=seed,
             recommended_level=recommended_level,
             previous_drill_code=last_selected_drill_code,
+            active_elapsed_s=active_elapsed_s,
+            recent_blocks=recent_blocks,
+            linked_primitive_id=linked_primitive_id,
+            target_area_override=target_area_override,
         )
     note_lines = [
         "Open-ended adaptive session. Each Enter continues to the next weakest eligible drill.",
@@ -1725,20 +1909,43 @@ def _select_weighted_adaptive_target(
     ranking: tuple[AdaptivePriorityBreakdown, ...],
     seed: int,
     last_selected_primitive_id: str | None,
+    active_elapsed_s: float = 0.0,
+    recent_blocks: list[AdaptiveRecentBlock] | None = None,
 ) -> tuple[AdaptivePriorityBreakdown | None, tuple[AdaptivePriorityBreakdown, ...]]:
     ordered = list(ranking)
+    recent = list(recent_blocks or [])
+    eligible_primitive_ids = _catalog_primitive_ids(active_elapsed_s=active_elapsed_s)
+    allowed_ordered = [
+        item for item in ordered if item.primitive_id in eligible_primitive_ids
+    ]
     eligible = [
-        item for item in ordered if item.primitive_id != last_selected_primitive_id
+        item for item in allowed_ordered if item.primitive_id != last_selected_primitive_id
     ]
     if not eligible:
-        eligible = list(ordered)
+        eligible = list(allowed_ordered)
     pool = eligible[:_TOP_PICK_POOL_SIZE]
     if not pool:
-        return (None, tuple(ordered))
+        return (
+            None,
+            tuple(replace(item, eligible=False, selected_weight=0.0) for item in ordered),
+        )
     weights: list[float] = []
+    dominant_id = ""
+    if len(pool) > 1:
+        top = pool[0]
+        runner_up = max(pool[1:], key=lambda item: float(item.priority))
+        if float(top.priority) >= (float(runner_up.priority) * 1.35) and (
+            float(top.priority) - float(runner_up.priority)
+        ) >= 0.20:
+            dominant_id = top.primitive_id
     for index, item in enumerate(pool):
         rank_weight = _TOP_PICK_RANK_WEIGHTS[min(index, len(_TOP_PICK_RANK_WEIGHTS) - 1)]
-        weights.append(max(0.01, float(item.priority)) * float(rank_weight))
+        variety_multiplier = (
+            1.0
+            if item.primitive_id == dominant_id
+            else _variety_weight_multiplier(item, recent)
+        )
+        weights.append(max(0.01, float(item.priority)) * float(rank_weight) * variety_multiplier)
     total_weight = sum(weights)
     rng = random.Random(int(seed))
     threshold = rng.random() * total_weight
@@ -1769,9 +1976,91 @@ def _select_weighted_adaptive_target(
 def _selection_role_for_item(item: AdaptivePriorityBreakdown) -> str:
     if item.unmeasured:
         return "target_anchor"
+    if item.retention >= 0.45 and item.retention >= max(
+        item.weakness,
+        item.fatigue,
+        item.post_error,
+        item.lapse,
+        item.control,
+    ):
+        return "reassessment_probe"
     if item.fatigue >= max(item.post_error, item.lapse, item.control):
         return "target_pressure_fatigue"
     return "target_tempo"
+
+
+def _linked_target_area(
+    *,
+    source_primitive_id: str,
+    linked_primitive_id: str,
+    source_target_area: str,
+) -> str:
+    for link in _adjacent_links_for_primitive(source_primitive_id):
+        if link.linked_primitive_id != linked_primitive_id:
+            continue
+        for source_area, linked_area in link.linked_target_areas:
+            if source_area == source_target_area:
+                return linked_area
+        if link.linked_target_areas:
+            return link.linked_target_areas[0][1]
+    return ""
+
+
+def _select_live_cross_train_target(
+    *,
+    selected: AdaptivePriorityBreakdown | None,
+    ranking: tuple[AdaptivePriorityBreakdown, ...],
+    recent_blocks: list[AdaptiveRecentBlock],
+    active_elapsed_s: float,
+) -> tuple[AdaptivePriorityBreakdown | None, str | None, str | None]:
+    if selected is None:
+        return (None, None, None)
+    recent = list(recent_blocks[:3])
+    if len(recent) < 2 or selected.unmeasured:
+        return (selected, None, None)
+    selected_domain = _PRIMITIVE_BY_ID[selected.primitive_id].domain_id
+    primitive_hits = sum(1 for block in recent if block.primitive_id == selected.primitive_id)
+    domain_hits = sum(1 for block in recent if block.domain_id == selected_domain)
+    if primitive_hits < 2 and domain_hits < 2:
+        return (selected, None, None)
+
+    eligible_by_id = {
+        item.primitive_id: item
+        for item in ranking
+        if item.eligible and item.primitive_id != selected.primitive_id
+    }
+    if not eligible_by_id:
+        return (selected, None, None)
+
+    source_target_area = _target_area_for_primitive(selected)
+    scored: list[tuple[float, str, str, AdaptivePriorityBreakdown]] = []
+    for link in _adjacent_links_for_primitive(selected.primitive_id):
+        neighbor = eligible_by_id.get(link.linked_primitive_id)
+        if neighbor is None:
+            continue
+        if not _catalog_candidates_for_primitive(
+            neighbor.primitive_id,
+            active_elapsed_s=active_elapsed_s,
+        ):
+            continue
+        if float(selected.priority) >= (float(neighbor.priority) * 1.45) and (
+            float(selected.priority) - float(neighbor.priority)
+        ) >= 0.25:
+            continue
+        linked_area = _linked_target_area(
+            source_primitive_id=selected.primitive_id,
+            linked_primitive_id=neighbor.primitive_id,
+            source_target_area=source_target_area,
+        )
+        score = float(neighbor.priority) * _variety_weight_multiplier(neighbor, recent_blocks)
+        if linked_area:
+            score += 0.06
+        scored.append((score, linked_area, neighbor.primitive_id, neighbor))
+    if not scored:
+        return (selected, None, None)
+    scored.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
+    _score, linked_area, _primitive_id, neighbor = scored[0]
+    return (neighbor, selected.primitive_id, linked_area or None)
 
 
 def _pick_drill_candidate(
@@ -1780,17 +2069,45 @@ def _pick_drill_candidate(
     item: AdaptivePriorityBreakdown,
     previous_drill_code: str | None,
     seed: int,
+    active_elapsed_s: float = 0.0,
+    recent_blocks: list[AdaptiveRecentBlock] | None = None,
+    target_area_override: str | None = None,
 ) -> AdaptiveDrillCandidate:
     preferred_role = _selection_role_for_item(item)
-    candidates = list(_catalog_candidates_for_primitive(primitive_id, role=preferred_role))
+    candidates = list(
+        _catalog_candidates_for_primitive(
+            primitive_id,
+            role=preferred_role,
+            active_elapsed_s=active_elapsed_s,
+        )
+    )
     if not candidates:
-        candidates = list(_catalog_candidates_for_primitive(primitive_id))
+        candidates = list(
+            _catalog_candidates_for_primitive(
+                primitive_id,
+                active_elapsed_s=active_elapsed_s,
+            )
+        )
     if not candidates:
         raise LookupError(f"no adaptive drill candidates available for primitive {primitive_id}")
     primitive = _PRIMITIVE_BY_ID[primitive_id]
     anchor_codes = set(primitive.anchor_templates)
-    target_area = _target_area_for_primitive(item)
+    target_area = str(target_area_override or "").strip().lower() or _target_area_for_primitive(item)
     previous_code = str(previous_drill_code or "").strip().lower()
+    recent = list(recent_blocks or [])
+    recent_drill_counts = {
+        block.drill_code: sum(1 for candidate in recent[:5] if candidate.drill_code == block.drill_code)
+        for block in recent[:5]
+    }
+    recent_target_counts = {
+        block.target_area: sum(
+            1
+            for candidate in recent[:5]
+            if candidate.primitive_id == primitive_id and candidate.target_area == block.target_area
+        )
+        for block in recent[:5]
+        if block.primitive_id == primitive_id and block.target_area
+    }
     scored: list[tuple[float, str, AdaptiveDrillCandidate]] = []
     for candidate in candidates:
         score = 0.0
@@ -1804,6 +2121,8 @@ def _pick_drill_candidate(
             score += 1.0
         if previous_code != "" and str(candidate.drill_code).strip().lower() == previous_code:
             score -= 4.0
+        score -= 1.25 * float(recent_drill_counts.get(candidate.drill_code, 0))
+        score -= 0.65 * float(recent_target_counts.get(candidate.target_area, 0))
         if candidate.canonical_preferred:
             score += 0.5
         score += _seed_tiebreak(candidate.drill_code, seed=seed)
@@ -1817,11 +2136,18 @@ def _pick_drill_candidate(
     return best
 
 
-def _training_mode_for_live_item(item: AdaptivePriorityBreakdown, drill_code: str) -> AntDrillMode:
+def _training_mode_for_live_item(
+    item: AdaptivePriorityBreakdown,
+    drill_code: str,
+    *,
+    active_elapsed_s: float | None = None,
+) -> AntDrillMode:
     if item.unmeasured:
         return AntDrillMode.BUILD
-    if item.fatigue >= max(item.post_error, item.lapse, item.control) and supports_training_mode(
-        drill_code, AntDrillMode.FATIGUE_PROBE
+    if (
+        item.fatigue >= max(item.post_error, item.lapse, item.control)
+        and _fatigue_gate_open(active_elapsed_s)
+        and supports_training_mode(drill_code, AntDrillMode.FATIGUE_PROBE)
     ):
         return AntDrillMode.FATIGUE_PROBE
     if item.confidence < 0.45:
@@ -1843,6 +2169,10 @@ def _build_live_adaptive_block(
     seed: int,
     recommended_level: int | None,
     previous_drill_code: str | None,
+    active_elapsed_s: float = 0.0,
+    recent_blocks: list[AdaptiveRecentBlock] | None = None,
+    linked_primitive_id: str | None = None,
+    target_area_override: str | None = None,
 ) -> AdaptiveSessionBlock:
     block_seed = _random_seed() if seed <= 0 else int(seed) + ((block_index + 1) * 131)
     candidate = _pick_drill_candidate(
@@ -1850,10 +2180,17 @@ def _build_live_adaptive_block(
         item=primitive,
         previous_drill_code=previous_drill_code,
         seed=block_seed,
+        active_elapsed_s=active_elapsed_s,
+        recent_blocks=recent_blocks,
+        target_area_override=target_area_override,
     )
     difficulty_level = clamp_level(recommended_level or int(primitive.recommended_level))
     drill_code = resolved_canonical_drill_code(candidate.drill_code, for_adaptive=True) or candidate.drill_code
-    drill_mode = _training_mode_for_live_item(primitive, drill_code)
+    drill_mode = _training_mode_for_live_item(
+        primitive,
+        drill_code,
+        active_elapsed_s=active_elapsed_s,
+    )
     return AdaptiveSessionBlock(
         block_index=int(block_index),
         primitive_id=primitive.primitive_id,
@@ -1868,7 +2205,7 @@ def _build_live_adaptive_block(
         drill_mode=drill_mode,
         form_factor=candidate.form_factor if candidate.form_factor in {"micro", "short"} else "short",
         target_area=candidate.target_area,
-        linked_primitive_id=None,
+        linked_primitive_id=linked_primitive_id,
         comparable_level=None,
     )
 
@@ -1884,6 +2221,9 @@ def _history_entry_from_block_result(
     metrics.setdefault("training_mode", block.drill_mode.value)
     metrics.setdefault("duration_s", f"{float(result.duration_s):.6f}")
     metrics["adaptive.block_role"] = block.mode
+    metrics["adaptive.primitive_id"] = block.primitive_id
+    metrics["adaptive.target_area"] = block.target_area
+    metrics["adaptive.linked_primitive_id"] = block.linked_primitive_id or ""
     return AttemptHistoryEntry(
         attempt_id=int(attempt_id),
         session_id=0,
@@ -2139,6 +2479,7 @@ class AdaptiveSession:
             recommended_level=None,
             fixed_mode=(self._difficulty_mode != "adaptive"),
             variant="adaptive",
+            active_elapsed_s=self._active_elapsed_s(),
         )
         if next_plan is None or not next_plan.blocks:
             self._stage = AdaptiveStage.RESULTS
@@ -2417,6 +2758,7 @@ class AdaptiveSession:
             "scheduler.block_count": str(len(self._plan.blocks)),
             "scheduler.total_duration_s": f"{self._plan.scored_duration_s:.6f}",
             "scheduler.replan_count": str(int(self._replan_count)),
+            "scheduler.active_elapsed_s": f"{self._active_elapsed_s():.6f}",
             "scheduler.fatigue.load": f"{self._fatigue_snapshot.fatigue_load:.6f}",
             "scheduler.fatigue.runtime_load": f"{self._fatigue_snapshot.runtime_load:.6f}",
             "scheduler.fatigue.degradation_load": f"{self._fatigue_snapshot.degradation_load:.6f}",
@@ -2705,6 +3047,7 @@ class AdaptiveSession:
             start_block_index=next_role_index,
             prior_blocks=previous_blocks,
             previous_target_area=previous_area,
+            active_elapsed_s=self._active_elapsed_s(),
         )
         if rebuilt is None:
             return
@@ -2779,6 +3122,25 @@ class AdaptiveSession:
             pass
         block = self.current_block_plan()
         return None if block is None else float(block.duration_s)
+
+    def _active_elapsed_s(self) -> float:
+        total = 0.0
+        for result in self._completed_attempts:
+            try:
+                total += max(0.0, float(result.duration_s))
+            except Exception:
+                continue
+
+        if self._stage is AdaptiveStage.BLOCK:
+            block = self.current_block_plan()
+            remaining_s = self._current_block_time_remaining_s()
+            if block is not None and remaining_s is not None:
+                try:
+                    elapsed_s = float(block.duration_s) - float(remaining_s)
+                except Exception:
+                    elapsed_s = 0.0
+                total += min(float(block.duration_s), max(0.0, elapsed_s))
+        return max(0.0, float(total))
 
     def _session_time_remaining_s(self) -> float | None:
         if self._stage is AdaptiveStage.INTRO:

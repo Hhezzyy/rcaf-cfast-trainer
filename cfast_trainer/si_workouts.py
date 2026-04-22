@@ -108,7 +108,7 @@ def build_si_workout_plan(*, duration_scale: float = 1.0) -> AntWorkoutPlan:
             "balanced mixed-part runs, and a final pressure block."
         ),
         notes=(
-            "Typed reflections and block setup screens do not count toward the 90-minute drill clock.",
+            "Block setup screens do not count toward the 90-minute drill clock.",
             "Every block keeps the same three-view study loop, frozen-scene presentation, compass behavior, and grid-click or 1-4 answer flow as the live Spatial Integration runtime.",
             "The workout stays balanced: 30 minutes static-only, 30 minutes aircraft-only, then 30 minutes of mixed-part chaining.",
         ),

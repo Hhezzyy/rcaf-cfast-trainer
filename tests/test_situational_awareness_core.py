@@ -334,7 +334,7 @@ def test_report_variation_query_uses_five_choice_mode_and_unique_options() -> No
     assert len({choice.text for choice in query.answer_choices}) == 5
 
 
-def test_grid_location_queries_target_hidden_subject_after_cues_fade() -> None:
+def test_grid_location_queries_freeze_and_display_subject_while_active() -> None:
     cfg = SituationalAwarenessConfig(
         scored_duration_s=90.0,
         practice_scenarios=0,
@@ -355,13 +355,189 @@ def test_grid_location_queries_target_hidden_subject_after_cues_fade() -> None:
                 SituationalAwarenessQueryKind.INSTRUCTED_DESTINATION,
                 SituationalAwarenessQueryKind.ACTUAL_DESTINATION,
             ):
-                visible_callsigns = {contact.callsign for contact in payload.visible_contacts}
-                assert query.subject_callsign not in visible_callsigns
+                visible_contacts = {contact.callsign: contact for contact in payload.visible_contacts}
+                frozen = engine._active_query_frozen_contact
+                assert frozen is not None
+                assert query.subject_callsign == frozen.callsign
+                assert query.subject_callsign in visible_contacts
+                contact = visible_contacts[query.subject_callsign]
+                assert contact.x == pytest.approx(frozen.x)
+                assert contact.y == pytest.approx(frozen.y)
                 return
         clock.advance(1.0)
         engine.update()
 
-    raise AssertionError("Expected a hidden-subject grid query in the scored stream.")
+    raise AssertionError("Expected a frozen-subject grid query in the scored stream.")
+
+
+def test_queried_callsign_is_retired_for_rest_of_scenario() -> None:
+    cfg = SituationalAwarenessConfig(
+        scored_duration_s=70.0,
+        practice_scenarios=0,
+        scored_scenario_duration_s=70.0,
+        query_interval_min_s=8,
+        query_interval_max_s=8,
+        min_track_count=6,
+        max_track_count=6,
+    )
+    clock = FakeClock()
+    engine = build_situational_awareness_test(clock=clock, seed=446, difficulty=0.75, config=cfg)
+    engine.start_scored()
+
+    first_payload = _advance_until_query(engine, clock)
+    first_query = first_payload.active_query
+    assert first_query is not None
+    retired = first_query.subject_callsign
+    assert retired is not None
+
+    assert engine.submit_answer(first_query.correct_answer_token) is True
+    assert retired in engine._retired_callsigns
+
+    seen_later_query_subjects: list[str] = []
+    for _ in range(38):
+        payload = engine.snapshot().payload
+        assert isinstance(payload, SituationalAwarenessPayload)
+        assert retired not in {contact.callsign for contact in payload.visible_contacts}
+        assert payload.cue_card is None or payload.cue_card.callsign != retired
+        assert retired not in payload.top_strip_text
+        assert all(retired not in line for line in payload.radio_log)
+        if payload.active_query is not None:
+            assert payload.active_query.subject_callsign != retired
+            if payload.active_query.subject_callsign is not None:
+                seen_later_query_subjects.append(payload.active_query.subject_callsign)
+            assert engine.submit_answer(payload.active_query.correct_answer_token) is True
+        clock.advance(1.0)
+        engine.update()
+
+    assert seen_later_query_subjects
+
+
+def test_active_query_freezes_live_asset_until_answered_then_motion_resumes() -> None:
+    cfg = SituationalAwarenessConfig(
+        scored_duration_s=45.0,
+        practice_scenarios=0,
+        scored_scenario_duration_s=45.0,
+        query_interval_min_s=10,
+        query_interval_max_s=10,
+        min_track_count=5,
+        max_track_count=5,
+    )
+    clock = FakeClock()
+    engine = build_situational_awareness_test(
+        clock=clock,
+        seed=448,
+        difficulty=0.8,
+        config=cfg,
+        practice_segments=(),
+        scored_segments=(
+            SituationalAwarenessTrainingSegment(
+                label="Current Location",
+                duration_s=45.0,
+                active_channels=("pictorial", "coded", "numerical", "aural"),
+                active_query_kinds=(SituationalAwarenessQueryKind.CURRENT_LOCATION.value,),
+                focus_label="Current location",
+                profile=SituationalAwarenessTrainingProfile(
+                    query_interval_min_s=10,
+                    query_interval_max_s=10,
+                    response_window_s=10,
+                    min_track_count=5,
+                    max_track_count=5,
+                ),
+            ),
+        ),
+    )
+    engine.start_scored()
+
+    payload = _advance_until_query(
+        engine,
+        clock,
+        required_kind=SituationalAwarenessQueryKind.CURRENT_LOCATION,
+    )
+    query = payload.active_query
+    assert query is not None
+    subject = query.subject_callsign
+    assert subject is not None
+    asset = engine._live_assets[subject]
+    asset.movement_mode = "linear"
+    asset.heading = "W" if asset.x >= 8.0 else "E"
+    asset.speed_cells_per_min = 60
+    frozen_x = asset.x
+    frozen_y = asset.y
+
+    clock.advance(3.0)
+    engine.update()
+    assert asset.x == pytest.approx(frozen_x)
+    assert asset.y == pytest.approx(frozen_y)
+
+    active_payload = engine.snapshot().payload
+    assert isinstance(active_payload, SituationalAwarenessPayload)
+    active_contact = next(
+        contact for contact in active_payload.visible_contacts if contact.callsign == subject
+    )
+    assert active_contact.x == pytest.approx(frozen_x)
+    assert active_contact.y == pytest.approx(frozen_y)
+
+    assert engine.submit_answer(query.correct_answer_token) is True
+    clock.advance(1.0)
+    engine.update()
+    assert asset.x != pytest.approx(frozen_x)
+    assert asset.y == pytest.approx(frozen_y)
+
+
+def test_situational_awareness_seeded_motion_modes_include_stationary_and_direct_to_target() -> None:
+    cfg = SituationalAwarenessConfig(
+        scored_duration_s=45.0,
+        practice_scenarios=0,
+        scored_scenario_duration_s=45.0,
+        query_interval_min_s=40,
+        query_interval_max_s=40,
+        min_track_count=5,
+        max_track_count=5,
+    )
+    clock_a = FakeClock()
+    clock_b = FakeClock()
+    engine_a = build_situational_awareness_test(clock=clock_a, seed=449, difficulty=0.8, config=cfg)
+    engine_b = build_situational_awareness_test(clock=clock_b, seed=449, difficulty=0.8, config=cfg)
+    engine_a.start_scored()
+    engine_b.start_scored()
+
+    modes_a = {
+        callsign: asset.movement_mode
+        for callsign, asset in sorted(engine_a._live_assets.items())
+    }
+    modes_b = {
+        callsign: asset.movement_mode
+        for callsign, asset in sorted(engine_b._live_assets.items())
+    }
+    assert modes_a == modes_b
+    assert list(modes_a.values()).count("stationary") == 1
+    assert list(modes_a.values()).count("direct_to_target") >= 2
+
+    def distance_to_destination(asset) -> float:
+        row = "ABCDEFGHIJ".index(asset.actual_destination[0])
+        col = int(asset.actual_destination[1:])
+        dx = float(col) - float(asset.x)
+        dy = float(row) - float(asset.y)
+        return (dx * dx + dy * dy) ** 0.5
+
+    stationary = next(
+        asset for asset in engine_a._live_assets.values() if asset.movement_mode == "stationary"
+    )
+    direct_assets = [
+        asset for asset in engine_a._live_assets.values() if asset.movement_mode == "direct_to_target"
+    ]
+    stationary_start = (stationary.x, stationary.y)
+    direct_start_distances = {
+        asset.callsign: distance_to_destination(asset)
+        for asset in direct_assets
+    }
+
+    clock_a.advance(5.0)
+    engine_a.update()
+
+    assert (stationary.x, stationary.y) == pytest.approx(stationary_start)
+    for asset in direct_assets:
+        assert distance_to_destination(asset) < direct_start_distances[asset.callsign]
 
 
 def test_radio_announcements_only_emit_on_actual_updates() -> None:

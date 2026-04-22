@@ -86,11 +86,11 @@ def build_vs_workout_plan(*, duration_scale: float = 1.0) -> AntWorkoutPlan:
         code="visual_search_workout",
         title="Visual Search Workout (90m)",
         description=(
-            "Standard 90-minute Visual Search workout with typed reflection, full-board warm-ups, "
+            "Standard 90-minute Visual Search workout with full-board warm-ups, "
             "family runs, mixed tempo, and a final pressure block."
         ),
         notes=(
-            "Typed reflections and block setup screens do not count toward the 90-minute drill clock.",
+            "Block setup screens do not count toward the 90-minute drill clock.",
             "Every block keeps the same typed two-digit block-number answer flow while the board scales upward with difficulty.",
             "Early blocks keep distractors easier; later blocks tighten similarity, expand the matrix, and increase family switching.",
         ),

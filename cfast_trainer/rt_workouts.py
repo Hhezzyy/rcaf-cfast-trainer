@@ -104,11 +104,11 @@ def build_rt_workout_plan(*, duration_scale: float = 1.0) -> AntWorkoutPlan:
         code="rapid_tracking_workout",
         title="Rapid Tracking Workout (90m)",
         description=(
-            "Standard 90-minute Rapid Tracking workout with typed reflection, focused lock and handoff anchors, "
+            "Standard 90-minute Rapid Tracking workout with focused lock and handoff anchors, "
             "terrain and capture work, mixed tempo rotation, and a final pressure run."
         ),
         notes=(
-            "Typed reflections and block setup screens do not count toward the 90-minute drill clock.",
+            "Block setup screens do not count toward the 90-minute drill clock.",
             "Every block reuses the live Rapid Tracking scene, capture box, and real HOTAS or keyboard capture controls.",
             "Tracking windows remain the primary accuracy metric, and block score combines tracking score with normalized capture points.",
         ),

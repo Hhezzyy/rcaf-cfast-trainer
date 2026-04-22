@@ -104,11 +104,11 @@ def build_sa_workout_plan(*, duration_scale: float = 1.0) -> AntWorkoutPlan:
         code="situational_awareness_workout",
         title="Situational Awareness Workout (90m)",
         description=(
-            "Standard 90-minute Situational Awareness workout with typed reflection, sparse-picture anchors, "
+            "Standard 90-minute Situational Awareness workout with sparse-picture anchors, "
             "report and route correlation, family and query switching, and a final full-pressure hidden-state run."
         ),
         notes=(
-            "Typed reflections and block setup screens do not count toward the 90-minute drill clock.",
+            "Block setup screens do not count toward the 90-minute drill clock.",
             "Every block reuses the live continuous Situational Awareness screen with the incoming bar, flashing status panel, radio chatter, and direct-response queries.",
             "Controls stay the live model throughout: click or type grid cells, then answer choice prompts with click or 1-5.",
         ),

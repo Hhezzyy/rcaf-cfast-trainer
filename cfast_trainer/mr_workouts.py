@@ -86,11 +86,11 @@ def build_mr_workout_plan(*, duration_scale: float = 1.0) -> AntWorkoutPlan:
         code="math_reasoning_workout",
         title="Mathematics Reasoning Workout (90m)",
         description=(
-            "Standard 90-minute Mathematics Reasoning workout with typed reflection, extraction and setup warm-ups, "
+            "Standard 90-minute Mathematics Reasoning workout with extraction and setup warm-ups, "
             "typed solve blocks, and late multiple-choice pressure work."
         ),
         notes=(
-            "Typed reflections and block setup screens do not count toward the 90-minute drill clock.",
+            "Block setup screens do not count toward the 90-minute drill clock.",
             "Warm-up and core blocks stay typed; the late blocks switch to the real multiple-choice Mathematics Reasoning format.",
             "The extraction block is about finding the right values first, not solving too early.",
         ),

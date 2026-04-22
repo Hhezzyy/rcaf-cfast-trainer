@@ -29,7 +29,7 @@ def _build_small_abd_workout_plan() -> AntWorkoutPlan:
         code="angles_bearings_degrees_workout",
         title="ABD Workout Smoke",
         description="Short deterministic workout for tests.",
-        notes=("Reflections are untimed.",),
+        notes=("Block setup is untimed.",),
         blocks=(
             AntWorkoutBlockPlan(
                 block_id="anchors",
@@ -77,10 +77,6 @@ def _complete_small_abd_workout(clock: FakeClock) -> AntWorkoutSession:
 
     assert session.stage is AntWorkoutStage.INTRO
     session.activate()
-    session.append_text("Train the eye")
-    session.activate()
-    session.append_text("Reset after misses")
-    session.activate()
 
     assert session.stage is AntWorkoutStage.BLOCK_SETUP
     session.activate()
@@ -96,10 +92,8 @@ def _complete_small_abd_workout(clock: FakeClock) -> AntWorkoutSession:
 
     assert session.stage is AntWorkoutStage.BLOCK_RESULTS
     session.activate()
-    assert session.stage is AntWorkoutStage.POST_REFLECTION
-    session.append_text("Bearings were slower than angles")
+    assert session.stage is AntWorkoutStage.RESULTS
     session.activate()
-    session.append_text("Find north first")
     session.activate()
 
     assert session.stage is AntWorkoutStage.RESULTS
@@ -119,7 +113,7 @@ def test_abd_workout_session_runs_typed_and_mc_blocks() -> None:
     assert len(session.events()) == 2
 
 
-def test_abd_workout_attempt_result_omits_reflection_metrics() -> None:
+def test_abd_workout_attempt_result_omits_setup_metrics() -> None:
     clock = FakeClock()
     session = _complete_small_abd_workout(clock)
     result = attempt_result_from_engine(session, test_code="angles_bearings_degrees_workout")

@@ -2838,6 +2838,7 @@ class _SaAssetSeed:
     instructed_destination: str
     actual_destination: str
     task_text: str
+    movement_mode: str = "linear"
 
 
 @dataclass(frozen=True, slots=True)
@@ -2904,6 +2905,7 @@ class _SaLiveAssetState:
     instructed_destination: str
     actual_destination: str
     task_text: str
+    movement_mode: str = "linear"
     last_report_text: str = ""
     last_report_grid: str = ""
     last_report_subject: str = ""
@@ -2926,11 +2928,24 @@ class _SaLiveAssetState:
             instructed_destination=self.instructed_destination,
             actual_destination=self.actual_destination,
             task_text=self.task_text,
+            movement_mode=self.movement_mode,
             last_report_text=self.last_report_text,
             last_report_grid=self.last_report_grid,
             last_report_subject=self.last_report_subject,
             last_report_variation_index=self.last_report_variation_index,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class _SaFrozenContact:
+    callsign: str
+    spoken_callsign: str
+    allegiance: str
+    asset_type: str
+    x: float
+    y: float
+    heading: str
+    destination_cell: str
 
 
 @dataclass(slots=True)
@@ -3356,6 +3371,18 @@ class _SituationalAwarenessScenarioGenerator:
             "Intercept now",
             "Hold position",
         )
+        movement_modes = ["linear"] * track_count
+        motion_candidates = list(range(1, track_count))
+        if track_count >= 3 and motion_candidates:
+            stationary_idx = int(self._rng.choice(tuple(motion_candidates)))
+            movement_modes[stationary_idx] = "stationary"
+            remaining = [idx for idx in motion_candidates if idx != stationary_idx]
+            if remaining:
+                direct_idx = int(self._rng.choice(tuple(remaining)))
+                movement_modes[direct_idx] = "direct_to_target"
+                remaining = [idx for idx in remaining if idx != direct_idx]
+                if track_count >= 5 and remaining:
+                    movement_modes[int(self._rng.choice(tuple(remaining)))] = "direct_to_target"
         seeds: list[_SaAssetSeed] = []
         for idx in range(track_count):
             display_callsign, spoken_callsign = callsigns[idx]
@@ -3393,6 +3420,7 @@ class _SituationalAwarenessScenarioGenerator:
                     instructed_destination=inst,
                     actual_destination=act,
                     task_text=tasks[idx % len(tasks)],
+                    movement_mode=movement_modes[idx],
                 )
             )
 
@@ -3649,6 +3677,8 @@ class SituationalAwarenessTest:
         self._query_slot_cursor = 0
         self._current_query: _SaActiveQueryState | None = None
         self._live_assets: dict[str, _SaLiveAssetState] = {}
+        self._retired_callsigns: set[str] = set()
+        self._active_query_frozen_contact: _SaFrozenContact | None = None
         self._visible_contacts: dict[str, _SaVisibleContactState] = {}
         self._cue_card_state: _SaCueCardState | None = None
         self._info_panel_state: _SaInfoPanelState | None = None
@@ -3783,7 +3813,7 @@ class SituationalAwarenessTest:
             self._phase = Phase.RESULTS
             self._scenario_plan = None
             self._current_segment = None
-            self._current_query = None
+            self._clear_active_query()
 
     def submit_answer(self, raw: str) -> bool:
         if self._phase not in (Phase.PRACTICE, Phase.SCORED):
@@ -3805,7 +3835,7 @@ class SituationalAwarenessTest:
                 if event.is_correct
                 else f"Incorrect. Correct answer: {expected}."
             )
-        self._current_query = None
+        self._clear_active_query()
         return True
 
     def time_remaining_s(self) -> float | None:
@@ -3917,7 +3947,7 @@ class SituationalAwarenessTest:
             self._phase = Phase.PRACTICE_DONE if is_practice else Phase.RESULTS
             self._scenario_plan = None
             self._current_segment = None
-            self._current_query = None
+            self._clear_active_query()
             return
         self._practice_feedback = None
         self._scenario_index = self._active_segment_index + 1
@@ -3935,7 +3965,7 @@ class SituationalAwarenessTest:
             self._phase = Phase.RESULTS
             self._scenario_plan = None
             self._current_segment = None
-            self._current_query = None
+            self._clear_active_query()
             return
         self._practice_feedback = None
         remaining_rounds = max(1, self._scenario_total - self._scenario_index)
@@ -3976,7 +4006,7 @@ class SituationalAwarenessTest:
         self._update_cursor = 0
         self._contact_sweep_cursor = 0
         self._query_slot_cursor = 0
-        self._current_query = None
+        self._clear_active_query()
         self._live_assets = {
             seed.callsign: _SaLiveAssetState(
                 index=seed.index,
@@ -3994,9 +4024,12 @@ class SituationalAwarenessTest:
                 instructed_destination=seed.instructed_destination,
                 actual_destination=seed.actual_destination,
                 task_text=seed.task_text,
+                movement_mode=seed.movement_mode,
             )
             for seed in self._scenario_plan.asset_seeds
         }
+        self._retired_callsigns = set()
+        self._active_query_frozen_contact = None
         self._visible_contacts = {}
         self._cue_card_state = None
         self._info_panel_state = None
@@ -4025,7 +4058,7 @@ class SituationalAwarenessTest:
     def _end_current_scenario(self) -> None:
         if self._current_query is not None:
             self._record_query_result(raw="", is_timeout=True)
-            self._current_query = None
+            self._clear_active_query()
 
         if self._custom_segment_layout:
             self._active_segment_index += 1
@@ -4059,17 +4092,66 @@ class SituationalAwarenessTest:
                 return
             self._begin_scored_scenario()
 
+    def _clear_active_query(self) -> None:
+        self._current_query = None
+        self._active_query_frozen_contact = None
+
+    def _is_callsign_retired(self, callsign: str | None) -> bool:
+        return callsign is not None and str(callsign) in self._retired_callsigns
+
+    def _text_mentions_retired_callsign(self, text: str) -> bool:
+        line = str(text)
+        return any(callsign in line for callsign in self._retired_callsigns)
+
+    def _retire_callsign(self, callsign: str, *, tick: int) -> None:
+        token = str(callsign)
+        if token == "":
+            return
+        self._retired_callsigns.add(token)
+        self._visible_contacts.pop(token, None)
+        if self._cue_card_state is not None and self._cue_card_state.callsign == token:
+            self._cue_card_state = None
+        if self._info_panel_state is not None and self._info_panel_state.callsign == token:
+            self._focus_next_info_panel_asset(tick=tick, exclude_callsign=token)
+        self._radio_log = [
+            (line_tick, line)
+            for line_tick, line in self._radio_log
+            if token not in str(line)
+        ]
+        if self._top_strip_state is not None and token in self._top_strip_state.text:
+            self._top_strip_state = None
+        if any(token in line for line in self._announcement_lines):
+            self._clear_announcement()
+
+    def _capture_frozen_contact(self, callsign: str) -> _SaFrozenContact | None:
+        asset = self._live_assets.get(str(callsign))
+        if asset is None:
+            return None
+        return _SaFrozenContact(
+            callsign=asset.callsign,
+            spoken_callsign=asset.spoken_callsign,
+            allegiance=asset.allegiance,
+            asset_type=asset.asset_type,
+            x=float(asset.x),
+            y=float(asset.y),
+            heading=asset.heading,
+            destination_cell=asset.actual_destination,
+        )
+
     def _advance_one_tick(self, tick: int) -> None:
         if self._scenario_plan is None:
             return
         if self._current_query is not None and tick >= int(self._current_query.expires_at_s):
             self._record_query_result(raw="", is_timeout=True)
-            self._current_query = None
+            self._clear_active_query()
 
         for asset in self._live_assets.values():
-            dx, dy = _HEADING_VECTORS.get(asset.heading, (0, 0))
-            asset.x = max(0.0, min(float(_SA_GRID_SIZE - 1), asset.x + (dx * asset.speed_cells_per_min / 60.0)))
-            asset.y = max(0.0, min(float(_SA_GRID_SIZE - 1), asset.y + (dy * asset.speed_cells_per_min / 60.0)))
+            if (
+                self._active_query_frozen_contact is not None
+                and asset.callsign == self._active_query_frozen_contact.callsign
+            ):
+                continue
+            self._advance_asset_position(asset)
 
         while (
             self._update_cursor < len(self._scenario_plan.updates)
@@ -4090,6 +4172,38 @@ class SituationalAwarenessTest:
             if int(slot.at_s) <= int(tick):
                 self._query_slot_cursor += 1
                 self._spawn_query(slot=slot, tick=tick)
+
+    @staticmethod
+    def _advance_asset_position(asset: _SaLiveAssetState) -> None:
+        mode = str(asset.movement_mode)
+        if mode == "stationary":
+            return
+        step = max(0.0, float(asset.speed_cells_per_min) / 60.0)
+        if step <= 0.0:
+            return
+        if mode == "direct_to_target":
+            target = cell_xy_from_label(asset.actual_destination)
+            if target is not None:
+                dx = float(target[0]) - float(asset.x)
+                dy = float(target[1]) - float(asset.y)
+                distance = (dx * dx + dy * dy) ** 0.5
+                if distance <= step:
+                    asset.x = float(target[0])
+                    asset.y = float(target[1])
+                elif distance > 0.0:
+                    asset.heading = _heading_from_delta(dx, dy)
+                    asset.x = max(
+                        0.0,
+                        min(float(_SA_GRID_SIZE - 1), asset.x + ((dx / distance) * step)),
+                    )
+                    asset.y = max(
+                        0.0,
+                        min(float(_SA_GRID_SIZE - 1), asset.y + ((dy / distance) * step)),
+                    )
+                return
+        dx, dy = _HEADING_VECTORS.get(asset.heading, (0, 0))
+        asset.x = max(0.0, min(float(_SA_GRID_SIZE - 1), asset.x + (dx * step)))
+        asset.y = max(0.0, min(float(_SA_GRID_SIZE - 1), asset.y + (dy * step)))
 
     def _apply_update_to_state(self, asset: _SaLiveAssetState, update: _SaUpdateEvent) -> None:
         if update.heading is not None:
@@ -4121,6 +4235,8 @@ class SituationalAwarenessTest:
         if asset is None:
             return
         self._apply_update_to_state(asset, update)
+        if self._is_callsign_retired(asset.callsign) or self._text_mentions_retired_callsign(update.line):
+            return
         if update.modality in {"audio_plus_visual", "visual_only"}:
             if "pictorial" in self._active_channels():
                 self._reveal_contact(asset.callsign, tick=tick)
@@ -4159,6 +4275,8 @@ class SituationalAwarenessTest:
         return max(2, int(round(5.0 / max(0.65, float(profile.pressure_scale)))))
 
     def _reveal_contact(self, callsign: str, *, tick: int) -> None:
+        if self._is_callsign_retired(callsign):
+            return
         self._visible_contacts[callsign] = _SaVisibleContactState(
             callsign=callsign,
             shown_at_s=int(tick),
@@ -4179,6 +4297,8 @@ class SituationalAwarenessTest:
     ) -> None:
         if not self._can_show_info_panel():
             return
+        if self._is_callsign_retired(callsign):
+            return
         if callsign not in self._live_assets:
             return
         existing = self._info_panel_state
@@ -4195,7 +4315,7 @@ class SituationalAwarenessTest:
 
     def _focus_next_info_panel_asset(self, *, tick: int, exclude_callsign: str) -> None:
         for asset in sorted(self._live_assets.values(), key=lambda item: item.index):
-            if asset.callsign == exclude_callsign:
+            if asset.callsign == exclude_callsign or self._is_callsign_retired(asset.callsign):
                 continue
             self._set_info_panel_focus(
                 asset.callsign,
@@ -4207,6 +4327,8 @@ class SituationalAwarenessTest:
         self._info_panel_state = None
 
     def _show_cue_card(self, callsign: str, *, tick: int) -> None:
+        if self._is_callsign_retired(callsign):
+            return
         self._cue_card_state = _SaCueCardState(
             callsign=callsign,
             shown_at_s=int(tick),
@@ -4221,6 +4343,8 @@ class SituationalAwarenessTest:
 
     def _show_top_strip(self, text: str, *, tick: int) -> None:
         if str(text).strip() == "":
+            return
+        if self._text_mentions_retired_callsign(str(text)):
             return
         self._top_strip_state = _SaTopStripState(
             text=str(text),
@@ -4243,12 +4367,10 @@ class SituationalAwarenessTest:
                 int(self._scenario_plan.duration_s),
             )
         query = self._build_query(slot=slot, tick=tick, expires_at_s=expires_at_s)
-        if not self._current_profile().allow_visible_answers and query.subject_callsign is not None:
-            self._visible_contacts.pop(query.subject_callsign, None)
-            if self._cue_card_state is not None and self._cue_card_state.callsign == query.subject_callsign:
-                self._cue_card_state = None
-            if self._info_panel_state is not None and self._info_panel_state.callsign == query.subject_callsign:
-                self._focus_next_info_panel_asset(tick=tick, exclude_callsign=query.subject_callsign)
+        self._active_query_frozen_contact = None
+        if query.subject_callsign is not None:
+            self._active_query_frozen_contact = self._capture_frozen_contact(query.subject_callsign)
+            self._retire_callsign(query.subject_callsign, tick=tick)
         self._current_query = query
         self._clear_announcement()
 
@@ -4289,10 +4411,19 @@ class SituationalAwarenessTest:
 
     def _memory_candidates(self) -> list[_SaLiveAssetState]:
         assets = sorted(self._live_assets.values(), key=lambda item: item.index)
+        available = self._query_asset_pool(assets)
         if self._current_profile().allow_visible_answers:
-            return assets
-        hidden = [asset for asset in assets if not self._is_contact_visible(asset.callsign)]
-        return hidden or assets
+            return available
+        hidden = [asset for asset in available if not self._is_contact_visible(asset.callsign)]
+        return hidden or available
+
+    def _query_asset_pool(
+        self,
+        candidates: Sequence[_SaLiveAssetState],
+    ) -> list[_SaLiveAssetState]:
+        ordered = list(candidates)
+        available = [asset for asset in ordered if not self._is_callsign_retired(asset.callsign)]
+        return available or ordered
 
     def _is_contact_visible(self, callsign: str) -> bool:
         state = self._visible_contacts.get(callsign)
@@ -4304,7 +4435,7 @@ class SituationalAwarenessTest:
         *,
         preferred_callsign: str | None = None,
     ) -> _SaLiveAssetState:
-        ordered = list(candidates)
+        ordered = self._query_asset_pool(candidates)
         if preferred_callsign is not None:
             for asset in ordered:
                 if asset.callsign == preferred_callsign:
@@ -4495,9 +4626,17 @@ class SituationalAwarenessTest:
         tick: int,
         expires_at_s: int,
     ) -> _SaActiveQueryState | None:
-        reporter = self._live_assets.get(str(self._scenario_context("reporter_callsign")))
-        if reporter is None or reporter.last_report_grid == "":
+        reporters = [
+            asset
+            for asset in sorted(self._live_assets.values(), key=lambda item: item.index)
+            if asset.last_report_grid != ""
+        ]
+        if not reporters:
             return None
+        reporter = self._pick_asset_for_query(
+            reporters,
+            preferred_callsign=self._scenario_context("reporter_callsign"),
+        )
         return _SaActiveQueryState(
             query_id=query_id,
             asked_at_s=tick,
@@ -4516,9 +4655,17 @@ class SituationalAwarenessTest:
         tick: int,
         expires_at_s: int,
     ) -> _SaActiveQueryState | None:
-        reporter = self._live_assets.get(str(self._scenario_context("reporter_callsign")))
-        if reporter is None or reporter.last_report_variation_index <= 0:
+        reporters = [
+            asset
+            for asset in sorted(self._live_assets.values(), key=lambda item: item.index)
+            if asset.last_report_variation_index > 0
+        ]
+        if not reporters:
             return None
+        reporter = self._pick_asset_for_query(
+            reporters,
+            preferred_callsign=self._scenario_context("reporter_callsign"),
+        )
         choices, correct = self._fixed_choice_card(
             query_id=query_id,
             options=_SA_REPORT_VARIATIONS,
@@ -4543,9 +4690,13 @@ class SituationalAwarenessTest:
         tick: int,
         expires_at_s: int,
     ) -> _SaActiveQueryState | None:
-        lead = self._live_assets.get(str(self._scenario_context("lead_callsign")))
-        if lead is None:
+        assets = sorted(self._live_assets.values(), key=lambda item: item.index)
+        if not assets:
             return None
+        lead = self._pick_asset_for_query(
+            assets,
+            preferred_callsign=self._scenario_context("lead_callsign"),
+        )
         choices, correct = self._fixed_choice_card(
             query_id=query_id,
             options=_SA_FIXED_RULE_ACTIONS,
@@ -4570,14 +4721,23 @@ class SituationalAwarenessTest:
         tick: int,
         expires_at_s: int,
     ) -> _SaActiveQueryState | None:
-        lead = self._live_assets.get(str(self._scenario_context("lead_callsign")))
-        threat = self._live_assets.get(str(self._scenario_context("threat_callsign")))
-        if lead is None or threat is None:
+        assets = sorted(self._live_assets.values(), key=lambda item: item.index)
+        if len(assets) < 2:
             return None
+        lead = self._pick_asset_for_query(
+            assets,
+            preferred_callsign=self._scenario_context("lead_callsign"),
+        )
+        threat_candidates = [asset for asset in assets if asset.callsign != lead.callsign]
+        threat = self._pick_asset_for_query(
+            threat_candidates,
+            preferred_callsign=self._scenario_context("threat_callsign"),
+        )
+        direction = _sa_direction_from_delta(threat.x - lead.x, threat.y - lead.y)
         choices, correct = self._fixed_choice_card(
             query_id=query_id,
             options=_SA_FIXED_DIRECTION_OPTIONS,
-            correct_text=str(self._scenario_context("intercept_direction")),
+            correct_text=direction,
         )
         return _SaActiveQueryState(
             query_id=query_id,
@@ -4598,12 +4758,21 @@ class SituationalAwarenessTest:
         tick: int,
         expires_at_s: int,
     ) -> _SaActiveQueryState | None:
-        subject_callsign = str(self._scenario_context("lead_callsign"))
-        all_callsigns = tuple(asset.callsign for asset in sorted(self._live_assets.values(), key=lambda item: item.index))
-        if len(all_callsigns) < 2:
+        assets = sorted(self._live_assets.values(), key=lambda item: item.index)
+        if len(assets) < 2:
             return None
-        options = list(all_callsigns[:5])
-        correct_text = str(self._scenario_context("assist_correct"))
+        subject = self._pick_asset_for_query(
+            assets,
+            preferred_callsign=self._scenario_context("lead_callsign"),
+        )
+        candidate_assets = self._query_asset_pool(
+            [asset for asset in assets if asset.callsign != subject.callsign]
+        )
+        if not candidate_assets:
+            return None
+        all_callsigns = tuple(asset.callsign for asset in candidate_assets)
+        options = list((subject.callsign,) + all_callsigns[:4])
+        correct_text = self._pick_assist_callsign_live(subject=subject, candidates=candidate_assets)
         if correct_text not in options:
             options[-1] = correct_text
         choices, correct = self._fixed_choice_card(
@@ -4617,11 +4786,27 @@ class SituationalAwarenessTest:
             expires_at_s=expires_at_s,
             kind=SituationalAwarenessQueryKind.ASSIST_SELECTION,
             answer_mode=SituationalAwarenessAnswerMode.CHOICE,
-            prompt=f"Which callsign should assist {subject_callsign} given the tactical picture?",
+            prompt=f"Which callsign should assist {subject.callsign} given the tactical picture?",
             correct_answer_token=correct,
-            subject_callsign=subject_callsign,
+            subject_callsign=subject.callsign,
             answer_choices=choices,
         )
+
+    @staticmethod
+    def _pick_assist_callsign_live(
+        *,
+        subject: _SaLiveAssetState,
+        candidates: Sequence[_SaLiveAssetState],
+    ) -> str:
+        preferred = [asset for asset in candidates if asset.allegiance == "friendly"]
+        pool = preferred or list(candidates)
+        if not pool:
+            return subject.callsign
+        best = min(
+            pool,
+            key=lambda item: _sa_distance((item.x, item.y), (subject.x, subject.y)),
+        )
+        return best.callsign
 
     def _fixed_choice_card(
         self,
@@ -4780,13 +4965,36 @@ class SituationalAwarenessTest:
         return int(self._seed + phase_offset + (self._scenario_index * 7_919))
 
     def _asset_eta_clock_text(self, asset: _SaLiveAssetState) -> str:
+        eta_s = self._seconds_until_destination(asset)
+        if eta_s is None:
+            return "--"
+        return _clock_text(int(self._scenario_clock_s()) + eta_s)
+
+    def _seconds_until_destination(self, asset: _SaLiveAssetState) -> int | None:
         target = cell_xy_from_label(asset.actual_destination)
         if target is None:
-            return "--"
-        distance = _sa_distance((asset.x, asset.y), (float(target[0]), float(target[1])))
-        cells_per_second = max(0.05, float(asset.speed_cells_per_min) / 60.0)
-        eta_s = max(0, int(round(distance / cells_per_second)))
-        return _clock_text(int(self._scenario_clock_s()) + eta_s)
+            return None
+        target_xy = (float(target[0]), float(target[1]))
+        if _sa_distance((asset.x, asset.y), target_xy) <= 0.05:
+            return 0
+        if asset.movement_mode == "stationary":
+            return None
+        probe = asset.copy()
+        previous_distance = _sa_distance((probe.x, probe.y), target_xy)
+        stale_steps = 0
+        for second in range(1, 601):
+            self._advance_asset_position(probe)
+            distance = _sa_distance((probe.x, probe.y), target_xy)
+            if distance <= 0.05:
+                return second
+            if distance >= previous_distance - 1e-6:
+                stale_steps += 1
+                if stale_steps >= 6:
+                    return None
+            else:
+                stale_steps = 0
+            previous_distance = distance
+        return None
 
     @staticmethod
     def _asset_comms_text(asset: _SaLiveAssetState) -> str:
@@ -4803,7 +5011,11 @@ class SituationalAwarenessTest:
 
     def _radio_log_lines(self, *, scenario_elapsed_s: float) -> tuple[str, ...]:
         _ = scenario_elapsed_s
-        return tuple(line for _tick, line in self._radio_log[-4:])
+        return tuple(
+            line
+            for _tick, line in self._radio_log[-4:]
+            if not self._text_mentions_retired_callsign(line)
+        )
 
     def _payload(self) -> SituationalAwarenessPayload:
         assert self._scenario_plan is not None
@@ -4815,6 +5027,8 @@ class SituationalAwarenessTest:
         ttl = max(1.0, float(self._contact_ttl_s()))
         for state in list(self._visible_contacts.values()):
             if int(state.visible_until_s) <= int(scenario_elapsed_s):
+                continue
+            if self._is_callsign_retired(state.callsign):
                 continue
             asset = self._live_assets.get(state.callsign)
             if asset is None:
@@ -4834,13 +5048,35 @@ class SituationalAwarenessTest:
                     fade=fade,
                 )
             )
+        frozen = self._active_query_frozen_contact
+        if self._current_query is not None and frozen is not None:
+            contacts = [contact for contact in contacts if contact.callsign != frozen.callsign]
+            contacts.append(
+                SituationalAwarenessVisibleContact(
+                    callsign=frozen.callsign,
+                    spoken_callsign=frozen.spoken_callsign,
+                    allegiance=frozen.allegiance,
+                    asset_type=frozen.asset_type,
+                    x=float(frozen.x),
+                    y=float(frozen.y),
+                    cell_label=cell_label_from_xy(frozen.x, frozen.y),
+                    heading=frozen.heading,
+                    destination_cell=frozen.destination_cell,
+                    fade=1.0,
+                )
+            )
         contacts.sort(key=lambda item: item.callsign)
 
         cue_card = None
         if self._can_show_info_panel():
             focus_callsign = self._info_panel_state.callsign if self._info_panel_state is not None else None
+            if focus_callsign is not None and self._is_callsign_retired(focus_callsign):
+                focus_callsign = None
             if focus_callsign is None and self._live_assets:
-                focus_callsign = sorted(self._live_assets.values(), key=lambda item: item.index)[0].callsign
+                candidates = self._query_asset_pool(
+                    sorted(self._live_assets.values(), key=lambda item: item.index)
+                )
+                focus_callsign = candidates[0].callsign if candidates else None
             asset = self._live_assets.get(focus_callsign) if focus_callsign is not None else None
             if asset is not None:
                 flash_base = 0.56

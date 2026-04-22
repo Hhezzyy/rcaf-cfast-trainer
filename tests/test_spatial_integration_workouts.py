@@ -34,7 +34,7 @@ def _build_small_si_workout_plan() -> AntWorkoutPlan:
         code="spatial_integration_workout",
         title="Spatial Integration Workout Smoke",
         description="Short deterministic SI workout for tests.",
-        notes=("Reflections are untimed.",),
+        notes=("Block setup is untimed.",),
         blocks=(
             AntWorkoutBlockPlan(
                 block_id="landmark-anchor",
@@ -87,9 +87,7 @@ def _complete_small_si_workout(clock: FakeClock) -> AntWorkoutSession:
         starting_level=5,
     )
     session.activate()
-    session.append_text("build one scene at a time")
     session.activate()
-    session.append_text("reset after a bad viewpoint shift")
     session.activate()
     session.activate()
     _run_current_block(session, clock)
@@ -100,10 +98,8 @@ def _complete_small_si_workout(clock: FakeClock) -> AntWorkoutSession:
     _run_current_block(session, clock)
     assert session.stage is AntWorkoutStage.BLOCK_RESULTS
     session.activate()
-    assert session.stage is AntWorkoutStage.POST_REFLECTION
-    session.append_text("aircraft transition was the hardest reset")
+    assert session.stage is AntWorkoutStage.RESULTS
     session.activate()
-    session.append_text("anchor the hills before the object")
     session.activate()
     assert session.stage is AntWorkoutStage.RESULTS
     return session

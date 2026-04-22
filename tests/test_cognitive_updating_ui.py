@@ -195,7 +195,7 @@ def test_cognitive_updating_workout_block_uses_real_runtime_screen() -> None:
             code="cognitive_updating_workout",
             title="CU Workout UI",
             description="UI regression workout.",
-            notes=("Untimed reflections.",),
+            notes=("Untimed block setup.",),
             blocks=(
                 AntWorkoutBlockPlan(
                     block_id="mixed",
@@ -210,9 +210,7 @@ def test_cognitive_updating_workout_block_uses_real_runtime_screen() -> None:
         )
         session = AntWorkoutSession(clock=clock, seed=606, plan=plan, starting_level=5)
         session.activate()
-        session.append_text("scan")
         session.activate()
-        session.append_text("code")
         session.activate()
         session.activate()
 
@@ -348,7 +346,7 @@ def test_cognitive_updating_messages_page_removes_stale_sensor_line_after_sensor
         pygame.quit()
 
 
-def test_cognitive_updating_controls_page_shows_current_code_and_rollover_timer() -> None:
+def test_cognitive_updating_comms_code_status_moves_from_controls_page_to_messages_page() -> None:
     clock = _FakeClock()
     payload = replace(
         _sample_payload(active_domains=("controls", "state_code"), focus_label="Controls"),
@@ -366,14 +364,14 @@ def test_cognitive_updating_controls_page_shows_current_code_and_rollover_timer(
         captured = _install_recording_fonts(app, screen)
 
         screen.render(surface)
-        screen._cognitive_updating_upper_tab_index = 2
+        screen._cognitive_updating_upper_tab_index = 0
         screen._cognitive_updating_lower_tab_index = 2
         captured.clear()
         screen.render(surface)
 
         rendered = "\n".join(captured)
-        assert f"Current code: {payload.comms_code}" in rendered
-        assert "Code changes in: 00:30" in rendered
+        assert rendered.count(f"Current code: {payload.comms_code}") == 1
+        assert rendered.count("Code changes in: 00:30") == 1
 
         runtime = screen._cognitive_updating_runtime
         assert runtime is not None
@@ -382,8 +380,8 @@ def test_cognitive_updating_controls_page_shows_current_code_and_rollover_timer(
         captured.clear()
         screen.render(surface)
         rendered_pending = "\n".join(captured)
-        assert f"Current code: {payload.comms_code}" in rendered_pending
-        assert "Code changes in: 00:01" in rendered_pending
+        assert rendered_pending.count(f"Current code: {payload.comms_code}") == 1
+        assert rendered_pending.count("Code changes in: 00:01") == 1
 
         clock.advance(0.5)
         captured.clear()
@@ -391,8 +389,8 @@ def test_cognitive_updating_controls_page_shows_current_code_and_rollover_timer(
         rendered_rolled = "\n".join(captured)
         rolled = runtime.snapshot()
         assert rolled.current_comms_code != payload.comms_code
-        assert f"Current code: {rolled.current_comms_code}" in rendered_rolled
-        assert "Code changes in: 00:30" in rendered_rolled
+        assert rendered_rolled.count(f"Current code: {rolled.current_comms_code}") == 1
+        assert rendered_rolled.count("Code changes in: 00:30") == 1
     finally:
         pygame.quit()
 
@@ -424,6 +422,8 @@ def test_cognitive_updating_upcoming_comms_code_renders_only_on_messages_page() 
         screen.render(surface)
         rendered_messages = "\n".join(captured)
         assert "New Comms Code:" in rendered_messages
+        assert f"Current code: {payload.comms_code}" in rendered_messages
+        assert "Code changes in: 00:05" in rendered_messages
 
         screen._cognitive_updating_upper_tab_index = 2
         screen._cognitive_updating_lower_tab_index = 2
@@ -431,7 +431,7 @@ def test_cognitive_updating_upcoming_comms_code_renders_only_on_messages_page() 
         screen.render(surface)
         rendered_controls = "\n".join(captured)
         assert "New Comms Code:" not in rendered_controls
-        assert f"Current code: {payload.comms_code}" in rendered_controls
-        assert "Code changes in: 00:05" in rendered_controls
+        assert "Current code:" not in rendered_controls
+        assert "Code changes in:" not in rendered_controls
     finally:
         pygame.quit()

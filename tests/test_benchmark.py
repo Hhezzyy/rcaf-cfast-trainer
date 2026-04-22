@@ -3,13 +3,21 @@ from __future__ import annotations
 import os
 import re
 import sqlite3
+import sys
 from dataclasses import dataclass
+from importlib.machinery import ModuleSpec
+from types import ModuleType
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 
 import pygame
 import pytest
+
+if "moderngl" not in sys.modules:
+    moderngl_stub = ModuleType("moderngl")
+    moderngl_stub.__spec__ = ModuleSpec("moderngl", loader=None)
+    sys.modules["moderngl"] = moderngl_stub
 
 from cfast_trainer.adaptive_difficulty import difficulty_ratio_for_level
 from cfast_trainer.app import (
@@ -1010,6 +1018,7 @@ def test_benchmark_probe_overlay_hides_timer_text() -> None:
         screen._render_probe_overlay(surface, session.snapshot())
 
         assert not any("Probe time" in text or "Battery remaining" in text for text in captured)
+        assert "Timers hidden for runtime sessions." not in captured
         assert not any(re.search(r"\b\d{2}:\d{2}\b", text) for text in captured)
         assert not any(text.startswith("Benchmark ") for text in captured)
         assert not any(text.startswith("Attempted ") for text in captured)

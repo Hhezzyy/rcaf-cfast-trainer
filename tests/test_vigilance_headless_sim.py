@@ -86,6 +86,6 @@ def test_headless_scripted_run_produces_expected_summary() -> None:
     assert summary.correct == 2
     assert summary.accuracy == pytest.approx(1.0)
     assert summary.points == 4
-    assert summary.missed == 2
+    assert summary.missed == 1
     assert summary.mean_capture_time_s is not None
-    assert summary.mean_capture_time_s == pytest.approx(0.03225818240538203)
+    assert summary.mean_capture_time_s == pytest.approx(0.029623139224990158)

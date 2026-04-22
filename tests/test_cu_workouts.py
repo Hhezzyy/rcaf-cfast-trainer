@@ -29,7 +29,7 @@ def _build_small_cu_workout_plan() -> AntWorkoutPlan:
         code="cognitive_updating_workout",
         title="CU Workout Smoke",
         description="Short deterministic workout for tests.",
-        notes=("Reflections are untimed.",),
+        notes=("Block setup is untimed.",),
         blocks=(
             AntWorkoutBlockPlan(
                 block_id="controls",
@@ -72,9 +72,7 @@ def _complete_small_cu_workout(clock: FakeClock) -> AntWorkoutSession:
         starting_level=5,
     )
     session.activate()
-    session.append_text("stay ahead of the tabs")
     session.activate()
-    session.append_text("keep the state code clean")
     session.activate()
     session.activate()
     _finish_current_block_with_one_correct_answer(session, clock)
@@ -85,10 +83,8 @@ def _complete_small_cu_workout(clock: FakeClock) -> AntWorkoutSession:
     _finish_current_block_with_one_correct_answer(session, clock)
     assert session.stage is AntWorkoutStage.BLOCK_RESULTS
     session.activate()
-    assert session.stage is AntWorkoutStage.POST_REFLECTION
-    session.append_text("controls stayed tidy")
+    assert session.stage is AntWorkoutStage.RESULTS
     session.activate()
-    session.append_text("mixed scan held up")
     session.activate()
     assert session.stage is AntWorkoutStage.RESULTS
     return session

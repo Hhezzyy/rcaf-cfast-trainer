@@ -90,7 +90,7 @@ def build_vig_workout_plan(*, duration_scale: float = 1.0) -> AntWorkoutPlan:
             "and a final full-board pressure run."
         ),
         notes=(
-            "Typed reflections and block setup screens do not count toward the 90-minute drill clock.",
+            "Block setup screens do not count toward the 90-minute drill clock.",
             "Every block keeps the real 9x9 Vigilance board, the normal symbol rarity and point values, and the standard row/column entry flow.",
             "Early blocks bias scan discipline and clean entry; later blocks only change pace and overlap density.",
         ),

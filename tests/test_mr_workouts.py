@@ -29,7 +29,7 @@ def _build_small_mr_workout_plan() -> AntWorkoutPlan:
         code="math_reasoning_workout",
         title="MR Workout Smoke",
         description="Short deterministic workout for tests.",
-        notes=("Reflections are untimed.",),
+        notes=("Block setup is untimed.",),
         blocks=(
             AntWorkoutBlockPlan(
                 block_id="extract",
@@ -72,9 +72,7 @@ def _complete_small_mr_workout(clock: FakeClock) -> AntWorkoutSession:
         starting_level=5,
     )
     session.activate()
-    session.append_text("Read the ask first")
     session.activate()
-    session.append_text("Do not chase filler")
     session.activate()
     session.activate()
     _finish_current_block_with_one_correct_answer(session, clock)
@@ -85,10 +83,8 @@ def _complete_small_mr_workout(clock: FakeClock) -> AntWorkoutSession:
     _finish_current_block_with_one_correct_answer(session, clock)
     assert session.stage is AntWorkoutStage.BLOCK_RESULTS
     session.activate()
-    assert session.stage is AntWorkoutStage.POST_REFLECTION
-    session.append_text("Averages got slow")
+    assert session.stage is AntWorkoutStage.RESULTS
     session.activate()
-    session.append_text("Keep units visible in my head")
     session.activate()
     assert session.stage is AntWorkoutStage.RESULTS
     return session

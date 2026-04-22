@@ -31,14 +31,6 @@ class FixedWingPygamePalette:
     outline: tuple[int, int, int] = (242, 246, 252)
 
 
-@dataclass(frozen=True, slots=True)
-class FixedWingPandaPalette:
-    body: tuple[float, float, float, float]
-    accent: tuple[float, float, float, float]
-    canopy: tuple[float, float, float, float]
-    engine: tuple[float, float, float, float]
-
-
 _DEFAULT_PYGAME_INSTRUMENT_PALETTE = FixedWingPygamePalette(
     body=(222, 66, 68),
     accent=(184, 34, 40),
@@ -46,7 +38,7 @@ _DEFAULT_PYGAME_INSTRUMENT_PALETTE = FixedWingPygamePalette(
     engine=(134, 18, 24),
     outline=(244, 248, 255),
 )
-_PANDA_FIXED_WING_MODEL_HPR_OFFSET_DEG = (0.0, 0.0, 0.0)
+_FIXED_WING_MODEL_HPR_OFFSET_DEG = (0.0, 0.0, 0.0)
 
 
 def instrument_card_pygame_palette() -> FixedWingPygamePalette:
@@ -75,32 +67,13 @@ def build_pygame_palette(
     )
 
 
-def build_panda_palette(
-    *,
-    body_color: tuple[float, float, float, float],
-    canopy_color: tuple[float, float, float, float] | None = None,
-    accent_color: tuple[float, float, float, float] | None = None,
-    engine_color: tuple[float, float, float, float] | None = None,
-) -> FixedWingPandaPalette:
-    alpha = float(body_color[3])
-    canopy = canopy_color or (0.90, 0.95, 1.0, max(0.78, alpha))
-    accent = accent_color or _scale_rgba(body_color, 0.76, alpha=alpha)
-    engine = engine_color or _scale_rgba(body_color, 0.58, alpha=alpha)
-    return FixedWingPandaPalette(
-        body=tuple(float(channel) for channel in body_color),
-        accent=tuple(float(channel) for channel in accent),
-        canopy=tuple(float(channel) for channel in canopy),
-        engine=tuple(float(channel) for channel in engine),
-    )
-
-
-def panda3d_fixed_wing_hpr(
+def fixed_wing_hpr(
     *,
     heading_deg: float,
     pitch_deg: float,
     roll_deg: float,
 ) -> tuple[float, float, float]:
-    offset_h, offset_p, offset_r = _PANDA_FIXED_WING_MODEL_HPR_OFFSET_DEG
+    offset_h, offset_p, offset_r = _FIXED_WING_MODEL_HPR_OFFSET_DEG
     return (
         float(heading_deg) + offset_h,
         float(pitch_deg) + offset_p,
@@ -108,13 +81,13 @@ def panda3d_fixed_wing_hpr(
     )
 
 
-def panda3d_fixed_wing_hpr_from_world_hpr(
+def fixed_wing_hpr_from_world_hpr(
     *,
     heading_deg: float,
     pitch_deg: float,
     roll_deg: float,
 ) -> tuple[float, float, float]:
-    return panda3d_fixed_wing_hpr(
+    return fixed_wing_hpr(
         heading_deg=float(heading_deg),
         pitch_deg=-float(pitch_deg),
         roll_deg=float(roll_deg),
@@ -162,14 +135,14 @@ def screen_heading_deg_from_world_tangent(
     return heading
 
 
-def panda3d_fixed_wing_hpr_from_screen_heading(
+def fixed_wing_hpr_from_screen_heading(
     *,
     screen_heading_deg: float,
     pitch_deg: float = 0.0,
     roll_deg: float = 0.0,
     camera_heading_deg: float = 0.0,
 ) -> tuple[float, float, float]:
-    return panda3d_fixed_wing_hpr(
+    return fixed_wing_hpr(
         heading_deg=fixed_wing_heading_from_screen_heading(screen_heading_deg)
         + float(camera_heading_deg),
         pitch_deg=float(pitch_deg),
@@ -177,18 +150,18 @@ def panda3d_fixed_wing_hpr_from_screen_heading(
     )
 
 
-def panda3d_fixed_wing_hpr_from_tangent(
+def fixed_wing_hpr_from_tangent(
     tangent: Point3,
     *,
     bank_deg: float = 0.0,
 ) -> tuple[float, float, float]:
-    return panda3d_fixed_wing_hpr_from_world_tangent(
+    return fixed_wing_hpr_from_world_tangent(
         tangent=tangent,
         roll_deg=float(bank_deg),
     )
 
 
-def panda3d_fixed_wing_hpr_from_world_tangent(
+def fixed_wing_hpr_from_world_tangent(
     tangent: Point3,
     *,
     roll_deg: float = 0.0,
@@ -198,7 +171,7 @@ def panda3d_fixed_wing_hpr_from_world_tangent(
         raise ValueError("world tangent must be non-zero")
 
     horiz = max(1e-6, math.sqrt((dx * dx) + (dy * dy)))
-    return panda3d_fixed_wing_hpr_from_world_hpr(
+    return fixed_wing_hpr_from_world_hpr(
         heading_deg=math.degrees(math.atan2(dx, dy)) % 360.0,
         pitch_deg=math.degrees(math.atan2(dz, horiz)),
         roll_deg=float(roll_deg),
@@ -493,60 +466,6 @@ def project_fixed_wing_point(
     return sx, sy, y
 
 
-def build_panda3d_fixed_wing_model(
-    *,
-    palette: FixedWingPandaPalette,
-    name: str = "fixed-wing",
-):
-    from panda3d.core import (
-        Geom,
-        GeomNode,
-        GeomTriangles,
-        GeomVertexData,
-        GeomVertexFormat,
-        GeomVertexWriter,
-        NodePath,
-        TransparencyAttrib,
-    )
-
-    role_colors = {
-        "body": palette.body,
-        "accent": palette.accent,
-        "canopy": palette.canopy,
-        "engine": palette.engine,
-    }
-
-    vdata = GeomVertexData(name, GeomVertexFormat.getV3n3c4(), Geom.UHStatic)
-    vertex_writer = GeomVertexWriter(vdata, "vertex")
-    normal_writer = GeomVertexWriter(vdata, "normal")
-    color_writer = GeomVertexWriter(vdata, "color")
-    triangles = GeomTriangles(Geom.UHStatic)
-
-    vertex_index = 0
-    for face in build_fixed_wing_mesh():
-        if len(face.points) < 3:
-            continue
-        normal = _face_normal(face.points)
-        color = role_colors.get(face.role, palette.body)
-        for point in face.points:
-            vertex_writer.addData3f(*point)
-            normal_writer.addData3f(*normal)
-            color_writer.addData4f(*color)
-        for idx in range(1, len(face.points) - 1):
-            triangles.addVertices(vertex_index, vertex_index + idx, vertex_index + idx + 1)
-        vertex_index += len(face.points)
-
-    geom = Geom(vdata)
-    geom.addPrimitive(triangles)
-    node = GeomNode(name)
-    node.addGeom(geom)
-    root = NodePath(node)
-    root.setTwoSided(True)
-    if any(color[3] < 0.999 for color in role_colors.values()):
-        root.setTransparency(TransparencyAttrib.MAlpha)
-    return root
-
-
 def _loft_body(
     *,
     stations: tuple[tuple[float, float, float, float], ...],
@@ -715,16 +634,3 @@ def _polygon_area(points: list[tuple[int, int]]) -> float:
         total += (current[0] * nxt[1]) - (nxt[0] * current[1])
     return abs(total) * 0.5
 
-
-def _scale_rgba(
-    color: tuple[float, float, float, float],
-    factor: float,
-    *,
-    alpha: float | None = None,
-) -> tuple[float, float, float, float]:
-    return (
-        max(0.0, min(1.0, float(color[0]) * factor)),
-        max(0.0, min(1.0, float(color[1]) * factor)),
-        max(0.0, min(1.0, float(color[2]) * factor)),
-        float(color[3] if alpha is None else alpha),
-    )

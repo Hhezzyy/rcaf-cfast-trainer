@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import importlib.util
 import os
 import sys
 import math
@@ -22,13 +21,6 @@ from .render_assets import RenderAssetCatalog
 
 _CANONICAL_CARD_SIZE = (448, 280)
 _CARD_SPRITE_VERSION = "v20"
-
-
-def panda3d_card_rendering_available() -> bool:
-    return (
-        importlib.util.find_spec("moderngl") is not None
-        and importlib.util.find_spec("glcontext") is not None
-    )
 
 
 def _default_cache_dir() -> Path:

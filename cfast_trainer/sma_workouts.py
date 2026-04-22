@@ -104,11 +104,11 @@ def build_sma_workout_plan(*, duration_scale: float = 1.0) -> AntWorkoutPlan:
         code="sensory_motor_apparatus_workout",
         title="Sensory Motor Apparatus Workout (90m)",
         description=(
-            "Standard 90-minute Sensory Motor Apparatus workout with typed reflection, focused axis warm-ups, "
+            "Standard 90-minute Sensory Motor Apparatus workout with focused axis warm-ups, "
             "mode-switch blocks, disturbance cycling, and a pressure finish."
         ),
         notes=(
-            "Typed reflections and block setup screens do not count toward the 90-minute drill clock.",
+            "Block setup screens do not count toward the 90-minute drill clock.",
             "Every block reuses the live Sensory Motor Apparatus tracking screen with the same dot and cross display.",
             "The family is joystick and HOTAS first, but keyboard fallback remains available in every block.",
         ),

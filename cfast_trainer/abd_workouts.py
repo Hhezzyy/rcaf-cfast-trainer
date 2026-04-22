@@ -97,11 +97,11 @@ def build_abd_workout_plan(*, duration_scale: float = 1.0) -> AntWorkoutPlan:
         code="angles_bearings_degrees_workout",
         title="Angles, Bearings and Degrees Workout (90m)",
         description=(
-            "Standard 90-minute Angles, Bearings and Degrees workout with reflection, "
+            "Standard 90-minute Angles, Bearings and Degrees workout with "
             "anchor warm-ups, typed calibration, and test-style pressure blocks."
         ),
         notes=(
-            "Typed reflections and block setup screens do not count toward the 90-minute drill clock.",
+            "Block setup screens do not count toward the 90-minute drill clock.",
             "Warm-up and calibration blocks use typed answers; the final family runs switch to the real multiple-choice ABD screen.",
             "North is taught as 000/360 in the anchor block, but later bearing blocks return to normal 000-359 scoring.",
         ),

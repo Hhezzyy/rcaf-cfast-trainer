@@ -14,6 +14,7 @@ from .airborne_numerical import (
 from .clock import Clock
 from .cognitive_core import AnswerScorer, Phase, Problem, QuestionEvent, SeededRng, TestSnapshot
 from .lookup_retain import LookupRetainPromptSpec, LookupRetainScorer, expected_digits_for_problem
+from .runtime_ui_policy import runtime_visible_timers_enabled
 
 
 def _clamp01(value: float) -> float:
@@ -1234,7 +1235,13 @@ class TimedCapDrill:
     def _input_hint(self) -> str:
         if self._phase not in (Phase.PRACTICE, Phase.SCORED):
             return "Press Enter to continue"
-        return f"L{self._current_level()} | Cap {self._item_remaining_s():0.1f}s | Type answer then Enter"
+        return self._timed_cap_hint("Type answer then Enter")
+
+    def _timed_cap_hint(self, action: str) -> str:
+        prefix = f"L{self._current_level()}"
+        if runtime_visible_timers_enabled():
+            return f"{prefix} | Cap {self._item_remaining_s():0.1f}s | {action}"
+        return f"{prefix} | {action}"
 
     def _current_level(self) -> int:
         return _difficulty_to_level(self._difficulty)

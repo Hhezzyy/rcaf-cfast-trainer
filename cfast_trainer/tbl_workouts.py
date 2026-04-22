@@ -30,8 +30,8 @@ def build_tbl_workout_plan(*, duration_scale: float = 1.0) -> AntWorkoutPlan:
         _block(
             "part1_anchor",
             "Part 1 Anchor Warm-Up",
-            "Start on clean single-card row and column lookups before denser scans and card switches appear.",
-            ("Single-table lookup", "Keyboard answer flow"),
+            "Start on clean one-table row and column lookups before denser scans and tab switches appear.",
+            ("Single-table lookup", "Tabbed answer flow"),
             "tbl_part1_anchor",
             AntDrillMode.BUILD,
             10 * scale,
@@ -39,8 +39,8 @@ def build_tbl_workout_plan(*, duration_scale: float = 1.0) -> AntWorkoutPlan:
         _block(
             "part1_scan",
             "Part 1 Scan Run",
-            "Push wider scans and tighter distractors while still staying on the single-card workflow.",
-            ("Scan speed", "Single-card discrimination"),
+            "Push wider scans and tighter distractors while still staying on the one-table workflow.",
+            ("Scan speed", "Single-table discrimination"),
             "tbl_part1_scan_run",
             AntDrillMode.BUILD,
             10 * scale,
@@ -48,8 +48,8 @@ def build_tbl_workout_plan(*, duration_scale: float = 1.0) -> AntWorkoutPlan:
         _block(
             "part2_prime",
             "Part 2 Prime",
-            "Warm up the easier two-card chain before the full correction workflow tightens up.",
-            ("Two-card chaining", "Intermediate value control"),
+            "Warm up the easier two-table chain before the full correction workflow tightens up.",
+            ("Two-table chaining", "Intermediate value control"),
             "tbl_part2_prime",
             AntDrillMode.BUILD,
             10 * scale,
@@ -57,8 +57,8 @@ def build_tbl_workout_plan(*, duration_scale: float = 1.0) -> AntWorkoutPlan:
         _block(
             "part2_correction",
             "Part 2 Correction Run",
-            "Run the full two-card correction workflow at tempo with the real live table layout still active.",
-            ("Two-card correction", "Cross-card carryover"),
+            "Run the full two-table correction workflow at tempo with the real live table layout still active.",
+            ("Two-table correction", "Cross-table carryover"),
             "tbl_part2_correction_run",
             AntDrillMode.TEMPO,
             10 * scale,
@@ -66,7 +66,7 @@ def build_tbl_workout_plan(*, duration_scale: float = 1.0) -> AntWorkoutPlan:
         _block(
             "part_switch",
             "Part Switch Run",
-            "Alternate one-card and two-card items so the workflow change itself stops costing time.",
+            "Alternate one-table, two-table, and typed-answer items so the workflow change itself stops costing time.",
             ("Part switching", "Workflow reset"),
             "tbl_part_switch_run",
             AntDrillMode.TEMPO,
@@ -84,8 +84,8 @@ def build_tbl_workout_plan(*, duration_scale: float = 1.0) -> AntWorkoutPlan:
         _block(
             "mixed_tempo",
             "Mixed Tempo Run",
-            "Hold a fixed 2x Part 1, 2x Part 2 rhythm and keep the same keyboard flow across both sections.",
-            ("Mixed table tempo", "Section rhythm control"),
+            "Hold a mixed rhythm across choices, numeric entry, letter search, and multi-table lookups.",
+            ("Mixed table tempo", "Answer-mode switching"),
             "tbl_mixed_tempo",
             AntDrillMode.TEMPO,
             15 * scale,
@@ -104,13 +104,13 @@ def build_tbl_workout_plan(*, duration_scale: float = 1.0) -> AntWorkoutPlan:
         code="table_reading_workout",
         title="Table Reading Workout (90m)",
         description=(
-            "Standard 90-minute Table Reading workout with typed reflection, single-card and two-card "
-            "warm-ups, switching blocks, and a final pressure run."
+            "Standard 90-minute Table Reading workout with tabbed one-table and "
+            "multi-table warm-ups, answer-mode switching blocks, and a final pressure run."
         ),
         notes=(
-            "Typed reflections and block setup screens do not count toward the 90-minute drill clock.",
-            "Every block reuses the live Table Reading UI with the real card tables and the normal answer strip.",
-            "Controls stay keyboard-only throughout: Up/Down to move selection, A/S/D/F/G or 1-5 to choose, then Enter to submit.",
+            "Block setup screens do not count toward the 90-minute drill clock.",
+            "Every block reuses the live Table Reading UI with a question tab plus table-data tabs.",
+            "Controls stay keyboard-first throughout: Tab switches views; choices use A/S/D/F/G or 1-5; typed numeric and letter answers use Enter.",
         ),
         blocks=blocks,
     )

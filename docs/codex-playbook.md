@@ -100,7 +100,7 @@
 - Visual Search dense late-level boards.
 - Situational Awareness grid plus cue card plus active query.
 - Benchmark/adaptive intro, block, and results transitions.
-- Renderer failure/diagnostic screens and any Panda3D/OpenGL mismatch.
+- Renderer failure/diagnostic screens and any ModernGL/fallback mismatch.
 - HOTAS calibration, input profile, and joystick binding screens.
 
 ## Scoped Change Rules
@@ -125,7 +125,7 @@
 
 ### Rendering Bugs
 
-1. Decide whether the issue is Modern GL, Panda3D, or shared renderer failure/diagnostics behavior.
+1. Decide whether the issue is ModernGL, the built-in pygame fallback, or shared renderer failure/diagnostics behavior.
 2. Inspect `cfast_trainer/app.py` bootstrap code first, then the renderer-specific module.
 3. Compare against `tests/test_3d_renderer_selection.py`, `tests/test_gl_bootstrap.py`, and any subsystem renderer tests.
 4. Use full-window screenshots and note platform, requested renderer mode, window mode, and any failure-screen diagnostic code.

@@ -29,7 +29,7 @@ def _build_small_tbl_workout_plan() -> AntWorkoutPlan:
         code="table_reading_workout",
         title="TRBL Workout Smoke",
         description="Short deterministic workout for tests.",
-        notes=("Reflections are untimed.",),
+        notes=("Block setup is untimed.",),
         blocks=(
             AntWorkoutBlockPlan(
                 block_id="part1",
@@ -72,9 +72,7 @@ def _complete_small_tbl_workout(clock: FakeClock) -> AntWorkoutSession:
         starting_level=5,
     )
     session.activate()
-    session.append_text("stay orderly")
     session.activate()
-    session.append_text("carry values cleanly")
     session.activate()
     session.activate()
     _finish_current_block_with_one_correct_answer(session, clock)
@@ -85,10 +83,8 @@ def _complete_small_tbl_workout(clock: FakeClock) -> AntWorkoutSession:
     _finish_current_block_with_one_correct_answer(session, clock)
     assert session.stage is AntWorkoutStage.BLOCK_RESULTS
     session.activate()
-    assert session.stage is AntWorkoutStage.POST_REFLECTION
-    session.append_text("scan rhythm held")
+    assert session.stage is AntWorkoutStage.RESULTS
     session.activate()
-    session.append_text("switching stayed clean")
     session.activate()
     assert session.stage is AntWorkoutStage.RESULTS
     return session
@@ -124,8 +120,8 @@ def test_real_tbl_workout_matches_standard_90_minute_structure() -> None:
     assert {
         "Single-table lookup",
         "Scan speed",
-        "Two-card chaining",
-        "Two-card correction",
+        "Two-table chaining",
+        "Two-table correction",
         "Part switching",
         "Card-family adaptation",
         "Pressure tolerance",

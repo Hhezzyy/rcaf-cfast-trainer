@@ -113,11 +113,11 @@ def build_ic_workout_plan(*, duration_scale: float = 1.0) -> AntWorkoutPlan:
         code="instrument_comprehension_workout",
         title="Instrument Comprehension Workout (90m)",
         description=(
-            "Standard 90-minute Instrument Comprehension workout with typed reflection, Part 1/2/3 "
+            "Standard 90-minute Instrument Comprehension workout with Part 1/2/3 "
             "warm-ups, balanced mixed runs, and a final pressure block."
         ),
         notes=(
-            "Typed reflections and block setup screens do not count toward the 90-minute drill clock.",
+            "Block setup screens do not count toward the 90-minute drill clock.",
             "All timed blocks stay on the real Instrument Comprehension layouts and keep the A/S/D/F/G multiple-choice answer flow.",
             "The family stays balanced across Part 1 aircraft matching, Part 2 reverse panel matching, and Part 3 description interpretation.",
         ),

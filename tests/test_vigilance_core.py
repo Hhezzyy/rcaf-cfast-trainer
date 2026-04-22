@@ -9,6 +9,7 @@ from cfast_trainer.vigilance import (
     VigilancePayload,
     VigilanceSymbolKind,
     build_vigilance_test,
+    _vigilance_difficulty_params,
 )
 
 
@@ -40,6 +41,70 @@ def _advance_until_symbol(
             return payload
         elapsed += step_s
     raise AssertionError("expected a visible vigilance symbol before timeout")
+
+
+def test_difficulty_params_make_easy_stream_less_pressured_than_hard_stream() -> None:
+    config = VigilanceConfig(
+        practice_duration_s=0.0,
+        scored_duration_s=8.0,
+        spawn_interval_s=0.85,
+        max_active_symbols=7,
+    )
+
+    easy = _vigilance_difficulty_params(0.0, config)
+    hard = _vigilance_difficulty_params(1.0, config)
+
+    assert easy.max_active_symbols < hard.max_active_symbols
+    assert easy.spawn_interval_s > hard.spawn_interval_s
+    assert easy.lifetime_scale > hard.lifetime_scale
+    assert easy.lifetime_floor_s > hard.lifetime_floor_s
+    assert easy.symbol_kind_thresholds[0] > hard.symbol_kind_thresholds[0]
+    assert easy.symbol_kind_thresholds[1] > hard.symbol_kind_thresholds[1]
+    assert easy.symbol_kind_thresholds[2] > hard.symbol_kind_thresholds[2]
+
+    easy_engine = build_vigilance_test(clock=FakeClock(), seed=901, difficulty=0.0, config=config)
+    hard_engine = build_vigilance_test(clock=FakeClock(), seed=901, difficulty=1.0, config=config)
+
+    easy_star_lifetime = easy_engine._symbol_lifetime_s(kind=VigilanceSymbolKind.STAR)
+    hard_star_lifetime = hard_engine._symbol_lifetime_s(kind=VigilanceSymbolKind.STAR)
+
+    assert easy_star_lifetime > hard_star_lifetime
+
+
+def test_high_difficulty_produces_more_spawn_and_overlap_pressure_than_low_difficulty() -> None:
+    def observe_pressure(difficulty: float) -> tuple[int, int, int]:
+        clock = FakeClock()
+        engine = build_vigilance_test(
+            clock=clock,
+            seed=902,
+            difficulty=difficulty,
+            config=VigilanceConfig(
+                practice_duration_s=0.0,
+                scored_duration_s=8.0,
+                spawn_interval_s=0.85,
+                max_active_symbols=7,
+            ),
+        )
+        engine.start_scored()
+
+        seen_ids: set[int] = set()
+        max_visible = 0
+        while engine.phase.value == "scored":
+            clock.advance(0.1)
+            engine.update()
+            payload = engine.snapshot().payload
+            assert isinstance(payload, VigilancePayload)
+            seen_ids.update(symbol.symbol_id for symbol in payload.symbols)
+            max_visible = max(max_visible, len(payload.symbols))
+
+        return len(seen_ids), max_visible, engine.scored_summary().missed
+
+    easy_seen, easy_max_visible, easy_missed = observe_pressure(0.0)
+    hard_seen, hard_max_visible, hard_missed = observe_pressure(1.0)
+
+    assert easy_seen < hard_seen
+    assert easy_max_visible < hard_max_visible
+    assert easy_missed < hard_missed
 
 
 def test_symbol_stream_is_deterministic_for_same_seed_and_script() -> None:

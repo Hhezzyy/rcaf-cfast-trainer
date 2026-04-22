@@ -23,7 +23,7 @@ def test_ui_smoke_navigate_to_workouts_and_open_airborne_numerical_workout() -> 
         # Main menu: Enter on 90-minute workouts.
         # Workouts menu: Enter on Airborne Numerical Workout.
         # Loading screen needs two renders before the target is swapped in.
-        # Workout intro: Right once, Enter, type two short reflections, then start the first block.
+        # Workout intro: Right once, Enter to reach block setup, then Enter again to start the first block.
         if frame == 1:
             pygame.event.post(
                 pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""})

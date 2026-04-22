@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import pytest
+
 from cfast_trainer.cognitive_core import Phase, SeededRng
 from cfast_trainer.colours_letters_numbers import (
     ColoursLettersNumbersConfig,
     ColoursLettersNumbersGenerator,
     _LiveDiamond,
+    _colours_letters_numbers_difficulty_params,
     build_colours_letters_numbers_test,
 )
 
@@ -37,6 +40,92 @@ def test_default_test_profile_shows_sequence_longer_than_legacy_two_seconds() ->
     cfg = ColoursLettersNumbersConfig()
 
     assert cfg.sequence_show_s > 2.0
+
+
+def test_difficulty_params_make_easy_cln_less_pressured_than_hard_cln() -> None:
+    cfg = ColoursLettersNumbersConfig()
+
+    easy = _colours_letters_numbers_difficulty_params(0.0, cfg)
+    mid = _colours_letters_numbers_difficulty_params(0.5, cfg)
+    hard = _colours_letters_numbers_difficulty_params(1.0, cfg)
+
+    assert easy.sequence_show_s > mid.sequence_show_s > hard.sequence_show_s
+    assert easy.round_duration_s > mid.round_duration_s > hard.round_duration_s
+    assert easy.memory_recall_delay_s < mid.memory_recall_delay_s < hard.memory_recall_delay_s
+    assert easy.memory_recall_delay_max_s < mid.memory_recall_delay_max_s < hard.memory_recall_delay_max_s
+    assert easy.diamond_spawn_interval_s > mid.diamond_spawn_interval_s > hard.diamond_spawn_interval_s
+    assert easy.diamond_spawn_interval_max_s > mid.diamond_spawn_interval_max_s > hard.diamond_spawn_interval_max_s
+    assert easy.diamond_speed_norm_per_s < mid.diamond_speed_norm_per_s < hard.diamond_speed_norm_per_s
+    assert easy.diamond_speed_max_norm_per_s < mid.diamond_speed_max_norm_per_s < hard.diamond_speed_max_norm_per_s
+    assert easy.max_live_diamonds < hard.max_live_diamonds
+    assert mid.sequence_show_s == pytest.approx(cfg.sequence_show_s)
+    assert mid.round_duration_s == pytest.approx(cfg.round_duration_s)
+    assert mid.diamond_spawn_interval_s == pytest.approx(cfg.diamond_spawn_interval_s)
+    assert mid.diamond_speed_norm_per_s == pytest.approx(cfg.diamond_speed_norm_per_s)
+
+
+def test_default_memory_sequences_get_longer_at_higher_difficulty() -> None:
+    low = ColoursLettersNumbersGenerator(SeededRng(444))
+    high = ColoursLettersNumbersGenerator(SeededRng(444))
+
+    low_lengths = [
+        len(low.next_memory_challenge(difficulty=0.0).target_sequence) for _ in range(30)
+    ]
+    high_lengths = [
+        len(high.next_memory_challenge(difficulty=1.0).target_sequence) for _ in range(30)
+    ]
+
+    assert min(high_lengths) >= min(low_lengths)
+    assert max(high_lengths) > max(low_lengths)
+    assert (sum(high_lengths) / len(high_lengths)) > (sum(low_lengths) / len(low_lengths))
+
+
+def test_higher_difficulty_increases_live_diamond_pressure() -> None:
+    cfg = ColoursLettersNumbersConfig(
+        scored_duration_s=6.0,
+        practice_rounds=0,
+        round_duration_s=20.0,
+        sequence_show_s=0.1,
+        memory_recall_delay_s=0.0,
+        memory_recall_delay_max_s=0.0,
+        diamond_spawn_interval_s=0.4,
+        diamond_spawn_interval_max_s=0.4,
+        diamond_speed_norm_per_s=0.25,
+        diamond_speed_max_norm_per_s=0.25,
+        max_live_diamonds=6,
+    )
+
+    def observe(difficulty: float) -> tuple[int, int, int]:
+        clock = FakeClock()
+        engine = build_colours_letters_numbers_test(
+            clock=clock,
+            seed=555,
+            difficulty=difficulty,
+            config=cfg,
+        )
+        engine.start_practice()
+        engine.start_scored()
+
+        max_live = 0
+        while True:
+            clock.advance(0.1)
+            engine.update()
+            if engine.phase is not Phase.SCORED:
+                break
+            payload = engine.snapshot().payload
+            assert payload is not None
+            max_live = max(max_live, len(payload.diamonds))
+
+        spawned = engine._next_diamond_id - 1  # type: ignore[attr-defined]
+        missed = engine._scored_missed  # type: ignore[attr-defined]
+        return spawned, max_live, missed
+
+    easy_spawned, easy_max_live, easy_missed = observe(0.0)
+    hard_spawned, hard_max_live, hard_missed = observe(1.0)
+
+    assert easy_spawned < hard_spawned
+    assert easy_max_live < hard_max_live
+    assert easy_missed < hard_missed
 
 
 def test_sequence_is_shown_first_then_corner_options_activate() -> None:

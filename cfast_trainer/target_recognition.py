@@ -63,6 +63,9 @@ class TargetRecognitionPayload:
     light_interval_range_s: tuple[float, float] = (5.0, 10.0)
     scan_interval_range_s: tuple[float, float] = (5.0, 10.0)
     scan_repeat_range: tuple[int, int] = (2, 4)
+    scene_spawn_interval_range_s: tuple[float, float] = (10.0, 40.0)
+    scene_spawn_burst_chance: float = 0.0
+    scene_spawn_burst_range: tuple[int, int] = (1, 1)
     scene_objective_label: str = ""
     scene_clear_all_targets: bool = False
     developer_answer_review: bool = False
@@ -189,6 +192,9 @@ class TargetRecognitionGenerator:
             light_interval_range_s=(5.0, 10.0),
             scan_interval_range_s=(5.0, 10.0),
             scan_repeat_range=(2, 4),
+            scene_spawn_interval_range_s=self._scene_spawn_interval_range_s(d),
+            scene_spawn_burst_chance=self._scene_spawn_burst_chance(d),
+            scene_spawn_burst_range=self._scene_spawn_burst_range(d),
             content_family="mixed_panel",
             variant_id=stable_variant_id(scene_target, scan_target, system_target),
         )
@@ -448,6 +454,21 @@ class TargetRecognitionGenerator:
     def _system_step_interval_s(self, difficulty: float) -> float:
         # Slow but increasing cadence as difficulty rises.
         return max(0.20, min(0.80, 0.70 - (difficulty * 0.35)))
+
+    def _scene_spawn_interval_range_s(self, difficulty: float) -> tuple[float, float]:
+        d = clamp01(difficulty)
+        low = 14.0 - (d * 8.0)
+        high = 36.0 - (d * 18.0)
+        low = max(5.0, low)
+        high = max(low + 2.0, high)
+        return (round(low, 2), round(high, 2))
+
+    def _scene_spawn_burst_chance(self, difficulty: float) -> float:
+        d = clamp01(difficulty)
+        return round(0.05 + (d * 0.25), 3)
+
+    def _scene_spawn_burst_range(self, difficulty: float) -> tuple[int, int]:
+        return (1, 2) if clamp01(difficulty) >= 0.72 else (1, 1)
 
     def _build_system_cycles(
         self,

@@ -123,11 +123,11 @@ def build_cln_workout_plan(*, duration_scale: float = 1.0) -> AntWorkoutPlan:
         code="colours_letters_numbers_workout",
         title="Colours, Letters and Numbers Workout (90m)",
         description=(
-            "Standard 90-minute Colours, Letters and Numbers workout with typed reflection, "
+            "Standard 90-minute Colours, Letters and Numbers workout with "
             "three-lane baseline warm-ups, paired interference blocks, and late overdrive finishers."
         ),
         notes=(
-            "Typed reflections and block setup screens do not count toward the 90-minute drill clock.",
+            "Block setup screens do not count toward the 90-minute drill clock.",
             "Early blocks split memory, math, and colour so each channel is warm before the paired and full CLN blocks.",
             "The standard CLN baseline uses A/S/D/F/G for memory, digits plus Enter for math, and Q/W/E for colour lanes.",
             "The late overdrive blocks reintroduce blue, expand memory choice count, and add a bonus multiple-choice math panel.",

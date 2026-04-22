@@ -30,7 +30,7 @@ def _build_small_ac_workout_plan() -> AntWorkoutPlan:
         code="auditory_capacity_workout",
         title="Auditory Workout Smoke",
         description="Short deterministic workout for tests.",
-        notes=("Reflections are untimed.",),
+        notes=("Block setup is untimed.",),
         blocks=(
             AntWorkoutBlockPlan(
                 block_id="gate-anchor",
@@ -107,9 +107,7 @@ def _complete_small_ac_workout(clock: FakeClock) -> AntWorkoutSession:
         starting_level=5,
     )
     session.activate()
-    session.append_text("stay smooth on the controls")
     session.activate()
-    session.append_text("keep call sign filtering clean")
     session.activate()
     session.activate()
     _run_current_block(session, clock)
@@ -120,10 +118,8 @@ def _complete_small_ac_workout(clock: FakeClock) -> AntWorkoutSession:
     _run_current_block(session, clock)
     assert session.stage is AntWorkoutStage.BLOCK_RESULTS
     session.activate()
-    assert session.stage is AntWorkoutStage.POST_REFLECTION
-    session.append_text("gates stayed calmer than expected")
+    assert session.stage is AntWorkoutStage.RESULTS
     session.activate()
-    session.append_text("mixed channel rhythm held together")
     session.activate()
     assert session.stage is AntWorkoutStage.RESULTS
     return session

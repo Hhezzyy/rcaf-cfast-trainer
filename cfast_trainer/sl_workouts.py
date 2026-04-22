@@ -104,11 +104,11 @@ def build_sl_workout_plan(*, duration_scale: float = 1.0) -> AntWorkoutPlan:
         code="system_logic_workout",
         title="System Logic Workout (90m)",
         description=(
-            "Standard 90-minute System Logic workout with typed reflection, guide-style two-pane live blocks, "
+            "Standard 90-minute System Logic workout with guide-style two-pane live blocks, "
             "focused reasoning warm-ups, and a final pressure run."
         ),
         notes=(
-            "Typed reflections and block setup screens do not count toward the 90-minute drill clock.",
+            "Block setup screens do not count toward the 90-minute drill clock.",
             "Every block reuses the live System Logic two-pane guide layout with the right-side index and A-E answer row.",
             "Controls stay keyboard-only throughout: Up/Down to move the index, A-E or 1-5 to choose, then Enter to submit.",
         ),

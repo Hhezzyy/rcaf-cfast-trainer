@@ -12,6 +12,7 @@ from importlib.machinery import ModuleSpec
 from types import ModuleType
 
 import pygame
+import pytest
 
 if "moderngl" not in sys.modules:
     moderngl_stub = ModuleType("moderngl")
@@ -95,12 +96,22 @@ class _RecordingFont:
 @dataclass
 class _FakeClock:
     t: float = 0.0
+    paused: bool = False
 
     def now(self) -> float:
         return self.t
 
     def advance(self, dt: float) -> None:
         self.t += dt
+
+    def pause(self) -> None:
+        self.paused = True
+
+    def resume(self) -> None:
+        self.paused = False
+
+    def is_paused(self) -> bool:
+        return bool(self.paused)
 
 
 def _build_payload(*, active_panels: tuple[str, ...]) -> TargetRecognitionPayload:
@@ -280,7 +291,7 @@ def test_target_recognition_workout_block_uses_real_runtime_screen() -> None:
             code="target_recognition_workout",
             title="TR Workout UI",
             description="UI regression workout.",
-            notes=("Untimed reflections.",),
+            notes=("Untimed block setup.",),
             blocks=(
                 AntWorkoutBlockPlan(
                     block_id="scene",
@@ -300,9 +311,7 @@ def test_target_recognition_workout_block_uses_real_runtime_screen() -> None:
             starting_level=5,
         )
         session.activate()
-        session.append_text("focus")
         session.activate()
-        session.append_text("reset")
         session.activate()
         session.activate()
 
@@ -413,7 +422,7 @@ def test_target_recognition_workout_overlay_is_suppressed_during_live_block(
             code="target_recognition_workout",
             title="TR Workout UI",
             description="UI regression workout.",
-            notes=("Untimed reflections.",),
+            notes=("Untimed block setup.",),
             blocks=(
                 AntWorkoutBlockPlan(
                     block_id="scene",
@@ -433,9 +442,7 @@ def test_target_recognition_workout_overlay_is_suppressed_during_live_block(
             starting_level=5,
         )
         session.activate()
-        session.append_text("focus")
         session.activate()
-        session.append_text("reset")
         session.activate()
         session.activate()
 
@@ -644,7 +651,7 @@ def test_target_recognition_scene_clear_all_objective_waits_for_last_target() ->
         pygame.quit()
 
 
-def test_target_recognition_scene_correct_click_only_reseeds_clicked_glyph() -> None:
+def test_target_recognition_scene_clear_waits_until_target_type_absent_from_panel() -> None:
     payload = replace(
         _build_payload(active_panels=("scene",)),
         scene_rows=2,
@@ -671,26 +678,18 @@ def test_target_recognition_scene_correct_click_only_reseeds_clicked_glyph() -> 
 
         clock.advance(1.25)
         screen.render(surface)
+        assert screen._tr_scene_live_counts_by_label == {"Friendly Truck": 2}
 
-        clicked = [
+        live_hits = [
             (hit_rect, glyph_id)
             for hit_rect, glyph_id in screen._tr_scene_symbol_hitboxes
             if screen._tr_scene_glyphs[glyph_id].live_target_label == "Friendly Truck"
         ]
-        untouched = [
-            glyph_id
-            for _hit_rect, glyph_id in screen._tr_scene_symbol_hitboxes
-            if (
-                "Friendly Truck" in screen._tr_scene_glyphs[glyph_id].matching_labels
-                and screen._tr_scene_glyphs[glyph_id].live_target_label == ""
-            )
-        ]
-        assert len(clicked) == 1
-        assert untouched
-        clicked_hit, clicked_id = clicked[0]
-        untouched_id = untouched[0]
+        assert len(live_hits) == 2
+        clicked_hit, clicked_id = live_hits[0]
+        second_hit, second_id = live_hits[1]
         clicked_before = _scene_glyph_signature(screen, clicked_id)
-        untouched_before = _scene_glyph_signature(screen, untouched_id)
+        second_before = _scene_glyph_signature(screen, second_id)
 
         screen.handle_event(
             pygame.event.Event(
@@ -699,10 +698,24 @@ def test_target_recognition_scene_correct_click_only_reseeds_clicked_glyph() -> 
             )
         )
 
+        assert engine.submit_calls == []
+        assert screen._tr_scene_active_targets == ["Friendly Truck"]
+        assert screen._tr_scene_live_counts_by_label == {"Friendly Truck": 1}
+        assert screen._tr_scene_points == 0
+        assert _scene_glyph_signature(screen, clicked_id) != clicked_before
+        assert _scene_glyph_signature(screen, second_id) == second_before
+
+        screen.handle_event(
+            pygame.event.Event(
+                pygame.MOUSEBUTTONDOWN,
+                {"button": 1, "pos": (second_hit.right - 2, second_hit.centery)},
+            )
+        )
+
         assert engine.submit_calls == ["1"]
         assert screen._tr_scene_active_targets == []
-        assert _scene_glyph_signature(screen, clicked_id) != clicked_before
-        assert _scene_glyph_signature(screen, untouched_id) == untouched_before
+        assert screen._tr_scene_live_counts_by_label == {}
+        assert screen._tr_scene_points == 1
     finally:
         pygame.quit()
 
@@ -832,6 +845,7 @@ def test_target_recognition_light_press_shows_registered_feedback() -> None:
 
         assert engine.submit_calls == ["1"]
         assert screen._tr_light_feedback_state == "ok"
+        assert screen._tr_light_pressed_until_ms > int(clock.now() * 1000)
         assert any("Registered" in text for text in captured)
         assert screen._tr_light_target_pattern_live == initial_target
         assert screen._tr_light_current_pattern == initial_pattern
@@ -839,6 +853,7 @@ def test_target_recognition_light_press_shows_registered_feedback() -> None:
         clock.advance(0.5)
         screen.render(surface)
 
+        assert screen._tr_light_pressed_until_ms < int(clock.now() * 1000)
         assert screen._tr_light_target_pattern_live != initial_target
         assert screen._tr_light_current_pattern != initial_pattern
     finally:
@@ -874,6 +889,7 @@ def test_target_recognition_scan_press_shows_registered_feedback() -> None:
 
         assert engine.submit_calls == ["1"]
         assert screen._tr_scan_feedback_state == "ok"
+        assert screen._tr_scan_pressed_until_ms > int(clock.now() * 1000)
         assert any("Registered" in text for text in captured)
         assert screen._tr_scan_target_pattern_live == initial_target
         assert screen._tr_scan_current_pattern == initial_target
@@ -881,8 +897,37 @@ def test_target_recognition_scan_press_shows_registered_feedback() -> None:
         clock.advance(0.5)
         screen.render(surface)
 
+        assert screen._tr_scan_pressed_until_ms < int(clock.now() * 1000)
         assert screen._tr_scan_target_pattern_live != initial_target
         assert screen._tr_scan_current_pattern != initial_target
+    finally:
+        pygame.quit()
+
+
+def test_target_recognition_press_button_visual_state_changes() -> None:
+    _app, screen = _build_screen(_FakeTREngine(_build_payload(active_panels=("light",)), title="Target Recognition"))
+    try:
+        rect = pygame.Rect(8, 8, 72, 28)
+        up = pygame.Surface((96, 48), pygame.SRCALPHA)
+        down = pygame.Surface((96, 48), pygame.SRCALPHA)
+        screen._draw_target_recognition_press_button(
+            up,
+            rect,
+            fill=(220, 174, 34),
+            edge=(248, 234, 184),
+            text_color=(28, 20, 6),
+            pressed=False,
+        )
+        screen._draw_target_recognition_press_button(
+            down,
+            rect,
+            fill=(220, 174, 34),
+            edge=(248, 234, 184),
+            text_color=(28, 20, 6),
+            pressed=True,
+        )
+
+        assert pygame.image.tobytes(up, "RGBA") != pygame.image.tobytes(down, "RGBA")
     finally:
         pygame.quit()
 
@@ -996,7 +1041,7 @@ def test_target_recognition_selection_highlight_only_draws_in_developer_review()
         pygame.quit()
 
 
-def test_target_recognition_scored_countdown_uses_local_runtime_timer() -> None:
+def test_target_recognition_scored_countdown_hidden_but_local_runtime_timer_advances() -> None:
     payload = _build_payload(active_panels=("scene",))
     engine = _FakeTREngine(
         payload,
@@ -1013,12 +1058,16 @@ def test_target_recognition_scored_countdown_uses_local_runtime_timer() -> None:
         captured = _install_recording_fonts(screen)
 
         screen.render(surface)
-        assert "01:30" in captured
+        assert "01:30" not in captured
+        assert screen._tr_timer_time_s == pytest.approx(0.0)
 
         clock.advance(15.0)
         captured.clear()
         screen.render(surface)
-        assert "01:15" in captured
+        assert "01:15" not in captured
+        assert not any(re.fullmatch(r"\d{2}:\d{2}", text) for text in captured)
+        assert screen._tr_timer_time_s == pytest.approx(15.0)
+        assert screen._target_recognition_time_remaining_s(engine.snapshot()) == pytest.approx(75.0)
     finally:
         pygame.quit()
 
@@ -1088,17 +1137,17 @@ def test_target_recognition_scene_spawn_timer_tracks_duplicate_live_counts_until
 
         clock.advance(1.25)
         screen.render(surface)
-        assert screen._tr_scene_live_counts_by_label == {"Friendly Truck": 1}
+        assert screen._tr_scene_live_counts_by_label == {"Friendly Truck": 2}
         interval = float(screen._tr_scene_next_spawn_after_s)
         assert 10.0 <= interval <= 40.0
 
         clock.advance(interval - 0.1)
         screen.render(surface)
-        assert screen._tr_scene_live_counts_by_label == {"Friendly Truck": 1}
+        assert screen._tr_scene_live_counts_by_label == {"Friendly Truck": 2}
 
         clock.advance(0.2)
         screen.render(surface)
-        assert screen._tr_scene_live_counts_by_label == {"Friendly Truck": 2}
+        assert screen._tr_scene_live_counts_by_label == {"Friendly Truck": 3}
         assert screen._tr_scene_active_targets == ["Friendly Truck"]
 
         live_hits = [
@@ -1106,14 +1155,26 @@ def test_target_recognition_scene_spawn_timer_tracks_duplicate_live_counts_until
             for hit_rect, glyph_id in screen._tr_scene_symbol_hitboxes
             if screen._tr_scene_glyphs[glyph_id].live_target_label == "Friendly Truck"
         ]
-        assert len(live_hits) == 2
+        assert len(live_hits) == 3
 
         first_hit, _first_id = live_hits[0]
         second_hit, _second_id = live_hits[1]
+        third_hit, _third_id = live_hits[2]
         screen.handle_event(
             pygame.event.Event(
                 pygame.MOUSEBUTTONDOWN,
                 {"button": 1, "pos": (first_hit.right - 2, first_hit.centery)},
+            )
+        )
+
+        assert engine.submit_calls == []
+        assert screen._tr_scene_live_counts_by_label == {"Friendly Truck": 2}
+        assert screen._tr_scene_points == 0
+
+        screen.handle_event(
+            pygame.event.Event(
+                pygame.MOUSEBUTTONDOWN,
+                {"button": 1, "pos": (second_hit.right - 2, second_hit.centery)},
             )
         )
 
@@ -1124,7 +1185,7 @@ def test_target_recognition_scene_spawn_timer_tracks_duplicate_live_counts_until
         screen.handle_event(
             pygame.event.Event(
                 pygame.MOUSEBUTTONDOWN,
-                {"button": 1, "pos": (second_hit.right - 2, second_hit.centery)},
+                {"button": 1, "pos": (third_hit.right - 2, third_hit.centery)},
             )
         )
 
@@ -1133,6 +1194,56 @@ def test_target_recognition_scene_spawn_timer_tracks_duplicate_live_counts_until
         assert engine.submit_calls == ["1"]
     finally:
         pygame.quit()
+
+
+def test_target_recognition_scene_hybrid_spawns_are_deterministic() -> None:
+    payload = replace(
+        _build_payload(active_panels=("scene",)),
+        scene_rows=2,
+        scene_cols=2,
+        scene_cells=("TRK:F", "BLD:N", "TNK:H", "BLD:N"),
+        scene_entities=(
+            TargetRecognitionSceneEntity("truck", "friendly", False, False),
+            TargetRecognitionSceneEntity("building", "neutral", False, False),
+            TargetRecognitionSceneEntity("tank", "hostile", False, False),
+            TargetRecognitionSceneEntity("building", "neutral", False, False),
+        ),
+        scene_target="Friendly Truck",
+        scene_has_target=True,
+        scene_target_options=("Friendly Truck",),
+        scene_spawn_interval_range_s=(0.3, 0.3),
+        scene_spawn_burst_chance=1.0,
+        scene_spawn_burst_range=(1, 1),
+    )
+
+    def run_once() -> tuple[dict[str, int], tuple[tuple[object, ...], ...]]:
+        _app, screen = _build_screen(_FakeTREngine(payload, title="Target Recognition: Scene Anchor"))
+        clock = _FakeClock()
+        screen._review_clock = clock
+        try:
+            surface = pygame.display.get_surface()
+            assert surface is not None
+            screen.render(surface)
+            clock.advance(1.25)
+            screen.render(surface)
+            clock.advance(0.4)
+            screen.render(surface)
+            return (
+                dict(screen._tr_scene_live_counts_by_label),
+                tuple(
+                    _scene_glyph_signature(screen, glyph_id)
+                    for _hit, glyph_id in screen._tr_scene_symbol_hitboxes
+                ),
+            )
+        finally:
+            pygame.quit()
+
+    first_counts, first_glyphs = run_once()
+    second_counts, second_glyphs = run_once()
+
+    assert first_counts == second_counts
+    assert first_glyphs == second_glyphs
+    assert first_counts.get("Friendly Truck", 0) >= 2
 
 
 def test_target_recognition_scene_ambient_and_fog_animate_over_time() -> None:
@@ -1156,6 +1267,28 @@ def test_target_recognition_scene_ambient_and_fog_animate_over_time() -> None:
 
         assert initial_alphas != later_alphas
         assert later_fog != initial_fog
+    finally:
+        pygame.quit()
+
+
+def test_target_recognition_cloud_obstruction_stays_partial_and_moves() -> None:
+    payload = _build_payload(active_panels=("scene",))
+    _app, screen = _build_screen(_FakeTREngine(payload, title="Target Recognition: Scene Anchor"))
+    try:
+        first = pygame.Surface((320, 220), pygame.SRCALPHA)
+        second = pygame.Surface((320, 220), pygame.SRCALPHA)
+        screen._draw_target_recognition_clouds(first, payload, phase_s=0.0)
+        screen._draw_target_recognition_clouds(second, payload, phase_s=12.0)
+
+        width, height = first.get_size()
+        total = width * height
+        alphas = [first.get_at((x, y)).a for y in range(height) for x in range(width)]
+        heavy = sum(1 for alpha in alphas if alpha >= 96)
+
+        assert max(alphas) < 170
+        assert heavy / float(total) <= 0.70
+        assert any(alpha > 40 for alpha in alphas)
+        assert pygame.image.tobytes(first, "RGBA") != pygame.image.tobytes(second, "RGBA")
     finally:
         pygame.quit()
 

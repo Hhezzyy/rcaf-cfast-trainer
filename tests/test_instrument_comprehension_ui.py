@@ -218,6 +218,7 @@ def _build_live_screen(
     engine: object,
     *,
     size: tuple[int, int] = (960, 540),
+    test_code: str | None = None,
 ) -> tuple[App, CognitiveTestScreen]:
     pygame.init()
     surface = pygame.display.set_mode(size)
@@ -225,7 +226,7 @@ def _build_live_screen(
     app = App(surface=surface, font=font)
     root = MenuScreen(app, "Main Menu", [MenuItem("Quit", app.quit)], is_root=True)
     app.push(root)
-    screen = CognitiveTestScreen(app, engine_factory=lambda: engine)
+    screen = CognitiveTestScreen(app, engine_factory=lambda: engine, test_code=test_code)
     app.push(screen)
     return app, screen
 
@@ -443,7 +444,7 @@ def test_reverse_part_layout_matches_uniform_guide_grid() -> None:
         pygame.quit()
 
 
-def test_instruction_screen_renders_part1_preview_content_without_generic_intro_overlay(
+def test_instruction_screen_uses_standard_intro_overlay_without_part_preview(
     monkeypatch,
 ) -> None:
     clock = _FakeClock()
@@ -453,11 +454,11 @@ def test_instruction_screen_renders_part1_preview_content_without_generic_intro_
         difficulty=0.5,
         config=InstrumentComprehensionConfig(scored_duration_s=20.0, practice_questions=1),
     )
-    _app, screen = _build_live_screen(engine)
+    _app, screen = _build_live_screen(engine, test_code="instrument_comprehension")
     try:
         surface = pygame.display.get_surface()
         assert surface is not None
-        calls = {"dials": 0, "cards": 0, "intro_sections": 0}
+        calls = {"dials": 0, "cards": 0, "intro_sections": 0, "custom_intro": 0}
 
         def dials_stub(*args, **kwargs):
             _ = (args, kwargs)
@@ -471,21 +472,27 @@ def test_instruction_screen_renders_part1_preview_content_without_generic_intro_
             _ = (args, kwargs)
             calls["intro_sections"] += 1
 
+        def custom_intro_stub(*args, **kwargs):
+            _ = (args, kwargs)
+            calls["custom_intro"] += 1
+
         monkeypatch.setattr(screen, "_draw_orientation_prompt_dials", dials_stub)
         monkeypatch.setattr(screen, "_draw_aircraft_orientation_card", cards_stub)
         monkeypatch.setattr(screen, "_draw_intro_section", intro_stub)
+        monkeypatch.setattr(screen, "_render_instrument_instruction_page", custom_intro_stub)
 
         screen.render(surface)
 
-        assert calls["dials"] == 1
-        assert calls["cards"] == 5
-        assert calls["intro_sections"] == 0
-        assert screen._instrument_part1_layout is not None
+        assert calls["dials"] == 0
+        assert calls["cards"] == 0
+        assert calls["custom_intro"] == 0
+        assert calls["intro_sections"] == 5
+        assert screen._instrument_part1_layout is None
     finally:
         pygame.quit()
 
 
-def test_transition_screen_renders_part2_preview_content(monkeypatch) -> None:
+def test_transition_screen_uses_standard_intro_overlay_without_part_preview(monkeypatch) -> None:
     clock = _FakeClock()
     engine = build_instrument_comprehension_test(
         clock=clock,
@@ -498,11 +505,11 @@ def test_transition_screen_renders_part2_preview_content(monkeypatch) -> None:
     engine.start_scored()
     assert engine.submit_answer("__skip_section__") is True
 
-    _app, screen = _build_live_screen(engine)
+    _app, screen = _build_live_screen(engine, test_code="instrument_comprehension")
     try:
         surface = pygame.display.get_surface()
         assert surface is not None
-        calls = {"prompt": 0, "answers": 0}
+        calls = {"prompt": 0, "answers": 0, "intro_sections": 0, "custom_intro": 0}
 
         def prompt_stub(*args, **kwargs):
             _ = (args, kwargs)
@@ -512,14 +519,26 @@ def test_transition_screen_renders_part2_preview_content(monkeypatch) -> None:
             _ = (args, kwargs)
             calls["answers"] += 1
 
+        def intro_stub(*args, **kwargs):
+            _ = (args, kwargs)
+            calls["intro_sections"] += 1
+
+        def custom_intro_stub(*args, **kwargs):
+            _ = (args, kwargs)
+            calls["custom_intro"] += 1
+
         monkeypatch.setattr(screen, "_draw_aircraft_prompt_card", prompt_stub)
         monkeypatch.setattr(screen, "_draw_instrument_panel_answer_card", answer_stub)
+        monkeypatch.setattr(screen, "_draw_intro_section", intro_stub)
+        monkeypatch.setattr(screen, "_render_instrument_instruction_page", custom_intro_stub)
 
         screen.render(surface)
 
-        assert calls["prompt"] == 1
-        assert calls["answers"] == 5
-        assert screen._instrument_part1_layout is not None
+        assert calls["prompt"] == 0
+        assert calls["answers"] == 0
+        assert calls["custom_intro"] == 0
+        assert calls["intro_sections"] == 5
+        assert screen._instrument_part1_layout is None
     finally:
         pygame.quit()
 
@@ -969,7 +988,40 @@ def test_instrument_drill_title_still_routes_to_real_ic_renderer(monkeypatch) ->
         pygame.quit()
 
 
-def test_instrument_workout_block_uses_real_ic_runtime_screen() -> None:
+def test_instrument_drill_instruction_uses_standard_intro_overlay(monkeypatch) -> None:
+    clock = _FakeClock()
+    engine = build_ic_description_run_drill(
+        clock=clock,
+        seed=304,
+        difficulty=0.5,
+        mode=AntDrillMode.BUILD,
+    )
+    _app, screen = _build_live_screen(engine, test_code="ic_description_run")
+    try:
+        surface = pygame.display.get_surface()
+        assert surface is not None
+        calls = {"intro_sections": 0, "custom_intro": 0}
+
+        def intro_stub(*args, **kwargs):
+            _ = (args, kwargs)
+            calls["intro_sections"] += 1
+
+        def custom_intro_stub(*args, **kwargs):
+            _ = (args, kwargs)
+            calls["custom_intro"] += 1
+
+        monkeypatch.setattr(screen, "_draw_intro_section", intro_stub)
+        monkeypatch.setattr(screen, "_render_instrument_instruction_page", custom_intro_stub)
+        screen.render(surface)
+
+        assert calls["custom_intro"] == 0
+        assert calls["intro_sections"] == 5
+        assert screen._instrument_part1_layout is None
+    finally:
+        pygame.quit()
+
+
+def test_instrument_workout_block_uses_standard_ic_instruction_overlay(monkeypatch) -> None:
     pygame.init()
     try:
         surface = pygame.display.set_mode((960, 540))
@@ -983,7 +1035,7 @@ def test_instrument_workout_block_uses_real_ic_runtime_screen() -> None:
             code="instrument_comprehension_workout",
             title="IC Workout UI",
             description="UI regression workout.",
-            notes=("Untimed reflections.",),
+            notes=("Untimed block setup.",),
             blocks=(
                 AntWorkoutBlockPlan(
                     block_id="heading",
@@ -1003,9 +1055,7 @@ def test_instrument_workout_block_uses_real_ic_runtime_screen() -> None:
             starting_level=5,
         )
         session.activate()
-        session.append_text("focus")
         session.activate()
-        session.append_text("reset")
         session.activate()
         session.activate()
 
@@ -1016,6 +1066,27 @@ def test_instrument_workout_block_uses_real_ic_runtime_screen() -> None:
         runtime = screen._runtime_screen
         assert runtime is not None
         assert isinstance(runtime, CognitiveTestScreen)
+        assert runtime._resolved_intro_test_code() == "ic_heading_anchor"
+        assert runtime._engine.snapshot().phase is Phase.SCORED
         assert runtime._instrument_part1_layout is not None
+
+        calls = {"intro_sections": 0, "custom_intro": 0}
+
+        def intro_stub(*args, **kwargs):
+            _ = (args, kwargs)
+            calls["intro_sections"] += 1
+
+        def custom_intro_stub(*args, **kwargs):
+            _ = (args, kwargs)
+            calls["custom_intro"] += 1
+
+        monkeypatch.setattr(runtime, "_draw_intro_section", intro_stub)
+        monkeypatch.setattr(runtime, "_render_instrument_instruction_page", custom_intro_stub)
+        setattr(runtime._engine, "_phase", Phase.INSTRUCTIONS)
+        runtime.render(surface)
+
+        assert calls["custom_intro"] == 0
+        assert calls["intro_sections"] == 5
+        assert runtime._instrument_part1_layout is None
     finally:
         pygame.quit()

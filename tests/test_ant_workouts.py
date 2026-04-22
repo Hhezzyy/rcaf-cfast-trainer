@@ -37,7 +37,7 @@ def _build_small_workout_plan() -> AntWorkoutPlan:
         code="airborne_numerical_workout",
         title="Airborne Numerical Workout Smoke",
         description="Short deterministic workout for tests.",
-        notes=("Reflections are untimed.",),
+        notes=("Block setup is untimed.",),
         blocks=(
             AntWorkoutBlockPlan(
                 block_id="snap",
@@ -91,12 +91,6 @@ def _complete_small_workout(clock: FakeClock) -> AntWorkoutSession:
     )
 
     session.activate()
-    assert session.stage is AntWorkoutStage.PRE_REFLECTION
-    session.append_text("Need better tempo")
-    session.activate()
-    session.append_text("Move on after misses")
-    session.activate()
-
     assert session.stage is AntWorkoutStage.BLOCK_SETUP
     session.adjust_block_level(-1)
     first_setup = session.snapshot()
@@ -120,12 +114,6 @@ def _complete_small_workout(clock: FakeClock) -> AntWorkoutSession:
     assert session.stage is AntWorkoutStage.BLOCK_RESULTS
     session.activate()
 
-    assert session.stage is AntWorkoutStage.POST_REFLECTION
-    session.append_text("Got slow on the scenario transition")
-    session.activate()
-    session.append_text("Read the ask first")
-    session.activate()
-
     assert session.stage is AntWorkoutStage.RESULTS
     assert session.can_exit() is True
     return session
@@ -147,7 +135,7 @@ def _build_app_and_workout_screen(
     return app, screen
 
 
-def test_airborne_numerical_workout_session_runs_reflections_setups_blocks_and_results() -> None:
+def test_airborne_numerical_workout_session_runs_setups_blocks_and_results() -> None:
     clock = FakeClock()
     session = _complete_small_workout(clock)
 
@@ -167,7 +155,39 @@ def test_airborne_numerical_workout_session_runs_reflections_setups_blocks_and_r
     assert any("1H " in line and "2H " in line for line in snapshot.note_lines)
 
 
-def test_airborne_numerical_workout_attempt_result_omits_reflection_metrics(tmp_path) -> None:
+def test_workout_intro_and_completion_have_no_extra_questions() -> None:
+    clock = FakeClock()
+    session = AntWorkoutSession(
+        clock=clock,
+        seed=123,
+        plan=_build_small_workout_plan(),
+        starting_level=5,
+    )
+
+    intro = session.snapshot()
+    forbidden = "re" + "flection"
+    assert intro.stage is AntWorkoutStage.INTRO
+    assert forbidden not in intro.prompt.lower()
+    assert all(forbidden not in line.lower() for line in intro.note_lines)
+
+    session.activate()
+    assert session.stage is AntWorkoutStage.BLOCK_SETUP
+    assert forbidden not in session.snapshot().prompt.lower()
+
+    session.activate()
+    _finish_current_block_with_one_correct_answer(session, clock)
+    session.activate()
+    session.activate()
+    _finish_current_block_with_one_correct_answer(session, clock)
+    session.activate()
+
+    results = session.snapshot()
+    assert results.stage is AntWorkoutStage.RESULTS
+    assert forbidden not in results.prompt.lower()
+    assert all(forbidden not in line.lower() for line in results.note_lines)
+
+
+def test_airborne_numerical_workout_attempt_result_omits_setup_metrics(tmp_path) -> None:
     clock = FakeClock()
     session = _complete_small_workout(clock)
 
@@ -396,9 +416,7 @@ def test_workout_pause_menu_skip_current_segment_advances_current_block() -> Non
     _app, screen = _build_app_and_workout_screen(clock=clock, session=session)
     try:
         session.activate()
-        session.append_text("Need better tempo")
         session.activate()
-        session.append_text("Move on after misses")
         session.activate()
         session.activate()
         session.activate()
@@ -434,9 +452,7 @@ def test_workout_pause_freezes_block_timer() -> None:
     surface = screen._app.surface
     try:
         session.activate()
-        session.append_text("Need better tempo")
         session.activate()
-        session.append_text("Move on after misses")
         session.activate()
         session.activate()
         session.activate()
@@ -478,9 +494,7 @@ def test_workout_keypad_enter_advances_from_block_results() -> None:
     _app, screen = _build_app_and_workout_screen(clock=clock, session=session)
     try:
         session.activate()
-        session.append_text("Need better tempo")
         session.activate()
-        session.append_text("Move on after misses")
         session.activate()
         session.activate()
         session.activate()
@@ -499,7 +513,7 @@ def test_workout_keypad_enter_advances_from_block_results() -> None:
         pygame.quit()
 
 
-def test_workout_escape_opens_pause_during_reflection_and_results() -> None:
+def test_workout_escape_opens_pause_during_setup_and_results() -> None:
     clock = FakeClock()
     session = AntWorkoutSession(
         clock=clock,
@@ -510,7 +524,7 @@ def test_workout_escape_opens_pause_during_reflection_and_results() -> None:
     app, screen = _build_app_and_workout_screen(clock=clock, session=session)
     try:
         session.activate()
-        assert session.stage is AntWorkoutStage.PRE_REFLECTION
+        assert session.stage is AntWorkoutStage.BLOCK_SETUP
 
         screen.handle_event(
             pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_ESCAPE, "unicode": ""})
@@ -566,9 +580,7 @@ def test_workout_pause_menu_skip_does_not_persist_attempt(
     app.push(screen)
     try:
         session.activate()
-        session.append_text("Need better tempo")
         session.activate()
-        session.append_text("Move on after misses")
         session.activate()
         session.activate()
         session.activate()
@@ -617,9 +629,7 @@ def test_workout_screen_uses_single_activity_session_while_running_block(tmp_pat
     app.push(screen)
     try:
         session.activate()
-        session.append_text("Need better tempo")
         session.activate()
-        session.append_text("Move on after misses")
         session.activate()
         session.activate()
         session.activate()

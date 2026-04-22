@@ -40,6 +40,18 @@ def test_generator_determinism_same_seed_same_sequence() -> None:
     ]
 
 
+def test_scene_spawn_pressure_scales_with_difficulty() -> None:
+    low = TargetRecognitionGenerator(seed=202604).next_problem(difficulty=0.0).payload
+    high = TargetRecognitionGenerator(seed=202604).next_problem(difficulty=1.0).payload
+    assert isinstance(low, TargetRecognitionPayload)
+    assert isinstance(high, TargetRecognitionPayload)
+
+    assert high.scene_spawn_interval_range_s[0] < low.scene_spawn_interval_range_s[0]
+    assert high.scene_spawn_interval_range_s[1] < low.scene_spawn_interval_range_s[1]
+    assert high.scene_spawn_burst_chance > low.scene_spawn_burst_chance
+    assert high.scene_spawn_burst_range == (1, 2)
+
+
 def test_generated_answer_matches_panel_presence_flags() -> None:
     gen = TargetRecognitionGenerator(seed=123)
     p = gen.next_problem(difficulty=0.55)

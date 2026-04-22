@@ -1,29 +1,19 @@
-Panda3D Asset Slots
+Render Asset Slots
 
 This directory is the drop-in root for optional real 3D assets used by the
-Panda3D runtime. The main pygame trainer does not require these files.
+ModernGL runtime. The trainer can still run with internal primitives if a model
+file is missing.
 
 Supported model formats:
 - `.glb`
 - `.gltf`
 - `.obj`
-- `.bam`
-- `.egg`
 
 Recommended structure:
 
 ```text
-assets/panda3d/
+assets/render/
   manifest.json
-  aircraft/
-    plane_red.glb
-    plane_blue.glb
-    plane_green.glb
-    plane_yellow.glb
-  helicopters/
-    helicopter_green.glb
-  vehicles/
-    truck_olive.glb
   rapid_tracking/
     plane_fixed_wing.obj
     helicopter_green.obj
@@ -55,8 +45,6 @@ assets/panda3d/
     trees_field_cluster.mtl
     forest_canopy_patch.obj
     forest_canopy_patch.mtl
-  personnel/
-    soldiers_patrol.glb
 ```
 
 The runtime reads `manifest.json` first and resolves the first existing path for
@@ -68,4 +56,4 @@ Optional manifest tuning fields:
 - `pos_offset`: x, y, z offsets applied after the scene placement
 - `scale`: multiplies the scene-authored scale for loaded models
 
-This keeps the bridge usable while higher-quality art is being sourced.
+This keeps the 3D scenes usable while higher-quality art is being sourced.

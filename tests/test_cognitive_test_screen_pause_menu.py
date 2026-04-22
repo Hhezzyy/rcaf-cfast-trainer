@@ -19,10 +19,18 @@ import pytest
 
 from cfast_trainer.ac_drills import AcDrillConfig, build_ac_gate_anchor_drill
 from cfast_trainer.airborne_numerical import build_airborne_numerical_test
+from cfast_trainer.ant_drills import AntDrillMode
+from cfast_trainer.ant_workouts import (
+    AntWorkoutBlockPlan,
+    AntWorkoutPlan,
+    AntWorkoutSession,
+    AntWorkoutStage,
+)
 from cfast_trainer.app import (
     INTRO_LOADING_MIN_FRAMES,
     AnalogBinding,
     App,
+    AntWorkoutScreen,
     AxisCalibrationSettings,
     CognitiveTestScreen,
     DifficultySettingsStore,
@@ -33,11 +41,11 @@ from cfast_trainer.app import (
     MenuScreen,
     RapidTrackingSettingsScreen,
     RapidTrackingSettingsStore,
-    _AuditoryPandaRequirementState,
 )
 from cfast_trainer.clock import Clock
 from cfast_trainer.cognitive_core import Phase
 from cfast_trainer.cognitive_core import TestSnapshot as SnapshotModel
+from cfast_trainer.gl_scenes import RapidTrackingGlScene
 from cfast_trainer.numerical_operations import build_numerical_operations_test
 from cfast_trainer.persistence import ResultsStore
 from cfast_trainer.rapid_tracking import build_rapid_tracking_test
@@ -151,22 +159,6 @@ class _FakeClock:
         self.t += dt
 
 
-class _FakePandaRenderer:
-    def __init__(self, *, size: tuple[int, int]) -> None:
-        self.size = tuple(size)
-
-    def render(self, **_: object) -> pygame.Surface:
-        surface = pygame.Surface(self.size)
-        surface.fill((72, 108, 144))
-        return surface
-
-    def close(self) -> None:
-        return None
-
-    def target_overlay_state(self):
-        return None
-
-
 class _PressedKeys:
     def __init__(self, pressed: set[int]) -> None:
         self._pressed = set(pressed)
@@ -213,6 +205,26 @@ def _build_app_and_screen(
     return app, screen, created
 
 
+def _build_single_block_no_workout_plan() -> AntWorkoutPlan:
+    return AntWorkoutPlan(
+        code="numerical_operations_workout",
+        title="Pause Workout",
+        description="Short deterministic workout for pause tests.",
+        notes=("Block setup is untimed.",),
+        blocks=(
+            AntWorkoutBlockPlan(
+                block_id="prime",
+                label="Fact Prime",
+                description="Warm-up.",
+                focus_skills=("Arithmetic fact retrieval",),
+                drill_code="no_fact_prime",
+                mode=AntDrillMode.BUILD,
+                duration_min=0.05,
+            ),
+        ),
+    )
+
+
 def _build_airborne_screen() -> tuple[App, CognitiveTestScreen, Clock]:
     pygame.init()
     surface = pygame.display.set_mode((960, 540))
@@ -234,26 +246,6 @@ def _build_airborne_screen() -> tuple[App, CognitiveTestScreen, Clock]:
     )
     app.push(screen)
     return app, screen, clock
-
-
-def _mark_auditory_panda_ready(screen: CognitiveTestScreen) -> None:
-    screen._auditory_panda_requirement = _AuditoryPandaRequirementState(
-        checked=True,
-        ready=True,
-    )
-    screen._auditory_panda_failed = False
-
-
-def _mark_scene_panda_ready(screen: CognitiveTestScreen, scene_key: str) -> None:
-    setattr(
-        screen,
-        f"_{scene_key}_panda_requirement",
-        _AuditoryPandaRequirementState(
-            checked=True,
-            ready=True,
-        ),
-    )
-    setattr(screen, f"_{scene_key}_panda_failed", False)
 
 
 def test_airborne_distance_reveal_tracks_current_held_a_key(monkeypatch) -> None:
@@ -866,6 +858,169 @@ def test_pause_menu_freezes_scored_timer_until_resumed() -> None:
         pygame.quit()
 
 
+def test_shell_pause_blocks_long_pause_from_falling_through_to_results(tmp_path) -> None:
+    pygame.init()
+    surface = pygame.display.set_mode((960, 540))
+    font = pygame.font.Font(None, 36)
+    store = ResultsStore(tmp_path / "results.sqlite3")
+    app = App(surface=surface, font=font, results_store=store)
+    app.push(MenuScreen(app, "Main Menu", [MenuItem("Quit", app.quit)], is_root=True))
+    clock = _FakeClock()
+    screen = CognitiveTestScreen(
+        app,
+        engine_factory=lambda: build_numerical_operations_test(
+            clock=clock,
+            seed=17,
+            difficulty=0.5,
+        ),
+        test_code="numerical_operations",
+    )
+    app.push(screen)
+    try:
+        screen._engine.start_practice()
+        screen._engine.start_scored()
+        before = screen._engine.snapshot().time_remaining_s
+        assert before is not None
+
+        app.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_ESCAPE, "mod": 0, "unicode": ""})
+        )
+        assert app.shell_pause_overlay_active() is True
+        clock.advance(float(before) + 30.0)
+        app.render()
+
+        paused_snap = screen._engine.snapshot()
+        assert paused_snap.phase is Phase.SCORED
+        assert paused_snap.time_remaining_s == pytest.approx(before)
+        assert screen._results_persisted is False
+        session = store.session_summary()
+        assert session is not None
+        assert session.attempt_count == 0
+
+        app.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_ESCAPE, "mod": 0, "unicode": ""})
+        )
+        assert app.shell_pause_overlay_active() is False
+        clock.advance(1.0)
+        app.render()
+
+        resumed_snap = screen._engine.snapshot()
+        assert resumed_snap.phase is Phase.SCORED
+        assert resumed_snap.time_remaining_s == pytest.approx(float(before) - 1.0)
+    finally:
+        pygame.quit()
+
+
+def test_workout_block_pause_freezes_child_engine_before_runtime_screen_exists() -> None:
+    pygame.init()
+    surface = pygame.display.set_mode((960, 540))
+    font = pygame.font.Font(None, 36)
+    app = App(surface=surface, font=font)
+    app.push(MenuScreen(app, "Main Menu", [MenuItem("Quit", app.quit)], is_root=True))
+    clock = _FakeClock()
+    session = AntWorkoutSession(
+        clock=clock,
+        seed=19,
+        plan=_build_single_block_no_workout_plan(),
+        starting_level=5,
+    )
+    session.activate()
+    assert session.stage is AntWorkoutStage.BLOCK_SETUP
+    session.activate()
+    assert session.stage is AntWorkoutStage.BLOCK
+    screen = AntWorkoutScreen(app, session=session, test_code="numerical_operations_workout")
+    app.push(screen)
+    try:
+        engine = session.current_engine()
+        assert engine is not None
+        before = engine.snapshot().time_remaining_s
+        assert before is not None
+
+        app.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_ESCAPE, "mod": 0, "unicode": ""})
+        )
+        assert app.shell_pause_overlay_active() is True
+        clock.advance(float(before) + 10.0)
+        app.render()
+
+        assert session.stage is AntWorkoutStage.BLOCK
+        paused_engine = session.current_engine()
+        assert paused_engine is engine
+        paused_snap = paused_engine.snapshot()
+        assert paused_snap.phase is Phase.SCORED
+        assert paused_snap.time_remaining_s == pytest.approx(before)
+
+        app.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_ESCAPE, "mod": 0, "unicode": ""})
+        )
+        clock.advance(1.0)
+        app.render()
+
+        assert session.stage is AntWorkoutStage.BLOCK
+        resumed_snap = engine.snapshot()
+        assert resumed_snap.time_remaining_s == pytest.approx(float(before) - 1.0)
+    finally:
+        pygame.quit()
+
+
+def test_rapid_tracking_gl_scene_elapsed_freezes_while_shell_paused() -> None:
+    pygame.init()
+    surface = pygame.display.set_mode((960, 540))
+    font = pygame.font.Font(None, 36)
+    app = App(surface=surface, font=font)
+    app.set_opengl_enabled(True)
+    app.push(MenuScreen(app, "Main Menu", [MenuItem("Quit", app.quit)], is_root=True))
+    clock = _FakeClock()
+    screen = CognitiveTestScreen(
+        app,
+        engine_factory=lambda: build_rapid_tracking_test(
+            clock=clock,
+            seed=23,
+            difficulty=0.5,
+        ),
+        test_code="rapid_tracking",
+    )
+    app.push(screen)
+    try:
+        screen._engine.start_scored()
+        app.render()
+        scene = app.consume_gl_scene()
+        assert isinstance(scene, RapidTrackingGlScene)
+        assert scene.payload is not None
+        before_elapsed = scene.payload.phase_elapsed_s
+        before_remaining = screen._engine.snapshot().time_remaining_s
+        assert before_remaining is not None
+
+        app.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_ESCAPE, "mod": 0, "unicode": ""})
+        )
+        clock.advance(12.0)
+        app.render()
+        paused_scene = app.consume_gl_scene()
+        assert isinstance(paused_scene, RapidTrackingGlScene)
+        assert paused_scene.payload is not None
+        paused_snap = screen._engine.snapshot()
+
+        assert paused_scene.payload.phase_elapsed_s == pytest.approx(before_elapsed)
+        assert paused_snap.phase is Phase.SCORED
+        assert paused_snap.time_remaining_s == pytest.approx(before_remaining)
+
+        app.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_ESCAPE, "mod": 0, "unicode": ""})
+        )
+        clock.advance(1.0)
+        app.render()
+        resumed_scene = app.consume_gl_scene()
+        assert isinstance(resumed_scene, RapidTrackingGlScene)
+        assert resumed_scene.payload is not None
+        resumed_snap = screen._engine.snapshot()
+
+        assert resumed_scene.payload.phase_elapsed_s > paused_scene.payload.phase_elapsed_s
+        assert resumed_snap.time_remaining_s == pytest.approx(float(before_remaining) - 1.0, abs=0.05)
+    finally:
+        pygame.quit()
+
+
 def test_pause_menu_skip_does_not_persist_attempt(tmp_path) -> None:
     pygame.init()
     surface = pygame.display.set_mode((960, 540))
@@ -1164,7 +1319,6 @@ def test_auditory_intro_loading_shows_callsigns_and_rule_recap() -> None:
         surface = pygame.display.get_surface()
         assert surface is not None
         engine = engines[-1]
-        _mark_auditory_panda_ready(screen)
         engine._assigned_callsigns = ("RAVEN", "EAGLE", "VIPER")
 
         tiny_font = _SpyFont()
@@ -1194,7 +1348,6 @@ def test_auditory_prefixed_title_uses_live_auditory_renderer_path() -> None:
     try:
         surface = pygame.display.get_surface()
         assert surface is not None
-        _mark_auditory_panda_ready(screen)
 
         tiny_font = _SpyFont()
         small_font = _SpyFont()
@@ -1259,9 +1412,6 @@ def test_rapid_tracking_instructions_show_session_seed() -> None:
         screen._tiny_font = tiny_font
         screen._small_font = small_font
         screen._app._font = app_font
-        screen._get_rapid_tracking_panda_renderer = (  # type: ignore[method-assign]
-            lambda *, size: (_mark_scene_panda_ready(screen, "rapid_tracking") or _FakePandaRenderer(size=size))
-        )
 
         screen.render(surface)
         rendered_text = "\n".join(app_font.rendered + small_font.rendered + tiny_font.rendered)
@@ -2080,12 +2230,6 @@ def test_pause_settings_changes_auditory_mix_controls(
         surface = pygame.display.get_surface()
         assert surface is not None
         engine = engines[-1]
-        _mark_auditory_panda_ready(screen)
-        monkeypatch.setattr(
-            screen,
-            "_get_auditory_panda_renderer",
-            lambda *, size: _FakePandaRenderer(size=size),
-        )
 
         screen.handle_event(
             pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_ESCAPE, "mod": 0, "unicode": ""})

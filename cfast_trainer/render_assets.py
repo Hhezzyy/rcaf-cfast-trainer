@@ -16,8 +16,7 @@ def _repo_root() -> Path:
 
 
 def default_asset_root() -> Path:
-    # Keep the existing asset location while removing renderer-specific semantics.
-    return _repo_root() / "assets" / "panda3d"
+    return _repo_root() / "assets" / "render"
 
 
 @dataclass(frozen=True, slots=True)

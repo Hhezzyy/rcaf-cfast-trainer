@@ -72,6 +72,38 @@ def test_same_seed_gives_same_problem_stream_for_each_tr_drill() -> None:
             assert engine_b.submit_answer(str(engine_b._current.answer)) is True
 
 
+def test_tr_drill_scene_spawn_pressure_is_deterministic_and_mode_scaled() -> None:
+    build_engine = build_tr_pressure_run_drill(
+        clock=FakeClock(),
+        seed=717,
+        difficulty=0.82,
+        mode=AntDrillMode.BUILD,
+    )
+    stress_engine = build_tr_pressure_run_drill(
+        clock=FakeClock(),
+        seed=717,
+        difficulty=0.82,
+        mode=AntDrillMode.STRESS,
+    )
+    build_engine.start_scored()
+    stress_engine.start_scored()
+    build_payload = _current_payload(build_engine)
+    stress_payload = _current_payload(stress_engine)
+
+    assert stress_payload.scene_spawn_interval_range_s[0] < build_payload.scene_spawn_interval_range_s[0]
+    assert stress_payload.scene_spawn_interval_range_s[1] < build_payload.scene_spawn_interval_range_s[1]
+    assert stress_payload.scene_spawn_burst_chance > build_payload.scene_spawn_burst_chance
+
+    repeat_engine = build_tr_pressure_run_drill(
+        clock=FakeClock(),
+        seed=717,
+        difficulty=0.82,
+        mode=AntDrillMode.STRESS,
+    )
+    repeat_engine.start_scored()
+    assert _current_payload(repeat_engine) == stress_payload
+
+
 def test_focused_tr_drills_keep_scene_active_for_anchor_variants() -> None:
     cases = (
         (build_tr_scene_anchor_drill, ("scene",)),

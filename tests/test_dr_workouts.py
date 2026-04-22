@@ -31,7 +31,7 @@ def _build_small_dr_workout_plan() -> AntWorkoutPlan:
         code="digit_recognition_workout",
         title="DR Workout Smoke",
         description="Short deterministic workout for tests.",
-        notes=("Reflections are untimed.",),
+        notes=("Block setup is untimed.",),
         blocks=(
             AntWorkoutBlockPlan(
                 block_id="visible",
@@ -93,18 +93,14 @@ def _complete_small_dr_workout(clock: FakeClock) -> AntWorkoutSession:
         starting_level=5,
     )
     session.activate()
-    session.append_text("Train clean encoding")
     session.activate()
-    session.append_text("Reset fast after misses")
     session.activate()
     session.activate()
     _finish_current_block_with_one_correct_answer(session, clock)
     session.activate()
     _finish_current_block_with_one_correct_answer(session, clock)
     session.activate()
-    session.append_text("Different-digit items were slower")
     session.activate()
-    session.append_text("Re-encode the next display immediately")
     session.activate()
     assert session.stage is AntWorkoutStage.RESULTS
     return session

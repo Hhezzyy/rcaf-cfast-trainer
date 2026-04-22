@@ -41,10 +41,7 @@ class SystemLogicTimedDrill(TimedCapDrill):
     def _input_hint(self) -> str:
         if self.phase not in (Phase.PRACTICE, Phase.SCORED):
             return "Press Enter to continue"
-        return (
-            f"L{self._current_level()} | Cap {self._item_remaining_s():0.1f}s | "
-            "Up/Down + A-E or 1-5 then Enter"
-        )
+        return self._timed_cap_hint("Up/Down + A-E or 1-5 then Enter")
 
 
 class _SystemLogicSingleReasoningGenerator(SystemLogicGenerator):

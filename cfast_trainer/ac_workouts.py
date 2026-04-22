@@ -104,11 +104,11 @@ def build_ac_workout_plan(*, duration_scale: float = 1.0) -> AntWorkoutPlan:
         code="auditory_capacity_workout",
         title="Auditory Capacity Workout (90m)",
         description=(
-            "Standard 90-minute Auditory Capacity workout with typed reflection, focused channel warm-ups, "
+            "Standard 90-minute Auditory Capacity workout with focused channel warm-ups, "
             "a mixed tempo block, and a final full-pressure run on the live auditory task."
         ),
         notes=(
-            "Typed reflections and block setup screens do not count toward the 90-minute drill clock.",
+            "Block setup screens do not count toward the 90-minute drill clock.",
             "Every block reuses the live Auditory Capacity screen, audio path, and trigger/recall control model.",
             "Controls stay the normal live model throughout: fly the ball, change colour or number, submit digit recall, and answer the beep with the configured trigger binding or Space.",
         ),

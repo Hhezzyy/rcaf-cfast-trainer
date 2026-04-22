@@ -357,11 +357,9 @@ def build_workout_block_engine(
 
 class AntWorkoutStage(str, Enum):
     INTRO = "intro"
-    PRE_REFLECTION = "pre_reflection"
     BLOCK_SETUP = "block_setup"
     BLOCK = "block"
     BLOCK_RESULTS = "block_results"
-    POST_REFLECTION = "post_reflection"
     RESULTS = "results"
 
 
@@ -477,23 +475,6 @@ class AntWorkoutSummary:
     block_count: int = 0
     completed_blocks: int = 0
     workout_code: str = ""
-
-
-@dataclass(frozen=True, slots=True)
-class _ReflectionPrompt:
-    prompt: str
-
-
-_TEXT_LIMIT = 140
-_OPENING_REFLECTIONS: tuple[_ReflectionPrompt, ...] = (
-    _ReflectionPrompt("Why are you training today?"),
-    _ReflectionPrompt("When you feel behind, what rule will you follow instead of spiraling?"),
-)
-_CLOSING_REFLECTIONS: tuple[_ReflectionPrompt, ...] = (
-    _ReflectionPrompt("What started to break down first?"),
-    _ReflectionPrompt("What is one rule for the next session?"),
-)
-
 
 def _block(
     block_id: str,
@@ -623,11 +604,11 @@ def build_ant_workout_plan(code: str, *, duration_scale: float = 1.0) -> AntWork
         code="airborne_numerical_workout",
         title="Airborne Numerical Workout (90m)",
         description=(
-            "Standard 90-minute Airborne Numerical workout with reflection, warm-up, "
+            "Standard 90-minute Airborne Numerical workout with warm-up, "
             "tempo calculation work, and full-question scenario sets."
         ),
         notes=(
-            "Typed reflections and block setup screens do not count toward the 90-minute drill clock.",
+            "Block setup screens do not count toward the 90-minute drill clock.",
             "Each drill block can override the workout default difficulty before it starts.",
             "The workout keeps the full drill library available outside the workout menu.",
         ),
@@ -787,10 +768,6 @@ class AntWorkoutSession:
             adaptive_enabled=(self._difficulty_mode == "adaptive"),
         )
         self._stage = AntWorkoutStage.INTRO
-        self._reflection_input = ""
-        self._reflection_index = 0
-        self._opening_reflections: list[str] = []
-        self._closing_reflections: list[str] = []
         self._current_block_index = -1
         self._current_block_plan: AntWorkoutBlockPlan | None = None
         self._current_engine: object | None = None
@@ -882,37 +859,9 @@ class AntWorkoutSession:
         )
         self._refresh_metric_overrides()
 
-    def append_text(self, text: str) -> None:
-        if self._stage not in (AntWorkoutStage.PRE_REFLECTION, AntWorkoutStage.POST_REFLECTION):
-            return
-        cleaned = "".join(ch for ch in str(text) if 32 <= ord(ch) <= 126)
-        if not cleaned:
-            return
-        room = max(0, _TEXT_LIMIT - len(self._reflection_input))
-        if room <= 0:
-            return
-        self._reflection_input += cleaned[:room]
-
-    def backspace_text(self) -> None:
-        if self._stage in (AntWorkoutStage.PRE_REFLECTION, AntWorkoutStage.POST_REFLECTION):
-            self._reflection_input = self._reflection_input[:-1]
-
     def activate(self) -> None:
         if self._stage is AntWorkoutStage.INTRO:
-            self._stage = AntWorkoutStage.PRE_REFLECTION
-            self._reflection_index = 0
-            self._reflection_input = ""
-            return
-
-        if self._stage is AntWorkoutStage.PRE_REFLECTION:
-            response = self._reflection_input.strip()
-            if response == "":
-                return
-            self._opening_reflections.append(response[:_TEXT_LIMIT])
-            self._reflection_input = ""
-            self._reflection_index += 1
-            if self._reflection_index >= len(_OPENING_REFLECTIONS):
-                self._start_first_block()
+            self._start_first_block()
             return
 
         if self._stage is AntWorkoutStage.BLOCK_SETUP:
@@ -924,23 +873,9 @@ class AntWorkoutSession:
             self._prepare_next_block()
             return
 
-        if self._stage is AntWorkoutStage.POST_REFLECTION:
-            response = self._reflection_input.strip()
-            if response == "":
-                return
-            self._closing_reflections.append(response[:_TEXT_LIMIT])
-            self._reflection_input = ""
-            self._reflection_index += 1
-            if self._reflection_index >= len(_CLOSING_REFLECTIONS):
-                self._stage = AntWorkoutStage.RESULTS
-            return
-
     def debug_skip_stage(self) -> None:
         if self._stage is AntWorkoutStage.RESULTS:
             return
-        if self._stage in (AntWorkoutStage.PRE_REFLECTION, AntWorkoutStage.POST_REFLECTION):
-            if self._reflection_input.strip() == "":
-                self._reflection_input = "skip"
         self.activate()
 
     def debug_skip_block(self) -> None:
@@ -962,8 +897,6 @@ class AntWorkoutSession:
             self._record_current_block_result()
         self._current_engine = None
         self._current_block_plan = None
-        self._reflection_input = ""
-        self._reflection_index = 0
         self._stage = AntWorkoutStage.RESULTS
 
     def submit_answer(self, raw: str) -> bool:
@@ -1014,32 +947,6 @@ class AntWorkoutSession:
                     f"Focus: {', '.join(self._plan.focus_skills)}",
                     *self._plan.notes,
                 ),
-                difficulty_level=self._starting_level,
-            )
-
-        if self._stage is AntWorkoutStage.PRE_REFLECTION:
-            prompt = _OPENING_REFLECTIONS[self._reflection_index].prompt
-            return AntWorkoutSnapshot(
-                stage=self._stage,
-                title=self._plan.title,
-                subtitle=f"Opening Reflection {self._reflection_index + 1}/{len(_OPENING_REFLECTIONS)}",
-                prompt=prompt,
-                options=(),
-                selected_index=0,
-                current_block_label="",
-                block_index=0,
-                block_total=len(self._plan.blocks),
-                block_time_remaining_s=None,
-                workout_time_remaining_s=self._plan.scored_duration_s,
-                attempted_total=attempted_total,
-                correct_total=correct_total,
-                fixation_rate=fixation_rate,
-                note_lines=(
-                    "Type a short answer and press Enter.",
-                    "This reflection is not saved and does not count toward workout time.",
-                ),
-                text_value=self._reflection_input,
-                text_max_length=_TEXT_LIMIT,
                 difficulty_level=self._starting_level,
             )
 
@@ -1111,32 +1018,6 @@ class AntWorkoutSession:
                 ),
                 difficulty_level=self._current_block_level,
                 latest_block_result=result,
-            )
-
-        if self._stage is AntWorkoutStage.POST_REFLECTION:
-            prompt = _CLOSING_REFLECTIONS[self._reflection_index].prompt
-            return AntWorkoutSnapshot(
-                stage=self._stage,
-                title=self._plan.title,
-                subtitle=f"Closing Reflection {self._reflection_index + 1}/{len(_CLOSING_REFLECTIONS)}",
-                prompt=prompt,
-                options=(),
-                selected_index=0,
-                current_block_label="",
-                block_index=len(self._plan.blocks),
-                block_total=len(self._plan.blocks),
-                block_time_remaining_s=None,
-                workout_time_remaining_s=0.0,
-                attempted_total=attempted_total,
-                correct_total=correct_total,
-                fixation_rate=fixation_rate,
-                note_lines=(
-                    "Type a short answer and press Enter.",
-                    "This reflection is not saved and does not count toward workout time.",
-                ),
-                text_value=self._reflection_input,
-                text_max_length=_TEXT_LIMIT,
-                difficulty_level=self._starting_level,
             )
 
         if self._stage is AntWorkoutStage.RESULTS:
@@ -1273,7 +1154,6 @@ class AntWorkoutSession:
             if split_fragment is None:
                 continue
             lines.append(f"{result.label}: {split_fragment}")
-        lines.append("Reflections were for focus only and were not saved.")
         return tuple(lines)
 
     def _running_totals(self) -> tuple[int, int, float]:
@@ -1316,9 +1196,7 @@ class AntWorkoutSession:
     def _prepare_next_block(self) -> None:
         self._current_block_index += 1
         if self._current_block_index >= len(self._plan.blocks):
-            self._stage = AntWorkoutStage.POST_REFLECTION
-            self._reflection_index = 0
-            self._reflection_input = ""
+            self._stage = AntWorkoutStage.RESULTS
             self._current_engine = None
             self._current_block_plan = None
             return

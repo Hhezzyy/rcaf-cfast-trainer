@@ -34,7 +34,7 @@ def _build_small_tt1_workout_plan() -> AntWorkoutPlan:
         code="trace_test_1_workout",
         title="Trace Test 1 Workout Smoke",
         description="Short deterministic TT1 workout for tests.",
-        notes=("Reflections are untimed.",),
+        notes=("Block setup is untimed.",),
         blocks=(
             AntWorkoutBlockPlan(
                 block_id="tt1-lateral",
@@ -63,7 +63,7 @@ def _build_small_tt2_workout_plan() -> AntWorkoutPlan:
         code="trace_test_2_workout",
         title="Trace Test 2 Workout Smoke",
         description="Short deterministic TT2 workout for tests.",
-        notes=("Reflections are untimed.",),
+        notes=("Block setup is untimed.",),
         blocks=(
             AntWorkoutBlockPlan(
                 block_id="tt2-steady",
@@ -124,9 +124,7 @@ def _complete_small_trace_workout(clock: FakeClock, plan: AntWorkoutPlan) -> Ant
         starting_level=5,
     )
     session.activate()
-    session.append_text("keep the first cue clean")
     session.activate()
-    session.append_text("reset immediately after misses")
     session.activate()
     session.activate()
     _run_current_block(session, clock)
@@ -137,10 +135,8 @@ def _complete_small_trace_workout(clock: FakeClock, plan: AntWorkoutPlan) -> Ant
     _run_current_block(session, clock)
     assert session.stage is AntWorkoutStage.BLOCK_RESULTS
     session.activate()
-    assert session.stage is AntWorkoutStage.POST_REFLECTION
-    session.append_text("second block felt faster")
+    assert session.stage is AntWorkoutStage.RESULTS
     session.activate()
-    session.append_text("anchor the first family earlier")
     session.activate()
     assert session.stage is AntWorkoutStage.RESULTS
     return session

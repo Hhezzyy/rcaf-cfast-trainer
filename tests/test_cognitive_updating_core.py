@@ -6,6 +6,7 @@ from typing import cast
 import pytest
 
 from cfast_trainer.cognitive_updating import (
+    COGNITIVE_UPDATING_DOMAIN_ORDER,
     CognitiveUpdatingConfig,
     CognitiveUpdatingGenerator,
     CognitiveUpdatingPayload,
@@ -14,6 +15,7 @@ from cfast_trainer.cognitive_updating import (
     CognitiveUpdatingTrainingProfile,
     build_cognitive_updating_test,
     decode_cognitive_updating_submission_raw,
+    _difficulty_params,
 )
 
 
@@ -41,7 +43,14 @@ def _signature(payload: CognitiveUpdatingPayload) -> tuple[str, tuple[tuple[str,
 def _payload_for(seed: int) -> CognitiveUpdatingPayload:
     return cast(
         CognitiveUpdatingPayload,
-        CognitiveUpdatingGenerator(seed=seed).next_problem(difficulty=0.5).payload,
+        CognitiveUpdatingGenerator(seed=seed).next_problem_for_selection(
+            difficulty=0.5,
+            training_profile=CognitiveUpdatingTrainingProfile(
+                active_domains=COGNITIVE_UPDATING_DOMAIN_ORDER,
+                focus_label="Core Test Fixture",
+            ),
+            scenario_family="baseline",
+        ).payload,
     )
 
 
@@ -91,6 +100,50 @@ def test_generated_payload_has_multiple_components_and_submenus() -> None:
     assert 0 <= payload.dispenser_lit <= 4
     assert len(payload.comms_code) == 4
     assert payload.comms_code.isdigit()
+
+
+def test_default_difficulty_scales_active_domains_and_pressure_parameters() -> None:
+    low = cast(
+        CognitiveUpdatingPayload,
+        CognitiveUpdatingGenerator(seed=710).next_problem(difficulty=0.0).payload,
+    )
+    hard = cast(
+        CognitiveUpdatingPayload,
+        CognitiveUpdatingGenerator(seed=710).next_problem(difficulty=1.0).payload,
+    )
+    low_params = _difficulty_params(0.0)
+    hard_params = _difficulty_params(1.0)
+
+    assert low.active_domains == ("controls", "navigation", "state_code")
+    assert hard.active_domains == COGNITIVE_UPDATING_DOMAIN_ORDER
+    assert low.pressure_drift_scale < hard.pressure_drift_scale
+    assert low.speed_drift_scale < hard.speed_drift_scale
+    assert low.tank_drain_scale < hard.tank_drain_scale
+    assert low.response_grace_window_s > hard.response_grace_window_s
+    assert low.speed_tolerance_knots > hard.speed_tolerance_knots
+    assert low.tank_spread_tolerance_l > hard.tank_spread_tolerance_l
+    assert low.estimate_tolerance > hard.estimate_tolerance
+    assert low.comms_time_limit_s > hard.comms_time_limit_s
+    assert (low.pressure_high - low.pressure_low) > (hard.pressure_high - hard.pressure_low)
+    assert low_params.camera_due_min_s > hard_params.camera_due_min_s
+    assert low_params.sensor_due_min_s > hard_params.sensor_due_min_s
+    assert low_params.objective_deadline_min_s > hard_params.objective_deadline_min_s
+
+
+def test_explicit_full_mixed_profile_preserves_declared_domains_at_easy_difficulty() -> None:
+    payload = cast(
+        CognitiveUpdatingPayload,
+        CognitiveUpdatingGenerator(seed=711).next_problem_for_selection(
+            difficulty=0.0,
+            training_profile=CognitiveUpdatingTrainingProfile(
+                active_domains=COGNITIVE_UPDATING_DOMAIN_ORDER,
+                focus_label="Full Mixed",
+            ),
+            scenario_family="baseline",
+        ).payload,
+    )
+
+    assert payload.active_domains == COGNITIVE_UPDATING_DOMAIN_ORDER
 
 
 def test_scorer_exact_and_estimation_behaviour() -> None:
@@ -150,6 +203,85 @@ def test_runtime_state_machine_changes_code_from_actions() -> None:
     assert parsed is not None
     assert parsed.entered_code == "1234"
     assert parsed.state_code == after.current_comms_code
+
+
+def test_comms_entry_clear_and_submit_do_not_mutate_other_subsystems() -> None:
+    clock = FakeClock()
+    payload = replace(
+        _payload_for(612),
+        pressure_value=100,
+        pump_on=True,
+        required_knots=120,
+        current_knots=120,
+        tank_levels_l=(440, 430, 420),
+        active_tank=1,
+        comms_time_limit_s=40,
+    )
+    runtime = CognitiveUpdatingRuntime(payload=payload, clock=clock)
+
+    before = (
+        runtime._pressure_value,
+        runtime._pump_on,
+        runtime._current_knots,
+        tuple(runtime._tank_levels),
+        runtime._active_tank,
+    )
+    clock.advance(12.0)
+    for ch in "1234":
+        runtime.append_comms_digit(ch)
+    runtime.clear_comms()
+    for ch in "1234":
+        runtime.append_comms_digit(ch)
+    raw = runtime.build_submission_raw()
+
+    assert raw.startswith("1234")
+    assert (
+        runtime._pressure_value,
+        runtime._pump_on,
+        runtime._current_knots,
+        tuple(runtime._tank_levels),
+        runtime._active_tank,
+    ) == before
+
+    snap = runtime.snapshot()
+    assert snap.pressure_value > int(round(before[0]))
+    assert snap.current_knots > int(round(before[2]))
+    assert snap.tank_levels_l[0] < int(round(before[3][0]))
+
+
+def test_key_subsystem_actions_only_mutate_their_owned_subsystem_state() -> None:
+    clock = FakeClock()
+    payload = replace(
+        _payload_for(613),
+        pressure_value=100,
+        pump_on=False,
+        required_knots=120,
+        current_knots=120,
+        tank_levels_l=(440, 430, 420),
+        active_tank=1,
+    )
+    runtime = CognitiveUpdatingRuntime(payload=payload, clock=clock)
+
+    clock.advance(10.0)
+    runtime.set_pump(True)
+    assert runtime._pump_on is True
+    assert runtime._current_knots == pytest.approx(120.0)
+    assert tuple(runtime._tank_levels) == pytest.approx((440.0, 430.0, 420.0))
+
+    pressure_after_pump = runtime._pressure_value
+    tanks_after_pump = tuple(runtime._tank_levels)
+    runtime.adjust_knots(5)
+    assert runtime._pressure_value == pytest.approx(pressure_after_pump)
+    assert tuple(runtime._tank_levels) == pytest.approx(tanks_after_pump)
+    assert runtime._current_knots != pytest.approx(120.0)
+
+    pressure_after_nav = runtime._pressure_value
+    knots_after_nav = runtime._current_knots
+    runtime.set_active_tank(2)
+    assert runtime._pressure_value == pytest.approx(pressure_after_nav)
+    assert runtime._current_knots == pytest.approx(knots_after_nav)
+    assert runtime._active_tank == 2
+    assert runtime._tank_levels[0] < tanks_after_pump[0]
 
 
 def test_runtime_clock_tracks_elapsed_seconds() -> None:
@@ -221,7 +353,7 @@ def test_camera_button_flashes_and_resets_due_message() -> None:
 
 def test_message_lines_include_objective_and_comms_status_rows() -> None:
     clock = FakeClock()
-    payload = replace(_payload_for(515), comms_time_limit_s=40)
+    payload = replace(_payload_for(515), comms_time_limit_s=40, message_reveal_comms_s=20.0)
     runtime = CognitiveUpdatingRuntime(payload=payload, clock=clock)
 
     start = runtime.snapshot()
@@ -276,7 +408,7 @@ def test_comms_message_reveal_uses_remaining_time_threshold() -> None:
 
 def test_comms_code_rollover_replaces_target_and_clears_stale_entry() -> None:
     clock = FakeClock()
-    payload = replace(_payload_for(522), comms_time_limit_s=30)
+    payload = replace(_payload_for(522), comms_time_limit_s=30, message_reveal_comms_s=20.0)
     runtime = CognitiveUpdatingRuntime(payload=payload, clock=clock)
 
     start = runtime.snapshot()
@@ -530,6 +662,64 @@ def test_navigation_and_engine_drift_rates_match_reference_video() -> None:
     assert 427 <= snap.tank_levels_l[0] <= 429
     assert snap.tank_levels_l[1] == 449
     assert snap.tank_levels_l[2] == 448
+
+
+def test_harder_difficulty_drifts_out_of_sync_faster_than_easier_difficulty() -> None:
+    profile = CognitiveUpdatingTrainingProfile(
+        active_domains=COGNITIVE_UPDATING_DOMAIN_ORDER,
+        focus_label="Drift Fixture",
+    )
+    low_payload = cast(
+        CognitiveUpdatingPayload,
+        CognitiveUpdatingGenerator(seed=614).next_problem_for_selection(
+            difficulty=0.0,
+            training_profile=profile,
+            scenario_family="baseline",
+        ).payload,
+    )
+    hard_payload = cast(
+        CognitiveUpdatingPayload,
+        CognitiveUpdatingGenerator(seed=614).next_problem_for_selection(
+            difficulty=1.0,
+            training_profile=profile,
+            scenario_family="baseline",
+        ).payload,
+    )
+    low_payload = replace(
+        low_payload,
+        pressure_low=80,
+        pressure_high=130,
+        pressure_value=90,
+        pump_on=True,
+        required_knots=100,
+        current_knots=100,
+        tank_levels_l=(458, 449, 448),
+        active_tank=1,
+    )
+    hard_payload = replace(
+        hard_payload,
+        pressure_low=80,
+        pressure_high=130,
+        pressure_value=90,
+        pump_on=True,
+        required_knots=100,
+        current_knots=100,
+        tank_levels_l=(458, 449, 448),
+        active_tank=1,
+    )
+    low_clock = FakeClock()
+    hard_clock = FakeClock()
+    low_runtime = CognitiveUpdatingRuntime(payload=low_payload, clock=low_clock)
+    hard_runtime = CognitiveUpdatingRuntime(payload=hard_payload, clock=hard_clock)
+
+    low_clock.advance(30.0)
+    hard_clock.advance(30.0)
+    low_snap = low_runtime.snapshot()
+    hard_snap = hard_runtime.snapshot()
+
+    assert (hard_snap.pressure_value - 90) > (low_snap.pressure_value - 90)
+    assert (hard_snap.current_knots - 100) > (low_snap.current_knots - 100)
+    assert (458 - hard_snap.tank_levels_l[0]) > (458 - low_snap.tank_levels_l[0])
 
 
 def test_scorer_encoded_submission_weights_operations() -> None:

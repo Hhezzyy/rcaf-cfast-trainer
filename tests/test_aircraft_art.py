@@ -4,10 +4,10 @@ import pytest
 
 from cfast_trainer.aircraft_art import (
     build_fixed_wing_mesh,
+    fixed_wing_hpr_from_world_hpr,
+    fixed_wing_hpr_from_world_tangent,
     fixed_wing_heading_from_screen_heading,
     instrument_card_pygame_palette,
-    panda3d_fixed_wing_hpr_from_world_hpr,
-    panda3d_fixed_wing_hpr_from_world_tangent,
     project_fixed_wing_faces,
     screen_heading_deg_from_world_tangent,
 )
@@ -99,8 +99,8 @@ def test_screen_heading_from_world_tangent_is_deterministic() -> None:
     assert first == second
 
 
-def test_panda3d_fixed_wing_hpr_from_world_hpr_preserves_heading_and_roll_but_flips_pitch() -> None:
-    hpr = panda3d_fixed_wing_hpr_from_world_hpr(
+def test_fixed_wing_hpr_from_world_hpr_preserves_heading_and_roll_but_flips_pitch() -> None:
+    hpr = fixed_wing_hpr_from_world_hpr(
         heading_deg=42.0,
         pitch_deg=9.5,
         roll_deg=-17.0,
@@ -109,9 +109,9 @@ def test_panda3d_fixed_wing_hpr_from_world_hpr_preserves_heading_and_roll_but_fl
     assert hpr == (42.0, -9.5, -17.0)
 
 
-def test_panda3d_fixed_wing_hpr_from_world_tangent_uses_world_heading_and_climb_convention() -> None:
-    east = panda3d_fixed_wing_hpr_from_world_tangent((1.0, 0.0, 0.0), roll_deg=12.0)
-    climb = panda3d_fixed_wing_hpr_from_world_tangent((0.0, 1.0, 1.0), roll_deg=-8.0)
+def test_fixed_wing_hpr_from_world_tangent_uses_world_heading_and_climb_convention() -> None:
+    east = fixed_wing_hpr_from_world_tangent((1.0, 0.0, 0.0), roll_deg=12.0)
+    climb = fixed_wing_hpr_from_world_tangent((0.0, 1.0, 1.0), roll_deg=-8.0)
 
     assert east == (90.0, -0.0, 12.0)
     assert climb[0] == 0.0
@@ -119,9 +119,9 @@ def test_panda3d_fixed_wing_hpr_from_world_tangent_uses_world_heading_and_climb_
     assert climb[2] == -8.0
 
 
-def test_panda3d_fixed_wing_hpr_from_world_tangent_rejects_zero_motion() -> None:
+def test_fixed_wing_hpr_from_world_tangent_rejects_zero_motion() -> None:
     with pytest.raises(ValueError, match="non-zero"):
-        panda3d_fixed_wing_hpr_from_world_tangent(
+        fixed_wing_hpr_from_world_tangent(
             (0.0, 0.0, 0.0),
             roll_deg=22.0,
         )

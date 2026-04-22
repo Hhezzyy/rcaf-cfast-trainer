@@ -30,7 +30,7 @@ def _build_small_rt_workout_plan() -> AntWorkoutPlan:
         code="rapid_tracking_workout",
         title="Rapid Tracking Workout Smoke",
         description="Short deterministic workout for tests.",
-        notes=("Reflections are untimed.",),
+        notes=("Block setup is untimed.",),
         blocks=(
             AntWorkoutBlockPlan(
                 block_id="lock-anchor",
@@ -80,9 +80,7 @@ def _complete_small_rt_workout(clock: FakeClock) -> AntWorkoutSession:
         starting_level=5,
     )
     session.activate()
-    session.append_text("keep the lock calm")
     session.activate()
-    session.append_text("capture only on clean boxes")
     session.activate()
     session.activate()
     _run_current_block(session, clock)
@@ -93,10 +91,8 @@ def _complete_small_rt_workout(clock: FakeClock) -> AntWorkoutSession:
     _run_current_block(session, clock)
     assert session.stage is AntWorkoutStage.BLOCK_RESULTS
     session.activate()
-    assert session.stage is AntWorkoutStage.POST_REFLECTION
-    session.append_text("mixed tempo needed quicker resets")
+    assert session.stage is AntWorkoutStage.RESULTS
     session.activate()
-    session.append_text("capture timing stayed mostly clean")
     session.activate()
     assert session.stage is AntWorkoutStage.RESULTS
     return session

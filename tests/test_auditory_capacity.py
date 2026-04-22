@@ -16,7 +16,7 @@ from cfast_trainer.auditory_capacity import (
     project_inside_tube,
     tube_contact_ratio,
 )
-from cfast_trainer.auditory_capacity_panda3d import AuditoryCapacityPanda3DRenderer
+from cfast_trainer.auditory_capacity_motion import auditory_gate_world_distance_from_x_norm
 from cfast_trainer.auditory_capacity_view import (
     AUDITORY_BALL_ANCHOR_DISTANCE,
     BALL_FORWARD_IDLE_NORM,
@@ -52,15 +52,26 @@ def test_default_config_values_match_auditory_overhaul() -> None:
     assert cfg.gate_interval_s == pytest.approx(4.2)
 
 
-def test_engine_and_panda_renderer_share_gate_anchors() -> None:
+def test_engine_and_render_motion_share_gate_anchors() -> None:
     assert AUDITORY_GATE_SPAWN_X_NORM == pytest.approx(1.65)
     assert AUDITORY_GATE_RETIRE_X_NORM == pytest.approx(-1.25)
-    assert AuditoryCapacityPanda3DRenderer._GATE_SPAWN_X_NORM == pytest.approx(
-        AUDITORY_GATE_SPAWN_X_NORM
+
+    travel_distance = 18.0
+    engine_distance = gate_distance_from_x_norm(
+        AUDITORY_GATE_SPAWN_X_NORM,
+        travel_distance=travel_distance,
+        spawn_x_norm=AUDITORY_GATE_SPAWN_X_NORM,
+        player_x_norm=AUDITORY_GATE_PLAYER_X_NORM,
+        retire_x_norm=AUDITORY_GATE_RETIRE_X_NORM,
     )
-    assert AuditoryCapacityPanda3DRenderer._GATE_RETIRE_X_NORM == pytest.approx(
-        AUDITORY_GATE_RETIRE_X_NORM
+    motion_distance = auditory_gate_world_distance_from_x_norm(
+        AUDITORY_GATE_SPAWN_X_NORM,
+        travel_distance=travel_distance,
+        spawn_x_norm=AUDITORY_GATE_SPAWN_X_NORM,
+        player_x_norm=AUDITORY_GATE_PLAYER_X_NORM,
+        retire_x_norm=AUDITORY_GATE_RETIRE_X_NORM,
     )
+    assert motion_distance == pytest.approx(engine_distance)
 
 
 def test_default_gate_interval_comes_from_spawn_rate() -> None:

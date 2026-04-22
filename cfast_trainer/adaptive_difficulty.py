@@ -29,6 +29,7 @@ _BENCHMARK_CODE = "benchmark_battery"
 _DEFAULT_LEVEL_RATIOS = (0.00, 0.08, 0.16, 0.26, 0.38, 0.50, 0.62, 0.74, 0.87, 1.00)
 _MATH_LEVEL_RATIOS = (0.00, 0.03, 0.08, 0.15, 0.25, 0.38, 0.52, 0.68, 0.84, 1.00)
 _LOOKUP_LEVEL_RATIOS = (0.00, 0.06, 0.14, 0.24, 0.36, 0.48, 0.60, 0.73, 0.86, 1.00)
+_TABLE_READING_LEVEL_RATIOS = tuple(index / 9.0 for index in range(10))
 _MEMORY_LEVEL_RATIOS = (0.00, 0.05, 0.12, 0.22, 0.34, 0.48, 0.62, 0.76, 0.89, 1.00)
 _SCAN_LEVEL_RATIOS = (0.00, 0.07, 0.16, 0.26, 0.38, 0.50, 0.62, 0.74, 0.87, 1.00)
 _TRACKING_LEVEL_RATIOS = (0.00, 0.10, 0.18, 0.28, 0.40, 0.52, 0.64, 0.76, 0.88, 1.00)
@@ -424,7 +425,7 @@ _FAMILY_REGISTRY: dict[DifficultyFamilyId, _FamilyDifficultyConfig] = {
     "table_cross_reference": _FamilyDifficultyConfig(
         family_id="table_cross_reference",
         label="Table Cross Reference",
-        legacy_ratios=_LOOKUP_LEVEL_RATIOS,
+        legacy_ratios=_TABLE_READING_LEVEL_RATIOS,
         axis_weights=DifficultyAxes(
             content_complexity=0.24,
             time_pressure=0.74,

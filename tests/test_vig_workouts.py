@@ -30,7 +30,7 @@ def _build_small_vig_workout_plan() -> AntWorkoutPlan:
         code="vigilance_workout",
         title="Vigilance Workout Smoke",
         description="Short deterministic Vigilance workout for tests.",
-        notes=("Reflections are untimed.",),
+        notes=("Block setup is untimed.",),
         blocks=(
             AntWorkoutBlockPlan(
                 block_id="entry-anchor",
@@ -80,10 +80,6 @@ def _complete_small_vig_workout(clock: FakeClock) -> AntWorkoutSession:
         starting_level=5,
     )
     session.activate()
-    session.append_text("scan in rows")
-    session.activate()
-    session.append_text("reset after misses")
-    session.activate()
 
     assert session.stage is AntWorkoutStage.BLOCK_SETUP
     session.activate()
@@ -97,10 +93,8 @@ def _complete_small_vig_workout(clock: FakeClock) -> AntWorkoutSession:
 
     assert session.stage is AntWorkoutStage.BLOCK_RESULTS
     session.activate()
-    assert session.stage is AntWorkoutStage.POST_REFLECTION
-    session.append_text("late block was denser")
+    assert session.stage is AntWorkoutStage.RESULTS
     session.activate()
-    session.append_text("keep row-first discipline")
     session.activate()
     assert session.stage is AntWorkoutStage.RESULTS
     return session

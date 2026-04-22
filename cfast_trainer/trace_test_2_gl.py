@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 
-from .aircraft_art import panda3d_fixed_wing_hpr_from_world_tangent, screen_motion_heading_deg
+from .aircraft_art import fixed_wing_hpr_from_world_tangent, screen_motion_heading_deg
 from .trace_test_2 import (
     TraceTest2AircraftTrack,
     TraceTest2Point3,
@@ -12,7 +12,7 @@ from .trace_test_2 import (
 
 
 def aircraft_hpr_from_tangent(tangent: tuple[float, float, float]) -> tuple[float, float, float]:
-    return panda3d_fixed_wing_hpr_from_world_tangent(
+    return fixed_wing_hpr_from_world_tangent(
         tangent=tangent,
         roll_deg=0.0,
     )

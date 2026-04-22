@@ -108,7 +108,7 @@ def build_trace_test_1_workout_plan(*, duration_scale: float = 1.0) -> AntWorkou
             "then longer full-command TT1 tempo and stress blocks."
         ),
         notes=(
-            "Typed reflections and block setup screens do not count toward the 90-minute drill clock.",
+            "Block setup screens do not count toward the 90-minute drill clock.",
             "This workout stays inside Trace Test 1 only; it does not chain into Trace Test 2.",
             "Later blocks reuse the full TT1 command family under tighter observe windows instead of introducing a mixed-test segment.",
         ),
@@ -200,7 +200,7 @@ def build_trace_test_2_workout_plan(*, duration_scale: float = 1.0) -> AntWorkou
             "then longer tempo and stress TT2 finishers."
         ),
         notes=(
-            "Typed reflections and block setup screens do not count toward the 90-minute drill clock.",
+            "Block setup screens do not count toward the 90-minute drill clock.",
             "This workout stays inside Trace Test 2 only; it does not chain into Trace Test 1.",
             "Later blocks keep the guide-style observe screen and separate question screen while tightening the TT2 timing profile.",
         ),

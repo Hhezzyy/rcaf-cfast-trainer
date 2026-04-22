@@ -1,14 +1,18 @@
 # Handoff (RCAF CFAST Trainer)
 
 ## Current status
-- Tests: `python -m pytest -q` should be green.
-- Recent work: fixed `app.py` airborne UI helpers (indentation + method placement) and made `TimedTextInputTest.submit_answer` accept non-string inputs by coercing to str.
+- Tests: `.venv/bin/python -m pytest -q` is green on this Mac as of 2026-04-22.
+- Bare `python` is not on PATH on this laptop; use `.venv/bin/python` or `python3`.
+- Recent verified work: removed stale Panda3D references after the renderer cleanup, documented the current ModernGL/render-asset layout, and kept pygame fallback render paths working for non-OpenGL tests.
+- The large pre-existing diff also moves former `assets/panda3d/` models to `assets/render/` and deletes old Panda3D runtime/tests. I only labelled the parts whose purpose was clear from the code and tests.
 
 ## How to run
 - Activate venv:
   `source .venv/bin/activate`
 - Run:
-  `python -m cfast_trainer`
+  `.venv/bin/python -m cfast_trainer`
+- Test:
+  `.venv/bin/python -m pytest -q`
 
 ## Known UX issue
 - Fullscreen can trap/freeze. If it happens:

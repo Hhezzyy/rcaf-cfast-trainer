@@ -13,11 +13,9 @@ class SpatialIntegrationVisualSpec:
     topdown_icon: str
     topdown_rgb: tuple[int, int, int]
     asset_ids: tuple[str, ...]
-    panda_fallback_kind: str
     scale_class: str
     heading_class: str
     scene_scale_bias: float
-    panda_scale: float
     allow_answer_map_text: bool = True
 
 
@@ -36,11 +34,9 @@ _VISUAL_SPECS: dict[str, SpatialIntegrationVisualSpec] = {
         topdown_icon="hangar",
         topdown_rgb=(144, 104, 66),
         asset_ids=("building_hangar",),
-        panda_fallback_kind="hangar",
         scale_class="building",
         heading_class="orthogonal",
         scene_scale_bias=1.15,
-        panda_scale=0.86,
     ),
     "tower": SpatialIntegrationVisualSpec(
         kind="tower",
@@ -51,11 +47,9 @@ _VISUAL_SPECS: dict[str, SpatialIntegrationVisualSpec] = {
         topdown_icon="tower",
         topdown_rgb=(166, 168, 156),
         asset_ids=("building_tower",),
-        panda_fallback_kind="tower",
         scale_class="tower",
         heading_class="free",
         scene_scale_bias=1.15,
-        panda_scale=0.72,
     ),
     "truck": SpatialIntegrationVisualSpec(
         kind="truck",
@@ -66,11 +60,9 @@ _VISUAL_SPECS: dict[str, SpatialIntegrationVisualSpec] = {
         topdown_icon="truck",
         topdown_rgb=(124, 110, 62),
         asset_ids=("truck_olive",),
-        panda_fallback_kind="truck",
         scale_class="truck",
         heading_class="vehicle",
         scene_scale_bias=1.0,
-        panda_scale=0.70,
     ),
     "foot_soldiers": SpatialIntegrationVisualSpec(
         kind="foot_soldiers",
@@ -81,11 +73,9 @@ _VISUAL_SPECS: dict[str, SpatialIntegrationVisualSpec] = {
         topdown_icon="soldiers",
         topdown_rgb=(102, 104, 66),
         asset_ids=("soldiers_patrol",),
-        panda_fallback_kind="soldiers",
         scale_class="soldiers",
         heading_class="patrol",
         scene_scale_bias=1.0,
-        panda_scale=0.66,
     ),
     "forest": SpatialIntegrationVisualSpec(
         kind="forest",
@@ -96,11 +86,9 @@ _VISUAL_SPECS: dict[str, SpatialIntegrationVisualSpec] = {
         topdown_icon="trees",
         topdown_rgb=(72, 124, 66),
         asset_ids=("trees_field_cluster", "forest_canopy_patch"),
-        panda_fallback_kind="trees",
         scale_class="forest",
         heading_class="free",
         scene_scale_bias=1.0,
-        panda_scale=1.08,
     ),
     "tent": SpatialIntegrationVisualSpec(
         kind="tent",
@@ -111,11 +99,9 @@ _VISUAL_SPECS: dict[str, SpatialIntegrationVisualSpec] = {
         topdown_icon="tent",
         topdown_rgb=(192, 170, 98),
         asset_ids=("spatial_tent_canvas",),
-        panda_fallback_kind="spatial_tent",
         scale_class="tent",
         heading_class="orthogonal",
         scene_scale_bias=1.0,
-        panda_scale=0.78,
     ),
     "sheep": SpatialIntegrationVisualSpec(
         kind="sheep",
@@ -126,11 +112,9 @@ _VISUAL_SPECS: dict[str, SpatialIntegrationVisualSpec] = {
         topdown_icon="sheep",
         topdown_rgb=(214, 218, 220),
         asset_ids=("spatial_sheep_flock",),
-        panda_fallback_kind="spatial_sheep",
         scale_class="sheep",
         heading_class="free",
         scene_scale_bias=1.0,
-        panda_scale=0.62,
     ),
 }
 
@@ -208,10 +192,3 @@ def spatial_integration_landmark_gl_scale(
     scale = base * variation
     return (scale, scale, scale)
 
-
-def spatial_integration_landmark_panda_scale(*, label: str, kind: str) -> float:
-    spec = spatial_integration_visual_spec(kind)
-    if spec is None:
-        raise KeyError(f"Unsupported Spatial Integration landmark kind: {kind}")
-    variation = 0.92 + ((_visual_seed(label, kind, "panda") % 9) * 0.02)
-    return float(spec.panda_scale * variation)

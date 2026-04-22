@@ -104,11 +104,11 @@ def build_tr_workout_plan(*, duration_scale: float = 1.0) -> AntWorkoutPlan:
         code="target_recognition_workout",
         title="Target Recognition Workout (90m)",
         description=(
-            "Standard 90-minute Target Recognition workout with typed reflection, focused panel warm-ups, "
+            "Standard 90-minute Target Recognition workout with focused panel warm-ups, "
             "switching blocks, and a full-pressure multitask finish."
         ),
         notes=(
-            "Typed reflections and block setup screens do not count toward the 90-minute drill clock.",
+            "Block setup screens do not count toward the 90-minute drill clock.",
             "Every block reuses the live four-panel Target Recognition layout and mouse-first interaction flow.",
             "Focused blocks keep the full layout visible, with the map panel staying live whenever Scene is part of the active search task.",
         ),

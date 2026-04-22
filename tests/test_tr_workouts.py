@@ -29,7 +29,7 @@ def _build_small_tr_workout_plan() -> AntWorkoutPlan:
         code="target_recognition_workout",
         title="TR Workout Smoke",
         description="Short deterministic workout for tests.",
-        notes=("Reflections are untimed.",),
+        notes=("Block setup is untimed.",),
         blocks=(
             AntWorkoutBlockPlan(
                 block_id="scene",
@@ -74,18 +74,14 @@ def _complete_small_tr_workout(clock: FakeClock) -> AntWorkoutSession:
         starting_level=5,
     )
     session.activate()
-    session.append_text("Read the active panel first")
     session.activate()
-    session.append_text("Reset on each panel switch")
     session.activate()
     session.activate()
     _finish_current_block_with_one_correct_answer(session, clock)
     session.activate()
     _finish_current_block_with_one_correct_answer(session, clock)
     session.activate()
-    session.append_text("Switching was the slow point")
     session.activate()
-    session.append_text("Keep the panel order cleaner")
     session.activate()
     assert session.stage is AntWorkoutStage.RESULTS
     return session

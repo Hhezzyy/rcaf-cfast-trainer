@@ -265,9 +265,7 @@ def test_study_scene_uses_same_scene_with_different_reference_view_heading() -> 
         pygame.quit()
 
 
-def test_study_scene_falls_back_to_builtin_renderer_when_external_3d_is_unavailable(
-    monkeypatch,
-) -> None:
+def test_study_scene_falls_back_to_builtin_renderer_when_external_3d_is_unavailable() -> None:
     payload = _payload_for(part=SpatialIntegrationPart.STATIC, study=True, question_index=1)
     _app, screen = _build_screen(_FakeSpatialEngine(payload))
     asset_calls = {"count": 0, "kinds": set()}
@@ -276,16 +274,6 @@ def test_study_scene_falls_back_to_builtin_renderer_when_external_3d_is_unavaila
         assert surface is not None
         crop = _study_scene_content_rect(size=surface.get_size())
 
-        monkeypatch.setattr(
-            screen,
-            "_get_spatial_integration_panda_renderer",
-            lambda *, size: None,
-        )
-
-        def fail_blocked_world(**_: object) -> None:
-            raise AssertionError("Spatial Integration should use the built-in scene fallback.")
-
-        monkeypatch.setattr(screen, "_render_scene_panda_blocked_world", fail_blocked_world)
         original_asset = screen._draw_spatial_scene_asset
 
         def wrapped_asset(*args, **kwargs):

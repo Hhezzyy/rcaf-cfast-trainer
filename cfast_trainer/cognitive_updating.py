@@ -127,6 +127,62 @@ def _clamp_float(value: float, low: float, high: float) -> float:
     return max(float(low), min(float(high), float(value)))
 
 
+def _lerp_float(low: float, high: float, amount: float) -> float:
+    t = clamp01(amount)
+    return float(low) + ((float(high) - float(low)) * t)
+
+
+@dataclass(frozen=True, slots=True)
+class _CognitiveUpdatingDifficultyParams:
+    active_domains: tuple[str, ...]
+    camera_due_min_s: int
+    camera_due_max_s: int
+    sensor_due_min_s: int
+    sensor_due_max_s: int
+    objective_deadline_min_s: int
+    objective_deadline_max_s: int
+    comms_time_limit_s: int
+    response_grace_window_s: int
+    pressure_band_width: int
+    speed_tolerance_knots: int
+    tank_spread_tolerance_l: int
+    estimate_tolerance: int
+    drift_multiplier: float
+    message_reveal_scale: float
+
+
+def _full_mixed_domains_for_difficulty(difficulty: float) -> tuple[str, ...]:
+    d = clamp01(difficulty)
+    if d < 0.25:
+        return ("controls", "navigation", "state_code")
+    if d < 0.50:
+        return ("controls", "navigation", "sensors", "state_code")
+    if d < 0.75:
+        return ("controls", "navigation", "engine", "sensors", "state_code")
+    return COGNITIVE_UPDATING_DOMAIN_ORDER
+
+
+def _difficulty_params(difficulty: float) -> _CognitiveUpdatingDifficultyParams:
+    d = clamp01(difficulty)
+    return _CognitiveUpdatingDifficultyParams(
+        active_domains=_full_mixed_domains_for_difficulty(d),
+        camera_due_min_s=lerp_int(36, 10, d),
+        camera_due_max_s=lerp_int(90, 34, d),
+        sensor_due_min_s=lerp_int(30, 8, d),
+        sensor_due_max_s=lerp_int(82, 28, d),
+        objective_deadline_min_s=lerp_int(70, 22, d),
+        objective_deadline_max_s=lerp_int(130, 48, d),
+        comms_time_limit_s=lerp_int(70, 24, d),
+        response_grace_window_s=lerp_int(8, 3, d),
+        pressure_band_width=lerp_int(28, 12, d),
+        speed_tolerance_knots=lerp_int(18, 6, d),
+        tank_spread_tolerance_l=lerp_int(80, 35, d),
+        estimate_tolerance=max(1, lerp_int(8, 2, d)),
+        drift_multiplier=0.50 + d,
+        message_reveal_scale=_lerp_float(0.70, 1.20, d),
+    )
+
+
 def canonical_cognitive_updating_domain(name: str) -> str:
     token = str(name).strip().lower().replace("-", "_").replace(" ", "_")
     if token in ("control", "controls_page"):
@@ -250,6 +306,9 @@ class CognitiveUpdatingPayload:
     answer_unit: str
     correct_value: int
     estimate_tolerance: int
+    response_grace_window_s: int = GRACE_WINDOW_S
+    speed_tolerance_knots: int = 10
+    tank_spread_tolerance_l: int = 50
     active_domains: tuple[str, ...] = COGNITIVE_UPDATING_DOMAIN_ORDER
     scenario_family: str = "baseline"
     focus_label: str = "Full Mixed"
@@ -379,7 +438,9 @@ class CognitiveUpdatingRuntime:
         self._active_domains = set(normalize_cognitive_updating_active_domains(*payload.active_domains))
         self._started_at_s = float(clock.now())
         self._clock_base_s = _parse_hms(payload.clock_hms)
-        self._last_advance_s = 0.0
+        self._last_domain_advance_s = {
+            domain: 0.0 for domain in COGNITIVE_UPDATING_DOMAIN_ORDER
+        }
         self._next_eval_s = EVAL_INTERVAL_S
 
         self._pressure_value = float(payload.pressure_value)
@@ -510,6 +571,9 @@ class CognitiveUpdatingRuntime:
     def _domain_active(self, domain: str) -> bool:
         return canonical_cognitive_updating_domain(domain) in self._active_domains
 
+    def _grace_window_s(self) -> float:
+        return max(0.0, float(self._payload.response_grace_window_s))
+
     def _controls_in_range(self) -> bool:
         if not self._domain_active("controls"):
             return True
@@ -522,7 +586,8 @@ class CognitiveUpdatingRuntime:
     def _navigation_in_range(self) -> bool:
         if not self._domain_active("navigation"):
             return True
-        return abs(int(round(self._current_knots)) - int(self._payload.required_knots)) <= 10
+        tolerance = max(1, int(self._payload.speed_tolerance_knots))
+        return abs(int(round(self._current_knots)) - int(self._payload.required_knots)) <= tolerance
 
     def _tank_spread(self) -> int:
         values = [int(round(v)) for v in self._tank_levels]
@@ -531,27 +596,29 @@ class CognitiveUpdatingRuntime:
     def _engine_in_range(self) -> bool:
         if not self._domain_active("engine"):
             return True
-        return self._tank_spread() < 50
+        return self._tank_spread() < max(1, int(self._payload.tank_spread_tolerance_l))
 
     def _camera_overdue(self, at_s: float) -> bool:
         if not self._domain_active("sensors"):
             return False
-        return (at_s > float(self._alpha_next_due_s + GRACE_WINDOW_S)) or (
-            at_s > float(self._bravo_next_due_s + GRACE_WINDOW_S)
+        grace = self._grace_window_s()
+        return (at_s > float(self._alpha_next_due_s + grace)) or (
+            at_s > float(self._bravo_next_due_s + grace)
         )
 
     def _sensor_overdue(self, at_s: float) -> bool:
         if not self._domain_active("sensors"):
             return False
-        return (at_s > float(self._air_next_due_s + GRACE_WINDOW_S)) or (
-            at_s > float(self._ground_next_due_s + GRACE_WINDOW_S)
+        grace = self._grace_window_s()
+        return (at_s > float(self._air_next_due_s + grace)) or (
+            at_s > float(self._ground_next_due_s + grace)
         )
 
     def _task_message_reveal_lead_s(self, interval_s: int) -> float:
         return _clamp_float(float(interval_s) * 0.45, 6.0, 16.0)
 
     def _task_visible(self, *, now_s: float, due_s: float, visible_from_s: float) -> bool:
-        return now_s >= float(visible_from_s) and now_s <= float(due_s + GRACE_WINDOW_S)
+        return now_s >= float(visible_from_s) and now_s <= float(due_s + self._grace_window_s())
 
     def _advance_sensor_cycles(self, at_s: float) -> None:
         task_specs = (
@@ -562,9 +629,10 @@ class CognitiveUpdatingRuntime:
         )
         for due_attr, interval_s, visible_attr in task_specs:
             due_s = float(getattr(self, due_attr))
-            if at_s <= float(due_s + GRACE_WINDOW_S):
+            grace = self._grace_window_s()
+            if at_s <= float(due_s + grace):
                 continue
-            while at_s > float(due_s + GRACE_WINDOW_S):
+            while at_s > float(due_s + grace):
                 due_s += float(interval_s)
             setattr(self, due_attr, due_s)
             setattr(
@@ -644,13 +712,16 @@ class CognitiveUpdatingRuntime:
         penalty = float(len(self._collect_warnings(at_s))) * float(self._payload.warning_penalty_scale)
         self._warning_penalty_points += int(round(penalty))
 
-    def _advance(self) -> float:
-        now_s = self._now_elapsed_s()
-        dt = now_s - self._last_advance_s
+    def _advance_domain(self, domain: str, at_s: float | None = None) -> float:
+        now_s = self._now_elapsed_s() if at_s is None else max(0.0, float(at_s))
+        token = canonical_cognitive_updating_domain(domain)
+        if token not in self._last_domain_advance_s:
+            return now_s
+        dt = now_s - float(self._last_domain_advance_s[token])
         if dt <= 0.0:
             return now_s
 
-        if self._domain_active("controls"):
+        if token == "controls" and self._domain_active("controls"):
             pressure_scale = max(0.0, float(self._payload.pressure_drift_scale))
             if self._pump_on:
                 self._pressure_value += (PUMP_RISE_PER_S * pressure_scale) * dt
@@ -658,7 +729,7 @@ class CognitiveUpdatingRuntime:
                 self._pressure_value -= (PUMP_FALL_PER_S * pressure_scale) * dt
             self._pressure_value = _clamp_float(self._pressure_value, 65.0, 138.0)
 
-        if self._domain_active("navigation"):
+        if token == "navigation" and self._domain_active("navigation"):
             speed_scale = max(0.0, float(self._payload.speed_drift_scale))
             if self._current_knots >= float(self._payload.required_knots):
                 self._current_knots += (KNOTS_DRIFT_PER_S * speed_scale) * dt
@@ -666,7 +737,7 @@ class CognitiveUpdatingRuntime:
                 self._current_knots -= (KNOTS_DRIFT_PER_S * speed_scale) * dt
             self._current_knots = _clamp_float(self._current_knots, 40.0, 220.0)
 
-        if self._domain_active("engine"):
+        if token == "engine" and self._domain_active("engine"):
             drain_scale = max(0.0, float(self._payload.tank_drain_scale))
             for idx in range(3):
                 drain = (
@@ -674,26 +745,36 @@ class CognitiveUpdatingRuntime:
                 ) * drain_scale
                 self._tank_levels[idx] = max(260.0, self._tank_levels[idx] - (drain * dt))
 
+        if token == "sensors" and self._domain_active("sensors"):
+            self._advance_sensor_cycles(now_s)
+
+        if token == "objectives" and self._domain_active("objectives"):
+            self._advance_objective_cycle(now_s)
+
+        if token == "state_code":
+            self._advance_comms_cycle(now_s)
+
+        self._last_domain_advance_s[token] = now_s
+        return now_s
+
+    def _advance_all(self) -> float:
+        now_s = self._now_elapsed_s()
+        for domain in COGNITIVE_UPDATING_DOMAIN_ORDER:
+            self._advance_domain(domain, now_s)
+
         while self._next_eval_s <= now_s + 1e-9:
-            self._advance_sensor_cycles(self._next_eval_s)
-            self._advance_objective_cycle(self._next_eval_s)
             self._evaluate_interval(self._next_eval_s)
             self._next_eval_s += EVAL_INTERVAL_S
 
-        self._advance_sensor_cycles(now_s)
-        self._advance_objective_cycle(now_s)
-        self._advance_comms_cycle(now_s)
-        self._last_advance_s = now_s
         return now_s
 
     def toggle_camera(self, camera: str) -> None:
         if not self._domain_active("sensors"):
             return
-        self._advance()
-        now_s = self._now_elapsed_s()
+        now_s = self._advance_domain("sensors")
         token = camera.strip().lower()
         if token == "alpha":
-            if abs(float(now_s) - float(self._alpha_next_due_s)) <= float(GRACE_WINDOW_S):
+            if abs(float(now_s) - float(self._alpha_next_due_s)) <= self._grace_window_s():
                 self._alpha_hits += 1
             self._alpha_last_press_s = now_s
             self._alpha_next_due_s = now_s + float(self._alpha_interval_s)
@@ -706,7 +787,7 @@ class CognitiveUpdatingRuntime:
             self._record("camera_alpha", "1")
             return
         if token == "bravo":
-            if abs(float(now_s) - float(self._bravo_next_due_s)) <= float(GRACE_WINDOW_S):
+            if abs(float(now_s) - float(self._bravo_next_due_s)) <= self._grace_window_s():
                 self._bravo_hits += 1
             self._bravo_last_press_s = now_s
             self._bravo_next_due_s = now_s + float(self._bravo_interval_s)
@@ -721,11 +802,10 @@ class CognitiveUpdatingRuntime:
     def toggle_sensor(self, sensor: str) -> None:
         if not self._domain_active("sensors"):
             return
-        self._advance()
-        now_s = self._now_elapsed_s()
+        now_s = self._advance_domain("sensors")
         token = sensor.strip().lower()
         if token == "air":
-            if abs(float(now_s) - float(self._air_next_due_s)) <= float(GRACE_WINDOW_S):
+            if abs(float(now_s) - float(self._air_next_due_s)) <= self._grace_window_s():
                 self._air_hits += 1
             self._air_last_press_s = now_s
             self._air_next_due_s = now_s + float(self._air_interval_s)
@@ -738,7 +818,7 @@ class CognitiveUpdatingRuntime:
             self._record("sensor_air", "1")
             return
         if token == "ground":
-            if abs(float(now_s) - float(self._ground_next_due_s)) <= float(GRACE_WINDOW_S):
+            if abs(float(now_s) - float(self._ground_next_due_s)) <= self._grace_window_s():
                 self._ground_hits += 1
             self._ground_last_press_s = now_s
             self._ground_next_due_s = now_s + float(self._ground_interval_s)
@@ -753,7 +833,7 @@ class CognitiveUpdatingRuntime:
     def set_pump(self, on: bool) -> None:
         if not self._domain_active("controls"):
             return
-        self._advance()
+        self._advance_domain("controls")
         self._pump_on = bool(on)
         if self._controls_in_range():
             self._controls_input_hits += 1
@@ -762,7 +842,7 @@ class CognitiveUpdatingRuntime:
     def adjust_knots(self, delta: int) -> None:
         if not self._domain_active("navigation"):
             return
-        self._advance()
+        self._advance_domain("navigation")
         change = int(delta)
         if change == 0:
             return
@@ -774,7 +854,7 @@ class CognitiveUpdatingRuntime:
     def set_active_tank(self, tank: int) -> None:
         if not self._domain_active("engine"):
             return
-        self._advance()
+        self._advance_domain("engine")
         idx = _clamp_int(tank, 1, 3)
         self._active_tank = idx
         if self._engine_in_range():
@@ -784,8 +864,7 @@ class CognitiveUpdatingRuntime:
     def activate_dispenser(self) -> None:
         if not self._domain_active("objectives"):
             return
-        self._advance()
-        now_s = self._now_elapsed_s()
+        now_s = self._advance_domain("objectives")
         ready = self._objective_drop_ready()
         if ready:
             self._objective_successes += 1
@@ -800,7 +879,7 @@ class CognitiveUpdatingRuntime:
     def set_parcel_field(self, index: int) -> None:
         if not self._domain_active("objectives"):
             return
-        self._advance()
+        self._advance_domain("objectives")
         idx = _clamp_int(index, 0, 2)
         self._active_parcel_field = idx
         self._record("parcel_field", str(idx))
@@ -808,7 +887,7 @@ class CognitiveUpdatingRuntime:
     def append_parcel_digit(self, digit: str) -> None:
         if not self._domain_active("objectives"):
             return
-        self._advance()
+        self._advance_domain("objectives")
         if len(digit) != 1 or not digit.isdigit():
             return
         idx = _clamp_int(self._active_parcel_field, 0, 2)
@@ -821,7 +900,7 @@ class CognitiveUpdatingRuntime:
             self._active_parcel_field = idx + 1
 
     def append_comms_digit(self, digit: str) -> None:
-        self._advance()
+        self._advance_domain("state_code")
         if len(digit) != 1 or not digit.isdigit():
             return
         if len(self._comms_input) >= 4:
@@ -830,7 +909,7 @@ class CognitiveUpdatingRuntime:
         self._record("comms_digit", digit)
 
     def clear_comms(self) -> None:
-        self._advance()
+        self._advance_domain("state_code")
         self._comms_input = ""
         self._record("comms_clear", "")
 
@@ -897,16 +976,16 @@ class CognitiveUpdatingRuntime:
         if not self._domain_active("navigation"):
             return 2
         speed = int(round(self._current_knots))
-        low = int(self._payload.required_knots) - 10
-        high = int(self._payload.required_knots) + 10
+        tolerance = max(1, int(self._payload.speed_tolerance_knots))
+        low = int(self._payload.required_knots) - tolerance
+        high = int(self._payload.required_knots) + tolerance
         if speed < low:
             return 1
         if speed > high:
             return 3
         return 2
 
-    def state_code(self) -> str:
-        self._advance()
+    def _state_code_from_current_values(self) -> str:
         return (
             f"{self._camera_digit()}"
             f"{self._pressure_digit()}"
@@ -914,27 +993,11 @@ class CognitiveUpdatingRuntime:
             f"{self._sensor_digit()}"
         )
 
-    def build_submission_raw(self) -> str:
-        self._advance()
-        if len(self._comms_input) != 4:
-            return ""
-        snap = self.snapshot()
-        return (
-            f"{self._comms_input}"
-            f"{snap.current_comms_code}"
-            f"{snap.controls_score:03d}"
-            f"{snap.navigation_score:03d}"
-            f"{snap.engine_score:03d}"
-            f"{snap.sensors_score:03d}"
-            f"{snap.objectives_score:03d}"
-            f"{snap.warnings_penalty_points:03d}"
-            f"{snap.overall_score:03d}"
-            f"{min(999, len(self._events)):03d}"
-        )
+    def state_code(self) -> str:
+        self._advance_all()
+        return self._state_code_from_current_values()
 
-    def snapshot(self) -> CognitiveUpdatingRuntimeSnapshot:
-        now_s = float(self._advance())
-        elapsed = int(now_s)
+    def _score_components(self) -> tuple[int, int, int, int, int, int]:
         controls_score = (
             _domain_score(
                 bad_ticks=self._controls_bad_ticks,
@@ -985,6 +1048,51 @@ class CognitiveUpdatingRuntime:
             0,
             100,
         )
+        return (
+            controls_score,
+            navigation_score,
+            engine_score,
+            sensors_score,
+            objectives_score,
+            overall_score,
+        )
+
+    def build_submission_raw(self) -> str:
+        self._advance_domain("state_code")
+        if len(self._comms_input) != 4:
+            return ""
+        (
+            controls_score,
+            navigation_score,
+            engine_score,
+            sensors_score,
+            objectives_score,
+            overall_score,
+        ) = self._score_components()
+        return (
+            f"{self._comms_input}"
+            f"{self._current_comms_code()}"
+            f"{controls_score:03d}"
+            f"{navigation_score:03d}"
+            f"{engine_score:03d}"
+            f"{sensors_score:03d}"
+            f"{objectives_score:03d}"
+            f"{int(self._warning_penalty_points):03d}"
+            f"{overall_score:03d}"
+            f"{min(999, len(self._events)):03d}"
+        )
+
+    def snapshot(self) -> CognitiveUpdatingRuntimeSnapshot:
+        now_s = float(self._advance_all())
+        elapsed = int(now_s)
+        (
+            controls_score,
+            navigation_score,
+            engine_score,
+            sensors_score,
+            objectives_score,
+            overall_score,
+        ) = self._score_components()
 
         warning_lines = self._collect_warnings(float(elapsed))
         air_left = max(0, int(round(self._air_next_due_s - now_s)))
@@ -1115,7 +1223,7 @@ class CognitiveUpdatingRuntime:
             current_comms_code=current_comms_code,
             next_comms_code=next_comms_code,
             objective_deadline_left_s=deadline_left,
-            state_code=self.state_code(),
+            state_code=self._state_code_from_current_values(),
             operation_score_hint=float(overall_score) / 100.0,
             event_count=len(self._events),
             pressure_value=int(round(self._pressure_value)),
@@ -1190,7 +1298,6 @@ class CognitiveUpdatingGenerator:
     def next_problem(self, *, difficulty: float) -> Problem:
         return self.next_problem_for_selection(
             difficulty=difficulty,
-            training_profile=CognitiveUpdatingTrainingProfile(),
             scenario_family="baseline",
         )
 
@@ -1206,8 +1313,14 @@ class CognitiveUpdatingGenerator:
         scenario_family: str | None = None,
     ) -> Problem:
         difficulty = clamp01(difficulty)
+        difficulty_profile = _difficulty_params(difficulty)
+        use_default_difficulty_domains = training_profile is None
         profile = training_profile or CognitiveUpdatingTrainingProfile()
-        active_domains = normalize_cognitive_updating_active_domains(*profile.active_domains)
+        active_domains = (
+            difficulty_profile.active_domains
+            if use_default_difficulty_domains
+            else normalize_cognitive_updating_active_domains(*profile.active_domains)
+        )
         family_token = canonical_cognitive_updating_scenario_family(
             scenario_family or profile.scenario_family or "baseline"
         )
@@ -1232,27 +1345,46 @@ class CognitiveUpdatingGenerator:
         comms_scale = max(0.35, family_cfg.comms_time_limit_scale * float(profile.comms_time_limit_scale))
         reveal_scale = max(0.35, family_cfg.message_reveal_scale * float(profile.message_reveal_scale))
         pressure_drift_scale = max(
-            0.0, family_cfg.pressure_drift_scale * float(profile.pressure_drift_scale)
+            0.0,
+            family_cfg.pressure_drift_scale
+            * float(profile.pressure_drift_scale)
+            * float(difficulty_profile.drift_multiplier),
         )
-        speed_drift_scale = max(0.0, family_cfg.speed_drift_scale * float(profile.speed_drift_scale))
-        tank_drain_scale = max(0.0, family_cfg.tank_drain_scale * float(profile.tank_drain_scale))
+        speed_drift_scale = max(
+            0.0,
+            family_cfg.speed_drift_scale
+            * float(profile.speed_drift_scale)
+            * float(difficulty_profile.drift_multiplier),
+        )
+        tank_drain_scale = max(
+            0.0,
+            family_cfg.tank_drain_scale
+            * float(profile.tank_drain_scale)
+            * float(difficulty_profile.drift_multiplier),
+        )
 
-        camera_due_min = max(8, int(round(lerp_int(22, 10, difficulty) * camera_scale)))
-        camera_due_max = max(camera_due_min, int(round(lerp_int(70, 36, difficulty) * camera_scale)))
+        camera_due_min = max(8, int(round(difficulty_profile.camera_due_min_s * camera_scale)))
+        camera_due_max = max(
+            camera_due_min,
+            int(round(difficulty_profile.camera_due_max_s * camera_scale)),
+        )
         alpha_camera_due_s = self._rng.randint(camera_due_min, camera_due_max)
         bravo_camera_due_s = self._rng.randint(camera_due_min, camera_due_max)
         earliest_camera = "ALPHA" if alpha_camera_due_s <= bravo_camera_due_s else "BRAVO"
         camera_digit = 1 if earliest_camera == "ALPHA" else 2
 
-        sensor_due_min = max(8, int(round(lerp_int(18, 8, difficulty) * sensor_scale)))
-        sensor_due_max = max(sensor_due_min, int(round(lerp_int(62, 30, difficulty) * sensor_scale)))
+        sensor_due_min = max(8, int(round(difficulty_profile.sensor_due_min_s * sensor_scale)))
+        sensor_due_max = max(
+            sensor_due_min,
+            int(round(difficulty_profile.sensor_due_max_s * sensor_scale)),
+        )
         air_sensor_due_s = self._rng.randint(sensor_due_min, sensor_due_max)
         ground_sensor_due_s = self._rng.randint(sensor_due_min, sensor_due_max)
         earliest_sensor = "AIR" if air_sensor_due_s <= ground_sensor_due_s else "GROUND"
         sensor_digit = 1 if earliest_sensor == "AIR" else 2
 
-        pressure_low = self._rng.randint(86, 94)
-        pressure_high = pressure_low + self._rng.randint(14, 20)
+        pressure_low = self._rng.randint(84, 94)
+        pressure_high = pressure_low + int(difficulty_profile.pressure_band_width)
         pressure_value = self._rng.randint(pressure_low, pressure_high)
         pressure_digit = 2
         pressure_warning = "Pressure Nominal"
@@ -1292,9 +1424,15 @@ class CognitiveUpdatingGenerator:
         parcel_lon = self._rng.randint(100000, 999999)
         parcel_time = int(self._fmt_hms(self._rng.randint(0, (24 * 3600) - 1)).replace(":", ""))
         objective_deadline_s = _clamp_int(
-            round(self._rng.randint(25, 75) * objective_scale),
+            round(
+                self._rng.randint(
+                    difficulty_profile.objective_deadline_min_s,
+                    difficulty_profile.objective_deadline_max_s,
+                )
+                * objective_scale
+            ),
             12,
-            120,
+            140,
         )
         dispenser_lit = 0
 
@@ -1306,12 +1444,13 @@ class CognitiveUpdatingGenerator:
         )
         answer_text = "".join(str(d) for d in answer_digits)
         answer = int(answer_text)
-        tolerance = max(1, lerp_int(6, 2, difficulty))
+        tolerance = int(difficulty_profile.estimate_tolerance)
 
-        message_reveal_lat_s = max(1.0, MESSAGE_REVEAL_LAT_S * reveal_scale)
-        message_reveal_lon_s = max(1.0, MESSAGE_REVEAL_LON_S * reveal_scale)
-        message_reveal_time_s = max(1.0, MESSAGE_REVEAL_TIME_S * reveal_scale)
-        message_reveal_comms_s = max(1.0, MESSAGE_REVEAL_COMMS_S * reveal_scale)
+        reveal_multiplier = reveal_scale * float(difficulty_profile.message_reveal_scale)
+        message_reveal_lat_s = max(1.0, MESSAGE_REVEAL_LAT_S * reveal_multiplier)
+        message_reveal_lon_s = max(1.0, MESSAGE_REVEAL_LON_S * reveal_multiplier)
+        message_reveal_time_s = max(1.0, MESSAGE_REVEAL_TIME_S * reveal_multiplier)
+        message_reveal_comms_s = max(1.0, MESSAGE_REVEAL_COMMS_S * reveal_multiplier)
         message_lines = (
             f"Activate Alpha Camera at: {self._fmt_hms(now_total_s + alpha_camera_due_s)}"
             if "sensors" in active_domains
@@ -1345,7 +1484,10 @@ class CognitiveUpdatingGenerator:
             pressure_value=pressure_value,
             pump_on=pump_on,
             comms_code=answer_text,
-            comms_time_limit_s=lerp_int(48, 26, difficulty),
+            comms_time_limit_s=max(
+                12,
+                int(round(float(difficulty_profile.comms_time_limit_s) * comms_scale)),
+            ),
             required_knots=required_knots,
             current_knots=current_knots,
             tank_levels_l=tank_levels,
@@ -1363,6 +1505,9 @@ class CognitiveUpdatingGenerator:
             answer_unit="code",
             correct_value=answer,
             estimate_tolerance=tolerance,
+            response_grace_window_s=int(difficulty_profile.response_grace_window_s),
+            speed_tolerance_knots=int(difficulty_profile.speed_tolerance_knots),
+            tank_spread_tolerance_l=int(difficulty_profile.tank_spread_tolerance_l),
             active_domains=active_domains,
             scenario_family=family_token,
             focus_label=focus_label,

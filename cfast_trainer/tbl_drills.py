@@ -9,12 +9,15 @@ from .ant_drills import (
     TimedCapDrill,
 )
 from .clock import Clock
-from .cognitive_core import Phase, Problem
+from .cognitive_core import Phase, Problem, QuestionEvent
 from .table_reading import (
+    TableReadingAnswerMode,
     TableReadingGenerator,
+    TableReadingItemKind,
     TableReadingPart,
     TableReadingPayload,
     TableReadingScorer,
+    table_reading_event_user_answer,
 )
 
 
@@ -41,10 +44,94 @@ class TableReadingTimedDrill(TimedCapDrill):
     def _input_hint(self) -> str:
         if self.phase not in (Phase.PRACTICE, Phase.SCORED):
             return "Press Enter to continue"
-        return (
-            f"L{self._current_level()} | Cap {self._item_remaining_s():0.1f}s | "
-            "Up/Down + A/S/D/F/G or 1-5 then Enter"
+        payload = self._current.payload if self._current is not None else None
+        if isinstance(payload, TableReadingPayload):
+            if payload.answer_mode is TableReadingAnswerMode.MULTIPLE_CHOICE:
+                action = "A/S/D/F/G or 1-5"
+            elif payload.answer_mode is TableReadingAnswerMode.NUMERIC:
+                action = "digits then Enter"
+            elif payload.answer_mode is TableReadingAnswerMode.SINGLE_LETTER:
+                action = "one letter then Enter"
+            else:
+                action = "letters then Enter"
+            return self._timed_cap_hint(f"{action} | Tab: tables")
+        return self._timed_cap_hint("Up/Down + A/S/D/F/G or 1-5 then Enter")
+
+    def submit_answer(self, raw: str) -> bool:
+        if self._phase not in (Phase.PRACTICE, Phase.SCORED):
+            return False
+
+        token = str(raw).strip().lower()
+        if token in {"__skip_practice__", "skip_practice"} and self._phase is Phase.PRACTICE:
+            self._phase = Phase.PRACTICE_DONE
+            self._current = None
+            self._presented_at_s = None
+            self._current_cap_s = None
+            return True
+        if token in {"__skip_section__", "skip_section", "__skip_all__", "skip_all"} and (
+            self._phase is Phase.SCORED
+        ):
+            self._finish_results()
+            return True
+
+        if self._current is None or self._presented_at_s is None:
+            return False
+        if self._item_remaining_s() <= 0.0:
+            self._record_timeout()
+            return False
+
+        raw_in = str(raw)
+        if raw_in.strip() == "":
+            return False
+
+        user_answer = table_reading_event_user_answer(self._current, raw_in)
+        answered_at_s = self._clock.now()
+        response_time_s = max(0.0, answered_at_s - self._presented_at_s)
+        score_value = self._score_answer(problem=self._current, user_answer=user_answer, raw=raw_in)
+        is_correct = score_value >= 0.999999
+        self._events.append(
+            QuestionEvent(
+                index=len(self._events),
+                phase=self._phase,
+                prompt=self._current.prompt,
+                correct_answer=self._current.answer,
+                user_answer=user_answer,
+                is_correct=is_correct,
+                presented_at_s=self._presented_at_s,
+                answered_at_s=answered_at_s,
+                response_time_s=response_time_s,
+                raw=raw_in,
+                score=score_value,
+                max_score=1.0,
+            )
         )
+
+        if self._phase is Phase.SCORED:
+            adaptive_note = self._record_scored_outcome(is_correct=is_correct, is_timeout=False)
+        else:
+            self._practice_answered += 1
+            adaptive_note = None
+
+        self._last_feedback = self._compose_feedback(
+            is_timeout=False,
+            is_correct=is_correct,
+            correct_answer=self._display_answer(self._current),
+            score_value=score_value,
+            adaptive_note=adaptive_note,
+        )
+
+        if self._phase is Phase.SCORED and self.time_remaining_s() == 0.0:
+            self._finish_results()
+            return True
+        if self._phase is Phase.PRACTICE and self._practice_answered >= self._practice_questions:
+            self._phase = Phase.PRACTICE_DONE
+            self._current = None
+            self._presented_at_s = None
+            self._current_cap_s = None
+            return True
+
+        self._deal_new_problem()
+        return True
 
 
 class _BaseTableReadingSelectionGenerator:
@@ -65,6 +152,8 @@ class TblPart1AnchorGenerator(_BaseTableReadingSelectionGenerator):
             part=TableReadingPart.PART_ONE,
             family=family,
             profile="anchor",
+            item_kind=TableReadingItemKind.SINGLE_TABLE_LOOKUP,
+            answer_mode=TableReadingAnswerMode.MULTIPLE_CHOICE,
         )
 
 
@@ -81,6 +170,8 @@ class TblPart1ScanRunGenerator(_BaseTableReadingSelectionGenerator):
             part=TableReadingPart.PART_ONE,
             family=family,
             profile="scan",
+            item_kind=TableReadingItemKind.SINGLE_TABLE_LOOKUP,
+            answer_mode=TableReadingAnswerMode.NUMERIC,
         )
 
 
@@ -97,6 +188,8 @@ class TblPart2PrimeGenerator(_BaseTableReadingSelectionGenerator):
             part=TableReadingPart.PART_TWO,
             family=family,
             profile="prime",
+            item_kind=TableReadingItemKind.TWO_TABLE_LOOKUP,
+            answer_mode=TableReadingAnswerMode.MULTIPLE_CHOICE,
         )
 
 
@@ -113,6 +206,8 @@ class TblPart2CorrectionRunGenerator(_BaseTableReadingSelectionGenerator):
             part=TableReadingPart.PART_TWO,
             family=family,
             profile="run",
+            item_kind=TableReadingItemKind.TWO_TABLE_LOOKUP,
+            answer_mode=TableReadingAnswerMode.MULTIPLE_CHOICE,
         )
 
 
@@ -134,6 +229,8 @@ class TblPartSwitchRunGenerator(_BaseTableReadingSelectionGenerator):
                 part=part,
                 family=family,
                 profile="scan",
+                item_kind=TableReadingItemKind.SINGLE_TABLE_LOOKUP,
+                answer_mode=TableReadingAnswerMode.NUMERIC,
             )
         family = PART_TWO_FAMILIES[self._part_two_family_index % len(PART_TWO_FAMILIES)]
         self._part_two_family_index += 1
@@ -142,14 +239,35 @@ class TblPartSwitchRunGenerator(_BaseTableReadingSelectionGenerator):
             part=part,
             family=family,
             profile="run",
+            item_kind=TableReadingItemKind.TWO_TABLE_LOOKUP,
+            answer_mode=TableReadingAnswerMode.MULTIPLE_CHOICE,
         )
 
 
 class TblCardFamilyRunGenerator(_BaseTableReadingSelectionGenerator):
     _SEQUENCE = tuple(
-        (TableReadingPart.PART_ONE, family) for family in PART_ONE_FAMILIES
+        (
+            TableReadingItemKind.SINGLE_TABLE_LOOKUP,
+            TableReadingPart.PART_ONE,
+            family,
+            TableReadingAnswerMode.MULTIPLE_CHOICE,
+        )
+        for family in PART_ONE_FAMILIES
     ) + tuple(
-        (TableReadingPart.PART_TWO, family) for family in PART_TWO_FAMILIES
+        (
+            TableReadingItemKind.TWO_TABLE_LOOKUP,
+            TableReadingPart.PART_TWO,
+            family,
+            TableReadingAnswerMode.MULTIPLE_CHOICE,
+        )
+        for family in PART_TWO_FAMILIES
+    ) + (
+        (
+            TableReadingItemKind.LETTER_SEARCH,
+            TableReadingPart.PART_ONE,
+            None,
+            TableReadingAnswerMode.LETTER_STRING,
+        ),
     )
 
     def __init__(self, *, seed: int) -> None:
@@ -157,14 +275,16 @@ class TblCardFamilyRunGenerator(_BaseTableReadingSelectionGenerator):
         self._sequence_index = 0
 
     def next_problem(self, *, difficulty: float) -> Problem:
-        part, family = self._SEQUENCE[self._sequence_index % len(self._SEQUENCE)]
+        kind, part, family, answer_mode = self._SEQUENCE[self._sequence_index % len(self._SEQUENCE)]
         self._sequence_index += 1
-        profile = "scan" if part is TableReadingPart.PART_ONE else "run"
+        profile = "letter" if kind is TableReadingItemKind.LETTER_SEARCH else "scan" if part is TableReadingPart.PART_ONE else "run"
         return self._base.next_problem_for_selection(
             difficulty=difficulty,
             part=part,
             family=family,
             profile=profile,
+            item_kind=kind,
+            answer_mode=answer_mode,
         )
 
 
@@ -176,9 +296,9 @@ class TblMixedTempoGenerator(_BaseTableReadingSelectionGenerator):
         self._part_two_family_index = 0
 
     def next_problem(self, *, difficulty: float) -> Problem:
-        in_part_one_window = (self._sequence_index % 4) < 2
+        slot = self._sequence_index % 5
         self._sequence_index += 1
-        if in_part_one_window:
+        if slot in (0, 1):
             family = PART_ONE_FAMILIES[self._part_one_family_index % len(PART_ONE_FAMILIES)]
             self._part_one_family_index += 1
             return self._base.next_problem_for_selection(
@@ -186,6 +306,20 @@ class TblMixedTempoGenerator(_BaseTableReadingSelectionGenerator):
                 part=TableReadingPart.PART_ONE,
                 family=family,
                 profile="scan",
+                item_kind=TableReadingItemKind.SINGLE_TABLE_LOOKUP,
+                answer_mode=(
+                    TableReadingAnswerMode.MULTIPLE_CHOICE
+                    if slot == 0
+                    else TableReadingAnswerMode.NUMERIC
+                ),
+            )
+        if slot == 2:
+            return self._base.next_problem_for_selection(
+                difficulty=difficulty,
+                part=TableReadingPart.PART_ONE,
+                family=None,
+                profile="letter",
+                item_kind=TableReadingItemKind.LETTER_SEARCH,
             )
         family = PART_TWO_FAMILIES[self._part_two_family_index % len(PART_TWO_FAMILIES)]
         self._part_two_family_index += 1
@@ -193,7 +327,12 @@ class TblMixedTempoGenerator(_BaseTableReadingSelectionGenerator):
             difficulty=difficulty,
             part=TableReadingPart.PART_TWO,
             family=family,
-            profile="run",
+            profile="compute" if slot == 4 else "run",
+            item_kind=(
+                TableReadingItemKind.THREE_TABLE_LOOKUP
+                if slot == 4
+                else TableReadingItemKind.TWO_TABLE_LOOKUP
+            ),
         )
 
 
@@ -205,8 +344,19 @@ class TblPressureRunGenerator(_BaseTableReadingSelectionGenerator):
         self._part_two_family_index = 0
 
     def next_problem(self, *, difficulty: float) -> Problem:
-        part = TableReadingPart.PART_ONE if self._sequence_index % 2 == 0 else TableReadingPart.PART_TWO
+        slot = self._sequence_index % 4
+        part = TableReadingPart.PART_ONE if slot in (0, 2) else TableReadingPart.PART_TWO
         self._sequence_index += 1
+        if slot == 2:
+            family = PART_ONE_FAMILIES[self._part_one_family_index % len(PART_ONE_FAMILIES)]
+            self._part_one_family_index += 1
+            return self._base.next_problem_for_selection(
+                difficulty=difficulty,
+                part=TableReadingPart.PART_ONE,
+                family=family,
+                profile="reverse",
+                item_kind=TableReadingItemKind.REVERSE_LOOKUP,
+            )
         if part is TableReadingPart.PART_ONE:
             family = PART_ONE_FAMILIES[self._part_one_family_index % len(PART_ONE_FAMILIES)]
             self._part_one_family_index += 1
@@ -215,6 +365,8 @@ class TblPressureRunGenerator(_BaseTableReadingSelectionGenerator):
                 part=part,
                 family=family,
                 profile="pressure",
+                item_kind=TableReadingItemKind.SINGLE_TABLE_LOOKUP,
+                answer_mode=TableReadingAnswerMode.MULTIPLE_CHOICE,
             )
         family = PART_TWO_FAMILIES[self._part_two_family_index % len(PART_TWO_FAMILIES)]
         self._part_two_family_index += 1
@@ -223,6 +375,11 @@ class TblPressureRunGenerator(_BaseTableReadingSelectionGenerator):
             part=part,
             family=family,
             profile="pressure",
+            item_kind=(
+                TableReadingItemKind.THREE_TABLE_LOOKUP
+                if slot == 3
+                else TableReadingItemKind.TWO_TABLE_LOOKUP
+            ),
         )
 
 
@@ -239,6 +396,8 @@ class TblSingleLookupAnchorGenerator(_BaseTableReadingSelectionGenerator):
             part=TableReadingPart.PART_ONE,
             family=family,
             profile="anchor",
+            item_kind=TableReadingItemKind.SINGLE_TABLE_LOOKUP,
+            answer_mode=TableReadingAnswerMode.MULTIPLE_CHOICE,
         )
 
 
@@ -255,6 +414,8 @@ class TblTwoTableXrefGenerator(_BaseTableReadingSelectionGenerator):
             part=TableReadingPart.PART_TWO,
             family=family,
             profile="run",
+            item_kind=TableReadingItemKind.TWO_TABLE_LOOKUP,
+            answer_mode=TableReadingAnswerMode.MULTIPLE_CHOICE,
         )
 
 
@@ -270,7 +431,8 @@ class TblDistractorGridGenerator(_BaseTableReadingSelectionGenerator):
             difficulty=difficulty,
             part=TableReadingPart.PART_ONE,
             family=family,
-            profile="pressure",
+            profile="reverse",
+            item_kind=TableReadingItemKind.REVERSE_LOOKUP,
         )
 
 
@@ -282,27 +444,17 @@ class TblLookupComputeGenerator(_BaseTableReadingSelectionGenerator):
         self._part_two_family_index = 0
 
     def next_problem(self, *, difficulty: float) -> Problem:
-        use_part_one = self._problem_index % 2 == 0
         self._problem_index += 1
-        if use_part_one:
-            family = PART_ONE_FAMILIES[self._part_one_family_index % len(PART_ONE_FAMILIES)]
-            self._part_one_family_index += 1
-            base_problem = self._base.next_problem_for_selection(
-                difficulty=difficulty,
-                part=TableReadingPart.PART_ONE,
-                family=family,
-                profile="scan",
-            )
-        else:
-            family = PART_TWO_FAMILIES[self._part_two_family_index % len(PART_TWO_FAMILIES)]
-            self._part_two_family_index += 1
-            base_problem = self._base.next_problem_for_selection(
-                difficulty=difficulty,
-                part=TableReadingPart.PART_TWO,
-                family=family,
-                profile="prime",
-            )
-        return _transform_lookup_problem(base_problem=base_problem, generator=self._base, difficulty=difficulty)
+        family = PART_TWO_FAMILIES[self._part_two_family_index % len(PART_TWO_FAMILIES)]
+        self._part_two_family_index += 1
+        return self._base.next_problem_for_selection(
+            difficulty=difficulty,
+            part=TableReadingPart.PART_TWO,
+            family=family,
+            profile="compute",
+            item_kind=TableReadingItemKind.THREE_TABLE_LOOKUP,
+            answer_mode=TableReadingAnswerMode.NUMERIC,
+        )
 
 
 class TblShrinkingCapRunGenerator(_BaseTableReadingSelectionGenerator):
@@ -311,19 +463,43 @@ class TblShrinkingCapRunGenerator(_BaseTableReadingSelectionGenerator):
         self._problem_index = 0
 
     def next_problem(self, *, difficulty: float) -> Problem:
-        part = TableReadingPart.PART_ONE if self._problem_index % 2 == 0 else TableReadingPart.PART_TWO
+        slot = self._problem_index % 5
+        part = TableReadingPart.PART_ONE if slot in (0, 3, 4) else TableReadingPart.PART_TWO
         self._problem_index += 1
+        if slot == 4:
+            return self._base.next_problem_for_selection(
+                difficulty=difficulty,
+                part=TableReadingPart.PART_ONE,
+                family=None,
+                profile="letter",
+                item_kind=TableReadingItemKind.LETTER_SEARCH,
+            )
         family = (
             PART_ONE_FAMILIES[(self._problem_index - 1) % len(PART_ONE_FAMILIES)]
             if part is TableReadingPart.PART_ONE
             else PART_TWO_FAMILIES[(self._problem_index - 1) % len(PART_TWO_FAMILIES)]
         )
-        profile = "scan" if part is TableReadingPart.PART_ONE else "run"
+        if slot == 3:
+            return self._base.next_problem_for_selection(
+                difficulty=difficulty,
+                part=part,
+                family=family,
+                profile="reverse",
+                item_kind=TableReadingItemKind.REVERSE_LOOKUP,
+            )
+        profile = "compute" if slot == 2 else "scan" if part is TableReadingPart.PART_ONE else "run"
         return self._base.next_problem_for_selection(
             difficulty=difficulty,
             part=part,
             family=family,
             profile=profile,
+            item_kind=(
+                TableReadingItemKind.THREE_TABLE_LOOKUP
+                if slot == 2
+                else TableReadingItemKind.SINGLE_TABLE_LOOKUP
+                if part is TableReadingPart.PART_ONE
+                else TableReadingItemKind.TWO_TABLE_LOOKUP
+            ),
         )
 
     def cap_for_problem(self, *, problem: Problem, level: int) -> float:

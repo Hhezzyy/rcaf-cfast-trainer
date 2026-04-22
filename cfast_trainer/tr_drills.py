@@ -45,10 +45,7 @@ class TargetRecognitionTimedDrill(TimedCapDrill):
     def _input_hint(self) -> str:
         if self.phase not in (Phase.PRACTICE, Phase.SCORED):
             return "Press Enter to continue"
-        return (
-            f"L{self._current_level()} | Cap {self._item_remaining_s():0.1f}s | "
-            "Mouse only: click active panel matches"
-        )
+        return self._timed_cap_hint("Mouse only: click active panel matches")
 
 
 class _TargetRecognitionTrainingGenerator(TargetRecognitionGenerator):
@@ -189,6 +186,9 @@ class _TargetRecognitionTrainingGenerator(TargetRecognitionGenerator):
             light_interval_range_s=self._light_interval_range_s_for(d),
             scan_interval_range_s=self._scan_interval_range_s_for(d),
             scan_repeat_range=self._scan_repeat_range_for(d),
+            scene_spawn_interval_range_s=self._scene_spawn_interval_range_s_for(d),
+            scene_spawn_burst_chance=self._scene_spawn_burst_chance_for(d),
+            scene_spawn_burst_range=self._scene_spawn_burst_range_for(d),
             scene_objective_label=scene_objective_label,
             scene_clear_all_targets=scene_clear_all_targets,
         )
@@ -646,6 +646,36 @@ class _TargetRecognitionTrainingGenerator(TargetRecognitionGenerator):
         if self._cadence_style == "steady" and difficulty < 0.5:
             return (3, 4)
         return base
+
+    def _scene_spawn_interval_range_s_for(self, difficulty: float) -> tuple[float, float]:
+        base = {
+            AntDrillMode.BUILD: (13.0, 32.0),
+            AntDrillMode.TEMPO: (9.5, 24.0),
+            AntDrillMode.STRESS: (6.8, 18.0),
+        }[self._mode]
+        delta = self._family_pace_delta()
+        low = max(4.0, base[0] + delta - (difficulty * 4.4))
+        high = max(low + 1.8, base[1] + (delta * 1.8) - (difficulty * 8.2))
+        return (round(low, 2), round(high, 2))
+
+    def _scene_spawn_burst_chance_for(self, difficulty: float) -> float:
+        base = {
+            AntDrillMode.BUILD: 0.06,
+            AntDrillMode.TEMPO: 0.13,
+            AntDrillMode.STRESS: 0.22,
+        }[self._mode]
+        style_bonus = {
+            "steady": 0.0,
+            "switch": 0.03,
+            "mixed": 0.06,
+            "pressure": 0.10,
+        }.get(self._cadence_style, 0.0)
+        return round(min(0.46, base + style_bonus + (difficulty * 0.18)), 3)
+
+    def _scene_spawn_burst_range_for(self, difficulty: float) -> tuple[int, int]:
+        if self._mode is AntDrillMode.STRESS or self._cadence_style == "pressure" or difficulty >= 0.72:
+            return (1, 2)
+        return (1, 1)
 
     def _system_step_interval_s_for(self, difficulty: float) -> float:
         base = {

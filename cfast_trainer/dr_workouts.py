@@ -113,11 +113,11 @@ def build_dr_workout_plan(*, duration_scale: float = 1.0) -> AntWorkoutPlan:
         code="digit_recognition_workout",
         title="Digit Recognition Workout (90m)",
         description=(
-            "Standard 90-minute Digit Recognition workout with typed reflection, visible scaffold blocks, "
+            "Standard 90-minute Digit Recognition workout with visible scaffold blocks, "
             "hidden-memory family work, and a final mixed pressure block."
         ),
         notes=(
-            "Typed reflections and block setup screens do not count toward the 90-minute drill clock.",
+            "Block setup screens do not count toward the 90-minute drill clock.",
             "Early blocks allow visible support; later blocks switch to the real hidden-memory show, mask, and question rhythm.",
             "All Digit Recognition blocks stay typed digits only, with the family ladder expanding from recall into four non-recall comparison/count prompts.",
         ),

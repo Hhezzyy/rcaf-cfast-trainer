@@ -31,7 +31,7 @@ def _build_small_cln_workout_plan() -> AntWorkoutPlan:
         code="colours_letters_numbers_workout",
         title="CLN Workout Smoke",
         description="Short deterministic workout for tests.",
-        notes=("Reflections are untimed.",),
+        notes=("Block setup is untimed.",),
         blocks=(
             AntWorkoutBlockPlan(
                 block_id="sequence_copy",
@@ -64,10 +64,6 @@ def _complete_small_cln_workout(clock: FakeClock) -> AntWorkoutSession:
     )
 
     session.activate()
-    session.append_text("Train controlled switching")
-    session.activate()
-    session.append_text("Keep moving when overlap spikes")
-    session.activate()
 
     assert session.stage is AntWorkoutStage.BLOCK_SETUP
     session.activate()
@@ -97,10 +93,8 @@ def _complete_small_cln_workout(clock: FakeClock) -> AntWorkoutSession:
 
     assert session.stage is AntWorkoutStage.BLOCK_RESULTS
     session.activate()
-    assert session.stage is AntWorkoutStage.POST_REFLECTION
-    session.append_text("Memory degraded first")
+    assert session.stage is AntWorkoutStage.RESULTS
     session.activate()
-    session.append_text("Reset the sequence immediately")
     session.activate()
 
     assert session.stage is AntWorkoutStage.RESULTS
@@ -118,7 +112,7 @@ def test_cln_workout_session_runs_scaffold_and_full_blocks() -> None:
     assert summary.attempted >= 1
 
 
-def test_cln_workout_attempt_result_omits_reflection_metrics() -> None:
+def test_cln_workout_attempt_result_omits_setup_metrics() -> None:
     clock = FakeClock()
     session = _complete_small_cln_workout(clock)
     result = attempt_result_from_engine(session, test_code="colours_letters_numbers_workout")

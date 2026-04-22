@@ -14,6 +14,7 @@ from .digit_recognition import (
     DigitRecognitionTrainingSpec,
 )
 from .lookup_retain import expected_digits_for_problem
+from .runtime_ui_policy import runtime_visible_timers_enabled
 
 
 def _clamp01(value: float) -> float:
@@ -767,9 +768,14 @@ class DigitRecognitionTimedDrill:
             return "Press Enter to continue"
         if self._stage is not _DrStage.QUESTION or self._question_presented_at_s is None:
             return f"L{_difficulty_to_level(self._difficulty)} | Observe, then type digits"
+        level = _difficulty_to_level(self._difficulty)
+        if runtime_visible_timers_enabled():
+            return (
+                f"L{level} | "
+                f"Cap {self._item_remaining_s():0.1f}s | Type digits then Enter"
+            )
         return (
-            f"L{_difficulty_to_level(self._difficulty)} | "
-            f"Cap {self._item_remaining_s():0.1f}s | Type digits then Enter"
+            f"L{level} | Type digits then Enter"
         )
 
     def _deal_new_problem(self) -> None:

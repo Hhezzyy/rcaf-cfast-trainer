@@ -248,7 +248,7 @@ def test_rapid_tracking_workout_block_uses_real_runtime_screen() -> None:
             code="rapid_tracking_workout",
             title="RT Workout UI",
             description="UI regression workout.",
-            notes=("Untimed reflections.",),
+            notes=("Untimed block setup.",),
             blocks=(
                 AntWorkoutBlockPlan(
                     block_id="mixed",
@@ -263,9 +263,7 @@ def test_rapid_tracking_workout_block_uses_real_runtime_screen() -> None:
         )
         session = AntWorkoutSession(clock=clock, seed=606, plan=plan, starting_level=5)
         session.activate()
-        session.append_text("steady scan")
         session.activate()
-        session.append_text("capture late")
         session.activate()
         session.activate()
 

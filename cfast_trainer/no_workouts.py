@@ -87,11 +87,11 @@ def build_no_workout_plan(*, duration_scale: float = 1.0) -> AntWorkoutPlan:
         code="numerical_operations_workout",
         title="Numerical Operations Workout (90m)",
         description=(
-            "Standard 90-minute Numerical Operations workout with typed reflection, warm-up blocks, "
+            "Standard 90-minute Numerical Operations workout with warm-up blocks, "
             "core arithmetic tempo work, and late pressure runs."
         ),
         notes=(
-            "Typed reflections and block setup screens do not count toward the 90-minute drill clock.",
+            "Block setup screens do not count toward the 90-minute drill clock.",
             "Every block stays typed, matching the real Numerical Operations answer mode.",
             "The late blocks tighten caps to train recovery after misses rather than perfect streaks.",
         ),
