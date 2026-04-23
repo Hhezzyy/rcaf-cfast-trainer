@@ -270,7 +270,7 @@ def test_generated_tracks_preserve_role_specific_smooth_tangent_behavior() -> No
             assert end_tangent[2] > 0.0
 
 
-def test_generated_turning_tracks_pivot_before_translating_on_turn_steps() -> None:
+def test_generated_turning_tracks_translate_hold_pivot_then_continue() -> None:
     payload = TraceTest2Generator(seed=29).next_problem(difficulty=0.55).payload
     assert isinstance(payload, TraceTest2Payload)
 
@@ -292,19 +292,33 @@ def test_generated_turning_tracks_pivot_before_translating_on_turn_steps() -> No
             track=track,
             progress=(float(turn_index) + 0.20) / float(step_count),
         )
-        late = trace_test_2_track_position(
+        dwell = trace_test_2_track_position(
             track=track,
-            progress=(float(turn_index) + 0.60) / float(step_count),
+            progress=(float(turn_index) + 0.52) / float(step_count),
+        )
+        turning = trace_test_2_track_position(
+            track=track,
+            progress=(float(turn_index) + 0.75) / float(step_count),
+        )
+        next_move = trace_test_2_track_position(
+            track=track,
+            progress=(float(turn_index + 1) + 0.25) / float(step_count),
         )
 
-        assert mid == pytest.approx(early)
+        assert mid.y > early.y
+        assert mid.x == pytest.approx(early.x)
+        assert mid.z == pytest.approx(early.z)
+        assert dwell.y > mid.y
+        assert turning == pytest.approx(dwell)
         if track.motion_kind in (TraceTest2MotionKind.LEFT, TraceTest2MotionKind.RIGHT):
             expected_sign = -1.0 if track.motion_kind is TraceTest2MotionKind.LEFT else 1.0
-            assert (late.x - mid.x) * expected_sign > 0.0
-            assert late.y == pytest.approx(mid.y)
+            assert (next_move.x - dwell.x) * expected_sign > 0.0
+            assert next_move.y == pytest.approx(dwell.y)
+            assert next_move.z == pytest.approx(dwell.z)
         else:
-            assert late.z > mid.z
-            assert late.y == pytest.approx(mid.y)
+            assert next_move.z > dwell.z
+            assert next_move.y == pytest.approx(dwell.y)
+            assert next_move.x == pytest.approx(dwell.x)
 
 
 def test_generated_turning_tracks_keep_tangent_direction_consistent_with_motion_family() -> None:
@@ -323,7 +337,7 @@ def test_generated_turning_tracks_keep_tangent_direction_consistent_with_motion_
         step_count = len(track.lattice_path.steps)
         mid_tangent = trace_test_2_track_tangent(
             track=track,
-            progress=(float(turn_index) + 0.20) / float(step_count),
+            progress=(float(turn_index) + 0.75) / float(step_count),
         )
 
         assert math.isfinite(mid_tangent[0])

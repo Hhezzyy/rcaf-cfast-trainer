@@ -27,12 +27,11 @@ from .auditory_capacity_motion import (
     auditory_gate_world_distance_from_x_norm,
 )
 from .auditory_capacity_view import (
-    AUDITORY_BALL_ANCHOR_DISTANCE,
-    AUDITORY_GATE_BEHIND_DISTANCE,
+    AUDITORY_GATE_BEHIND_DISTANCE_OFFSET,
+    AUDITORY_TUNNEL_GEOMETRY_END_OFFSET_DISTANCE,
+    AUDITORY_TUNNEL_GEOMETRY_START_OFFSET_DISTANCE,
     TUNNEL_CAMERA_H_FOV_DEG,
     TUNNEL_CAMERA_V_FOV_DEG,
-    TUNNEL_GEOMETRY_END_DISTANCE,
-    TUNNEL_GEOMETRY_START_DISTANCE,
     fixed_camera_pose_at_distance,
     gate_depth_ratio_from_distance,
     run_travel_distance,
@@ -92,8 +91,11 @@ from .trace_scene_3d import (
     TraceAircraftPose,
     TraceCameraPose,
     TraceScene3dSnapshot,
+    TraceSceneBackdrop,
     build_trace_test_1_scene3d,
     build_trace_test_2_scene3d,
+    trace_test_1_backdrop,
+    trace_test_2_backdrop,
 )
 from .trace_test_1_gl import (
     aircraft_screen_poses_for_payload as trace_test_1_aircraft_screen_poses_for_payload,
@@ -203,6 +205,7 @@ class _ScenePlan:
     static_groups: tuple[_RapidTrackingStaticGroup, ...] = ()
     backdrop_groups: tuple[_RapidTrackingStaticGroup, ...] = ()
     playfield_groups: tuple[_RapidTrackingStaticGroup, ...] = ()
+    trace_backdrop: TraceSceneBackdrop | None = None
     debug: dict[str, object] | None = None
 
 
@@ -287,8 +290,30 @@ _AUDITORY_TUBE_RIB_STEP = 4.0
 _AUDITORY_TUBE_RX = 2.24
 _AUDITORY_TUBE_RZ = 1.64
 _AUDITORY_BALL_RADIUS = 0.11
-_AUDITORY_TUBE_GEOMETRY_START = float(TUNNEL_GEOMETRY_START_DISTANCE)
-_AUDITORY_TUBE_GEOMETRY_END = float(TUNNEL_GEOMETRY_END_DISTANCE)
+_AUDITORY_TUBE_GEOMETRY_START_OFFSET = float(AUDITORY_TUNNEL_GEOMETRY_START_OFFSET_DISTANCE)
+_AUDITORY_TUBE_GEOMETRY_END_OFFSET = float(AUDITORY_TUNNEL_GEOMETRY_END_OFFSET_DISTANCE)
+
+
+def _auditory_fixed_world_distances(
+    *,
+    start_distance: float,
+    end_distance: float,
+    step: float,
+    offset: float = 0.0,
+) -> tuple[float, ...]:
+    step = max(0.01, float(step))
+    offset = float(offset)
+    start = max(0.0, float(start_distance))
+    end = max(start, float(end_distance))
+    first_index = math.ceil((start - offset) / step)
+    distance = offset + (float(first_index) * step)
+    while distance < 0.0:
+        distance += step
+    values: list[float] = []
+    while distance <= end + 1e-6:
+        values.append(float(distance))
+        distance += step
+    return tuple(values)
 
 
 def _wrap_heading_deg(dx: float, dy: float) -> float:
@@ -1654,7 +1679,7 @@ def _build_auditory_scene_plan(
                     ),
                 )
             )
-        ball_distance = travel_distance + AUDITORY_BALL_ANCHOR_DISTANCE
+        ball_distance = travel_distance
         centerline, ball_tangent, right, up = _tube_frame(ball_distance)
         ball_roll_deg = auditory_ball_roll_deg(
             ball_distance=ball_distance,
@@ -1691,11 +1716,18 @@ def _build_auditory_scene_plan(
     )
 
     instances: list[_AssetInstance] = []
-    geometry_start = travel_distance + _AUDITORY_TUBE_GEOMETRY_START
-    geometry_end = travel_distance + _AUDITORY_TUBE_GEOMETRY_END
+    geometry_start = max(0.0, ball_distance + _AUDITORY_TUBE_GEOMETRY_START_OFFSET)
+    geometry_end = max(
+        geometry_start,
+        ball_distance + _AUDITORY_TUBE_GEOMETRY_END_OFFSET,
+    )
 
-    distance = geometry_start + (_AUDITORY_TUBE_SEGMENT_LENGTH * 0.5)
-    while distance <= geometry_end:
+    for distance in _auditory_fixed_world_distances(
+        start_distance=geometry_start,
+        end_distance=geometry_end,
+        step=_AUDITORY_TUBE_SEGMENT_LENGTH,
+        offset=_AUDITORY_TUBE_SEGMENT_LENGTH * 0.5,
+    ):
         center, tangent, _right, _up = _tube_frame(distance)
         hpr = _world_hpr_from_tangent(tangent=tangent, roll_deg=0.0)
         instances.append(
@@ -1707,10 +1739,12 @@ def _build_auditory_scene_plan(
                 color=(0.08, 0.14, 0.38, 0.78),
             )
         )
-        distance += _AUDITORY_TUBE_SEGMENT_LENGTH
 
-    distance = geometry_start
-    while distance <= geometry_end:
+    for distance in _auditory_fixed_world_distances(
+        start_distance=geometry_start,
+        end_distance=geometry_end,
+        step=_AUDITORY_TUBE_RIB_STEP,
+    ):
         center, tangent, _right, _up = _tube_frame(distance)
         hpr = _world_hpr_from_tangent(tangent=tangent, roll_deg=0.0)
         instances.append(
@@ -1722,7 +1756,6 @@ def _build_auditory_scene_plan(
                 color=(0.34, 0.52, 0.98, 0.94),
             )
         )
-        distance += _AUDITORY_TUBE_RIB_STEP
 
     gate_asset_ids: set[str] = set()
     ball_center = _vec_add(
@@ -1743,16 +1776,20 @@ def _build_auditory_scene_plan(
         y_half_span = max(0.08, float(payload.tube_half_height))
         visible_gates: list[tuple[float, object]] = []
         for gate in payload.gates:
-            distance = auditory_gate_world_distance_from_x_norm(
-                float(gate.x_norm),
-                travel_distance=travel_distance,
-                spawn_x_norm=float(AUDITORY_GATE_SPAWN_X_NORM),
-                player_x_norm=float(AUDITORY_GATE_PLAYER_X_NORM),
-                retire_x_norm=float(AUDITORY_GATE_RETIRE_X_NORM),
-            )
-            if distance < (travel_distance + AUDITORY_GATE_BEHIND_DISTANCE):
+            gate_world_distance = getattr(gate, "world_distance", None)
+            if gate_world_distance is None:
+                distance = auditory_gate_world_distance_from_x_norm(
+                    float(gate.x_norm),
+                    travel_distance=travel_distance,
+                    spawn_x_norm=float(AUDITORY_GATE_SPAWN_X_NORM),
+                    player_x_norm=float(AUDITORY_GATE_PLAYER_X_NORM),
+                    retire_x_norm=float(AUDITORY_GATE_RETIRE_X_NORM),
+                )
+            else:
+                distance = float(gate_world_distance)
+            if distance < (ball_distance + AUDITORY_GATE_BEHIND_DISTANCE_OFFSET):
                 continue
-            if distance > (travel_distance + _AUDITORY_TUBE_GEOMETRY_END + 0.5):
+            if distance > (geometry_end + 0.5):
                 continue
             visible_gates.append((distance, gate))
         visible_gates.sort(key=lambda item: float(item[0]), reverse=True)
@@ -1803,6 +1840,8 @@ def _build_auditory_scene_plan(
             "auditory_core_collisions": 0
             if payload is None
             else int(getattr(payload, "collisions", collision_penalties)),
+            "auditory_tunnel_geometry_start": float(geometry_start),
+            "auditory_tunnel_geometry_end": float(geometry_end),
         },
     )
 
@@ -3060,6 +3099,7 @@ def _build_trace_test_1_scene_plan(scene: TraceTest1GlScene) -> _ScenePlan:
             overlay_primitives=(),
             asset_ids=(),
             entity_count=0,
+            trace_backdrop=trace_test_1_backdrop(),
         )
     snapshot = build_trace_test_1_scene3d(payload=payload)
     return _ScenePlan(
@@ -3070,6 +3110,7 @@ def _build_trace_test_1_scene_plan(scene: TraceTest1GlScene) -> _ScenePlan:
         overlay_primitives=(),
         asset_ids=(),
         entity_count=1 + len(payload.scene.blue_frames),
+        trace_backdrop=snapshot.backdrop,
     )
 
 
@@ -3085,6 +3126,7 @@ def _build_trace_test_2_scene_plan(scene: TraceTest2GlScene) -> _ScenePlan:
             overlay_primitives=(),
             asset_ids=(),
             entity_count=0,
+            trace_backdrop=trace_test_2_backdrop(),
         )
     snapshot = build_trace_test_2_scene3d(
         payload=payload,
@@ -3102,6 +3144,7 @@ def _build_trace_test_2_scene_plan(scene: TraceTest2GlScene) -> _ScenePlan:
         overlay_primitives=(),
         asset_ids=tuple(sorted({instance.asset_id for instance in asset_instances})),
         entity_count=len(payload.aircraft) + len(asset_instances),
+        trace_backdrop=snapshot.backdrop,
     )
 
 
@@ -3368,14 +3411,12 @@ class ModernSceneRenderer:
         scissor_enabled = self._scene_needs_scissor(scene)
         if scissor_enabled:
             self._ctx.scissor = self._scene_scissor_rect(scene.world)
-            self._ctx.enable(moderngl.SCISSOR_TEST)
         try:
             self._draw_scene(scene=scene)
             self._flush_scene_textures()
             self._flush_color_geometry()
         finally:
             if scissor_enabled:
-                self._ctx.disable(moderngl.SCISSOR_TEST)
                 self._ctx.scissor = None
             self._ctx.disable(moderngl.DEPTH_TEST)
             self._restore_alpha_blend()
@@ -4508,24 +4549,34 @@ class ModernSceneRenderer:
             self._add_line(now, future, (0.94, 0.56, 0.30, 0.82), width=2.0)
         return int(scene_plan.entity_count)
 
+    def _draw_trace_backdrop(
+        self,
+        *,
+        rect: pygame.Rect,
+        backdrop: TraceSceneBackdrop | None,
+    ) -> None:
+        if backdrop is None:
+            return
+        vw = max(1, int(rect.w))
+        vh = max(1, int(rect.h))
+        for band in backdrop.bands:
+            top_y = max(0.0, min(1.0, float(band.top_y_norm))) * float(vh)
+            bottom_y = max(0.0, min(1.0, float(band.bottom_y_norm))) * float(vh)
+            if bottom_y <= top_y:
+                continue
+            self._add_quad(
+                self._to_screen(rect, 0.0, top_y),
+                self._to_screen(rect, float(vw), top_y),
+                self._to_screen(rect, float(vw), bottom_y),
+                self._to_screen(rect, 0.0, bottom_y),
+                tuple(float(channel) for channel in band.color_rgba),
+            )
+
     def _draw_trace_test_1_scene(self, *, scene: TraceTest1GlScene, scene_plan: _ScenePlan) -> int:
         rect = scene.world
         vw = max(1, int(rect.w))
         vh = max(1, int(rect.h))
-        self._add_quad(
-            self._to_screen(rect, 0.0, 0.0),
-            self._to_screen(rect, float(vw), 0.0),
-            self._to_screen(rect, float(vw), float(vh)),
-            self._to_screen(rect, 0.0, float(vh)),
-            (0.56, 0.70, 0.88, 1.0),
-        )
-        self._add_quad(
-            self._to_screen(rect, 0.0, float(vh * 0.52)),
-            self._to_screen(rect, float(vw), float(vh * 0.52)),
-            self._to_screen(rect, float(vw), float(vh)),
-            self._to_screen(rect, 0.0, float(vh)),
-            (0.48, 0.60, 0.74, 1.0),
-        )
+        self._draw_trace_backdrop(rect=rect, backdrop=scene_plan.trace_backdrop)
         if scene.payload is None:
             return 0
         self._render_overlay_primitives(
@@ -4567,23 +4618,7 @@ class ModernSceneRenderer:
 
     def _draw_trace_test_2_scene(self, *, scene: TraceTest2GlScene, scene_plan: _ScenePlan) -> int:
         rect = scene.world
-        vw = max(1, int(rect.w))
-        vh = max(1, int(rect.h))
-        horizon = vh * 0.26
-        self._add_quad(
-            self._to_screen(rect, 0.0, horizon),
-            self._to_screen(rect, float(vw), horizon),
-            self._to_screen(rect, float(vw), float(vh)),
-            self._to_screen(rect, 0.0, float(vh)),
-            (0.50, 0.66, 0.86, 1.0),
-        )
-        self._add_quad(
-            self._to_screen(rect, 0.0, 0.0),
-            self._to_screen(rect, float(vw), 0.0),
-            self._to_screen(rect, float(vw), horizon),
-            self._to_screen(rect, 0.0, horizon),
-            (0.40, 0.46, 0.52, 1.0),
-        )
+        self._draw_trace_backdrop(rect=rect, backdrop=scene_plan.trace_backdrop)
         if scene.payload is None:
             return 0
         if scene_plan.asset_instances:

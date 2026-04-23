@@ -188,6 +188,7 @@ class AuditoryCapacityGate:
     color: str
     shape: str
     aperture_norm: float
+    world_distance: float | None = None
     visual_slot_index: int | None = None
     flash_color: str | None = None
     flash_strength: float = 0.0
@@ -2616,6 +2617,9 @@ class AuditoryCapacityEngine:
                     color=g.color,
                     shape=g.shape,
                     aperture_norm=float(g.aperture_norm),
+                    world_distance=(
+                        None if g.world_distance is None else float(g.world_distance)
+                    ),
                     visual_slot_index=(
                         None if g.visual_slot_index is None else int(g.visual_slot_index)
                     ),

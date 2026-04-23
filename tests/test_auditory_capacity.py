@@ -18,9 +18,8 @@ from cfast_trainer.auditory_capacity import (
 )
 from cfast_trainer.auditory_capacity_motion import auditory_gate_world_distance_from_x_norm
 from cfast_trainer.auditory_capacity_view import (
-    AUDITORY_BALL_ANCHOR_DISTANCE,
+    AUDITORY_TUNNEL_GEOMETRY_END_OFFSET_DISTANCE,
     BALL_FORWARD_IDLE_NORM,
-    TUNNEL_GEOMETRY_END_DISTANCE,
     gate_distance_from_x_norm,
     run_start_distance,
     run_travel_distance,
@@ -170,13 +169,15 @@ def test_live_tunnel_run_start_is_seeded_repeatable_and_varies_between_runs() ->
     assert other != pytest.approx(first)
 
 
-def test_seeded_travel_changes_visible_tunnel_curve_relative_to_ball_anchor() -> None:
+def test_seeded_travel_changes_visible_tunnel_curve_relative_to_moving_ball() -> None:
     start_travel = run_travel_distance(session_seed=17, phase_elapsed_s=0.0)
     later_travel = run_travel_distance(session_seed=17, phase_elapsed_s=42.0)
 
     def relative_curve(travel_distance: float) -> tuple[float, float]:
-        ball_distance = float(travel_distance) + float(AUDITORY_BALL_ANCHOR_DISTANCE)
-        ring_distance = float(travel_distance) + (float(TUNNEL_GEOMETRY_END_DISTANCE) * 0.54)
+        ball_distance = float(travel_distance)
+        ring_distance = float(travel_distance) + (
+            float(AUDITORY_TUNNEL_GEOMETRY_END_OFFSET_DISTANCE) * 0.54
+        )
         ring_x, ring_z = tube_center_at_distance(ring_distance)
         ball_x, ball_z = tube_center_at_distance(ball_distance)
         return (ring_x - ball_x, ring_z - ball_z)

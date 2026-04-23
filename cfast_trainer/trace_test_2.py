@@ -28,6 +28,7 @@ from .trace_lattice import (
 
 _STAGE_EPSILON_S = 1e-6
 _TT2_TURN_PHASE_RATIO = 0.35
+_TT2_NODE_HOLD_PHASE_RATIO = 0.08
 _TT2_WORLD_COL_SPACING = 22.0
 _TT2_WORLD_ROW_SPACING = 24.0
 _TT2_WORLD_LEVEL_SPACING = 8.0
@@ -255,6 +256,7 @@ def trace_test_2_track_position(
             track.lattice_path,
             progress=progress,
             turn_phase_ratio=_TT2_TURN_PHASE_RATIO,
+            node_hold_phase_ratio=_TT2_NODE_HOLD_PHASE_RATIO,
         )
         return _tt2_world_point_from_lattice(
             pose.position,
@@ -300,6 +302,7 @@ def trace_test_2_track_tangent(
             track.lattice_path,
             progress=progress,
             turn_phase_ratio=_TT2_TURN_PHASE_RATIO,
+            node_hold_phase_ratio=_TT2_NODE_HOLD_PHASE_RATIO,
         )
         return (
             float(pose.forward[0] * _TT2_WORLD_COL_SPACING * float(track.lateral_scale)),
@@ -433,7 +436,7 @@ class TraceTest2Generator:
             ),
             "climb": (
                 TraceTest2MotionKind.CLIMB,
-                trace_lattice_state(col=4, row=2, level=1, forward=(0, 1, 0), up=(0, 0, 1)),
+                trace_lattice_state(col=4, row=2, level=2, forward=(0, 1, 0), up=(0, 0, 1)),
             ),
         }
         declared_motion_kind, start_state = templates[role_key]

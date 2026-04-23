@@ -169,6 +169,16 @@ AUDITORY_GATE_BEHIND_DISTANCE = max(
     TUNNEL_GEOMETRY_START_DISTANCE + 1.0,
     AUDITORY_BALL_ANCHOR_DISTANCE - 6.0,
 )
+AUDITORY_GATE_FAR_DISTANCE_OFFSET = AUDITORY_GATE_FAR_DISTANCE - AUDITORY_BALL_ANCHOR_DISTANCE
+AUDITORY_GATE_BEHIND_DISTANCE_OFFSET = (
+    AUDITORY_GATE_BEHIND_DISTANCE - AUDITORY_BALL_ANCHOR_DISTANCE
+)
+AUDITORY_TUNNEL_GEOMETRY_START_OFFSET_DISTANCE = (
+    TUNNEL_GEOMETRY_START_DISTANCE - AUDITORY_BALL_ANCHOR_DISTANCE
+)
+AUDITORY_TUNNEL_GEOMETRY_END_OFFSET_DISTANCE = (
+    TUNNEL_GEOMETRY_END_DISTANCE - AUDITORY_BALL_ANCHOR_DISTANCE
+)
 AUDITORY_RUN_MAX_START_DISTANCE = max(
     0.0,
     TUBE_PATH_SPAN
@@ -233,11 +243,11 @@ def gate_distance_from_x_norm(
     if x >= player:
         span = max(1e-6, spawn - player)
         t = clamp01((spawn - x) / span)
-        relative = lerp(AUDITORY_GATE_FAR_DISTANCE, AUDITORY_BALL_ANCHOR_DISTANCE, t)
+        relative = lerp(AUDITORY_GATE_FAR_DISTANCE_OFFSET, 0.0, t)
     else:
         span = max(1e-6, player - retire)
         t = clamp01((player - x) / span)
-        relative = lerp(AUDITORY_BALL_ANCHOR_DISTANCE, AUDITORY_GATE_BEHIND_DISTANCE, t)
+        relative = lerp(0.0, AUDITORY_GATE_BEHIND_DISTANCE_OFFSET, t)
     return float(travel_distance) + relative
 
 
@@ -246,8 +256,8 @@ def gate_depth_ratio_from_distance(
     *,
     travel_distance: float,
 ) -> float:
-    near = float(travel_distance) + AUDITORY_BALL_ANCHOR_DISTANCE
-    far = float(travel_distance) + AUDITORY_GATE_FAR_DISTANCE
+    near = float(travel_distance)
+    far = float(travel_distance) + AUDITORY_GATE_FAR_DISTANCE_OFFSET
     span = max(1e-6, far - near)
     return clamp01((float(distance) - near) / span)
 

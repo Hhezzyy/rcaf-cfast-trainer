@@ -36,6 +36,8 @@ def test_trace_test_2_scene3d_builder_is_deterministic_for_same_payload() -> Non
     assert first == second
     assert len(first.aircraft) == len(payload.aircraft)
     assert first.camera.target[1] > first.camera.position[1]
+    assert first.backdrop is not None
+    assert len(first.backdrop.bands) == 2
 
 
 def test_trace_test_2_practice_scene_adds_ghost_trails_without_moving_live_aircraft() -> None:
@@ -77,7 +79,7 @@ def test_trace_test_2_projected_aircraft_centers_move_between_observe_samples() 
         assert early != pytest.approx(late)
 
 
-def test_trace_test_2_projected_turning_tracks_hold_position_while_pivoting_then_move() -> None:
+def test_trace_test_2_projected_turning_tracks_move_then_hold_while_pivoting() -> None:
     payload = _sample_payload()
 
     for track in payload.aircraft:
@@ -93,27 +95,35 @@ def test_trace_test_2_projected_turning_tracks_hold_position_while_pivoting_then
         early = project_point(
             trace_test_2_track_position(
                 track=track,
-                progress=(float(turn_index) + 0.08) / float(step_count),
-            ),
-            size=(640, 360),
-        )
-        mid = project_point(
-            trace_test_2_track_position(
-                track=track,
                 progress=(float(turn_index) + 0.20) / float(step_count),
             ),
             size=(640, 360),
         )
-        late = project_point(
+        dwell = project_point(
             trace_test_2_track_position(
                 track=track,
-                progress=(float(turn_index) + 0.60) / float(step_count),
+                progress=(float(turn_index) + 0.52) / float(step_count),
+            ),
+            size=(640, 360),
+        )
+        turning = project_point(
+            trace_test_2_track_position(
+                track=track,
+                progress=(float(turn_index) + 0.75) / float(step_count),
+            ),
+            size=(640, 360),
+        )
+        next_move = project_point(
+            trace_test_2_track_position(
+                track=track,
+                progress=(float(turn_index + 1) + 0.25) / float(step_count),
             ),
             size=(640, 360),
         )
 
-        assert mid == pytest.approx(early)
-        assert late != pytest.approx(mid)
+        assert dwell != pytest.approx(early)
+        assert turning == pytest.approx(dwell)
+        assert next_move != pytest.approx(dwell)
 
 
 def test_trace_test_2_screen_pose_matches_projected_motion_for_representative_tracks() -> None:
@@ -157,8 +167,8 @@ def test_trace_test_2_screen_pose_progresses_toward_turn_heading_during_turn_win
         if step.effective_action is not TraceLatticeAction.STRAIGHT
     )
     step_count = len(right_track.lattice_path.steps)
-    early_progress = (float(turn_index) + 0.08) / float(step_count)
-    mid_progress = (float(turn_index) + 0.20) / float(step_count)
+    early_progress = (float(turn_index) + 0.52) / float(step_count)
+    mid_progress = (float(turn_index) + 0.75) / float(step_count)
     early_pose = aircraft_screen_pose_for_track(
         track=right_track,
         progress=early_progress,

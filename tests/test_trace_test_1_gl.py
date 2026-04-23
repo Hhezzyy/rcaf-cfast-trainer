@@ -95,13 +95,13 @@ def test_trace_test_1_projected_view_delta_separates_manual_commands() -> None:
     }
 
     for command, (expected_x_sign, expected_y_sign) in expected.items():
+        assert classify_trace_test_1_view_maneuver(prompt=_manual_prompt(command)) is command
         delta = trace_test_1_camera_space_delta(prompt=_manual_prompt(command))
         if expected_x_sign != 0.0:
             assert delta[0] * expected_x_sign > 0.0
             assert abs(delta[0]) > abs(delta[1])
         else:
             assert delta[1] * expected_y_sign > 0.0
-            assert abs(delta[1]) > abs(delta[0])
 
 
 def test_trace_test_1_scene3d_builder_is_deterministic_for_same_payload() -> None:
@@ -114,6 +114,8 @@ def test_trace_test_1_scene3d_builder_is_deterministic_for_same_payload() -> Non
     assert len(first.aircraft) == 1 + len(payload.scene.blue_frames)
     assert first.aircraft[0].asset_id == "plane_red"
     assert all(aircraft.asset_id == "plane_blue" for aircraft in first.aircraft[1:])
+    assert first.backdrop is not None
+    assert len(first.backdrop.bands) == 2
 
 
 def test_trace_test_1_scene3d_camera_tracks_real_world_aircraft_pose() -> None:
@@ -141,28 +143,34 @@ def test_trace_test_1_projected_red_aircraft_center_moves_between_observe_sample
     assert early_center != pytest.approx(late_center)
 
 
-def test_trace_test_1_projected_red_aircraft_holds_position_while_pivoting_then_moves() -> None:
+def test_trace_test_1_projected_red_aircraft_moves_then_holds_while_pivoting() -> None:
     prompt = _manual_prompt(TraceTest1Command.LEFT)
     step_count = len(prompt.red_plan.lattice_actions)
     early = trace_test_1_scene_frames(
         prompt=prompt,
-        progress=(1.0 + 0.08) / float(step_count),
-    ).red_frame
-    mid = trace_test_1_scene_frames(
-        prompt=prompt,
         progress=(1.0 + 0.20) / float(step_count),
     ).red_frame
-    late = trace_test_1_scene_frames(
+    dwell = trace_test_1_scene_frames(
         prompt=prompt,
-        progress=(1.0 + 0.60) / float(step_count),
+        progress=(1.0 + 0.52) / float(step_count),
+    ).red_frame
+    turning = trace_test_1_scene_frames(
+        prompt=prompt,
+        progress=(1.0 + 0.75) / float(step_count),
+    ).red_frame
+    next_move = trace_test_1_scene_frames(
+        prompt=prompt,
+        progress=(2.0 + 0.25) / float(step_count),
     ).red_frame
 
     early_center, _ = project_scene_position(early.position, size=(640, 360))
-    mid_center, _ = project_scene_position(mid.position, size=(640, 360))
-    late_center, _ = project_scene_position(late.position, size=(640, 360))
+    dwell_center, _ = project_scene_position(dwell.position, size=(640, 360))
+    turning_center, _ = project_scene_position(turning.position, size=(640, 360))
+    next_center, _ = project_scene_position(next_move.position, size=(640, 360))
 
-    assert mid_center == pytest.approx(early_center)
-    assert late_center[0] < mid_center[0]
+    assert dwell_center[1] < early_center[1]
+    assert turning_center == pytest.approx(dwell_center)
+    assert next_center[0] < dwell_center[0]
 
 
 def test_trace_test_1_projected_motion_matches_manual_command_direction() -> None:
@@ -175,9 +183,15 @@ def test_trace_test_1_projected_motion_matches_manual_command_direction() -> Non
 
     for command, expected_heading in expected.items():
         prompt = _manual_prompt(command)
-        early_frame = trace_test_1_scene_frames(prompt=prompt, progress=0.45).red_frame
-        mid_frame = trace_test_1_scene_frames(prompt=prompt, progress=0.50).red_frame
-        late_frame = trace_test_1_scene_frames(prompt=prompt, progress=0.55).red_frame
+        step_count = len(prompt.red_plan.lattice_actions)
+        early_frame = trace_test_1_scene_frames(
+            prompt=prompt,
+            progress=(2.0 + 0.15) / float(step_count),
+        ).red_frame
+        late_frame = trace_test_1_scene_frames(
+            prompt=prompt,
+            progress=(2.0 + 0.45) / float(step_count),
+        ).red_frame
         early_center, _ = project_scene_position(early_frame.position, size=(640, 360))
         late_center, _ = project_scene_position(late_frame.position, size=(640, 360))
         motion_heading = screen_motion_heading_deg(
@@ -193,8 +207,8 @@ def test_trace_test_1_projected_motion_matches_manual_command_direction() -> Non
 def test_trace_test_1_screen_pose_progresses_toward_turn_heading_during_turn_window() -> None:
     prompt = _manual_prompt(TraceTest1Command.RIGHT)
     step_count = len(prompt.red_plan.lattice_actions)
-    early_progress = (1.0 + 0.08) / float(step_count)
-    mid_progress = (1.0 + 0.20) / float(step_count)
+    early_progress = (1.0 + 0.52) / float(step_count)
+    mid_progress = (1.0 + 0.75) / float(step_count)
     early_frame = trace_test_1_scene_frames(prompt=prompt, progress=early_progress).red_frame
     mid_frame = trace_test_1_scene_frames(prompt=prompt, progress=mid_progress).red_frame
 

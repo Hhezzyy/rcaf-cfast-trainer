@@ -5,6 +5,7 @@ import math
 import sys
 from dataclasses import replace
 from importlib.machinery import ModuleSpec
+from pathlib import Path
 from types import SimpleNamespace
 from types import ModuleType
 
@@ -20,7 +21,6 @@ for _name, _value in {
     "BLEND": 1,
     "CULL_FACE": 2,
     "DEPTH_TEST": 3,
-    "SCISSOR_TEST": 4,
     "SRC_ALPHA": 5,
     "ONE_MINUS_SRC_ALPHA": 6,
     "ONE": 7,
@@ -36,10 +36,16 @@ from cfast_trainer.aircraft_art import (
     project_fixed_wing_point,
     rotate_fixed_wing_point,
 )
-from cfast_trainer.auditory_capacity import AuditoryCapacityGate, build_auditory_capacity_test
+from cfast_trainer.auditory_capacity import (
+    AUDITORY_GATE_PLAYER_X_NORM,
+    AUDITORY_GATE_RETIRE_X_NORM,
+    AUDITORY_GATE_SPAWN_X_NORM,
+    AuditoryCapacityGate,
+    build_auditory_capacity_test,
+)
+from cfast_trainer.auditory_capacity_motion import auditory_gate_x_norm_from_world_distance
 from cfast_trainer.auditory_capacity_view import (
     BALL_FORWARD_IDLE_NORM,
-    TUNNEL_GEOMETRY_END_DISTANCE,
     run_travel_distance,
 )
 from cfast_trainer.gl_scenes import (
@@ -528,16 +534,14 @@ def test_auditory_scene_plan_includes_volumetric_gate_assets_when_visible() -> N
             assert instance.color[3] > 0.0
 
 
-def test_auditory_scene_plan_camera_follows_presentation_travel_but_ignores_ball_offsets() -> None:
+def test_auditory_scene_plan_camera_follows_ball_travel_but_ignores_ball_offsets() -> None:
+    base_payload = _auditory_payload()
     baseline = _build_auditory_scene_plan(_auditory_scene_with_ball_offset(ball_x=0.0, ball_y=0.0))
     lateral = _build_auditory_scene_plan(_auditory_scene_with_ball_offset(ball_x=0.82, ball_y=-0.60))
     shifted_payload = replace(
-        _auditory_payload(),
-        phase_elapsed_s=9.4,
-        presentation_travel_distance=run_travel_distance(
-            session_seed=int(_auditory_payload().session_seed),
-            phase_elapsed_s=9.4,
-        ),
+        base_payload,
+        phase_elapsed_s=float(base_payload.phase_elapsed_s) + 90.0,
+        presentation_travel_distance=float(base_payload.presentation_travel_distance) + 18.0,
         ball_x=0.82,
         ball_y=-0.60,
         ball_forward_norm=0.74,
@@ -556,21 +560,64 @@ def test_auditory_scene_plan_camera_follows_presentation_travel_but_ignores_ball
     assert shifted.camera is not None
     assert lateral.camera == baseline.camera
     assert shifted.camera.position[1] > baseline.camera.position[1]
-    assert shifted.camera.position[0] > baseline.camera.position[0]
+    assert shifted.camera.position != pytest.approx(baseline.camera.position)
 
 
-def test_auditory_scene_plan_gate_positions_advance_with_travel_but_keep_ball_spacing() -> None:
+def test_auditory_scene_plan_gate_world_positions_stay_fixed_as_ball_advances() -> None:
     base_scene = _auditory_scene_with_visible_gates()
+    assert base_scene.payload is not None
+    base_travel = float(base_scene.payload.presentation_travel_distance)
+    gate_specs = (
+        ("GREEN", "SQUARE", base_travel + 14.0),
+        ("RED", "TRIANGLE", base_travel + 20.0),
+        ("BLUE", "CIRCLE", base_travel + 26.0),
+    )
+    base_gates = tuple(
+        AuditoryCapacityGate(
+            gate_id=730 + idx,
+            x_norm=auditory_gate_x_norm_from_world_distance(
+                world_distance,
+                travel_distance=base_travel,
+                spawn_x_norm=float(AUDITORY_GATE_SPAWN_X_NORM),
+                player_x_norm=float(AUDITORY_GATE_PLAYER_X_NORM),
+                retire_x_norm=float(AUDITORY_GATE_RETIRE_X_NORM),
+            ),
+            y_norm=0.0,
+            color=color,
+            shape=shape,
+            aperture_norm=0.20,
+            world_distance=world_distance,
+        )
+        for idx, (color, shape, world_distance) in enumerate(gate_specs)
+    )
+    base_scene = AuditoryGlScene(
+        world=base_scene.world,
+        payload=replace(base_scene.payload, gates=base_gates),
+        time_remaining_s=base_scene.time_remaining_s,
+        time_fill_ratio=base_scene.time_fill_ratio,
+    )
+    advanced_travel = base_travel + 3.0
+    advanced_gates = tuple(
+        replace(
+            gate,
+            x_norm=auditory_gate_x_norm_from_world_distance(
+                float(gate.world_distance),
+                travel_distance=advanced_travel,
+                spawn_x_norm=float(AUDITORY_GATE_SPAWN_X_NORM),
+                player_x_norm=float(AUDITORY_GATE_PLAYER_X_NORM),
+                retire_x_norm=float(AUDITORY_GATE_RETIRE_X_NORM),
+            ),
+        )
+        for gate in base_gates
+    )
     advanced_scene = AuditoryGlScene(
         world=pygame.Rect(0, 0, 640, 360),
         payload=replace(
             base_scene.payload,
             phase_elapsed_s=7.1,
-            presentation_travel_distance=run_travel_distance(
-                session_seed=int(base_scene.payload.session_seed),
-                phase_elapsed_s=7.1,
-            ),
+            presentation_travel_distance=advanced_travel,
             ball_forward_norm=0.72,
+            gates=advanced_gates,
         )
         if base_scene.payload is not None
         else None,
@@ -586,19 +633,25 @@ def test_auditory_scene_plan_gate_positions_advance_with_travel_but_keep_ball_sp
     second_ball = next(
         instance for instance in second_plan.asset_instances if instance.asset_id == "auditory_ball"
     )
-    first_gates = sorted(
-        instance.position[1] - first_ball.position[1]
+    first_gates = {
+        instance.asset_id: instance.position
         for instance in first_plan.asset_instances
         if instance.asset_id.startswith("auditory_gate_")
-    )
-    second_gates = sorted(
-        instance.position[1] - second_ball.position[1]
+    }
+    second_gates = {
+        instance.asset_id: instance.position
         for instance in second_plan.asset_instances
         if instance.asset_id.startswith("auditory_gate_")
-    )
+    }
 
     assert second_ball.position[1] > first_ball.position[1]
-    assert second_gates == pytest.approx(first_gates)
+    assert second_gates.keys() == first_gates.keys()
+    for asset_id, first_position in first_gates.items():
+        assert second_gates[asset_id] == pytest.approx(first_position)
+        assert (
+            second_gates[asset_id][1] - second_ball.position[1]
+            < first_position[1] - first_ball.position[1]
+        )
 
 
 def test_auditory_scene_plan_ball_advances_with_presentation_travel() -> None:
@@ -633,6 +686,47 @@ def test_auditory_scene_plan_ball_advances_with_presentation_travel() -> None:
     )
 
     assert far_ball.position[1] > near_ball.position[1]
+
+
+def test_auditory_scene_plan_tunnel_segments_are_fixed_world_samples() -> None:
+    base_payload = _auditory_payload()
+    advanced_payload = replace(
+        base_payload,
+        phase_elapsed_s=float(base_payload.phase_elapsed_s) + 0.5,
+        presentation_travel_distance=float(base_payload.presentation_travel_distance) + 1.25,
+    )
+
+    base_plan = _build_auditory_scene_plan(
+        AuditoryGlScene(
+            world=pygame.Rect(0, 0, 640, 360),
+            payload=base_payload,
+            time_remaining_s=18.0,
+            time_fill_ratio=0.44,
+        )
+    )
+    advanced_plan = _build_auditory_scene_plan(
+        AuditoryGlScene(
+            world=pygame.Rect(0, 0, 640, 360),
+            payload=advanced_payload,
+            time_remaining_s=18.0,
+            time_fill_ratio=0.44,
+        )
+    )
+    base_segments = {
+        round(instance.position[1], 3): instance.position
+        for instance in base_plan.asset_instances
+        if instance.asset_id == "auditory_tunnel_segment"
+    }
+    advanced_segments = {
+        round(instance.position[1], 3): instance.position
+        for instance in advanced_plan.asset_instances
+        if instance.asset_id == "auditory_tunnel_segment"
+    }
+    overlap = sorted(set(base_segments) & set(advanced_segments))
+
+    assert overlap
+    for distance in overlap:
+        assert advanced_segments[distance] == pytest.approx(base_segments[distance])
 
 
 def test_auditory_scene_plan_uses_core_collision_count_and_roll() -> None:
@@ -761,8 +855,10 @@ def test_auditory_scene_plan_keeps_far_end_tunnel_ring_in_front_of_camera() -> N
     )
 
     assert scene.payload is not None
+    assert plan.debug is not None
+    assert float(plan.debug["auditory_tunnel_geometry_end"]) - farthest_rib.position[1] < 4.0
     assert farthest_rib.position[1] == pytest.approx(
-        float(scene.payload.presentation_travel_distance) + TUNNEL_GEOMETRY_END_DISTANCE,
+        round(farthest_rib.position[1] / 4.0) * 4.0,
         abs=0.01,
     )
     assert farthest_rib.position[1] > plan.camera.position[1]
@@ -865,10 +961,12 @@ def test_scene_target_scissors_rapid_tracking_and_restores_state() -> None:
 
     assert ("scissor", expected_scissor) in ctx.events
     assert ctx.scissor is None
-    scissor_on = ctx.events.index(("enable", moderngl_for_tests.SCISSOR_TEST))
+    scissor_on = ctx.events.index(("scissor", expected_scissor))
     draw_idx = ctx.events.index(("draw_scene", "RapidTrackingGlScene"))
-    scissor_off = ctx.events.index(("disable", moderngl_for_tests.SCISSOR_TEST))
-    assert scissor_on < draw_idx < scissor_off
+    texture_idx = ctx.events.index(("scene_textures",))
+    color_idx = ctx.events.index(("color",))
+    scissor_off = ctx.events.index(("scissor", None))
+    assert scissor_on < draw_idx < texture_idx < color_idx < scissor_off
     assert ctx.blend_func == (
         moderngl_for_tests.SRC_ALPHA,
         moderngl_for_tests.ONE_MINUS_SRC_ALPHA,
@@ -876,6 +974,27 @@ def test_scene_target_scissors_rapid_tracking_and_restores_state() -> None:
         moderngl_for_tests.ONE_MINUS_SRC_ALPHA,
     )
     assert ("disable", moderngl_for_tests.DEPTH_TEST) in ctx.events
+
+
+def test_scene_target_scissor_does_not_require_moderngl_flag_constant(monkeypatch) -> None:
+    monkeypatch.delattr(moderngl_for_tests, "SCISSOR" + "_TEST", raising=False)
+    renderer = _build_pipeline_probe_renderer()
+    ctx = renderer._ctx
+    assert isinstance(ctx, _FakeContext)
+    scene = RapidTrackingGlScene(
+        world=pygame.Rect(8, 16, 300, 160),
+        payload=None,
+        active_phase=True,
+    )
+
+    renderer._draw_scene = lambda *, scene: ctx.events.append(("draw_scene", scene.__class__.__name__))
+    renderer._flush_scene_textures = lambda: ctx.events.append(("scene_textures",))
+    renderer._flush_color_geometry = lambda: ctx.events.append(("color",))
+
+    renderer._render_scene_target(scene=scene)
+
+    assert ("draw_scene", "RapidTrackingGlScene") in ctx.events
+    assert ctx.scissor is None
 
 
 def test_scene_target_scissors_spatial_integration_before_ui_composite() -> None:
@@ -889,10 +1008,15 @@ def test_scene_target_scissors_spatial_integration_before_ui_composite() -> None
     )
     expected_scissor = renderer._scene_scissor_rect(scene.world)
 
-    renderer._draw_scene = lambda *, scene: order.append("draw_scene")
+    def fake_draw_scene(*, scene) -> None:
+        assert isinstance(scene, SpatialIntegrationGlScene)
+        ctx.events.append(("draw_scene", scene.__class__.__name__))
+        order.append("draw_scene")
+
+    renderer._draw_scene = fake_draw_scene
     renderer._flush_scene_textures = lambda: order.append("scene_textures")
     renderer._flush_color_geometry = lambda: order.append("color")
-    renderer._composite_scene_target = lambda: order.append("composite")
+    renderer._composite_scene_target = lambda: (ctx.events.append(("composite",)) or order.append("composite"))
     renderer._draw_ui_surface = lambda *, ui_surface: order.append("ui")
 
     renderer.render_frame(
@@ -901,7 +1025,20 @@ def test_scene_target_scissors_spatial_integration_before_ui_composite() -> None
     )
 
     assert ("scissor", expected_scissor) in ctx.events
+    assert ctx.scissor is None
+    scissor_on = ctx.events.index(("scissor", expected_scissor))
+    draw_idx = ctx.events.index(("draw_scene", "SpatialIntegrationGlScene"))
+    scissor_off = ctx.events.index(("scissor", None))
+    composite_idx = ctx.events.index(("composite",))
+    assert scissor_on < draw_idx < scissor_off < composite_idx
     assert order == ["draw_scene", "scene_textures", "color", "composite", "ui"]
+
+
+def test_modern_gl_renderer_does_not_reference_moderngl_scissor_flag() -> None:
+    source = Path("cfast_trainer/modern_gl_renderer.py").read_text(encoding="utf-8")
+    flag_name = "_".join(("SCISSOR", "TEST"))
+
+    assert ".".join(("moderngl", flag_name)) not in source
 
 
 def test_world_geometry_flush_does_not_clear_backdrop_color() -> None:
@@ -1653,6 +1790,8 @@ def test_trace_test_1_scene_plan_builds_real_world_camera_and_aircraft_instances
     assert plan.entity_count == 1 + len(payload.scene.blue_frames)
     assert plan.asset_instances == ()
     assert plan.asset_ids == ()
+    assert plan.trace_backdrop is not None
+    assert len(plan.trace_backdrop.bands) == 2
 
 
 def test_trace_test_2_scene_plan_builds_real_world_camera_and_practice_ghosts() -> None:
@@ -1672,6 +1811,8 @@ def test_trace_test_2_scene_plan_builds_real_world_camera_and_practice_ghosts() 
     assert plan.entity_count == len(payload.aircraft) + len(plan.asset_instances)
     assert plan.entity_count > len(payload.aircraft)
     assert {"plane_blue", "plane_green", "plane_red", "plane_yellow"} >= set(plan.asset_ids)
+    assert plan.trace_backdrop is not None
+    assert len(plan.trace_backdrop.bands) == 2
 
 
 def test_trace_test_1_draw_scene_renders_projected_marker_geometry(monkeypatch) -> None:

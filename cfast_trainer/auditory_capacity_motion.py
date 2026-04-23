@@ -5,8 +5,8 @@ from dataclasses import dataclass
 
 from .auditory_capacity_view import (
     AUDITORY_BALL_ANCHOR_DISTANCE,
-    AUDITORY_GATE_BEHIND_DISTANCE,
-    AUDITORY_GATE_FAR_DISTANCE,
+    AUDITORY_GATE_BEHIND_DISTANCE_OFFSET,
+    AUDITORY_GATE_FAR_DISTANCE_OFFSET,
     Point3,
     lerp,
     run_start_distance,
@@ -103,7 +103,7 @@ class AuditoryTunnelFollower:
         return self.snapshot()
 
     def snapshot(self) -> AuditoryTunnelFollowerSnapshot:
-        ball_distance = float(self._travel_distance) + float(self._config.ball_anchor_distance)
+        ball_distance = float(self._travel_distance)
         center, tangent, right, up = tube_frame(ball_distance)
         roll = auditory_ball_roll_deg(
             ball_distance=ball_distance,
@@ -139,7 +139,7 @@ def auditory_travel_speed_from_gate_speed(
     player_x_norm: float,
 ) -> float:
     x_span = max(1e-6, float(spawn_x_norm) - float(player_x_norm))
-    distance_span = float(AUDITORY_GATE_FAR_DISTANCE) - float(AUDITORY_BALL_ANCHOR_DISTANCE)
+    distance_span = float(AUDITORY_GATE_FAR_DISTANCE_OFFSET)
     return max(0.0, float(gate_speed_x_norm_per_s)) * (distance_span / x_span)
 
 
@@ -158,11 +158,11 @@ def auditory_gate_world_distance_from_x_norm(
     if x >= player:
         span = max(1e-6, spawn - player)
         t = (spawn - x) / span
-        relative = lerp(AUDITORY_GATE_FAR_DISTANCE, AUDITORY_BALL_ANCHOR_DISTANCE, t)
+        relative = lerp(AUDITORY_GATE_FAR_DISTANCE_OFFSET, 0.0, t)
     else:
         span = max(1e-6, player - retire)
         t = (player - x) / span
-        relative = lerp(AUDITORY_BALL_ANCHOR_DISTANCE, AUDITORY_GATE_BEHIND_DISTANCE, t)
+        relative = lerp(0.0, AUDITORY_GATE_BEHIND_DISTANCE_OFFSET, t)
     return float(travel_distance) + float(relative)
 
 
@@ -178,12 +178,12 @@ def auditory_gate_x_norm_from_world_distance(
     player = float(player_x_norm)
     retire = float(retire_x_norm)
     relative = float(world_distance) - float(travel_distance)
-    if relative >= float(AUDITORY_BALL_ANCHOR_DISTANCE):
-        span = max(1e-6, float(AUDITORY_GATE_FAR_DISTANCE) - float(AUDITORY_BALL_ANCHOR_DISTANCE))
-        t = (float(AUDITORY_GATE_FAR_DISTANCE) - relative) / span
+    if relative >= 0.0:
+        span = max(1e-6, float(AUDITORY_GATE_FAR_DISTANCE_OFFSET))
+        t = (float(AUDITORY_GATE_FAR_DISTANCE_OFFSET) - relative) / span
         return lerp(spawn, player, t)
-    span = max(1e-6, float(AUDITORY_BALL_ANCHOR_DISTANCE) - float(AUDITORY_GATE_BEHIND_DISTANCE))
-    t = (float(AUDITORY_BALL_ANCHOR_DISTANCE) - relative) / span
+    span = max(1e-6, 0.0 - float(AUDITORY_GATE_BEHIND_DISTANCE_OFFSET))
+    t = (0.0 - relative) / span
     return lerp(player, retire, t)
 
 
@@ -254,4 +254,3 @@ def auditory_wall_collision_active(
     wall_bound: AuditoryTunnelWallBound,
 ) -> bool:
     return auditory_wall_contact_ratio(ball_bound=ball_bound, wall_bound=wall_bound) >= 1.0
-

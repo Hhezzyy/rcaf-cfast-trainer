@@ -56,6 +56,7 @@ _TT1_LATTICE_ROW_SPACING = 18.0
 _TT1_LATTICE_LEVEL_SPACING = 7.5
 _TT1_LATTICE_BASE_DEPTH = 16.0
 _TT1_TURN_PHASE_RATIO = 0.35
+_TT1_NODE_HOLD_PHASE_RATIO = 0.08
 _TT1_MAX_RED_RECOVERY_STEPS = 8
 
 
@@ -273,6 +274,7 @@ def _tt1_scene_frame_from_lattice_plan(
         path,
         progress=progress,
         turn_phase_ratio=_TT1_TURN_PHASE_RATIO,
+        node_hold_phase_ratio=_TT1_NODE_HOLD_PHASE_RATIO,
     )
     world_position = _tt1_world_position_from_lattice(pose.position)
     world_forward = (

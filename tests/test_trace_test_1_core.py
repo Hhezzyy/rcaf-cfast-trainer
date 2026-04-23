@@ -395,25 +395,33 @@ def test_left_and_right_lattice_paths_finish_in_expected_heading_family() -> Non
     left_prompt = _manual_prompt(command=TraceTest1Command.LEFT)
     right_prompt = _manual_prompt(command=TraceTest1Command.RIGHT)
 
+    left_turn_node = trace_test_1_scene_frames(
+        prompt=left_prompt,
+        progress=_plan_step_progress(left_prompt.red_plan, step_index=1, local_t=0.52),
+    ).red_frame
     left_mid = trace_test_1_scene_frames(prompt=left_prompt, progress=0.80).red_frame
     left_end = trace_test_1_scene_frames(prompt=left_prompt, progress=1.0).red_frame
+    right_turn_node = trace_test_1_scene_frames(
+        prompt=right_prompt,
+        progress=_plan_step_progress(right_prompt.red_plan, step_index=1, local_t=0.52),
+    ).red_frame
     right_mid = trace_test_1_scene_frames(prompt=right_prompt, progress=0.80).red_frame
     right_end = trace_test_1_scene_frames(prompt=right_prompt, progress=1.0).red_frame
 
-    assert left_mid.position[0] < 0.0
-    assert left_mid.position[1] >= left_prompt.red_plan.start_state.position[1]
+    assert left_mid.position[0] < left_turn_node.position[0]
+    assert left_mid.position[1] == pytest.approx(left_turn_node.position[1])
     assert left_mid.attitude.roll_deg == pytest.approx(0.0)
     assert abs(_angle_delta_deg(left_mid.travel_heading_deg, 270.0)) <= 2.0
     assert abs(_angle_delta_deg(left_end.travel_heading_deg, 270.0)) <= 2.0
 
-    assert right_mid.position[0] > 0.0
-    assert right_mid.position[1] >= right_prompt.red_plan.start_state.position[1]
+    assert right_mid.position[0] > right_turn_node.position[0]
+    assert right_mid.position[1] == pytest.approx(right_turn_node.position[1])
     assert right_mid.attitude.roll_deg == pytest.approx(0.0)
     assert _angle_delta_deg(right_mid.travel_heading_deg, 0.0) > 0.0
     assert abs(_angle_delta_deg(right_end.travel_heading_deg, 90.0)) <= 2.0
 
 
-def test_left_and_right_turn_paths_pause_to_pivot_before_advancing() -> None:
+def test_left_and_right_turn_paths_move_hold_pivot_then_advance() -> None:
     left_prompt = _manual_prompt(command=TraceTest1Command.LEFT)
     right_prompt = _manual_prompt(command=TraceTest1Command.RIGHT)
     left_step = _tt1_command_step_index(left_prompt.red_plan)
@@ -429,7 +437,15 @@ def test_left_and_right_turn_paths_pause_to_pivot_before_advancing() -> None:
     ).red_frame
     left_late = trace_test_1_scene_frames(
         prompt=left_prompt,
-        progress=_plan_step_progress(left_prompt.red_plan, step_index=left_step, local_t=0.60),
+        progress=_plan_step_progress(left_prompt.red_plan, step_index=left_step, local_t=0.52),
+    ).red_frame
+    left_turning = trace_test_1_scene_frames(
+        prompt=left_prompt,
+        progress=_plan_step_progress(left_prompt.red_plan, step_index=left_step, local_t=0.75),
+    ).red_frame
+    left_next = trace_test_1_scene_frames(
+        prompt=left_prompt,
+        progress=_plan_step_progress(left_prompt.red_plan, step_index=left_step + 1, local_t=0.25),
     ).red_frame
     right_early = trace_test_1_scene_frames(
         prompt=right_prompt,
@@ -441,31 +457,39 @@ def test_left_and_right_turn_paths_pause_to_pivot_before_advancing() -> None:
     ).red_frame
     right_late = trace_test_1_scene_frames(
         prompt=right_prompt,
-        progress=_plan_step_progress(right_prompt.red_plan, step_index=right_step, local_t=0.60),
+        progress=_plan_step_progress(right_prompt.red_plan, step_index=right_step, local_t=0.52),
+    ).red_frame
+    right_turning = trace_test_1_scene_frames(
+        prompt=right_prompt,
+        progress=_plan_step_progress(right_prompt.red_plan, step_index=right_step, local_t=0.75),
+    ).red_frame
+    right_next = trace_test_1_scene_frames(
+        prompt=right_prompt,
+        progress=_plan_step_progress(right_prompt.red_plan, step_index=right_step + 1, local_t=0.25),
     ).red_frame
 
-    assert left_mid.position == pytest.approx(left_early.position)
-    assert left_late.position[0] < left_mid.position[0]
-    assert left_late.position[1] == pytest.approx(left_mid.position[1])
-    assert abs(_angle_delta_deg(left_mid.travel_heading_deg, 270.0)) < abs(
-        _angle_delta_deg(left_early.travel_heading_deg, 270.0)
+    assert left_mid.position[1] > left_early.position[1]
+    assert left_mid.position[0] == pytest.approx(left_early.position[0])
+    assert left_late.position[1] > left_mid.position[1]
+    assert left_turning.position == pytest.approx(left_late.position)
+    assert abs(_angle_delta_deg(left_turning.travel_heading_deg, 270.0)) < abs(
+        _angle_delta_deg(left_late.travel_heading_deg, 270.0)
     )
-    assert abs(_angle_delta_deg(left_late.travel_heading_deg, 270.0)) < abs(
-        _angle_delta_deg(left_mid.travel_heading_deg, 270.0)
-    )
+    assert left_next.position[0] < left_late.position[0]
+    assert left_next.position[1] == pytest.approx(left_late.position[1])
 
-    assert right_mid.position == pytest.approx(right_early.position)
-    assert right_late.position[0] > right_mid.position[0]
-    assert right_late.position[1] == pytest.approx(right_mid.position[1])
-    assert abs(_angle_delta_deg(right_mid.travel_heading_deg, 90.0)) < abs(
-        _angle_delta_deg(right_early.travel_heading_deg, 90.0)
+    assert right_mid.position[1] > right_early.position[1]
+    assert right_mid.position[0] == pytest.approx(right_early.position[0])
+    assert right_late.position[1] > right_mid.position[1]
+    assert right_turning.position == pytest.approx(right_late.position)
+    assert abs(_angle_delta_deg(right_turning.travel_heading_deg, 90.0)) < abs(
+        _angle_delta_deg(right_late.travel_heading_deg, 90.0)
     )
-    assert abs(_angle_delta_deg(right_late.travel_heading_deg, 90.0)) < abs(
-        _angle_delta_deg(right_mid.travel_heading_deg, 90.0)
-    )
+    assert right_next.position[0] > right_late.position[0]
+    assert right_next.position[1] == pytest.approx(right_late.position[1])
 
 
-def test_push_and_pull_pitch_pivot_in_place_before_resuming_forward_motion() -> None:
+def test_push_and_pull_move_hold_pitch_pivot_then_vertical_motion() -> None:
     push_prompt = _manual_prompt(command=TraceTest1Command.PUSH)
     pull_prompt = _manual_prompt(command=TraceTest1Command.PULL)
     push_step = _tt1_command_step_index(push_prompt.red_plan)
@@ -481,7 +505,15 @@ def test_push_and_pull_pitch_pivot_in_place_before_resuming_forward_motion() -> 
     ).red_frame
     push_late = trace_test_1_scene_frames(
         prompt=push_prompt,
-        progress=_plan_step_progress(push_prompt.red_plan, step_index=push_step, local_t=0.60),
+        progress=_plan_step_progress(push_prompt.red_plan, step_index=push_step, local_t=0.52),
+    ).red_frame
+    push_turning = trace_test_1_scene_frames(
+        prompt=push_prompt,
+        progress=_plan_step_progress(push_prompt.red_plan, step_index=push_step, local_t=0.75),
+    ).red_frame
+    push_next = trace_test_1_scene_frames(
+        prompt=push_prompt,
+        progress=_plan_step_progress(push_prompt.red_plan, step_index=push_step + 1, local_t=0.25),
     ).red_frame
     pull_early = trace_test_1_scene_frames(
         prompt=pull_prompt,
@@ -493,20 +525,34 @@ def test_push_and_pull_pitch_pivot_in_place_before_resuming_forward_motion() -> 
     ).red_frame
     pull_late = trace_test_1_scene_frames(
         prompt=pull_prompt,
-        progress=_plan_step_progress(pull_prompt.red_plan, step_index=pull_step, local_t=0.60),
+        progress=_plan_step_progress(pull_prompt.red_plan, step_index=pull_step, local_t=0.52),
+    ).red_frame
+    pull_turning = trace_test_1_scene_frames(
+        prompt=pull_prompt,
+        progress=_plan_step_progress(pull_prompt.red_plan, step_index=pull_step, local_t=0.75),
+    ).red_frame
+    pull_next = trace_test_1_scene_frames(
+        prompt=pull_prompt,
+        progress=_plan_step_progress(pull_prompt.red_plan, step_index=pull_step + 1, local_t=0.25),
     ).red_frame
 
-    assert push_mid.position == pytest.approx(push_early.position)
-    assert push_late.position[1] == pytest.approx(push_mid.position[1])
-    assert push_late.position[2] < push_mid.position[2]
-    assert push_mid.attitude.pitch_deg < push_early.attitude.pitch_deg
-    assert push_late.attitude.pitch_deg <= push_mid.attitude.pitch_deg
+    assert push_mid.position[1] > push_early.position[1]
+    assert push_mid.position[2] == pytest.approx(push_early.position[2])
+    assert push_late.position[1] > push_mid.position[1]
+    assert push_late.position[2] == pytest.approx(push_mid.position[2])
+    assert push_turning.position == pytest.approx(push_late.position)
+    assert push_turning.attitude.pitch_deg < push_late.attitude.pitch_deg
+    assert push_next.position[1] == pytest.approx(push_late.position[1])
+    assert push_next.position[2] < push_late.position[2]
 
-    assert pull_mid.position == pytest.approx(pull_early.position)
-    assert pull_late.position[1] == pytest.approx(pull_mid.position[1])
-    assert pull_late.position[2] > pull_mid.position[2]
-    assert pull_mid.attitude.pitch_deg > pull_early.attitude.pitch_deg
-    assert pull_late.attitude.pitch_deg >= pull_mid.attitude.pitch_deg
+    assert pull_mid.position[1] > pull_early.position[1]
+    assert pull_mid.position[2] == pytest.approx(pull_early.position[2])
+    assert pull_late.position[1] > pull_mid.position[1]
+    assert pull_late.position[2] == pytest.approx(pull_mid.position[2])
+    assert pull_turning.position == pytest.approx(pull_late.position)
+    assert pull_turning.attitude.pitch_deg > pull_late.attitude.pitch_deg
+    assert pull_next.position[1] == pytest.approx(pull_late.position[1])
+    assert pull_next.position[2] > pull_late.position[2]
 
 
 def test_submit_answer_keeps_current_prompt_running_until_clip_end() -> None:

@@ -138,10 +138,9 @@ from .auditory_capacity import (
     build_auditory_capacity_test,
 )
 from .auditory_capacity_view import (
-    AUDITORY_BALL_ANCHOR_DISTANCE,
-    AUDITORY_GATE_BEHIND_DISTANCE,
+    AUDITORY_GATE_BEHIND_DISTANCE_OFFSET,
+    AUDITORY_TUNNEL_GEOMETRY_END_OFFSET_DISTANCE,
     BALL_FORWARD_IDLE_NORM,
-    TUNNEL_GEOMETRY_END_DISTANCE,
     TUNNEL_EXIT_NORM,
     gate_depth_ratio_from_distance,
     gate_distance_from_x_norm,
@@ -3409,14 +3408,18 @@ class _OpenGLSceneRenderer:
             gates: list[tuple[float, AuditoryCapacityGate, float, float, float, int]] = []
             visible_gates: list[tuple[float, AuditoryCapacityGate]] = []
             for gate in payload.gates:
-                distance = gate_distance_from_x_norm(
-                    float(gate.x_norm),
-                    travel_distance=travel_distance,
-                    spawn_x_norm=float(AUDITORY_GATE_SPAWN_X_NORM),
-                    player_x_norm=float(AUDITORY_GATE_PLAYER_X_NORM),
-                    retire_x_norm=float(AUDITORY_GATE_RETIRE_X_NORM),
-                )
-                if distance < (travel_distance + AUDITORY_GATE_BEHIND_DISTANCE):
+                gate_world_distance = getattr(gate, "world_distance", None)
+                if gate_world_distance is None:
+                    distance = gate_distance_from_x_norm(
+                        float(gate.x_norm),
+                        travel_distance=travel_distance,
+                        spawn_x_norm=float(AUDITORY_GATE_SPAWN_X_NORM),
+                        player_x_norm=float(AUDITORY_GATE_PLAYER_X_NORM),
+                        retire_x_norm=float(AUDITORY_GATE_RETIRE_X_NORM),
+                    )
+                else:
+                    distance = float(gate_world_distance)
+                if distance < (travel_distance + AUDITORY_GATE_BEHIND_DISTANCE_OFFSET):
                     continue
                 visible_gates.append((distance, gate))
             visible_gates.sort(key=lambda item: float(item[0]), reverse=True)
@@ -17263,12 +17266,14 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         z_near = 2.0
         z_far = 26.0
         travel_distance = 0.0 if payload is None else float(payload.presentation_travel_distance)
-        ball_distance = float(travel_distance) + float(AUDITORY_BALL_ANCHOR_DISTANCE)
+        ball_distance = float(travel_distance)
         depth_samples = (0.02, 0.10, 0.18, 0.28, 0.40, 0.54, 0.68, 0.82, float(TUNNEL_EXIT_NORM))
         ring_poses: list[tuple[float, tuple[int, int], tuple[int, int]]] = []
         for depth_norm in depth_samples:
             t = max(0.0, min(1.0, float(depth_norm)))
-            tunnel_distance = float(travel_distance) + (float(TUNNEL_GEOMETRY_END_DISTANCE) * t)
+            tunnel_distance = float(travel_distance) + (
+                float(AUDITORY_TUNNEL_GEOMETRY_END_OFFSET_DISTANCE) * t
+            )
             off_x, off_y = self._auditory_tube_offset_at_distance(
                 distance=tunnel_distance,
                 ball_distance=ball_distance,
@@ -17307,14 +17312,18 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             x_half_span = max(0.08, float(payload.tube_half_width))
             visible_gates: list[tuple[float, AuditoryCapacityGate]] = []
             for gate in payload.gates:
-                distance = gate_distance_from_x_norm(
-                    float(gate.x_norm),
-                    travel_distance=travel_distance,
-                    spawn_x_norm=float(AUDITORY_GATE_SPAWN_X_NORM),
-                    player_x_norm=float(AUDITORY_GATE_PLAYER_X_NORM),
-                    retire_x_norm=float(AUDITORY_GATE_RETIRE_X_NORM),
-                )
-                if distance < (travel_distance + AUDITORY_GATE_BEHIND_DISTANCE):
+                gate_world_distance = getattr(gate, "world_distance", None)
+                if gate_world_distance is None:
+                    distance = gate_distance_from_x_norm(
+                        float(gate.x_norm),
+                        travel_distance=travel_distance,
+                        spawn_x_norm=float(AUDITORY_GATE_SPAWN_X_NORM),
+                        player_x_norm=float(AUDITORY_GATE_PLAYER_X_NORM),
+                        retire_x_norm=float(AUDITORY_GATE_RETIRE_X_NORM),
+                    )
+                else:
+                    distance = float(gate_world_distance)
+                if distance < (travel_distance + AUDITORY_GATE_BEHIND_DISTANCE_OFFSET):
                     continue
                 visible_gates.append((distance, gate))
             visible_gates.sort(key=lambda item: float(item[0]), reverse=True)

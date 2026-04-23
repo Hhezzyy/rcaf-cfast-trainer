@@ -35,7 +35,7 @@ def test_tunnel_follower_advances_by_speed_times_delta_time() -> None:
     after = follower.update(0.40)
 
     assert after.travel_distance == pytest.approx(start.travel_distance + 1.4)
-    assert after.ball_distance == pytest.approx(after.travel_distance + follower.config.ball_anchor_distance)
+    assert after.ball_distance == pytest.approx(after.travel_distance)
 
 
 def test_tunnel_follower_motion_is_independent_of_frame_subdivision() -> None:
@@ -90,6 +90,36 @@ def test_gate_world_distance_projection_round_trips_without_moving_gate() -> Non
     ) < x_norm
 
 
+def test_gate_projection_uses_travel_distance_as_ball_world_position() -> None:
+    travel = 18.0
+
+    far = auditory_gate_world_distance_from_x_norm(
+        1.65,
+        travel_distance=travel,
+        spawn_x_norm=1.65,
+        player_x_norm=0.0,
+        retire_x_norm=-1.25,
+    )
+    contact = auditory_gate_world_distance_from_x_norm(
+        0.0,
+        travel_distance=travel,
+        spawn_x_norm=1.65,
+        player_x_norm=0.0,
+        retire_x_norm=-1.25,
+    )
+    behind = auditory_gate_world_distance_from_x_norm(
+        -1.25,
+        travel_distance=travel,
+        spawn_x_norm=1.65,
+        player_x_norm=0.0,
+        retire_x_norm=-1.25,
+    )
+
+    assert far > travel
+    assert contact == pytest.approx(travel)
+    assert behind < travel
+
+
 def test_sphere_wall_collision_increments_once_per_collision_episode() -> None:
     follower = _follower(speed=0.0)
     snapshot = follower.snapshot()
@@ -132,4 +162,3 @@ def test_sphere_wall_collision_increments_once_per_collision_episode() -> None:
     assert repeated.collision_penalties == 1
     assert not cleared.collision_active
     assert second.collision_penalties == 2
-

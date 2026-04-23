@@ -9,6 +9,8 @@ from .trace_test_1 import (
     TraceTest1Payload,
     TraceTest1PromptPlan,
     TraceTest1SceneFrame,
+    _tt1_build_lattice_path,
+    _tt1_command_step_index,
     trace_test_1_aircraft_hpr,
     trace_test_1_scene_frames,
 )
@@ -59,10 +61,23 @@ class TraceAircraftPose:
 
 
 @dataclass(frozen=True, slots=True)
+class TraceBackdropBand:
+    top_y_norm: float
+    bottom_y_norm: float
+    color_rgba: tuple[float, float, float, float]
+
+
+@dataclass(frozen=True, slots=True)
+class TraceSceneBackdrop:
+    bands: tuple[TraceBackdropBand, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class TraceScene3dSnapshot:
     camera: TraceCameraPose
     aircraft: tuple[TraceAircraftPose, ...]
     ghosts: tuple[TraceAircraftPose, ...] = ()
+    backdrop: TraceSceneBackdrop | None = None
 
 
 def _vec_add(left: Point3, right: Point3) -> Point3:
@@ -137,6 +152,40 @@ def _camera_pose(
         v_fov_deg=float(v_fov_deg),
         near_clip=float(near_clip),
         far_clip=float(far_clip),
+    )
+
+
+def trace_test_1_backdrop() -> TraceSceneBackdrop:
+    return TraceSceneBackdrop(
+        bands=(
+            TraceBackdropBand(
+                top_y_norm=0.0,
+                bottom_y_norm=0.52,
+                color_rgba=(0.56, 0.70, 0.88, 1.0),
+            ),
+            TraceBackdropBand(
+                top_y_norm=0.52,
+                bottom_y_norm=1.0,
+                color_rgba=(0.48, 0.60, 0.74, 1.0),
+            ),
+        )
+    )
+
+
+def trace_test_2_backdrop() -> TraceSceneBackdrop:
+    return TraceSceneBackdrop(
+        bands=(
+            TraceBackdropBand(
+                top_y_norm=0.0,
+                bottom_y_norm=0.26,
+                color_rgba=(0.40, 0.46, 0.52, 1.0),
+            ),
+            TraceBackdropBand(
+                top_y_norm=0.26,
+                bottom_y_norm=1.0,
+                color_rgba=(0.50, 0.66, 0.86, 1.0),
+            ),
+        )
     )
 
 
@@ -399,6 +448,24 @@ def _tt2_trail_points(
     return tuple(points)
 
 
+def _trace_test_1_command_from_lattice_prompt(
+    prompt: TraceTest1PromptPlan,
+) -> TraceTest1Command | None:
+    path = _tt1_build_lattice_path(prompt.red_plan)
+    if path is None:
+        return None
+    command_step = _tt1_command_step_index(prompt.red_plan)
+    if command_step >= len(path.steps):
+        return None
+    action = path.steps[command_step].effective_action
+    return {
+        "left": TraceTest1Command.LEFT,
+        "right": TraceTest1Command.RIGHT,
+        "push": TraceTest1Command.PUSH,
+        "pull": TraceTest1Command.PULL,
+    }.get(str(action.value))
+
+
 def build_trace_test_1_scene3d(
     *,
     payload: TraceTest1Payload,
@@ -436,6 +503,7 @@ def build_trace_test_1_scene3d(
     return TraceScene3dSnapshot(
         camera=camera,
         aircraft=tuple(aircraft),
+        backdrop=trace_test_1_backdrop(),
     )
 
 
@@ -487,6 +555,7 @@ def build_trace_test_2_scene3d(
         camera=camera,
         aircraft=aircraft,
         ghosts=tuple(ghosts),
+        backdrop=trace_test_2_backdrop(),
     )
 
 
@@ -495,8 +564,11 @@ def classify_trace_test_1_view_maneuver(
     prompt: TraceTest1PromptPlan,
     viewpoint_bearing_deg: int = 180,
 ) -> TraceTest1Command:
+    lattice_command = _trace_test_1_command_from_lattice_prompt(prompt)
+    if lattice_command is not None:
+        return lattice_command
     early_progress = min(0.18, max(0.08, float(prompt.answer_open_progress) * 0.5))
-    final_progress = min(0.82, max(0.68, float(prompt.answer_open_progress) + 0.24))
+    final_progress = min(0.94, max(0.72, float(prompt.answer_open_progress) + 0.45))
     early_frame = trace_test_1_scene_frames(prompt=prompt, progress=early_progress).red_frame
     final_frame = trace_test_1_scene_frames(prompt=prompt, progress=final_progress).red_frame
     camera = _trace_test_1_camera(
@@ -531,7 +603,7 @@ def trace_test_1_camera_space_delta(
     viewpoint_bearing_deg: int = 180,
 ) -> Point3:
     early_progress = min(0.18, max(0.08, float(prompt.answer_open_progress) * 0.5))
-    final_progress = min(0.82, max(0.68, float(prompt.answer_open_progress) + 0.24))
+    final_progress = min(0.94, max(0.72, float(prompt.answer_open_progress) + 0.45))
     early_frame = trace_test_1_scene_frames(prompt=prompt, progress=early_progress).red_frame
     final_frame = trace_test_1_scene_frames(prompt=prompt, progress=final_progress).red_frame
     camera = _trace_test_1_camera(
