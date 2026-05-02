@@ -93,6 +93,7 @@ def test_tr_drill_scene_spawn_pressure_is_deterministic_and_mode_scaled() -> Non
     assert stress_payload.scene_spawn_interval_range_s[0] < build_payload.scene_spawn_interval_range_s[0]
     assert stress_payload.scene_spawn_interval_range_s[1] < build_payload.scene_spawn_interval_range_s[1]
     assert stress_payload.scene_spawn_burst_chance > build_payload.scene_spawn_burst_chance
+    assert 8 <= len(stress_payload.system_cycles) <= 12
 
     repeat_engine = build_tr_pressure_run_drill(
         clock=FakeClock(),
@@ -212,12 +213,15 @@ def test_tr_scene_clear_all_variants_emit_expected_objectives() -> None:
         ),
         (
             build_tr_category_sweep_drill,
-            lambda payload: payload.scene_objective_label in {"All Trucks", "All Tanks", "All Buildings"}
+            lambda payload: payload.scene_objective_label
+            in {"All Trucks", "All Tanks", "All Buildings", "All Beacons", "All Unknowns"}
             and all(
                 {
                     "All Trucks": "Truck",
                     "All Tanks": "Tank",
                     "All Buildings": "Building",
+                    "All Beacons": "Beacon",
+                    "All Unknowns": "Unknown",
                 }[payload.scene_objective_label]
                 in label
                 for label in payload.scene_target_options

@@ -41,7 +41,7 @@ class SystemLogicTimedDrill(TimedCapDrill):
     def _input_hint(self) -> str:
         if self.phase not in (Phase.PRACTICE, Phase.SCORED):
             return "Press Enter to continue"
-        return self._timed_cap_hint("Up/Down + A-E or 1-5 then Enter")
+        return self._timed_cap_hint("Up/Down + A/S/D/F/G or keypad 1-5")
 
 
 class _SystemLogicSingleReasoningGenerator(SystemLogicGenerator):
@@ -648,7 +648,7 @@ def build_sl_rule_match_drill(
             "System Logic: Rule Match",
             f"Mode: {profile.label}",
             "Match the diagram, table, and rule relationship fast enough that the right pane stops feeling like extra overhead.",
-            "Keep the same A-E answer flow; only the reasoning profile gets narrower.",
+            "Keep the same A/S/D/F/G answer flow; only the reasoning profile gets narrower.",
             "Press Enter to begin practice.",
         ),
         generator=SlRuleMatchGenerator(seed=seed),

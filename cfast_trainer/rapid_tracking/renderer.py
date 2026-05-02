@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from typing import Any
 
@@ -11,7 +10,7 @@ from ..runtime_ui_policy import runtime_visible_timers_enabled
 from .camera import TARGET_VIEW_LIMIT
 from .debug import rapid_tracking_debug_lines
 from .entities import RapidTrackingPayload
-from .legacy import rapid_tracking_target_label
+from .legacy import rapid_tracking_target_cue, rapid_tracking_target_label
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,38 +61,6 @@ def _rapid_tracking_footer_text(
     if RapidTrackingExerciseRenderer._dev_tools_enabled(engine):
         base = f"{base}  |  F2 Debug  F3 Camera  F5 Reset  F6 Reseed  Shift+F5 Instructions"
     return base
-
-
-def _rapid_tracking_fallback_notice_lines(*, app: Any, diagnostic_code: str | None) -> tuple[str, ...]:
-    failure = None
-    failure_getter = getattr(app, "renderer_bootstrap_failure", None)
-    if callable(failure_getter):
-        failure = failure_getter()
-    requested = bool(getattr(app, "renderer_gl_requested", lambda: getattr(app, "opengl_enabled", False))())
-    attempted = bool(getattr(app, "renderer_gl_attempted", lambda: requested)())
-
-    if not requested:
-        detail = (
-            "Modern GL / OpenGL rendering is turned off for this run, so Rapid Tracking is "
-            "using the 2D fallback scene."
-        )
-    elif failure is not None:
-        detail = (
-            "Modern GL / OpenGL rendering could not start, so Rapid Tracking is using the "
-            "2D fallback scene."
-        )
-    elif attempted:
-        detail = "Modern GL / OpenGL fell back to the 2D scene for this run."
-    else:
-        detail = (
-            "Modern GL / OpenGL is unavailable in this environment, so Rapid Tracking is "
-            "using the 2D fallback scene."
-        )
-
-    lines = ["2D fallback active", detail]
-    if diagnostic_code:
-        lines.append(f"Report code {diagnostic_code}")
-    return tuple(lines)
 
 
 def _render_wrapped_text(
@@ -151,15 +118,6 @@ class RapidTrackingExerciseRenderer:
         text_muted = (168, 210, 190)
         accent = (90, 214, 166)
         warning = (240, 192, 94)
-        diagnostic_code: str | None = None
-        if context.app.opengl_enabled:
-            diagnostic_code = context.app.renderer_diagnostic_code("rapid_tracking")
-        else:
-            diagnostic_code = context.app.note_renderer_fallback(
-                scene="rapid_tracking",
-                stage="runtime",
-                path="fallback_2d",
-            )
 
         surface.fill(bg)
         frame = pygame.Rect(10, 10, w - 20, h - 20)
@@ -190,8 +148,20 @@ class RapidTrackingExerciseRenderer:
         meta_top = header.bottom + 8
         if payload is not None and snap.phase in (Phase.PRACTICE, Phase.SCORED):
             focus_text = context.tiny_font.render(f"Focus: {payload.focus_label}", True, text_main)
-            target_label = rapid_tracking_target_label(kind=payload.target_kind, variant=payload.target_variant)
-            target_text = context.tiny_font.render(f"Target: {target_label}", True, text_muted)
+            target_label = rapid_tracking_target_label(
+                kind=payload.target_kind,
+                variant=payload.target_variant,
+            )
+            target_cue = rapid_tracking_target_cue(
+                kind=payload.target_kind,
+                variant=payload.target_variant,
+                handoff_mode=payload.target_handoff_mode,
+            )
+            target_text = context.tiny_font.render(
+                f"Target: {target_label} - {target_cue}",
+                True,
+                text_muted,
+            )
             segment_text = context.tiny_font.render(payload.segment_label, True, text_muted)
             surface.blit(focus_text, (frame.x + 12, meta_top))
             surface.blit(target_text, (frame.x + 12, meta_top + 16))
@@ -223,35 +193,18 @@ class RapidTrackingExerciseRenderer:
         track_margin = max(4, min(10, min(body.w, body.h) // 60))
         track = body.inflate(-track_margin * 2, -track_margin * 2)
 
-        if context.app.opengl_enabled:
-            pygame.draw.rect(surface, (4, 10, 8, 26), track)
-        else:
-            pygame.draw.rect(surface, (4, 10, 8), track)
+        pygame.draw.rect(surface, (4, 10, 8), track)
         pygame.draw.rect(surface, (84, 122, 109), track, 1)
 
-        if payload is not None and context.app.opengl_enabled:
-            from ..gl_scenes import RapidTrackingGlScene
-
-            context.app.queue_gl_scene(
-                RapidTrackingGlScene(
-                    world=pygame.Rect(track),
-                    payload=payload,
-                    active_phase=snap.phase in (Phase.PRACTICE, Phase.SCORED),
-                )
-            )
-            shade = pygame.Surface(track.size, pygame.SRCALPHA)
-            shade.fill((0, 0, 0, 20))
-            surface.blit(shade, track.topleft)
-        else:
-            self._draw_fallback_world(
-                surface=surface,
-                track=track,
-                payload=payload,
-                accent=accent,
-                border=border,
-                text_muted=text_muted,
-                context=context,
-            )
+        self._draw_flat_tracking_field(
+            surface=surface,
+            track=track,
+            payload=payload,
+            accent=accent,
+            border=border,
+            text_muted=text_muted,
+            font=context.tiny_font,
+        )
 
         if payload is not None:
             self._draw_target_hud(
@@ -284,17 +237,6 @@ class RapidTrackingExerciseRenderer:
                     text_muted,
                 )
                 surface.blit(seed_text, seed_text.get_rect(topright=(prompt_bg.right - 10, prompt_bg.y + 8)))
-            if diagnostic_code:
-                code_text = context.tiny_font.render(
-                    f"Report code {diagnostic_code}",
-                    True,
-                    text_muted,
-                )
-                surface.blit(
-                    code_text,
-                    code_text.get_rect(midbottom=(prompt_bg.centerx, prompt_bg.bottom - 8)),
-                )
-
         if self._debug_overlay_enabled(engine):
             self._draw_debug_overlay(
                 surface=surface,
@@ -304,31 +246,6 @@ class RapidTrackingExerciseRenderer:
                 border=border,
                 text_muted=text_muted,
                 font=context.tiny_font,
-            )
-
-        if not context.app.opengl_enabled and snap.phase in (Phase.INSTRUCTIONS, Phase.PRACTICE_DONE):
-            notice = pygame.Rect(
-                0,
-                0,
-                max(260, min(track.w - 36, 640)),
-                max(104, min(track.h - 36, 132)),
-            )
-            notice.center = track.center
-            pygame.draw.rect(surface, (10, 24, 22), notice, border_radius=12)
-            pygame.draw.rect(surface, (120, 176, 154), notice, 2, border_radius=12)
-            title = context.small_font.render("2D Fallback Active", True, warning)
-            surface.blit(title, title.get_rect(midtop=(notice.centerx, notice.y + 12)))
-            lines = _rapid_tracking_fallback_notice_lines(
-                app=context.app,
-                diagnostic_code=diagnostic_code,
-            )
-            _render_wrapped_text(
-                surface=surface,
-                font=context.tiny_font,
-                rect=pygame.Rect(notice.x + 18, notice.y + 48, notice.w - 36, notice.h - 58),
-                text=" ".join(lines[1:]),
-                color=text_muted,
-                max_lines=4,
             )
 
         footer = _rapid_tracking_footer_text(snap=snap, payload=payload, engine=engine)
@@ -374,7 +291,6 @@ class RapidTrackingExerciseRenderer:
             ("debug", "Debug"),
             ("camera", "Camera"),
         )
-        x = frame.right - 90
         y = header.bottom + 8
         hitboxes: dict[str, pygame.Rect] = {}
         panel = pygame.Rect(frame.right - 420, y - 2, 408, 30)
@@ -390,7 +306,7 @@ class RapidTrackingExerciseRenderer:
         self._set_dev_button_hitboxes(engine, hitboxes)
         return panel.bottom
 
-    def _draw_fallback_world(
+    def _draw_flat_tracking_field(
         self,
         *,
         surface: pygame.Surface,
@@ -399,31 +315,22 @@ class RapidTrackingExerciseRenderer:
         accent: tuple[int, int, int],
         border: tuple[int, int, int],
         text_muted: tuple[int, int, int],
-        context: RapidTrackingUiContext,
+        font: pygame.font.Font,
     ) -> None:
         pygame.draw.rect(surface, (3, 12, 10), track)
         for idx in range(1, 6):
             y = track.y + int(round((track.h / 6.0) * idx))
-            alpha = max(26, 70 - (idx * 8))
-            band = pygame.Surface((track.w, 1), pygame.SRCALPHA)
-            band.fill((84, 122, 109, alpha))
-            surface.blit(band, (track.x, y))
-        for idx in range(1, 5):
-            x = track.x + int(round((track.w / 5.0) * idx))
-            pygame.draw.line(surface, (20, 48, 40), (x, track.y), (x, track.bottom), 1)
+            pygame.draw.line(surface, (24, 58, 48), (track.x, y), (track.right, y), 1)
+            x = track.x + int(round((track.w / 6.0) * idx))
+            pygame.draw.line(surface, (24, 58, 48), (x, track.y), (x, track.bottom), 1)
+        pygame.draw.line(surface, (58, 104, 86), (track.centerx, track.y), (track.centerx, track.bottom), 1)
+        pygame.draw.line(surface, (58, 104, 86), (track.x, track.centery), (track.right, track.centery), 1)
 
         center = track.center
         if payload is None:
+            label = font.render("Flat tracking field", True, text_muted)
+            surface.blit(label, label.get_rect(center=center))
             return
-
-        # Draw a simple moving world cue so the fallback still reads in world-space.
-        horizon_y = track.centery + int(round(payload.camera_y * track.h * 0.06))
-        horizon_y = max(track.y + 24, min(track.bottom - 24, horizon_y))
-        pygame.draw.line(surface, (34, 74, 60), (track.x + 10, horizon_y), (track.right - 10, horizon_y), 2)
-
-        for idx in range(-2, 3):
-            base_x = track.centerx + int(round(idx * track.w * 0.18))
-            pygame.draw.line(surface, (26, 60, 48), (base_x, horizon_y), (base_x + (idx * 8), track.bottom - 10), 1)
 
         box_half_w = max(18, int(round(((track.w // 2) - 12) * payload.capture_box_half_width)))
         box_half_h = max(14, int(round((((track.h // 2) - 12) * 0.9) * payload.capture_box_half_height)))
@@ -496,6 +403,13 @@ class RapidTrackingExerciseRenderer:
         )
         status = font.render(status_label, True, status_color)
         surface.blit(status, (track.x + 10, metrics_bg.bottom + 8))
+        cue_label = rapid_tracking_target_cue(
+            kind=payload.target_kind,
+            variant=payload.target_variant,
+            handoff_mode=payload.target_handoff_mode,
+        )
+        cue = font.render(f"Cue: {cue_label}", True, text_muted)
+        surface.blit(cue, (track.x + 10, metrics_bg.bottom + 24))
 
     def _draw_debug_overlay(
         self,

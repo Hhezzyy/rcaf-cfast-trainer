@@ -16,7 +16,6 @@ from cfast_trainer.rapid_tracking import (
     _readable_layout_evaluation,
     _repair_layout_for_visual_stability,
     _visual_stability_layout_summary,
-    build_distant_terrain_ring,
     build_rapid_tracking_compound_layout,
     build_rapid_tracking_test,
     score_window,
@@ -184,6 +183,126 @@ def test_same_seed_reproduces_target_motion_and_obscuration_samples() -> None:
     assert sampled_states(551) == sampled_states(551)
 
 
+def test_reacquisition_metrics_count_hidden_to_on_target_recovery() -> None:
+    engine = build_rapid_tracking_test(
+        clock=FakeClock(),
+        seed=17,
+        difficulty=0.5,
+        config=RapidTrackingConfig(practice_duration_s=0.0, scored_duration_s=10.0),
+    )
+    engine.start_scored()
+
+    engine._sim_elapsed_s = 1.0
+    engine._update_reacquisition_metrics(on_target=False, hidden=True)
+    engine._sim_elapsed_s = 2.0
+    engine._update_reacquisition_metrics(on_target=False, hidden=False)
+    engine._sim_elapsed_s = 2.35
+    engine._update_reacquisition_metrics(on_target=True, hidden=False)
+
+    summary = engine.scored_summary()
+    assert summary.occlusion_episode_count == 1
+    assert summary.reacquisition_count == 1
+    assert summary.reacquisition_success_ratio == pytest.approx(1.0)
+    assert summary.best_reacquisition_time_s == pytest.approx(0.35)
+    assert summary.mean_reacquisition_time_s == pytest.approx(0.35)
+    assert summary.slow_reacquisition_count == 0
+
+
+def test_reacquisition_metrics_count_slow_and_missed_reveals() -> None:
+    engine = build_rapid_tracking_test(
+        clock=FakeClock(),
+        seed=17,
+        difficulty=0.5,
+        config=RapidTrackingConfig(practice_duration_s=0.0, scored_duration_s=10.0),
+    )
+    engine.start_scored()
+
+    engine._sim_elapsed_s = 1.0
+    engine._update_reacquisition_metrics(on_target=False, hidden=True)
+    engine._sim_elapsed_s = 1.2
+    engine._update_reacquisition_metrics(on_target=False, hidden=False)
+    engine._sim_elapsed_s = 2.45
+    engine._update_reacquisition_metrics(on_target=True, hidden=False)
+    engine._sim_elapsed_s = 3.0
+    engine._update_reacquisition_metrics(on_target=False, hidden=True)
+    engine._sim_elapsed_s = 3.3
+    engine._update_reacquisition_metrics(on_target=False, hidden=False)
+
+    summary = engine.scored_summary()
+    assert summary.occlusion_episode_count == 2
+    assert summary.reacquisition_count == 1
+    assert summary.reacquisition_success_ratio == pytest.approx(0.5)
+    assert summary.best_reacquisition_time_s == pytest.approx(1.25)
+    assert summary.mean_reacquisition_time_s == pytest.approx(1.25)
+    assert summary.slow_reacquisition_count == 1
+
+
+def test_visibility_error_metrics_are_dt_weighted_by_cover_state() -> None:
+    engine = build_rapid_tracking_test(
+        clock=FakeClock(),
+        seed=17,
+        difficulty=0.5,
+        config=RapidTrackingConfig(practice_duration_s=0.0, scored_duration_s=10.0),
+    )
+    engine.start_scored()
+
+    engine._record_visibility_breakdown(
+        dt=0.25,
+        tracking_error=0.10,
+        on_target=True,
+        hidden=False,
+        cover_state="open",
+    )
+    engine._record_visibility_breakdown(
+        dt=0.75,
+        tracking_error=0.30,
+        on_target=False,
+        hidden=False,
+        cover_state="building",
+    )
+    engine._record_visibility_breakdown(
+        dt=0.40,
+        tracking_error=0.20,
+        on_target=False,
+        hidden=True,
+        cover_state="terrain",
+    )
+    engine._record_visibility_breakdown(
+        dt=0.20,
+        tracking_error=0.40,
+        on_target=True,
+        hidden=True,
+        cover_state="portal",
+    )
+    engine._record_visibility_breakdown(
+        dt=0.50,
+        tracking_error=0.12,
+        on_target=True,
+        hidden=False,
+        cover_state="partial",
+    )
+
+    summary = engine.scored_summary()
+    assert summary.visible_mean_error == pytest.approx((0.025 + 0.225 + 0.060) / 1.5)
+    assert summary.visible_rms_error == pytest.approx(
+        math.sqrt((0.0025 + 0.0675 + 0.0072) / 1.5)
+    )
+    assert summary.obscured_time_s == pytest.approx(0.60)
+    assert summary.obscured_tracking_ratio == pytest.approx(0.20 / 0.60)
+    assert summary.obscured_mean_error == pytest.approx((0.080 + 0.080) / 0.60)
+    assert summary.obscured_rms_error == pytest.approx(math.sqrt((0.016 + 0.032) / 0.60))
+    assert summary.prediction_score_ratio == pytest.approx(
+        score_window(
+            mean_error=summary.obscured_mean_error,
+            good_window_error=engine._cfg.good_window_error,
+        )
+    )
+    assert summary.terrain_cover_time_s == pytest.approx(0.40)
+    assert summary.portal_cover_time_s == pytest.approx(0.20)
+    assert summary.water_cover_time_s == pytest.approx(0.50)
+    assert summary.building_cover_time_s == pytest.approx(0.75)
+
+
 def test_camera_yaw_keeps_advancing_under_sustained_horizontal_input() -> None:
     clock = FakeClock()
     engine = build_rapid_tracking_test(
@@ -342,6 +461,11 @@ def test_capture_hold_start_bonus_and_release_drive_zoom_state() -> None:
 
     assert engine.submit_answer("CAPTURE_HOLD_END") is True
     engine._target_in_capture_box = lambda require_visible: False  # type: ignore[method-assign]
+    engine.update()
+    immediate_payload = engine.snapshot().payload
+    assert immediate_payload is not None
+    assert immediate_payload.capture_zoom == pytest.approx(0.0)
+
     clock.advance(0.30)
     engine.update()
     released_payload = engine.snapshot().payload
@@ -809,7 +933,13 @@ def test_truck_segments_bind_to_seeded_road_anchors() -> None:
     offroad_segments = [
         segment for segment in truck_segments if segment.route_kind == "offroad_armor_leg"
     ]
-    assert all(segment.variant == "tracked" for segment in offroad_segments)
+    assert {segment.variant for segment in offroad_segments} <= {"tracked", "tank", "apc"}
+    offroad_routes = [
+        route
+        for route in engine._scenario.layout.traffic_routes
+        if route.route_kind == "offroad_armor_leg"
+    ]
+    assert {route.variant for route in offroad_routes} == {"tracked", "tank", "apc"}
     on_road_segments = [
         segment for segment in truck_segments if segment.route_kind != "offroad_armor_leg"
     ]
@@ -1048,47 +1178,6 @@ def test_compound_layout_includes_seeded_foliage_clusters() -> None:
         or same_a.tree_clusters != other.tree_clusters
         or same_a.forest_clusters != other.forest_clusters
     )
-
-
-def test_distant_terrain_ring_is_seeded_and_surrounds_compound_center() -> None:
-    same_a = build_rapid_tracking_compound_layout(seed=551)
-    same_b = build_rapid_tracking_compound_layout(seed=551)
-    other = build_rapid_tracking_compound_layout(seed=552)
-
-    ring_a = build_distant_terrain_ring(layout=same_a)
-    ring_b = build_distant_terrain_ring(layout=same_b)
-    ring_other = build_distant_terrain_ring(layout=other)
-
-    assert ring_a == ring_b
-    assert ring_a != ring_other
-    assert len(ring_a) == 8
-    assert {feature.profile for feature in ring_a} == {"hill", "mountain"}
-
-    center_wx, center_wy = rapid_tracking_track_to_world_xy(
-        track_x=float(same_a.compound_center_x),
-        track_y=float(same_a.compound_center_y),
-        path_lateral_bias=float(same_a.path_lateral_bias),
-    )
-    distances = [
-        math.hypot(float(feature.world_x) - center_wx, float(feature.world_y) - center_wy)
-        for feature in ring_a
-    ]
-    assert min(distances) >= 520.0
-    assert max(feature.scale_z for feature in ring_a if feature.profile == "mountain") <= 26.0
-    assert max(feature.scale_z for feature in ring_a if feature.profile == "hill") <= 18.0
-
-    bearings = sorted(
-        (
-            math.degrees(
-                math.atan2(float(feature.world_y) - center_wy, float(feature.world_x) - center_wx)
-            )
-            % 360.0
-        )
-        for feature in ring_a
-    )
-    wrapped = [*bearings, bearings[0] + 360.0]
-    max_gap = max(b - a for a, b in zip(wrapped[:-1], wrapped[1:], strict=True))
-    assert max_gap <= 62.0
 
 
 def test_building_handoff_segments_bind_to_real_building_anchors() -> None:

@@ -48,7 +48,7 @@ def build_cu_workout_plan(*, duration_scale: float = 1.0) -> AntWorkoutPlan:
         _block(
             "engine_balance",
             "Engine Balance Run",
-            "Build active-tank switching and tank-spread control while the rest of the task stays neutral.",
+            "Build active-tank switching and tank-spread control while the rest of the task stays live.",
             ("Engine balance", "Fuel management"),
             "cu_engine_balance_run",
             AntDrillMode.BUILD,
@@ -66,7 +66,7 @@ def build_cu_workout_plan(*, duration_scale: float = 1.0) -> AntWorkoutPlan:
         _block(
             "objective_prime",
             "Objective Prime",
-            "Warm up parcel entry, field switching, and dispenser timing while other domains stay neutral.",
+            "Warm up parcel entry, field switching, and dispenser timing while all MFD pages stay live.",
             ("Objective execution", "Parcel timing"),
             "cu_objective_prime",
             AntDrillMode.BUILD,
@@ -110,7 +110,7 @@ def build_cu_workout_plan(*, duration_scale: float = 1.0) -> AntWorkoutPlan:
         notes=(
             "Block setup screens do not count toward the 90-minute drill clock.",
             "All timed blocks stay on the live dual-MFD Cognitive Updating screen with the normal controls and page flow.",
-            "Focused blocks dim inactive panels instead of removing them so the family still looks and feels like the full task.",
+            "Focused blocks keep every MFD page live; focus labels and start tabs identify the primary skill.",
         ),
         blocks=blocks,
     )

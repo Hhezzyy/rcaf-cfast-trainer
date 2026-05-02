@@ -54,7 +54,7 @@ class TableReadingTimedDrill(TimedCapDrill):
                 action = "one letter then Enter"
             else:
                 action = "letters then Enter"
-            return self._timed_cap_hint(f"{action} | Tab: tables")
+            return self._timed_cap_hint(f"{action} | Left/Right or Tab: tables")
         return self._timed_cap_hint("Up/Down + A/S/D/F/G or 1-5 then Enter")
 
     def submit_answer(self, raw: str) -> bool:

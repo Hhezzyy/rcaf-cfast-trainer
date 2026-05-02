@@ -1,17 +1,9 @@
 from __future__ import annotations
 
 import os
-import sys
-from importlib.machinery import ModuleSpec
-from types import ModuleType
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
-
-if "moderngl" not in sys.modules:
-    moderngl_stub = ModuleType("moderngl")
-    moderngl_stub.__spec__ = ModuleSpec("moderngl", loader=None)
-    sys.modules["moderngl"] = moderngl_stub
 
 import pygame
 

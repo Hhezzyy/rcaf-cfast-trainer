@@ -11,12 +11,14 @@ from .ant_drills import (
 from .clock import Clock
 from .cognitive_core import AttemptSummary, Phase, Problem, TestSnapshot, TimedTextInputTest
 from .cognitive_updating import (
+    COGNITIVE_UPDATING_DOMAIN_ORDER,
     CognitiveUpdatingGenerator,
-    CognitiveUpdatingPayload,
     CognitiveUpdatingScorer,
     CognitiveUpdatingTrainingProfile,
     supported_cognitive_updating_scenario_families,
 )
+
+_ALL_CU_DOMAINS = COGNITIVE_UPDATING_DOMAIN_ORDER
 
 
 CU_SCENARIO_FAMILY_SEQUENCE = supported_cognitive_updating_scenario_families()
@@ -41,7 +43,7 @@ class CognitiveUpdatingTimedDrill(TimedTextInputTest):
     def snapshot(self) -> TestSnapshot:
         snap = super().snapshot()
         if self.phase in (Phase.PRACTICE, Phase.SCORED):
-            hint = "Use live tabs and controls, enter the 4-digit code, then press Enter"
+            hint = "Use live tabs and controls; comms codes appear in Messages only"
         else:
             hint = "Press Enter to continue"
         return replace(snap, input_hint=hint)
@@ -164,48 +166,48 @@ class _SingleProfileGenerator(_BaseCognitiveUpdatingSelectionGenerator):
 
 class CuControlsAnchorGenerator(_SingleProfileGenerator):
     _profile = CognitiveUpdatingTrainingProfile(
-        active_domains=("controls", "state_code"),
+        active_domains=_ALL_CU_DOMAINS,
         focus_label="Controls",
         pressure_drift_scale=0.82,
         starting_upper_tab_index=2,
-        starting_lower_tab_index=1,
+        starting_lower_tab_index=0,
     )
 
 
 class CuNavigationAnchorGenerator(_SingleProfileGenerator):
     _profile = CognitiveUpdatingTrainingProfile(
-        active_domains=("navigation", "state_code"),
+        active_domains=_ALL_CU_DOMAINS,
         focus_label="Navigation",
         speed_drift_scale=0.82,
         starting_upper_tab_index=3,
-        starting_lower_tab_index=1,
+        starting_lower_tab_index=0,
     )
 
 
 class CuEngineBalanceRunGenerator(_SingleProfileGenerator):
     _profile = CognitiveUpdatingTrainingProfile(
-        active_domains=("engine", "state_code"),
+        active_domains=_ALL_CU_DOMAINS,
         focus_label="Engine",
         tank_drain_scale=0.94,
         starting_upper_tab_index=5,
-        starting_lower_tab_index=1,
+        starting_lower_tab_index=0,
     )
 
 
 class CuSensorsTimingPrimeGenerator(_SingleProfileGenerator):
     _profile = CognitiveUpdatingTrainingProfile(
-        active_domains=("sensors", "state_code"),
+        active_domains=_ALL_CU_DOMAINS,
         focus_label="Sensors",
         camera_due_scale=0.92,
         sensor_due_scale=0.90,
         starting_upper_tab_index=4,
-        starting_lower_tab_index=1,
+        starting_lower_tab_index=0,
     )
 
 
 class CuObjectivePrimeGenerator(_SingleProfileGenerator):
     _profile = CognitiveUpdatingTrainingProfile(
-        active_domains=("objectives", "state_code"),
+        active_domains=_ALL_CU_DOMAINS,
         focus_label="Objectives",
         objective_deadline_scale=1.10,
         starting_upper_tab_index=1,
@@ -215,7 +217,7 @@ class CuObjectivePrimeGenerator(_SingleProfileGenerator):
 
 class CuStateCodeRunGenerator(_SingleProfileGenerator):
     _profile = CognitiveUpdatingTrainingProfile(
-        active_domains=("controls", "navigation", "sensors", "state_code"),
+        active_domains=_ALL_CU_DOMAINS,
         focus_label="State Code",
         starting_upper_tab_index=2,
         starting_lower_tab_index=4,
@@ -225,49 +227,49 @@ class CuStateCodeRunGenerator(_SingleProfileGenerator):
 class CuMixedTempoGenerator(_BaseCognitiveUpdatingSelectionGenerator):
     _SEQUENCE = (
         CognitiveUpdatingTrainingProfile(
-            active_domains=("controls", "state_code"),
+            active_domains=_ALL_CU_DOMAINS,
             focus_label="Controls",
             pressure_drift_scale=0.82,
             starting_upper_tab_index=2,
-            starting_lower_tab_index=1,
+            starting_lower_tab_index=0,
         ),
         CognitiveUpdatingTrainingProfile(
-            active_domains=("navigation", "state_code"),
+            active_domains=_ALL_CU_DOMAINS,
             focus_label="Navigation",
             speed_drift_scale=0.82,
             starting_upper_tab_index=3,
-            starting_lower_tab_index=1,
+            starting_lower_tab_index=0,
         ),
         CognitiveUpdatingTrainingProfile(
-            active_domains=("engine", "state_code"),
+            active_domains=_ALL_CU_DOMAINS,
             focus_label="Engine",
             tank_drain_scale=0.94,
             starting_upper_tab_index=5,
-            starting_lower_tab_index=1,
+            starting_lower_tab_index=0,
         ),
         CognitiveUpdatingTrainingProfile(
-            active_domains=("sensors", "state_code"),
+            active_domains=_ALL_CU_DOMAINS,
             focus_label="Sensors",
             camera_due_scale=0.92,
             sensor_due_scale=0.90,
             starting_upper_tab_index=4,
-            starting_lower_tab_index=1,
+            starting_lower_tab_index=0,
         ),
         CognitiveUpdatingTrainingProfile(
-            active_domains=("objectives", "state_code"),
+            active_domains=_ALL_CU_DOMAINS,
             focus_label="Objectives",
             objective_deadline_scale=1.10,
             starting_upper_tab_index=1,
             starting_lower_tab_index=1,
         ),
         CognitiveUpdatingTrainingProfile(
-            active_domains=("controls", "navigation", "sensors", "state_code"),
+            active_domains=_ALL_CU_DOMAINS,
             focus_label="State Code",
             starting_upper_tab_index=2,
             starting_lower_tab_index=4,
         ),
         CognitiveUpdatingTrainingProfile(
-            active_domains=("controls", "navigation", "engine", "sensors", "objectives", "state_code"),
+            active_domains=_ALL_CU_DOMAINS,
             focus_label="Full Mixed",
             starting_upper_tab_index=2,
             starting_lower_tab_index=1,
@@ -288,7 +290,7 @@ class CuMixedTempoGenerator(_BaseCognitiveUpdatingSelectionGenerator):
 
 class CuPressureRunGenerator(_SingleProfileGenerator):
     _profile = CognitiveUpdatingTrainingProfile(
-        active_domains=("controls", "navigation", "engine", "sensors", "objectives", "state_code"),
+        active_domains=_ALL_CU_DOMAINS,
         focus_label="Full Mixed",
         camera_due_scale=0.84,
         sensor_due_scale=0.82,
@@ -366,8 +368,8 @@ def build_cu_controls_anchor_drill(
         instructions=_default_instructions(
             "Cognitive Updating: Controls Anchor",
             mode,
-            "Focus on pump and pressure correction while the other domains stay neutralized.",
-            "Use the live comms entry path to submit the final state code without needing the inactive systems.",
+            "Focus on pump and pressure correction while every MFD page remains live.",
+            "Use the live comms entry path while keeping the other systems available for scan practice.",
         ),
         generator=CuControlsAnchorGenerator(seed=seed, mode=mode),
         clock=clock,
@@ -392,8 +394,8 @@ def build_cu_navigation_anchor_drill(
         instructions=_default_instructions(
             "Cognitive Updating: Navigation Anchor",
             mode,
-            "Focus on bringing airspeed back to the required knots while the other domains stay neutral.",
-            "Practice reading the live state and entering the final code without unrelated panel penalties.",
+            "Focus on bringing airspeed back to the required knots while every MFD page remains live.",
+            "Practice reading the live state and entering the final code while the full panel set stays usable.",
         ),
         generator=CuNavigationAnchorGenerator(seed=seed, mode=mode),
         clock=clock,
@@ -419,7 +421,7 @@ def build_cu_engine_balance_run_drill(
             "Cognitive Updating: Engine Balance Run",
             mode,
             "Focus on active-tank switching and keeping the tank spread inside tolerance.",
-            "The rest of the task stays visible but neutral while you build clean tank-balance habits.",
+            "The rest of the task stays live while you build clean tank-balance habits.",
         ),
         generator=CuEngineBalanceRunGenerator(seed=seed, mode=mode),
         clock=clock,
@@ -444,7 +446,7 @@ def build_cu_sensors_timing_prime_drill(
         instructions=_default_instructions(
             "Cognitive Updating: Sensors Timing Prime",
             mode,
-            "Focus on Alpha, Bravo, air, and ground timing windows while unrelated domains stay neutral.",
+            "Focus on Alpha, Bravo, air, and ground timing windows while every MFD page remains live.",
             "Keep the sensor page flow tidy and preserve time for the final code entry.",
         ),
         generator=CuSensorsTimingPrimeGenerator(seed=seed, mode=mode),
@@ -470,8 +472,8 @@ def build_cu_objective_prime_drill(
         instructions=_default_instructions(
             "Cognitive Updating: Objective Prime",
             mode,
-            "Focus on parcel entry, field switching, and dispenser timing while the rest of the task stays neutral.",
-            "Use the training focus label and inactive-panel dimming to keep your scan disciplined.",
+            "Focus on parcel entry, field switching, and dispenser timing while the rest of the task stays live.",
+            "Use the training focus label and start tabs to keep your scan disciplined.",
         ),
         generator=CuObjectivePrimeGenerator(seed=seed, mode=mode),
         clock=clock,
@@ -497,7 +499,7 @@ def build_cu_state_code_run_drill(
             "Cognitive Updating: State Code Run",
             mode,
             "Controls, navigation, and sensors stay active so you can practice reading the live state code cleanly.",
-            "Engine and objective pages stay visible but neutralized throughout this block.",
+            "Engine and objective pages stay live throughout this block.",
         ),
         generator=CuStateCodeRunGenerator(seed=seed, mode=mode),
         clock=clock,
@@ -523,7 +525,7 @@ def build_cu_mixed_tempo_drill(
             "Cognitive Updating: Mixed Tempo",
             mode,
             "Move through the fixed Controls, Navigation, Engine, Sensors, Objectives, State Code, and Full Mixed rhythm.",
-            "Let the focus label and inactive-panel dimming tell you what matters on each item.",
+            "Let the focus label and start tabs tell you what matters on each item while all pages remain live.",
         ),
         generator=CuMixedTempoGenerator(seed=seed, mode=mode),
         clock=clock,

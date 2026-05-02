@@ -1,14 +1,6 @@
 from __future__ import annotations
 
-import sys
 from dataclasses import dataclass
-from importlib.machinery import ModuleSpec
-from types import ModuleType
-
-if "moderngl" not in sys.modules:
-    moderngl_stub = ModuleType("moderngl")
-    moderngl_stub.__spec__ = ModuleSpec("moderngl", loader=None)
-    sys.modules["moderngl"] = moderngl_stub
 
 from cfast_trainer.ant_drills import AntDrillMode
 from cfast_trainer.ant_workouts import (

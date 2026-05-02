@@ -2,22 +2,14 @@ from __future__ import annotations
 
 import os
 import re
-import sys
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 
 from dataclasses import dataclass, replace
-from importlib.machinery import ModuleSpec
-from types import ModuleType
 
 import pygame
 import pytest
-
-if "moderngl" not in sys.modules:
-    moderngl_stub = ModuleType("moderngl")
-    moderngl_stub.__spec__ = ModuleSpec("moderngl", loader=None)
-    sys.modules["moderngl"] = moderngl_stub
 
 from cfast_trainer.ant_drills import AntDrillMode
 from cfast_trainer.ant_workouts import (
@@ -360,7 +352,11 @@ def test_target_recognition_scene_absent_map_click_submits_clear_confirmation() 
     try:
         surface = pygame.display.get_surface()
         assert surface is not None
+        captured = _install_recording_fonts(screen)
         screen.render(surface)
+        assert "Friendly Truck" in captured
+        assert screen._tr_scene_active_targets == []
+        assert screen._tr_scene_live_counts_by_label == {}
 
         clear_point = _find_scene_clear_point(screen)
         screen.handle_event(
@@ -392,12 +388,6 @@ def test_target_recognition_info_panel_status_reflects_live_scene_state() -> Non
         assert "Scene visible for context only; click active panels." in rendered_inactive
 
         screen._engine = _FakeTREngine(active_payload, title="Target Recognition: Scene Anchor")
-        captured.clear()
-        screen.render(surface)
-        rendered_clear = "\n".join(captured)
-        assert "Scene active: currently clear." in rendered_clear
-
-        clock.advance(1.25)
         captured.clear()
         screen.render(surface)
         rendered_live = "\n".join(captured)
@@ -531,7 +521,7 @@ def test_target_recognition_map_background_uses_muted_shapes_and_hexagons(monkey
         pygame.quit()
 
 
-def test_target_recognition_scene_guidance_and_runtime_no_longer_use_filler_targets() -> None:
+def test_target_recognition_scene_guidance_lists_guide_target_types_without_fillers() -> None:
     _app, screen = _build_screen(
         _FakeTREngine(_build_payload(active_panels=("scene",)), title="Target Recognition: Scene Anchor")
     )
@@ -542,8 +532,8 @@ def test_target_recognition_scene_guidance_and_runtime_no_longer_use_filler_targ
 
         screen.render(surface)
 
-        assert "Beacon" not in captured
-        assert "Unknown" not in captured
+        assert "Beacons" in captured
+        assert "Unknown" in captured
         assert any(text.startswith("Scene active:") for text in captured)
         assert {glyph.kind for glyph in screen._tr_scene_glyphs.values()} == {"entity"}
     finally:
@@ -578,6 +568,66 @@ def test_target_recognition_symbols_use_plain_truck_and_tank_shapes() -> None:
             heading=0.0,
         )
         assert tank_surface.get_at((20, 20)).a == 0
+    finally:
+        pygame.quit()
+
+
+def test_target_recognition_beacon_and_unknown_parse_and_draw_distinctly() -> None:
+    _app, screen = _build_screen(_FakeTREngine(_build_payload(active_panels=("scene",)), title="Target Recognition"))
+    try:
+        beacon_surface = pygame.Surface((48, 48), pygame.SRCALPHA)
+        beacon = TargetRecognitionSceneEntity("beacon", "friendly", False, False)
+        screen._draw_target_recognition_symbol(
+            beacon_surface,
+            entity=beacon,
+            cx=20,
+            cy=20,
+            size=8,
+            color=(255, 255, 255, 255),
+            heading=0.0,
+        )
+
+        unknown_surface = pygame.Surface((48, 48), pygame.SRCALPHA)
+        unknown = TargetRecognitionSceneEntity("unknown", "hostile", False, False)
+        screen._draw_target_recognition_symbol(
+            unknown_surface,
+            entity=unknown,
+            cx=20,
+            cy=20,
+            size=8,
+            color=(255, 255, 255, 255),
+            heading=0.0,
+        )
+
+        beacon_alpha = sum(
+            1
+            for y in range(beacon_surface.get_height())
+            for x in range(beacon_surface.get_width())
+            if beacon_surface.get_at((x, y)).a > 0
+        )
+        unknown_alpha = sum(
+            1
+            for y in range(unknown_surface.get_height())
+            for x in range(unknown_surface.get_width())
+            if unknown_surface.get_at((x, y)).a > 0
+        )
+        assert beacon_alpha > 0
+        assert unknown_alpha > 0
+        assert pygame.image.tobytes(beacon_surface, "RGBA") != pygame.image.tobytes(
+            unknown_surface, "RGBA"
+        )
+
+        assert screen._target_recognition_entity_from_code("BCN:F").shape == "beacon"
+        assert screen._target_recognition_entity_from_code("UNK:HD").shape == "unknown"
+        parsed_beacon = screen._target_recognition_scene_entity_from_label("Friendly Beacon")
+        parsed_unknown = screen._target_recognition_scene_entity_from_label("Hostile Unknown (HP)")
+        assert parsed_beacon == TargetRecognitionSceneEntity("beacon", "friendly", False, False)
+        assert parsed_unknown == TargetRecognitionSceneEntity("unknown", "hostile", False, True)
+        assert screen._target_recognition_scene_label_matches(beacon, "Friendly Beacon")
+        assert screen._target_recognition_scene_label_matches(
+            TargetRecognitionSceneEntity("unknown", "hostile", False, True),
+            "Hostile Unknown (HP)",
+        )
     finally:
         pygame.quit()
 
@@ -760,24 +810,28 @@ def test_target_recognition_scene_wrong_click_keeps_non_target_shape_visible() -
 
 def test_target_recognition_system_hitbox_uses_full_row_band_and_registers_click() -> None:
     clock = _FakeClock()
+    stable_columns = (
+        ("C3D4", "E5F6", "G7H8", "J9K1", "M2N3", "P4Q5"),
+        ("L2M3", "A1B2", "N4P5", "Q6R7", "T8U9", "V1W2"),
+        ("S8T9", "Z9Y8", "U1V2", "W3X4", "B5C6", "D7E8"),
+    )
     payload = replace(
         _build_payload(active_panels=("system",)),
+        system_rows=stable_columns[0],
+        system_step_interval_s=1.0,
+        system_target="A1B2",
         system_cycles=(
             TargetRecognitionSystemCycle(
                 target="A1B2",
-                columns=(
-                    ("C3D4", "E5F6", "G7H8"),
-                    ("A1B2", "J9K1", "L2M3"),
-                    ("N4P5", "Q6R7", "S8T9"),
-                ),
+                columns=stable_columns,
             ),
             TargetRecognitionSystemCycle(
                 target="Z9Y8",
-                columns=(
-                    ("U1V2", "W3X4", "Y5Z6"),
-                    ("Z9Y8", "B2C3", "D4E5"),
-                    ("F6G7", "H8J9", "K1L2"),
-                ),
+                columns=stable_columns,
+            ),
+            TargetRecognitionSystemCycle(
+                target="G7H8",
+                columns=stable_columns,
             ),
         ),
     )
@@ -789,9 +843,24 @@ def test_target_recognition_system_hitbox_uses_full_row_band_and_registers_click
         assert surface is not None
         screen.render(surface)
 
-        target_hits = [hit for hit, code in screen._tr_system_string_hitboxes if code == payload.system_target]
-        assert target_hits
-        hit = target_hits[0]
+        def hit_for(code: str) -> pygame.Rect:
+            hits = [hit for hit, hit_code in screen._tr_system_string_hitboxes if hit_code == code]
+            assert hits
+            return hits[0]
+
+        def board_signature() -> tuple[tuple[str, ...], ...]:
+            return tuple(tuple(col) for col in screen._tr_system_columns)
+
+        clock.advance(1.25)
+        screen.render(surface)
+
+        initial_board = board_signature()
+        initial_offset = int(screen._tr_system_row_offset)
+        initial_frac = float(screen._tr_system_row_frac)
+        assert initial_offset == 1
+        assert initial_frac == pytest.approx(0.25, abs=0.02)
+
+        hit = hit_for(payload.system_target)
         text_w, _text_h = screen._tiny_font.size(payload.system_target)
         assert hit.w > text_w + 6
 
@@ -805,13 +874,31 @@ def test_target_recognition_system_hitbox_uses_full_row_band_and_registers_click
         assert engine.submit_calls == ["1"]
         assert screen._tr_system_feedback_state == "ok"
         assert screen._tr_system_target_code == "A1B2"
+        assert board_signature() == initial_board
 
         clock.advance(0.5)
         screen.render(surface)
 
         assert screen._tr_system_cycle_index == 1
         assert screen._tr_system_target_code == "Z9Y8"
-        assert screen._tr_system_columns[1][0] == "Z9Y8"
+        assert board_signature() == initial_board
+        assert int(screen._tr_system_row_offset) == initial_offset
+        assert float(screen._tr_system_row_frac) > initial_frac
+
+        next_hit = hit_for("Z9Y8")
+        next_text_w, _next_text_h = screen._tiny_font.size("Z9Y8")
+        assert next_hit.w > next_text_w + 6
+
+        screen.handle_event(
+            pygame.event.Event(
+                pygame.MOUSEBUTTONDOWN,
+                {"button": 1, "pos": (next_hit.right - 2, next_hit.centery)},
+            )
+        )
+
+        assert engine.submit_calls == ["1", "1"]
+        assert screen._tr_system_feedback_state == "ok"
+        assert screen._tr_system_feedback_code == "Z9Y8"
     finally:
         pygame.quit()
 
@@ -1072,7 +1159,7 @@ def test_target_recognition_scored_countdown_hidden_but_local_runtime_timer_adva
         pygame.quit()
 
 
-def test_target_recognition_scene_targets_fade_in_over_time() -> None:
+def test_target_recognition_scene_target_instruction_and_live_target_spawn_immediately() -> None:
     payload = _build_payload(active_panels=("scene",))
     engine = _FakeTREngine(payload, title="Target Recognition: Scene Anchor")
     _app, screen = _build_screen(engine)
@@ -1081,31 +1168,27 @@ def test_target_recognition_scene_targets_fade_in_over_time() -> None:
     try:
         surface = pygame.display.get_surface()
         assert surface is not None
+        captured = _install_recording_fonts(screen)
         screen.render(surface)
-        assert screen._tr_scene_active_targets == []
-
-        clock.advance(1.25)
-        screen.render(surface)
-        assert screen._tr_scene_active_targets
+        assert "Friendly Truck" in captured
+        assert screen._tr_scene_active_targets == ["Friendly Truck"]
+        assert screen._tr_scene_live_counts_by_label == {"Friendly Truck": 1}
         label = screen._tr_scene_active_targets[0]
-        assert screen._tr_scene_target_alpha_by_label[label] == 0.0
+        assert screen._tr_scene_target_alpha_by_label[label] == 1.0
 
-        first_alpha = max(
+        live_alphas = [
             glyph.alpha
             for glyph in screen._tr_scene_glyphs.values()
             if glyph.live_target_label == label
-        )
+        ]
+        assert live_alphas
+        assert min(live_alphas) > 0.0
+        assert max(live_alphas) < 220.0
 
         clock.advance(0.2)
         screen.render(surface)
 
-        assert screen._tr_scene_target_alpha_by_label[label] > 0.0
-        second_alpha = max(
-            glyph.alpha
-            for glyph in screen._tr_scene_glyphs.values()
-            if glyph.live_target_label == label
-        )
-        assert second_alpha > first_alpha
+        assert screen._tr_scene_target_alpha_by_label[label] == 1.0
     finally:
         pygame.quit()
 
@@ -1133,11 +1216,18 @@ def test_target_recognition_scene_spawn_timer_tracks_duplicate_live_counts_until
     try:
         surface = pygame.display.get_surface()
         assert surface is not None
-        screen.render(surface)
-
-        clock.advance(1.25)
+        captured = _install_recording_fonts(screen)
         screen.render(surface)
         assert screen._tr_scene_live_counts_by_label == {"Friendly Truck": 2}
+        assert "Friendly Truck" in captured
+        assert not any("Friendly Truck x" in text for text in captured)
+        live_alphas = [
+            round(float(screen._tr_scene_glyphs[glyph_id].alpha), 2)
+            for _hit_rect, glyph_id in screen._tr_scene_symbol_hitboxes
+            if screen._tr_scene_glyphs[glyph_id].live_target_label == "Friendly Truck"
+        ]
+        assert len(live_alphas) == 2
+        assert len(set(live_alphas)) > 1
         interval = float(screen._tr_scene_next_spawn_after_s)
         assert 10.0 <= interval <= 40.0
 
@@ -1146,9 +1236,12 @@ def test_target_recognition_scene_spawn_timer_tracks_duplicate_live_counts_until
         assert screen._tr_scene_live_counts_by_label == {"Friendly Truck": 2}
 
         clock.advance(0.2)
+        captured.clear()
         screen.render(surface)
         assert screen._tr_scene_live_counts_by_label == {"Friendly Truck": 3}
         assert screen._tr_scene_active_targets == ["Friendly Truck"]
+        assert "Friendly Truck" in captured
+        assert not any("Friendly Truck x" in text for text in captured)
 
         live_hits = [
             (hit_rect, glyph_id)
@@ -1246,7 +1339,7 @@ def test_target_recognition_scene_hybrid_spawns_are_deterministic() -> None:
     assert first_counts.get("Friendly Truck", 0) >= 2
 
 
-def test_target_recognition_scene_ambient_and_fog_animate_over_time() -> None:
+def test_target_recognition_scene_ambient_animates_over_time_without_fog_state() -> None:
     payload = _build_payload(active_panels=("scene",))
     engine = _FakeTREngine(payload, title="Target Recognition: Scene Anchor")
     _app, screen = _build_screen(engine)
@@ -1257,38 +1350,40 @@ def test_target_recognition_scene_ambient_and_fog_animate_over_time() -> None:
         assert surface is not None
         screen.render(surface)
         initial_alphas = tuple(round(shape.alpha, 3) for shape in screen._tr_scene_ambient_shapes)
-        initial_fog = (screen._tr_scene_fog_offset_x, screen._tr_scene_fog_offset_y)
+        assert not hasattr(screen, "_tr_scene_fog_offset_x")
+        assert not hasattr(screen, "_tr_scene_fog_tile")
 
         clock.advance(0.5)
         screen.render(surface)
 
         later_alphas = tuple(round(shape.alpha, 3) for shape in screen._tr_scene_ambient_shapes)
-        later_fog = (screen._tr_scene_fog_offset_x, screen._tr_scene_fog_offset_y)
 
         assert initial_alphas != later_alphas
-        assert later_fog != initial_fog
     finally:
         pygame.quit()
 
 
-def test_target_recognition_cloud_obstruction_stays_partial_and_moves() -> None:
+def test_target_recognition_scene_draw_has_no_fog_or_cloud_overlay(monkeypatch) -> None:
     payload = _build_payload(active_panels=("scene",))
     _app, screen = _build_screen(_FakeTREngine(payload, title="Target Recognition: Scene Anchor"))
     try:
-        first = pygame.Surface((320, 220), pygame.SRCALPHA)
-        second = pygame.Surface((320, 220), pygame.SRCALPHA)
-        screen._draw_target_recognition_clouds(first, payload, phase_s=0.0)
-        screen._draw_target_recognition_clouds(second, payload, phase_s=12.0)
+        surface = pygame.display.get_surface()
+        assert surface is not None
+        assert not hasattr(screen, "_draw_target_recognition_clouds")
+        calls: list[str] = []
+        original_symbol = screen._draw_target_recognition_symbol
 
-        width, height = first.get_size()
-        total = width * height
-        alphas = [first.get_at((x, y)).a for y in range(height) for x in range(width)]
-        heavy = sum(1 for alpha in alphas if alpha >= 96)
+        def wrapped_symbol(*args, **kwargs):
+            calls.append("symbol")
+            return original_symbol(*args, **kwargs)
 
-        assert max(alphas) < 170
-        assert heavy / float(total) <= 0.70
-        assert any(alpha > 40 for alpha in alphas)
-        assert pygame.image.tobytes(first, "RGBA") != pygame.image.tobytes(second, "RGBA")
+        monkeypatch.setattr(screen, "_draw_target_recognition_symbol", wrapped_symbol)
+
+        screen._target_recognition_sync_scene_stream(payload)
+        screen._draw_target_recognition_scene(surface, pygame.Rect(0, 0, 320, 220), payload)
+
+        assert screen._tr_scene_symbol_hitboxes
+        assert "symbol" in calls
     finally:
         pygame.quit()
 

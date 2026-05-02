@@ -5,7 +5,10 @@ from dataclasses import dataclass
 import pytest
 
 from cfast_trainer.ant_drills import AntDrillMode
-from cfast_trainer.cognitive_updating import CognitiveUpdatingPayload
+from cfast_trainer.cognitive_updating import (
+    COGNITIVE_UPDATING_DOMAIN_ORDER,
+    CognitiveUpdatingPayload,
+)
 from cfast_trainer.cu_drills import (
     CuDrillConfig,
     build_cu_controls_anchor_drill,
@@ -84,17 +87,17 @@ def test_cu_drills_are_deterministic_for_same_seed(builder) -> None:
 
 
 @pytest.mark.parametrize(
-    ("builder", "expected_domains"),
+    "builder",
     (
-        (build_cu_controls_anchor_drill, ("controls", "state_code")),
-        (build_cu_navigation_anchor_drill, ("navigation", "state_code")),
-        (build_cu_engine_balance_run_drill, ("engine", "state_code")),
-        (build_cu_sensors_timing_prime_drill, ("sensors", "state_code")),
-        (build_cu_objective_prime_drill, ("objectives", "state_code")),
-        (build_cu_state_code_run_drill, ("controls", "navigation", "sensors", "state_code")),
+        build_cu_controls_anchor_drill,
+        build_cu_navigation_anchor_drill,
+        build_cu_engine_balance_run_drill,
+        build_cu_sensors_timing_prime_drill,
+        build_cu_objective_prime_drill,
+        build_cu_state_code_run_drill,
     ),
 )
-def test_cu_focused_drills_emit_expected_active_domains(builder, expected_domains) -> None:
+def test_cu_focused_drills_keep_all_domains_active(builder) -> None:
     clock = FakeClock()
     engine = builder(
         clock=clock,
@@ -106,7 +109,7 @@ def test_cu_focused_drills_emit_expected_active_domains(builder, expected_domain
     engine.start_scored()
     payload = engine._current.payload
     assert isinstance(payload, CognitiveUpdatingPayload)
-    assert payload.active_domains == expected_domains
+    assert payload.active_domains == COGNITIVE_UPDATING_DOMAIN_ORDER
 
 
 def test_cu_mixed_tempo_repeats_fixed_item_cycle() -> None:
@@ -125,6 +128,7 @@ def test_cu_mixed_tempo_repeats_fixed_item_cycle() -> None:
         payload = engine._current.payload
         assert isinstance(payload, CognitiveUpdatingPayload)
         observed.append(payload.focus_label)
+        assert payload.active_domains == COGNITIVE_UPDATING_DOMAIN_ORDER
         assert engine.submit_answer(str(engine._current.answer)) is True
 
     assert observed == [
@@ -153,12 +157,5 @@ def test_cu_pressure_run_keeps_all_domains_active() -> None:
     for _ in range(4):
         payload = engine._current.payload
         assert isinstance(payload, CognitiveUpdatingPayload)
-        assert payload.active_domains == (
-            "controls",
-            "navigation",
-            "engine",
-            "sensors",
-            "objectives",
-            "state_code",
-        )
+        assert payload.active_domains == COGNITIVE_UPDATING_DOMAIN_ORDER
         assert engine.submit_answer(str(engine._current.answer)) is True

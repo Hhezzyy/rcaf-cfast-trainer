@@ -11,9 +11,15 @@ from cfast_trainer.adaptive_difficulty import (
     difficulty_profile_for_code,
     difficulty_ratio_for_level,
 )
+from cfast_trainer.angles_bearings_degrees import AnglesBearingsTrainingPayload
 from cfast_trainer.ant_drills import AntDrillMode
 from cfast_trainer.auditory_capacity import AuditoryCapacityPayload
-from cfast_trainer.benchmark import BenchmarkPlan, BenchmarkProbePlan, BenchmarkSession, BenchmarkStage
+from cfast_trainer.benchmark import (
+    BenchmarkPlan,
+    BenchmarkProbePlan,
+    BenchmarkSession,
+    BenchmarkStage,
+)
 from cfast_trainer.cognitive_core import Phase
 from cfast_trainer.cognitive_core import TestSnapshot as SnapshotModel
 from cfast_trainer.cognitive_updating import (
@@ -27,8 +33,10 @@ from cfast_trainer.dtb_drills import (
     DualTaskBridgeDrillConfig,
     build_dtb_tracking_filter_digit_report_drill,
 )
-from cfast_trainer.angles_bearings_degrees import AnglesBearingsTrainingPayload
-from cfast_trainer.numerical_operations import NumericalOperationsConfig, build_numerical_operations_test
+from cfast_trainer.numerical_operations import (
+    NumericalOperationsConfig,
+    build_numerical_operations_test,
+)
 from cfast_trainer.rapid_tracking import RapidTrackingPayload
 from cfast_trainer.results import attempt_result_from_engine
 from cfast_trainer.rt_drills import RtDrillConfig, build_rt_lock_anchor_drill
@@ -522,6 +530,21 @@ def test_tracking_result_emits_rms_tracking_overshoot_and_reversal_metrics() -> 
     assert result.metrics["rms_tracking_error"] != ""
     assert result.metrics["overshoot_count"] != ""
     assert result.metrics["reversal_count"] != ""
+    for key in (
+        "visible_mean_error",
+        "visible_rms_error",
+        "obscured_mean_error",
+        "obscured_rms_error",
+        "prediction_score_ratio",
+        "terrain_cover_time_s",
+        "portal_cover_time_s",
+        "water_cover_time_s",
+        "building_cover_time_s",
+        "reacquisition_success_ratio",
+        "best_reacquisition_time_s",
+        "slow_reacquisition_count",
+    ):
+        assert result.metrics[key] != ""
 
 
 def test_command_multitask_result_emits_switch_cost_and_false_command_rate() -> None:

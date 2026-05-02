@@ -7,7 +7,6 @@ import pytest
 
 from cfast_trainer.cognitive_core import Phase
 from cfast_trainer.trace_lattice import TraceLatticeAction, trace_lattice_state
-from cfast_trainer.trace_scene_3d import classify_trace_test_1_view_maneuver
 from cfast_trainer.trace_test_1 import (
     TraceTest1AircraftPlan,
     TraceTest1Command,
@@ -22,13 +21,13 @@ from cfast_trainer.trace_test_1 import (
     _tt1_aircraft_state_from_lattice_state,
     _tt1_build_lattice_path,
     _tt1_command_step_index,
+    _tt1_visible_command_for_prompt,
     build_trace_test_1_test,
     trace_test_1_answer_code,
     trace_test_1_difficulty_tier,
     trace_test_1_normalized_position,
     trace_test_1_scene_frames,
 )
-from cfast_trainer.trace_test_1_gl import project_scene_position
 
 
 @dataclass
@@ -107,7 +106,7 @@ def test_generator_determinism_same_seed_same_sequence() -> None:
     ]
 
 
-def test_generator_answer_matches_camera_space_view_classifier() -> None:
+def test_generator_answer_matches_flat_lattice_visible_command() -> None:
     gen = TraceTest1Generator(seed=902)
 
     for difficulty in (0.10, 0.50, 0.80, 0.95):
@@ -115,11 +114,8 @@ def test_generator_answer_matches_camera_space_view_classifier() -> None:
             problem = gen.next_problem(difficulty=difficulty)
             payload = problem.payload
             assert isinstance(payload, TraceTest1PromptPlan)
-            assert int(problem.answer) == int(
-                trace_test_1_answer_code(
-                    classify_trace_test_1_view_maneuver(prompt=payload).value
-                )
-            )
+            visible = _tt1_visible_command_for_prompt(payload)
+            assert int(problem.answer) == int(trace_test_1_answer_code(visible.value))
             gen.commit_prompt(prompt=payload, progress=1.0)
 
 
@@ -803,9 +799,9 @@ def test_red_lattice_paths_stay_on_screen_across_tiers() -> None:
             )
             for progress in (0.0, prompt.answer_open_progress, 1.0):
                 red = trace_test_1_scene_frames(prompt=prompt, progress=progress).red_frame
-                center, _scale = project_scene_position(red.position, size=(960, 540))
-                assert 0.0 <= center[0] <= 960.0
-                assert 0.0 <= center[1] <= 540.0
+                nx, ny = trace_test_1_normalized_position(red.position)
+                assert 0.0 <= nx <= 1.0
+                assert 0.0 <= ny <= 1.0
                 assert 0.0 <= red.position[2] <= 28.0
             gen.commit_prompt(prompt=prompt, progress=1.0)
 

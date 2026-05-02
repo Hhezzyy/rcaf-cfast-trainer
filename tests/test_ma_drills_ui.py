@@ -2,21 +2,13 @@ from __future__ import annotations
 
 import os
 import re
-import sys
 from dataclasses import dataclass
-from importlib.machinery import ModuleSpec
-from types import ModuleType
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 
 import pygame
 import pytest
-
-if "moderngl" not in sys.modules:
-    moderngl_stub = ModuleType("moderngl")
-    moderngl_stub.__spec__ = ModuleSpec("moderngl", loader=None)
-    sys.modules["moderngl"] = moderngl_stub
 
 from cfast_trainer.app import App, CognitiveTestScreen, MenuItem, MenuScreen
 from cfast_trainer.ma_drills import MaDrillConfig, build_ma_percentage_snap_drill

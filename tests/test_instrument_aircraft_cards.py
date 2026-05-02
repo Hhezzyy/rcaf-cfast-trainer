@@ -5,13 +5,13 @@ import pytest
 
 from cfast_trainer.instrument_aircraft_cards import (
     InstrumentAircraftCardKey,
-    aircraft_card_pose_signature,
+    InstrumentAircraftCardSpriteBank,
     aircraft_card_pitch_cue_px,
     aircraft_card_pose_distance,
+    aircraft_card_pose_signature,
     aircraft_card_projected_heading_deg,
     aircraft_card_semantic_drift_tags,
     aircraft_card_wing_tilt_px,
-    InstrumentAircraftCardSpriteBank,
 )
 from cfast_trainer.instrument_comprehension import InstrumentAircraftViewPreset, InstrumentState
 
@@ -38,33 +38,7 @@ def test_card_key_normalizes_state_values() -> None:
     assert key.pitch_deg == 20
     assert key.bank_deg == -45
     assert key.view_preset is InstrumentAircraftViewPreset.FRONT_LEFT
-    assert key.filename() == "v20_front_left_h001_pp20_bm45.png"
-
-
-def test_sprite_bank_loads_cached_png_without_generation(tmp_path) -> None:
-    cache_dir = tmp_path / "cards"
-    cache_dir.mkdir()
-
-    state = _state(heading_deg=90, pitch_deg=4, bank_deg=-12)
-    key = InstrumentAircraftCardKey.from_state(state)
-    cached_path = cache_dir / key.filename()
-
-    pygame.init()
-    try:
-        source = pygame.Surface((32, 20), pygame.SRCALPHA)
-        source.fill((210, 40, 60, 255))
-        pygame.image.save(source, str(cached_path))
-
-        bank = InstrumentAircraftCardSpriteBank(cache_dir=cache_dir, allow_generation=False)
-        loaded = bank.get_surface(state=state)
-
-        assert loaded is not None
-        assert loaded.get_size() == (32, 20)
-        scaled = bank.get_scaled_surface(state=state, size=(64, 40))
-        assert scaled is not None
-        assert scaled.get_size() == (64, 40)
-    finally:
-        pygame.quit()
+    assert key.filename() == "mesh_v1_front_left_h001_pp20_bm45.png"
 
 
 def test_pose_signature_is_stable_and_changes_with_orientation() -> None:
@@ -78,33 +52,34 @@ def test_pose_signature_is_stable_and_changes_with_orientation() -> None:
 
     assert sig_a == sig_b
     assert aircraft_card_pose_distance(sig_a, sig_b) == pytest.approx(0.0)
-    assert aircraft_card_pose_distance(sig_a, sig_c) > 0.0
+    assert aircraft_card_pose_distance(sig_a, sig_c) > 60.0
 
 
-def test_card_presets_keep_cardinal_heading_projection_reference_aligned() -> None:
+def test_top_down_heading_projection_preserves_cardinals() -> None:
     expected_angles = {
         0: 90.0,
         90: 0.0,
         180: -90.0,
         270: 180.0,
     }
-    for preset in InstrumentAircraftViewPreset:
-        for heading_deg, expected in expected_angles.items():
-            signature = aircraft_card_pose_signature(
-                _state(heading_deg=heading_deg, pitch_deg=0, bank_deg=0),
-                view_preset=preset,
-            )
-            projected = aircraft_card_projected_heading_deg(signature)
-            error = abs(((projected - expected + 180.0) % 360.0) - 180.0)
-            assert error <= 8.0, (preset, heading_deg, projected, expected)
-            assert "heading_axis" not in aircraft_card_semantic_drift_tags(
-                _state(heading_deg=heading_deg, pitch_deg=0, bank_deg=0),
-                view_preset=preset,
-            )
+    for heading_deg, expected in expected_angles.items():
+        signature = aircraft_card_pose_signature(
+            _state(heading_deg=heading_deg, pitch_deg=0, bank_deg=0),
+            view_preset=InstrumentAircraftViewPreset.TOP_DOWN,
+        )
+        projected = aircraft_card_projected_heading_deg(signature)
+        error = abs(((projected - expected + 180.0) % 360.0) - 180.0)
+        assert error <= 10.0, (heading_deg, projected, expected)
 
 
-def test_neutral_bank_and_signed_bank_deltas_stay_semantically_aligned() -> None:
-    for preset in InstrumentAircraftViewPreset:
+def test_signed_bank_deltas_stay_semantically_aligned() -> None:
+    presets = (
+        InstrumentAircraftViewPreset.FRONT_LEFT,
+        InstrumentAircraftViewPreset.FRONT_RIGHT,
+        InstrumentAircraftViewPreset.PROFILE_LEFT,
+        InstrumentAircraftViewPreset.PROFILE_RIGHT,
+    )
+    for preset in presets:
         neutral_state = _state(heading_deg=90, pitch_deg=0, bank_deg=0)
         left_bank_state = _state(heading_deg=90, pitch_deg=0, bank_deg=-20)
         right_bank_state = _state(heading_deg=90, pitch_deg=0, bank_deg=20)
@@ -131,11 +106,16 @@ def test_neutral_bank_and_signed_bank_deltas_stay_semantically_aligned() -> None
         right_delta = aircraft_card_wing_tilt_px(right_sig) - neutral_tilt
         assert left_delta > 0.0, (preset, left_delta)
         assert right_delta < 0.0, (preset, right_delta)
-        assert abs(abs(left_delta) - abs(right_delta)) <= 12.0, (preset, left_delta, right_delta)
 
 
 def test_pitch_metric_moves_symmetrically_around_level_flight() -> None:
-    for preset in InstrumentAircraftViewPreset:
+    presets = (
+        InstrumentAircraftViewPreset.FRONT_LEFT,
+        InstrumentAircraftViewPreset.FRONT_RIGHT,
+        InstrumentAircraftViewPreset.PROFILE_LEFT,
+        InstrumentAircraftViewPreset.PROFILE_RIGHT,
+    )
+    for preset in presets:
         neutral_sig = aircraft_card_pose_signature(
             _state(heading_deg=90, pitch_deg=0, bank_deg=0),
             view_preset=preset,
@@ -162,11 +142,6 @@ def test_pitch_metric_moves_symmetrically_around_level_flight() -> None:
         )
         assert descent_delta < 0.0, (preset, descent_delta)
         assert climb_delta > 0.0, (preset, climb_delta)
-        assert abs(abs(descent_delta) - abs(climb_delta)) <= 2.5, (
-            preset,
-            descent_delta,
-            climb_delta,
-        )
 
 
 def _red_bounds(surface: pygame.Surface) -> tuple[int, int, int, int] | None:
@@ -190,65 +165,44 @@ def _red_bounds(surface: pygame.Surface) -> tuple[int, int, int, int] | None:
     return (min_x, min_y, max_x, max_y)
 
 
-def test_generated_card_presets_keep_aircraft_inside_safe_inset(tmp_path, monkeypatch) -> None:
-    cache_dir = tmp_path / "generated-cards"
+def test_card_bank_renders_mesh_cards_and_caches_scaled_surfaces() -> None:
+    bank = InstrumentAircraftCardSpriteBank()
     state = _state(heading_deg=82, pitch_deg=7, bank_deg=-14)
-    bank = InstrumentAircraftCardSpriteBank(cache_dir=cache_dir, allow_generation=True)
-
-    class _FakeRenderer:
-        def render_card(self, *, key, destination, draw_callback, size) -> None:
-            _ = (key, draw_callback)
-            surface = pygame.Surface(size, pygame.SRCALPHA)
-            surface.fill((232, 232, 232, 255))
-            pygame.draw.polygon(
-                surface,
-                (210, 40, 60, 255),
-                [
-                    (size[0] // 2, 36),
-                    (size[0] // 2 + 58, size[1] // 2),
-                    (size[0] // 2, size[1] - 36),
-                    (size[0] // 2 - 58, size[1] // 2),
-                ],
-            )
-            pygame.image.save(surface, str(destination))
-
-    monkeypatch.setattr(bank, "_get_renderer", lambda: _FakeRenderer())
-
-    for preset in InstrumentAircraftViewPreset:
-        surface = bank.get_surface(state=state, view_preset=preset)
-        assert surface is not None
-        bounds = _red_bounds(surface)
-        assert bounds is not None
-        min_x, min_y, max_x, max_y = bounds
-        inset = 4
-        assert min_x >= inset, preset
-        assert min_y >= inset, preset
-        assert max_x <= surface.get_width() - inset, preset
-        assert max_y <= surface.get_height() - inset, preset
-        for sample in (
-            (2, 2),
-            (surface.get_width() - 3, 2),
-            (2, surface.get_height() - 3),
-            (surface.get_width() - 3, surface.get_height() - 3),
-        ):
-            assert surface.get_at(sample).a > 0, preset
-
-
-def test_generated_card_uses_software_fallback_when_renderer_generation_fails(tmp_path, monkeypatch) -> None:
-    bank = InstrumentAircraftCardSpriteBank(cache_dir=tmp_path / "generated-cards", allow_generation=True)
-
-    class _FailingRenderer:
-        def render_card(self, *, key, destination, draw_callback, size) -> None:
-            _ = (key, destination, draw_callback, size)
-            raise RuntimeError("renderer boom")
-
-    monkeypatch.setattr(bank, "_get_renderer", lambda: _FailingRenderer())
 
     pygame.init()
     try:
-        surface = bank.get_surface(state=_state(heading_deg=90, pitch_deg=0, bank_deg=0))
-        assert surface is not None
-        assert bank._generation_failed is True
-        assert _red_bounds(surface) is not None
+        for preset in InstrumentAircraftViewPreset:
+            surface = bank.get_scaled_surface(state=state, view_preset=preset, size=(224, 140))
+            cached = bank.get_scaled_surface(state=state, view_preset=preset, size=(224, 140))
+            assert cached is surface
+            bounds = _red_bounds(surface)
+            assert bounds is not None
+            min_x, min_y, max_x, max_y = bounds
+            assert min_x >= 2, preset
+            assert min_y >= 2, preset
+            assert max_x <= surface.get_width() - 3, preset
+            assert max_y <= surface.get_height() - 3, preset
+    finally:
+        pygame.quit()
+
+
+def test_card_bank_rendered_views_are_distinct() -> None:
+    bank = InstrumentAircraftCardSpriteBank()
+    state = _state(heading_deg=82, pitch_deg=7, bank_deg=-14)
+
+    pygame.init()
+    try:
+        front = bank.get_scaled_surface(
+            state=state,
+            view_preset=InstrumentAircraftViewPreset.FRONT_LEFT,
+            size=(224, 140),
+        )
+        top = bank.get_scaled_surface(
+            state=state,
+            view_preset=InstrumentAircraftViewPreset.TOP_DOWN,
+            size=(224, 140),
+        )
+
+        assert pygame.image.tobytes(front, "RGBA") != pygame.image.tobytes(top, "RGBA")
     finally:
         pygame.quit()

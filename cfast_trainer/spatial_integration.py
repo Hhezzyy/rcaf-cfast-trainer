@@ -40,7 +40,6 @@ class SpatialIntegrationPart(StrEnum):
 
 class SpatialIntegrationSceneView(StrEnum):
     TOPDOWN = "topdown"
-    OBLIQUE = "oblique"
     PROFILE = "profile"
 
 
@@ -502,15 +501,15 @@ class SpatialIntegrationGenerator:
         return _SpatialIntegrationSceneCluster(
             scene_id=scene_id,
             part=SpatialIntegrationPart.STATIC,
-            scene_view=SpatialIntegrationSceneView.OBLIQUE,
+            scene_view=SpatialIntegrationSceneView.TOPDOWN,
             north_arrow_deg=0,
             grid_cols=grid_cols,
             grid_rows=grid_rows,
             alt_levels=4,
             reference_views=(
-                SpatialIntegrationReferenceView("View 1", SpatialIntegrationSceneView.OBLIQUE, 24),
-                SpatialIntegrationReferenceView("View 2", SpatialIntegrationSceneView.OBLIQUE, -42),
-                SpatialIntegrationReferenceView("View 3", SpatialIntegrationSceneView.OBLIQUE, 132),
+                SpatialIntegrationReferenceView("Map View", SpatialIntegrationSceneView.TOPDOWN, 0),
+                SpatialIntegrationReferenceView("Profile View", SpatialIntegrationSceneView.PROFILE, 0),
+                SpatialIntegrationReferenceView("Route Map", SpatialIntegrationSceneView.TOPDOWN, 90),
             ),
             hills=hills,
             landmarks=landmarks,
@@ -630,15 +629,15 @@ class SpatialIntegrationGenerator:
         return _SpatialIntegrationSceneCluster(
             scene_id=scene_id,
             part=SpatialIntegrationPart.AIRCRAFT,
-            scene_view=SpatialIntegrationSceneView.OBLIQUE,
+            scene_view=SpatialIntegrationSceneView.TOPDOWN,
             north_arrow_deg=0,
             grid_cols=grid_cols,
             grid_rows=grid_rows,
             alt_levels=5,
             reference_views=(
-                SpatialIntegrationReferenceView("View 1", SpatialIntegrationSceneView.OBLIQUE, 28),
-                SpatialIntegrationReferenceView("View 2", SpatialIntegrationSceneView.OBLIQUE, -54),
-                SpatialIntegrationReferenceView("View 3", SpatialIntegrationSceneView.OBLIQUE, 146),
+                SpatialIntegrationReferenceView("Map View", SpatialIntegrationSceneView.TOPDOWN, 0),
+                SpatialIntegrationReferenceView("Profile View", SpatialIntegrationSceneView.PROFILE, 0),
+                SpatialIntegrationReferenceView("Route Map", SpatialIntegrationSceneView.TOPDOWN, 90),
             ),
             hills=hills,
             landmarks=landmarks,

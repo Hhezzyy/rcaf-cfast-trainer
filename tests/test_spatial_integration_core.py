@@ -64,7 +64,11 @@ def test_static_scene_cluster_has_expected_question_mix() -> None:
 
     assert scene.part is SpatialIntegrationPart.STATIC
     assert len(scene.reference_views) == 3
-    assert all(view.scene_view.value == "oblique" for view in scene.reference_views)
+    assert tuple(view.scene_view.value for view in scene.reference_views) == (
+        "topdown",
+        "profile",
+        "topdown",
+    )
     assert scene.questions[0].kind is SpatialIntegrationQuestionKind.LANDMARK_GRID
     assert scene.questions[0].answer_mode is SpatialIntegrationAnswerMode.GRID_CLICK
     assert scene.questions[1].kind is SpatialIntegrationQuestionKind.LANDMARK_GRID
@@ -80,7 +84,11 @@ def test_aircraft_scene_cluster_has_expected_question_mix() -> None:
 
     assert scene.part is SpatialIntegrationPart.AIRCRAFT
     assert len(scene.reference_views) == 3
-    assert all(view.scene_view.value == "oblique" for view in scene.reference_views)
+    assert tuple(view.scene_view.value for view in scene.reference_views) == (
+        "topdown",
+        "profile",
+        "topdown",
+    )
     assert len(scene.route_points) >= 5
     assert scene.questions[0].kind is SpatialIntegrationQuestionKind.AIRCRAFT_ROUTE_SELECTION
     assert scene.questions[0].answer_mode is SpatialIntegrationAnswerMode.OPTION_PICK

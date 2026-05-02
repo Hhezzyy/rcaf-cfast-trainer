@@ -1,10 +1,7 @@
 from __future__ import annotations
 
 import os
-import sys
 from dataclasses import dataclass, replace
-from importlib.machinery import ModuleSpec
-from types import ModuleType
 from typing import cast
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
@@ -12,17 +9,13 @@ os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 
 import pygame
 
-if "moderngl" not in sys.modules:
-    moderngl_stub = ModuleType("moderngl")
-    moderngl_stub.__spec__ = ModuleSpec("moderngl", loader=None)
-    sys.modules["moderngl"] = moderngl_stub
-
 from cfast_trainer.ant_drills import AntDrillMode
 from cfast_trainer.ant_workouts import AntWorkoutBlockPlan, AntWorkoutPlan, AntWorkoutSession
 from cfast_trainer.app import App, AntWorkoutScreen, CognitiveTestScreen, MenuItem, MenuScreen
 from cfast_trainer.cognitive_core import Phase
 from cfast_trainer.cognitive_core import TestSnapshot as SnapshotModel
 from cfast_trainer.cognitive_updating import (
+    COGNITIVE_UPDATING_DOMAIN_ORDER,
     CognitiveUpdatingGenerator,
     CognitiveUpdatingPayload,
     CognitiveUpdatingTrainingProfile,
@@ -48,16 +41,18 @@ class _FakeCognitiveUpdatingEngine:
         *,
         title: str,
         clock: _FakeClock | None = None,
+        phase: Phase = Phase.PRACTICE,
     ) -> None:
         self._payload = payload
         self._title = title
         self.clock = clock if clock is not None else _FakeClock()
+        self.phase = phase
         self.submissions: list[str] = []
 
     def snapshot(self) -> SnapshotModel:
         return SnapshotModel(
             title=self._title,
-            phase=Phase.PRACTICE,
+            phase=self.phase,
             prompt=self._payload.question,
             input_hint="",
             time_remaining_s=None,
@@ -134,6 +129,10 @@ def _install_recording_fonts(app: App, screen: CognitiveTestScreen) -> list[str]
     return captured
 
 
+def _keydown(key: int, *, unicode: str = "") -> pygame.event.Event:
+    return pygame.event.Event(pygame.KEYDOWN, {"key": key, "mod": 0, "unicode": unicode})
+
+
 def test_cognitive_updating_drill_title_routes_to_real_renderer(monkeypatch) -> None:
     payload = _sample_payload(active_domains=("controls", "state_code"), focus_label="Controls")
     _app, screen = _build_screen(
@@ -157,26 +156,28 @@ def test_cognitive_updating_drill_title_routes_to_real_renderer(monkeypatch) -> 
         pygame.quit()
 
 
-def test_cognitive_updating_focused_payload_dims_inactive_panels_visually() -> None:
+def test_cognitive_updating_focused_payload_keeps_all_panels_live() -> None:
     focused_payload = _sample_payload(active_domains=("controls", "state_code"), focus_label="Controls")
-    full_payload = _sample_payload(
-        active_domains=("controls", "navigation", "engine", "sensors", "objectives", "state_code"),
-        focus_label="Full Mixed",
-    )
     _app, screen = _build_screen(
         _FakeCognitiveUpdatingEngine(focused_payload, title="Cognitive Updating: Controls Anchor")
     )
     try:
         surface = pygame.display.get_surface()
         assert surface is not None
-        screen.render(surface)
-        focused_bytes = pygame.image.tobytes(surface, "RGBA")
+        captured = _install_recording_fonts(screen._app, screen)
 
-        screen._engine = _FakeCognitiveUpdatingEngine(full_payload, title="Cognitive Updating: Pressure Run")
         screen.render(surface)
-        full_bytes = pygame.image.tobytes(surface, "RGBA")
 
-        assert focused_bytes != full_bytes
+        rendered = "\n".join(captured)
+        assert "TRAINING INACTIVE" not in rendered
+
+        for page_idx, label in ((1, "Parcel Drop"), (4, "Sensors"), (5, "Tank 1 (L)")):
+            screen._cognitive_updating_upper_tab_index = page_idx
+            captured.clear()
+            screen.render(surface)
+            rendered = "\n".join(captured)
+            assert "TRAINING INACTIVE" not in rendered
+            assert label in rendered
     finally:
         pygame.quit()
 
@@ -246,7 +247,31 @@ def test_cognitive_updating_real_drill_engine_uses_payload_metadata_on_live_scre
         payload = engine._current.payload
         assert isinstance(payload, CognitiveUpdatingPayload)
         assert payload.focus_label == "Controls"
-        assert payload.active_domains == ("controls", "state_code")
+        assert payload.active_domains == COGNITIVE_UPDATING_DOMAIN_ORDER
+        assert payload.starting_lower_tab_index == 0
+    finally:
+        pygame.quit()
+
+
+def test_cognitive_updating_state_code_keeps_controls_page_visually_active() -> None:
+    payload = replace(
+        _sample_payload(active_domains=("navigation", "state_code"), focus_label="Navigation"),
+        starting_upper_tab_index=3,
+        starting_lower_tab_index=2,
+    )
+    _app, screen = _build_screen(
+        _FakeCognitiveUpdatingEngine(payload, title="Cognitive Updating: Navigation Anchor")
+    )
+    try:
+        surface = pygame.display.get_surface()
+        assert surface is not None
+        captured = _install_recording_fonts(screen._app, screen)
+
+        screen.render(surface)
+
+        rendered = "\n".join(captured)
+        assert "TRAINING INACTIVE" not in rendered
+        assert "Comms Code" in rendered
     finally:
         pygame.quit()
 
@@ -330,23 +355,23 @@ def test_cognitive_updating_messages_page_removes_stale_sensor_line_after_sensor
         captured.clear()
         screen.render(surface)
         rendered_before = "\n".join(captured)
-        assert "Air Sensor due in: 08s" in rendered_before
-        assert "Ground Sensor due in: 10s" in rendered_before
+        assert "Air Sensor due in: 30s" in rendered_before
 
         runtime = screen._cognitive_updating_runtime
         assert runtime is not None
+        clock.advance(30.0)
         runtime.toggle_sensor("air")
 
         captured.clear()
         screen.render(surface)
         rendered_after = "\n".join(captured)
         assert "Air Sensor due in:" not in rendered_after
-        assert "Ground Sensor due in: 10s" in rendered_after
+        assert "Activate Alpha Camera at:" in rendered_after
     finally:
         pygame.quit()
 
 
-def test_cognitive_updating_comms_code_status_moves_from_controls_page_to_messages_page() -> None:
+def test_cognitive_updating_controls_comms_box_never_renders_actual_codes() -> None:
     clock = _FakeClock()
     payload = replace(
         _sample_payload(active_domains=("controls", "state_code"), focus_label="Controls"),
@@ -364,24 +389,35 @@ def test_cognitive_updating_comms_code_status_moves_from_controls_page_to_messag
         captured = _install_recording_fonts(app, screen)
 
         screen.render(surface)
-        screen._cognitive_updating_upper_tab_index = 0
-        screen._cognitive_updating_lower_tab_index = 2
+        screen._cognitive_updating_upper_tab_index = 2
+        screen._cognitive_updating_lower_tab_index = 3
         captured.clear()
         screen.render(surface)
 
         rendered = "\n".join(captured)
-        assert rendered.count(f"Current code: {payload.comms_code}") == 1
-        assert rendered.count("Code changes in: 00:30") == 1
+        assert "Current code:" not in rendered
+        assert "Code changes in:" not in rendered
+        assert "Active code:" not in rendered
+        assert "Incoming:" not in rendered
+        assert payload.comms_code not in rendered
+        assert rendered.count("Check Messages") == 1
+        assert rendered.count("Update in: 00:30") == 1
 
         runtime = screen._cognitive_updating_runtime
         assert runtime is not None
+        first_incoming = runtime.snapshot().next_comms_code
+        assert first_incoming is not None
+        assert first_incoming not in rendered
 
         clock.advance(29.5)
         captured.clear()
         screen.render(surface)
         rendered_pending = "\n".join(captured)
-        assert rendered_pending.count(f"Current code: {payload.comms_code}") == 1
-        assert rendered_pending.count("Code changes in: 00:01") == 1
+        assert "Active code:" not in rendered_pending
+        assert "Incoming:" not in rendered_pending
+        assert payload.comms_code not in rendered_pending
+        assert first_incoming not in rendered_pending
+        assert rendered_pending.count("Update in: 00:01") == 1
 
         clock.advance(0.5)
         captured.clear()
@@ -389,13 +425,15 @@ def test_cognitive_updating_comms_code_status_moves_from_controls_page_to_messag
         rendered_rolled = "\n".join(captured)
         rolled = runtime.snapshot()
         assert rolled.current_comms_code != payload.comms_code
-        assert rendered_rolled.count(f"Current code: {rolled.current_comms_code}") == 1
-        assert rendered_rolled.count("Code changes in: 00:30") == 1
+        assert "Active code:" not in rendered_rolled
+        assert "Incoming:" not in rendered_rolled
+        assert rolled.current_comms_code not in rendered_rolled
+        assert rendered_rolled.count("Update in: 00:30") == 1
     finally:
         pygame.quit()
 
 
-def test_cognitive_updating_upcoming_comms_code_renders_only_on_messages_page() -> None:
+def test_cognitive_updating_messages_page_renders_only_incoming_comms_code() -> None:
     clock = _FakeClock()
     payload = replace(
         _sample_payload(active_domains=("controls", "state_code"), focus_label="Controls"),
@@ -422,8 +460,10 @@ def test_cognitive_updating_upcoming_comms_code_renders_only_on_messages_page() 
         screen.render(surface)
         rendered_messages = "\n".join(captured)
         assert "New Comms Code:" in rendered_messages
-        assert f"Current code: {payload.comms_code}" in rendered_messages
-        assert "Code changes in: 00:05" in rendered_messages
+        assert f"Active code: {payload.comms_code}" not in rendered_messages
+        assert "Current code:" not in rendered_messages
+        assert "Code changes in:" not in rendered_messages
+        assert "Update in:" not in rendered_messages
 
         screen._cognitive_updating_upper_tab_index = 2
         screen._cognitive_updating_lower_tab_index = 2
@@ -431,7 +471,119 @@ def test_cognitive_updating_upcoming_comms_code_renders_only_on_messages_page() 
         screen.render(surface)
         rendered_controls = "\n".join(captured)
         assert "New Comms Code:" not in rendered_controls
+        assert f"Active code: {payload.comms_code}" not in rendered_controls
+        assert "Incoming:" not in rendered_controls
+        assert payload.comms_code not in rendered_controls
+        assert "Update in:" in rendered_controls
+        assert "Check Messages" in rendered_controls
         assert "Current code:" not in rendered_controls
         assert "Code changes in:" not in rendered_controls
+    finally:
+        pygame.quit()
+
+
+def test_cognitive_updating_comms_submit_during_update_window_stays_in_runtime() -> None:
+    clock = _FakeClock()
+    payload = replace(
+        _sample_payload(active_domains=("controls", "state_code"), focus_label="Controls"),
+        comms_time_limit_s=30,
+    )
+    engine = _FakeCognitiveUpdatingEngine(
+        payload,
+        title="Cognitive Updating: Controls Anchor",
+        clock=clock,
+    )
+    app, screen = _build_screen(engine)
+    try:
+        surface = pygame.display.get_surface()
+        assert surface is not None
+        captured = _install_recording_fonts(app, screen)
+        screen.render(surface)
+        screen._cognitive_updating_upper_tab_index = 2
+        screen._cognitive_updating_lower_tab_index = 3
+        runtime = screen._cognitive_updating_runtime
+        assert runtime is not None
+        incoming = runtime.snapshot().next_comms_code
+        assert incoming is not None
+
+        for ch in incoming:
+            screen.handle_event(_keydown(getattr(pygame, f"K_{ch}"), unicode=ch))
+        screen.handle_event(_keydown(pygame.K_RETURN, unicode="\r"))
+
+        snap = runtime.snapshot()
+        assert engine.submissions == []
+        assert snap.pending_comms_code == incoming
+        assert snap.comms_input == ""
+
+        captured.clear()
+        screen.render(surface)
+        rendered_controls = "\n".join(captured)
+        assert "Submitted" in rendered_controls
+        assert incoming not in rendered_controls
+    finally:
+        pygame.quit()
+
+
+def test_cognitive_updating_current_code_submit_still_uses_final_submit_path() -> None:
+    clock = _FakeClock()
+    payload = replace(
+        _sample_payload(active_domains=("controls", "state_code"), focus_label="Controls"),
+        comms_time_limit_s=30,
+    )
+    engine = _FakeCognitiveUpdatingEngine(
+        payload,
+        title="Cognitive Updating: Controls Anchor",
+        clock=clock,
+    )
+    _app, screen = _build_screen(engine)
+    try:
+        surface = pygame.display.get_surface()
+        assert surface is not None
+        screen.render(surface)
+        screen._cognitive_updating_upper_tab_index = 2
+        screen._cognitive_updating_lower_tab_index = 2
+        runtime = screen._cognitive_updating_runtime
+        assert runtime is not None
+        current_code = runtime.snapshot().current_comms_code
+
+        for ch in current_code:
+            screen.handle_event(_keydown(getattr(pygame, f"K_{ch}"), unicode=ch))
+        screen.handle_event(_keydown(pygame.K_RETURN, unicode="\r"))
+
+        assert len(engine.submissions) == 1
+        assert engine.submissions[0].startswith(current_code + current_code)
+    finally:
+        pygame.quit()
+
+
+def test_cognitive_updating_scored_comms_submit_does_not_advance_whole_item() -> None:
+    clock = _FakeClock()
+    payload = replace(
+        _sample_payload(active_domains=("controls", "state_code"), focus_label="Controls"),
+        comms_time_limit_s=30,
+    )
+    engine = _FakeCognitiveUpdatingEngine(
+        payload,
+        title="Cognitive Updating: Controls Anchor",
+        clock=clock,
+        phase=Phase.SCORED,
+    )
+    _app, screen = _build_screen(engine)
+    try:
+        surface = pygame.display.get_surface()
+        assert surface is not None
+        screen.render(surface)
+        screen._cognitive_updating_upper_tab_index = 2
+        screen._cognitive_updating_lower_tab_index = 3
+        runtime = screen._cognitive_updating_runtime
+        assert runtime is not None
+        current_code = runtime.snapshot().current_comms_code
+
+        for ch in current_code:
+            screen.handle_event(_keydown(getattr(pygame, f"K_{ch}"), unicode=ch))
+        screen.handle_event(_keydown(pygame.K_RETURN, unicode="\r"))
+
+        assert engine.submissions == []
+        assert runtime.snapshot().comms_input == current_code
     finally:
         pygame.quit()

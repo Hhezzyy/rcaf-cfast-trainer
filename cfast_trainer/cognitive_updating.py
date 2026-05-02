@@ -16,8 +16,10 @@ ACTIVE_TANK_DRAIN_PER_S = 1.00
 IDLE_TANK_DRAIN_PER_S = 0.00
 MESSAGE_REVEAL_LAT_S = 3.0
 MESSAGE_REVEAL_LON_S = 11.0
-MESSAGE_REVEAL_COMMS_S = 20.0
+MESSAGE_REVEAL_COMMS_S = 45.0
 MESSAGE_REVEAL_TIME_S = 23.0
+AIR_SENSOR_INTERVAL_S = 30
+GROUND_SENSOR_INTERVAL_S = 60
 COGNITIVE_UPDATING_DOMAIN_ORDER = (
     "controls",
     "navigation",
@@ -152,13 +154,6 @@ class _CognitiveUpdatingDifficultyParams:
 
 
 def _full_mixed_domains_for_difficulty(difficulty: float) -> tuple[str, ...]:
-    d = clamp01(difficulty)
-    if d < 0.25:
-        return ("controls", "navigation", "state_code")
-    if d < 0.50:
-        return ("controls", "navigation", "sensors", "state_code")
-    if d < 0.75:
-        return ("controls", "navigation", "engine", "sensors", "state_code")
     return COGNITIVE_UPDATING_DOMAIN_ORDER
 
 
@@ -201,17 +196,7 @@ def canonical_cognitive_updating_domain(name: str) -> str:
 
 
 def normalize_cognitive_updating_active_domains(*domains: str) -> tuple[str, ...]:
-    seen: set[str] = set()
-    ordered: list[str] = []
-    raw_domains = domains or COGNITIVE_UPDATING_DOMAIN_ORDER
-    for name in raw_domains:
-        token = canonical_cognitive_updating_domain(name)
-        if token in COGNITIVE_UPDATING_DOMAIN_ORDER and token not in seen:
-            seen.add(token)
-            ordered.append(token)
-    if not ordered:
-        return COGNITIVE_UPDATING_DOMAIN_ORDER
-    return tuple(ordered)
+    return COGNITIVE_UPDATING_DOMAIN_ORDER
 
 
 def canonical_cognitive_updating_scenario_family(name: str) -> str:
@@ -410,6 +395,9 @@ class CognitiveUpdatingRuntimeSnapshot:
     comms_swap_in_s: int
     current_comms_code: str
     next_comms_code: str | None
+    pending_comms_code: str
+    comms_update_window_open: bool
+    comms_code_warning: bool
     objective_deadline_left_s: int
     state_code: str
     operation_score_hint: float
@@ -467,12 +455,12 @@ class CognitiveUpdatingRuntime:
         self._ground_hits = 0
         self._alpha_interval_s = max(8, int(payload.alpha_camera_due_s))
         self._bravo_interval_s = max(8, int(payload.bravo_camera_due_s))
-        self._air_interval_s = max(8, int(payload.air_sensor_due_s))
-        self._ground_interval_s = max(8, int(payload.ground_sensor_due_s))
+        self._air_interval_s = AIR_SENSOR_INTERVAL_S
+        self._ground_interval_s = GROUND_SENSOR_INTERVAL_S
         self._alpha_next_due_s = float(payload.alpha_camera_due_s)
         self._bravo_next_due_s = float(payload.bravo_camera_due_s)
-        self._air_next_due_s = float(payload.air_sensor_due_s)
-        self._ground_next_due_s = float(payload.ground_sensor_due_s)
+        self._air_next_due_s = float(AIR_SENSOR_INTERVAL_S)
+        self._ground_next_due_s = float(GROUND_SENSOR_INTERVAL_S)
         self._alpha_message_visible_from_s = 0.0
         self._bravo_message_visible_from_s = 0.0
         self._air_message_visible_from_s = 0.0
@@ -485,6 +473,9 @@ class CognitiveUpdatingRuntime:
         self._comms_cycle_index = 0
         self._comms_seed_base = self._build_comms_seed_base()
         self._comms_code_cache: dict[int, str] = {0: str(payload.comms_code)}
+        self._pending_comms_code = ""
+        self._pending_comms_cycle_index: int | None = None
+        self._comms_code_warning = False
 
         self._objective_cycle_duration_s = max(1, int(payload.objective_deadline_s))
         self._objective_cycle_started_at_s = 0.0
@@ -532,6 +523,19 @@ class CognitiveUpdatingRuntime:
         cycle_index = max(0, int(float(at_s) // float(self._comms_cycle_duration_s)))
         if cycle_index == self._comms_cycle_index:
             return
+        for new_cycle_index in range(self._comms_cycle_index + 1, cycle_index + 1):
+            expected_code = self._comms_code_for_cycle(new_cycle_index)
+            pending_matches = (
+                self._pending_comms_cycle_index == new_cycle_index
+                and self._pending_comms_code == expected_code
+            )
+            self._comms_code_warning = not pending_matches
+            if (
+                self._pending_comms_cycle_index is not None
+                and self._pending_comms_cycle_index <= new_cycle_index
+            ):
+                self._pending_comms_cycle_index = None
+                self._pending_comms_code = ""
         self._comms_cycle_index = cycle_index
         self._comms_input = ""
 
@@ -557,8 +561,11 @@ class CognitiveUpdatingRuntime:
     def _comms_reveal_threshold_s(self) -> float:
         return min(
             float(self._comms_cycle_duration_s),
-            max(0.0, float(self._payload.message_reveal_comms_s)),
+            float(MESSAGE_REVEAL_COMMS_S),
         )
+
+    def _comms_update_window_open(self, now_s: float) -> bool:
+        return self._comms_remaining_s(now_s) <= self._comms_reveal_threshold_s()
 
     def _now_elapsed_s(self) -> float:
         return max(0.0, float(self._clock.now()) - self._started_at_s)
@@ -695,6 +702,8 @@ class CognitiveUpdatingRuntime:
             warnings.append("Engine Panel")
         if self._domain_active("sensors") and (self._camera_overdue(at_s) or self._sensor_overdue(at_s)):
             warnings.append("Sensor Panel")
+        if self._domain_active("state_code") and self._comms_code_warning:
+            warnings.append("Comms Code")
         if self._domain_active("objectives") and (
             self._objective_mistyped() or (at_s > float(self._objective_deadline_s))
         ):
@@ -774,27 +783,31 @@ class CognitiveUpdatingRuntime:
         now_s = self._advance_domain("sensors")
         token = camera.strip().lower()
         if token == "alpha":
-            if abs(float(now_s) - float(self._alpha_next_due_s)) <= self._grace_window_s():
+            due_s = float(self._alpha_next_due_s)
+            if abs(float(now_s) - due_s) <= self._grace_window_s():
                 self._alpha_hits += 1
+                self._alpha_next_due_s = due_s + float(self._alpha_interval_s)
+                self._alpha_message_visible_from_s = max(
+                    0.0,
+                    self._alpha_next_due_s
+                    - self._task_message_reveal_lead_s(self._alpha_interval_s),
+                )
             self._alpha_last_press_s = now_s
-            self._alpha_next_due_s = now_s + float(self._alpha_interval_s)
-            self._alpha_message_visible_from_s = max(
-                0.0,
-                self._alpha_next_due_s - self._task_message_reveal_lead_s(self._alpha_interval_s),
-            )
             if self._alpha_armed_at_s is None:
                 self._alpha_armed_at_s = now_s
             self._record("camera_alpha", "1")
             return
         if token == "bravo":
-            if abs(float(now_s) - float(self._bravo_next_due_s)) <= self._grace_window_s():
+            due_s = float(self._bravo_next_due_s)
+            if abs(float(now_s) - due_s) <= self._grace_window_s():
                 self._bravo_hits += 1
+                self._bravo_next_due_s = due_s + float(self._bravo_interval_s)
+                self._bravo_message_visible_from_s = max(
+                    0.0,
+                    self._bravo_next_due_s
+                    - self._task_message_reveal_lead_s(self._bravo_interval_s),
+                )
             self._bravo_last_press_s = now_s
-            self._bravo_next_due_s = now_s + float(self._bravo_interval_s)
-            self._bravo_message_visible_from_s = max(
-                0.0,
-                self._bravo_next_due_s - self._task_message_reveal_lead_s(self._bravo_interval_s),
-            )
             if self._bravo_armed_at_s is None:
                 self._bravo_armed_at_s = now_s
             self._record("camera_bravo", "1")
@@ -805,27 +818,30 @@ class CognitiveUpdatingRuntime:
         now_s = self._advance_domain("sensors")
         token = sensor.strip().lower()
         if token == "air":
-            if abs(float(now_s) - float(self._air_next_due_s)) <= self._grace_window_s():
+            due_s = float(self._air_next_due_s)
+            if abs(float(now_s) - due_s) <= self._grace_window_s():
                 self._air_hits += 1
+                self._air_next_due_s = due_s + float(self._air_interval_s)
+                self._air_message_visible_from_s = max(
+                    0.0,
+                    self._air_next_due_s - self._task_message_reveal_lead_s(self._air_interval_s),
+                )
             self._air_last_press_s = now_s
-            self._air_next_due_s = now_s + float(self._air_interval_s)
-            self._air_message_visible_from_s = max(
-                0.0,
-                self._air_next_due_s - self._task_message_reveal_lead_s(self._air_interval_s),
-            )
             if self._air_sensor_armed_at_s is None:
                 self._air_sensor_armed_at_s = now_s
             self._record("sensor_air", "1")
             return
         if token == "ground":
-            if abs(float(now_s) - float(self._ground_next_due_s)) <= self._grace_window_s():
+            due_s = float(self._ground_next_due_s)
+            if abs(float(now_s) - due_s) <= self._grace_window_s():
                 self._ground_hits += 1
+                self._ground_next_due_s = due_s + float(self._ground_interval_s)
+                self._ground_message_visible_from_s = max(
+                    0.0,
+                    self._ground_next_due_s
+                    - self._task_message_reveal_lead_s(self._ground_interval_s),
+                )
             self._ground_last_press_s = now_s
-            self._ground_next_due_s = now_s + float(self._ground_interval_s)
-            self._ground_message_visible_from_s = max(
-                0.0,
-                self._ground_next_due_s - self._task_message_reveal_lead_s(self._ground_interval_s),
-            )
             if self._ground_sensor_armed_at_s is None:
                 self._ground_sensor_armed_at_s = now_s
             self._record("sensor_ground", "1")
@@ -912,6 +928,26 @@ class CognitiveUpdatingRuntime:
         self._advance_domain("state_code")
         self._comms_input = ""
         self._record("comms_clear", "")
+
+    def submit_comms_update(self) -> bool:
+        now_s = self._advance_domain("state_code")
+        if len(self._comms_input) != 4:
+            return False
+        submitted = self._comms_input
+        if self._comms_code_warning and submitted == self._current_comms_code():
+            self._comms_code_warning = False
+            self._comms_input = ""
+            self._record("comms_ack", submitted)
+            return True
+        if submitted == self._current_comms_code():
+            return False
+        if self._comms_update_window_open(now_s):
+            self._pending_comms_cycle_index = self._comms_cycle_index + 1
+            self._pending_comms_code = submitted
+            self._comms_input = ""
+            self._record("comms_update", submitted)
+            return True
+        return False
 
     def _camera_score(self) -> int:
         return _clamp_int((self._alpha_hits + self._bravo_hits) * 25, 0, 50)
@@ -1102,7 +1138,7 @@ class CognitiveUpdatingRuntime:
         current_comms_code = self._current_comms_code()
         next_comms_code = (
             self._next_comms_code()
-            if comms_remaining_s <= self._comms_reveal_threshold_s()
+            if self._comms_update_window_open(now_s)
             else None
         )
         target_lat, target_lon, target_time = self._parcel_target_tokens()
@@ -1126,7 +1162,7 @@ class CognitiveUpdatingRuntime:
             else ""
         )
         comms_line = (
-            f"New Comms Code: {next_comms_code} in {comms_swap_in_s:02d}s"
+            f"New Comms Code: {next_comms_code}"
             if next_comms_code is not None
             else ""
         )
@@ -1222,6 +1258,9 @@ class CognitiveUpdatingRuntime:
             comms_swap_in_s=comms_swap_in_s,
             current_comms_code=current_comms_code,
             next_comms_code=next_comms_code,
+            pending_comms_code=self._pending_comms_code,
+            comms_update_window_open=next_comms_code is not None,
+            comms_code_warning=self._comms_code_warning,
             objective_deadline_left_s=deadline_left,
             state_code=self._state_code_from_current_values(),
             operation_score_hint=float(overall_score) / 100.0,
@@ -1338,7 +1377,6 @@ class CognitiveUpdatingGenerator:
         now_total_s = (clock_h * 3600) + (clock_m * 60) + clock_s
 
         camera_scale = max(0.35, family_cfg.camera_due_scale * float(profile.camera_due_scale))
-        sensor_scale = max(0.35, family_cfg.sensor_due_scale * float(profile.sensor_due_scale))
         objective_scale = max(
             0.35, family_cfg.objective_deadline_scale * float(profile.objective_deadline_scale)
         )
@@ -1373,13 +1411,8 @@ class CognitiveUpdatingGenerator:
         earliest_camera = "ALPHA" if alpha_camera_due_s <= bravo_camera_due_s else "BRAVO"
         camera_digit = 1 if earliest_camera == "ALPHA" else 2
 
-        sensor_due_min = max(8, int(round(difficulty_profile.sensor_due_min_s * sensor_scale)))
-        sensor_due_max = max(
-            sensor_due_min,
-            int(round(difficulty_profile.sensor_due_max_s * sensor_scale)),
-        )
-        air_sensor_due_s = self._rng.randint(sensor_due_min, sensor_due_max)
-        ground_sensor_due_s = self._rng.randint(sensor_due_min, sensor_due_max)
+        air_sensor_due_s = AIR_SENSOR_INTERVAL_S
+        ground_sensor_due_s = GROUND_SENSOR_INTERVAL_S
         earliest_sensor = "AIR" if air_sensor_due_s <= ground_sensor_due_s else "GROUND"
         sensor_digit = 1 if earliest_sensor == "AIR" else 2
 
@@ -1450,7 +1483,7 @@ class CognitiveUpdatingGenerator:
         message_reveal_lat_s = max(1.0, MESSAGE_REVEAL_LAT_S * reveal_multiplier)
         message_reveal_lon_s = max(1.0, MESSAGE_REVEAL_LON_S * reveal_multiplier)
         message_reveal_time_s = max(1.0, MESSAGE_REVEAL_TIME_S * reveal_multiplier)
-        message_reveal_comms_s = max(1.0, MESSAGE_REVEAL_COMMS_S * reveal_multiplier)
+        message_reveal_comms_s = MESSAGE_REVEAL_COMMS_S
         message_lines = (
             f"Activate Alpha Camera at: {self._fmt_hms(now_total_s + alpha_camera_due_s)}"
             if "sensors" in active_domains
@@ -1563,7 +1596,7 @@ def build_cognitive_updating_test(
         "- Q/E: switch upper display (Messages, Objectives, Controls)",
         "- A/D: switch lower display (Navigation, Sensors, Engine)",
         "- No backspace editing",
-        "- Enter or Comms Submit sends your coded response",
+        "- Read comms updates from Messages, then enter and submit them in Controls",
         "",
         "Once the timed block starts, continue until completion.",
     ]

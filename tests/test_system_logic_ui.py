@@ -188,10 +188,10 @@ def test_system_logic_layout_matches_guide_structure() -> None:
         assert len(layout.answer_rects) == 5
         assert [screen._system_logic_choice_key_label(code) for code in range(1, 6)] == [
             "A",
-            "B",
-            "C",
+            "S",
             "D",
-            "E",
+            "F",
+            "G",
         ]
     finally:
         pygame.quit()
@@ -223,11 +223,37 @@ def test_system_logic_choice_keys_submit_immediately() -> None:
     engine = _FakeSystemLogicEngine(payload=_build_payload())
     screen = _build_screen(engine)
     try:
-        screen.handle_event(
-            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_c, "mod": 0, "unicode": "c"})
-        )
+        for key, char in (
+            (pygame.K_a, "a"),
+            (pygame.K_s, "s"),
+            (pygame.K_d, "d"),
+            (pygame.K_f, "f"),
+            (pygame.K_g, "g"),
+        ):
+            screen.handle_event(
+                pygame.event.Event(pygame.KEYDOWN, {"key": key, "mod": 0, "unicode": char})
+            )
 
-        assert engine.submissions == ["3"]
+        assert engine.submissions == ["1", "2", "3", "4", "5"]
+    finally:
+        pygame.quit()
+
+
+def test_system_logic_old_abcde_middle_keys_do_not_submit() -> None:
+    engine = _FakeSystemLogicEngine(payload=_build_payload())
+    screen = _build_screen(engine)
+    try:
+        for key, char in (
+            (pygame.K_b, "b"),
+            (pygame.K_c, "c"),
+            (pygame.K_e, "e"),
+        ):
+            screen.handle_event(
+                pygame.event.Event(pygame.KEYDOWN, {"key": key, "mod": 0, "unicode": char})
+            )
+
+        assert engine.submissions == []
+        assert screen._input == ""
     finally:
         pygame.quit()
 
@@ -241,6 +267,20 @@ def test_system_logic_number_keys_switch_index_directly() -> None:
         )
 
         assert screen._system_logic_index_index == 2
+    finally:
+        pygame.quit()
+
+
+def test_system_logic_keypad_number_keys_submit_choices() -> None:
+    engine = _FakeSystemLogicEngine(payload=_build_payload())
+    screen = _build_screen(engine)
+    try:
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_KP3, "mod": 0, "unicode": "3"})
+        )
+
+        assert screen._system_logic_index_index == 0
+        assert engine.submissions == ["3"]
     finally:
         pygame.quit()
 

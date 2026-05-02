@@ -1,20 +1,11 @@
 from __future__ import annotations
 
 import os
-import sys
-from dataclasses import dataclass
-from importlib.machinery import ModuleSpec
-from types import SimpleNamespace
-from types import ModuleType
+from dataclasses import dataclass, replace
 from typing import cast
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
-
-if "moderngl" not in sys.modules:
-    moderngl_stub = ModuleType("moderngl")
-    moderngl_stub.__spec__ = ModuleSpec("moderngl", loader=None)
-    sys.modules["moderngl"] = moderngl_stub
 
 import pygame
 import pytest
@@ -36,7 +27,6 @@ from cfast_trainer.app import (
 from cfast_trainer.cognitive_core import Phase
 from cfast_trainer.cognitive_core import TestSnapshot as SnapshotModel
 from cfast_trainer.rapid_tracking import RapidTrackingPayload, build_rapid_tracking_test
-from cfast_trainer.rapid_tracking.renderer import _rapid_tracking_fallback_notice_lines
 from cfast_trainer.rt_drills import (
     build_rt_ground_tempo_run_drill,
     build_rt_mixed_tempo_drill,
@@ -320,6 +310,32 @@ def test_rapid_tracking_live_screen_hides_window_and_segment_progress_counters()
         assert payload.segment_label in captured
         assert not any(text.startswith("Windows ") for text in captured)
         assert f"{payload.segment_label} {payload.segment_index}/{payload.segment_total}" not in captured
+    finally:
+        pygame.quit()
+
+
+def test_rapid_tracking_hud_surfaces_target_cues_without_identification_prompt() -> None:
+    payload = replace(
+        _sample_payload(),
+        target_kind="truck",
+        target_variant="tank",
+        target_handoff_mode="jump",
+        target_cover_state="portal",
+        target_visible=False,
+    )
+    _app, screen = _build_screen(
+        _FakeRapidTrackingEngine(payload, title="Rapid Tracking: Terrain Recovery")
+    )
+    try:
+        surface = pygame.display.get_surface()
+        assert surface is not None
+        captured = _install_recording_fonts(screen)
+
+        screen.render(surface)
+
+        assert "Target: TANK - ARMOURED VEHICLE / FAST  JUMP SWITCH" in captured
+        assert "Cue: ARMOURED VEHICLE / FAST  JUMP SWITCH" in captured
+        assert not any("Identify" in text or "ID" == text.strip() for text in captured)
     finally:
         pygame.quit()
 
@@ -710,6 +726,11 @@ def test_rapid_tracking_capture_hold_tracks_all_explicit_bindings_across_devices
         assert still_held.capture_zoom > 0.8
 
         stick_b._buttons[1] = 0
+        app.render()
+        immediate_release = screen._engine.snapshot().payload
+        assert immediate_release is not None
+        assert immediate_release.capture_zoom == pytest.approx(0.0)
+
         clock.advance(0.30)
         app.render()
         released = screen._engine.snapshot().payload
@@ -829,6 +850,11 @@ def test_rapid_tracking_joybutton_hold_starts_zoom_and_release_restores_view() -
         screen.handle_event(
             pygame.event.Event(pygame.JOYBUTTONUP, {"button": 0})
         )
+        screen._engine.update()
+        immediate_release = screen._engine.snapshot().payload
+        assert immediate_release is not None
+        assert immediate_release.capture_zoom == pytest.approx(0.0)
+
         clock.advance(0.30)
         screen._engine.update()
         released = screen._engine.snapshot().payload
@@ -868,6 +894,11 @@ def test_rapid_tracking_legacy_capture_hold_waits_for_last_button_release() -> N
         screen.handle_event(
             pygame.event.Event(pygame.JOYBUTTONUP, {"button": 1})
         )
+        screen._engine.update()
+        immediate_release = screen._engine.snapshot().payload
+        assert immediate_release is not None
+        assert immediate_release.capture_zoom == pytest.approx(0.0)
+
         clock.advance(0.30)
         screen._engine.update()
         released = screen._engine.snapshot().payload
@@ -931,23 +962,3 @@ def test_rapid_tracking_render_ignores_keyboard_camera_fallback(monkeypatch) -> 
         assert after.camera_pitch_deg == pytest.approx(before.camera_pitch_deg)
     finally:
         pygame.quit()
-
-
-def test_rapid_tracking_fallback_notice_uses_opengl_wording_not_panda() -> None:
-    app = SimpleNamespace(
-        opengl_enabled=False,
-        renderer_gl_requested=lambda: True,
-        renderer_gl_attempted=lambda: True,
-        renderer_bootstrap_failure=lambda: None,
-    )
-
-    lines = _rapid_tracking_fallback_notice_lines(
-        app=app,
-        diagnostic_code="RT-RUNT-FALL",
-    )
-    text = " ".join(lines)
-
-    assert "OpenGL" in text
-    assert "2D fallback" in text
-    assert "RT-RUNT-FALL" in text
-    assert "Panda" not in text

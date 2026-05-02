@@ -9,9 +9,10 @@ Screenshots are especially useful in this repo because many regressions are visu
   - Target Recognition multi-panel screens
   - Visual Search dense boards
   - Situational Awareness grid plus cue card plus active query
+  - Godot companion views for Auditory Capacity, Rapid Tracking, Spatial Integration, Trace Test 1, and Trace Test 2
+  - Instrument Comprehension aircraft cards rendered from local 3D mesh assets
   - Benchmark and adaptive intro/result transitions
   - HOTAS calibration, profile, and bindings screens
-- Any renderer failure or startup diagnostic screen.
 
 ## Naming
 
@@ -33,7 +34,7 @@ Examples:
 
 - Prefer full-window captures over tight crops.
 - If a crop is needed, keep one full-window shot as well.
-- Include the platform, requested renderer mode, and any failure-screen diagnostic code in the issue or PR text when relevant.
+- Include the platform and window mode in the issue or PR text when relevant.
 - Mention the input hardware used for reproduction when the bug is input-sensitive.
 - If the problem is motion or timing related, attach a short video or a before/after pair.
 
@@ -44,7 +45,6 @@ Include these alongside the screenshot:
 - exact branch and commit tested
 - subsystem or screen name
 - platform (`macOS`, `Windows`, or both)
-- requested renderer mode (`ModernGL`, built-in pygame fallback, or default app setting)
-- whether a renderer failure screen appeared, plus any diagnostic code shown
 - window mode (`windowed`, `fullscreen`, or `borderless`)
+- renderer/backend when relevant (`pygame_2d` or `godot_4`)
 - whether the bug reproduces with keyboard/mouse only or also with joystick/rudder hardware

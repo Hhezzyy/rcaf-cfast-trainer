@@ -1402,19 +1402,19 @@ TEST_GUIDE_BRIEFS: dict[str, TestGuideBriefing] = {
         ),
         timing="Guide time including instructions: about 38 minutes.",
         prep="Guide preparation: mental arithmetic helps.",
-        controls="Use Up/Down to move through the system index, choose A/B/C/D/E or 1-5, then press Enter.",
+        controls="Use Up/Down to move through the system index, choose A/S/D/F/G or keypad 1-5.",
         app_flow="Practice teaches the index workflow first, then the timed block keeps the same two-pane layout.",
     ),
     "sl_quantitative_anchor": TestGuideBriefing(
         label="System Logic: Quantitative Anchor",
         assessment="Timed System Logic drill for duration, capacity, and resource calculation using the live two-pane guide layout.",
         tasks=(
-            "Combine tables, facts, and equations to compute the correct A-E answer.",
+            "Combine tables, facts, and equations to compute the correct A/S/D/F/G answer.",
             "Use the right-side index deliberately instead of guessing from the first pane you notice.",
         ),
         timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
         prep="Guide preparation: basic arithmetic helps, but the main task is multi-source collation.",
-        controls="Use Up/Down to move the index, A/B/C/D/E or 1-5 to choose, then Enter to submit.",
+        controls="Use Up/Down to move the index, A/S/D/F/G or keypad 1-5 to choose.",
         app_flow="This drill keeps the real System Logic screen and narrows the reasoning load to quantitative items first.",
     ),
     "sl_flow_trace_anchor": TestGuideBriefing(
@@ -1426,19 +1426,19 @@ TEST_GUIDE_BRIEFS: dict[str, TestGuideBriefing] = {
         ),
         timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
         prep="Guide preparation: none required beyond learning the index-and-pane scan rhythm.",
-        controls="Use Up/Down to move the index, A/B/C/D/E or 1-5 to choose, then Enter to submit.",
+        controls="Use Up/Down to move the index, A/S/D/F/G or keypad 1-5 to choose.",
         app_flow="The live System Logic layout stays unchanged; only the reasoning family narrows to dependency tracing.",
     ),
     "sl_graph_rule_anchor": TestGuideBriefing(
         label="System Logic: Graph + Rule Anchor",
         assessment="Timed System Logic drill for graph interpretation and rule application with the real guide-style renderer.",
         tasks=(
-            "Read graph bands or curves and combine them with the rule pane before selecting A-E.",
+            "Read graph bands or curves and combine them with the rule pane before selecting A/S/D/F/G.",
             "Treat graph values and rule text as a paired source; neither one is enough by itself.",
         ),
         timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
         prep="Guide preparation: none required.",
-        controls="Use Up/Down to move the index, A/B/C/D/E or 1-5 to choose, then Enter to submit.",
+        controls="Use Up/Down to move the index, A/S/D/F/G or keypad 1-5 to choose.",
         app_flow="This drill keeps the live System Logic UI and focuses only the graph-and-rule reasoning family.",
     ),
     "sl_fault_diagnosis_prime": TestGuideBriefing(
@@ -1450,7 +1450,7 @@ TEST_GUIDE_BRIEFS: dict[str, TestGuideBriefing] = {
         ),
         timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
         prep="Guide preparation: none required.",
-        controls="Use Up/Down to move the index, A/B/C/D/E or 1-5 to choose, then Enter to submit.",
+        controls="Use Up/Down to move the index, A/S/D/F/G or keypad 1-5 to choose.",
         app_flow="The guide-style two-pane System Logic screen stays live while the drill narrows to diagnosis items.",
     ),
     "sl_index_switch_run": TestGuideBriefing(
@@ -1462,7 +1462,7 @@ TEST_GUIDE_BRIEFS: dict[str, TestGuideBriefing] = {
         ),
         timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
         prep="Guide preparation: know the live System Logic controls first.",
-        controls="Use Up/Down to move the index, A/B/C/D/E or 1-5 to choose, then Enter to submit.",
+        controls="Use Up/Down to move the index, A/S/D/F/G or keypad 1-5 to choose.",
         app_flow="This block keeps the live renderer and is designed so the answer depends on more than one indexed subsystem view.",
     ),
     "sl_family_run": TestGuideBriefing(
@@ -1474,7 +1474,7 @@ TEST_GUIDE_BRIEFS: dict[str, TestGuideBriefing] = {
         ),
         timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
         prep="Guide preparation: be comfortable with the basic live System Logic layout first.",
-        controls="Use Up/Down to move the index, A/B/C/D/E or 1-5 to choose, then Enter to submit.",
+        controls="Use Up/Down to move the index, A/S/D/F/G or keypad 1-5 to choose.",
         app_flow="The system family changes in a fixed cycle while the live System Logic UI stays constant.",
     ),
     "sl_mixed_tempo": TestGuideBriefing(
@@ -1486,7 +1486,7 @@ TEST_GUIDE_BRIEFS: dict[str, TestGuideBriefing] = {
         ),
         timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
         prep="Guide preparation: use the focused warm-up drills first if one reasoning family still causes slowdowns.",
-        controls="Use Up/Down to move the index, A/B/C/D/E or 1-5 to choose, then Enter to submit.",
+        controls="Use Up/Down to move the index, A/S/D/F/G or keypad 1-5 to choose.",
         app_flow="This is the reusable mixed System Logic tempo block, still on the real two-pane renderer and keyboard-only flow.",
     ),
     "sl_pressure_run": TestGuideBriefing(
@@ -1498,7 +1498,7 @@ TEST_GUIDE_BRIEFS: dict[str, TestGuideBriefing] = {
         ),
         timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
         prep="Guide preparation: arrive warmed up; this is a pressure block, not a teaching block.",
-        controls="Use Up/Down to move the index, A/B/C/D/E or 1-5 to choose, then Enter to submit.",
+        controls="Use Up/Down to move the index, A/S/D/F/G or keypad 1-5 to choose.",
         app_flow="The pressure run keeps the full live System Logic renderer and keyboard-only controls while removing simplifications.",
     ),
     "sl_one_rule_identify": TestGuideBriefing(
@@ -1510,7 +1510,7 @@ TEST_GUIDE_BRIEFS: dict[str, TestGuideBriefing] = {
         ),
         timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
         prep="Guide preparation: use the graph and rule pane together instead of guessing from one source.",
-        controls="Use Up/Down to move the index, A/B/C/D/E or 1-5 to choose, then Enter to submit.",
+        controls="Use Up/Down to move the index, A/S/D/F/G or keypad 1-5 to choose.",
         app_flow="This primitive drill preserves the normal System Logic guide layout and exact multiple-choice scoring.",
     ),
     "sl_missing_step_complete": TestGuideBriefing(
@@ -1522,7 +1522,7 @@ TEST_GUIDE_BRIEFS: dict[str, TestGuideBriefing] = {
         ),
         timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
         prep="Guide preparation: treat step order as the deciding feature, not just familiar wording.",
-        controls="Use Up/Down to move the index, A/B/C/D/E or 1-5 to choose, then Enter to submit.",
+        controls="Use Up/Down to move the index, A/S/D/F/G or keypad 1-5 to choose.",
         app_flow="This primitive drill keeps the standard two-pane System Logic presentation while narrowing the reasoning profile.",
     ),
     "sl_two_source_reconcile": TestGuideBriefing(
@@ -1534,7 +1534,7 @@ TEST_GUIDE_BRIEFS: dict[str, TestGuideBriefing] = {
         ),
         timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
         prep="Guide preparation: know how the index maps you to the minimum evidence set.",
-        controls="Use Up/Down to move the index, A/B/C/D/E or 1-5 to choose, then Enter to submit.",
+        controls="Use Up/Down to move the index, A/S/D/F/G or keypad 1-5 to choose.",
         app_flow="This primitive drill still uses the normal System Logic panes and exact scoring.",
     ),
     "sl_rule_match": TestGuideBriefing(
@@ -1546,7 +1546,7 @@ TEST_GUIDE_BRIEFS: dict[str, TestGuideBriefing] = {
         ),
         timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
         prep="Guide preparation: let the guide structure do the work; do not free-associate from one pane.",
-        controls="Use Up/Down to move the index, A/B/C/D/E or 1-5 to choose, then Enter to submit.",
+        controls="Use Up/Down to move the index, A/S/D/F/G or keypad 1-5 to choose.",
         app_flow="This primitive drill keeps the live guide layout and focuses the generator on rule-matching cases.",
     ),
     "sl_fast_reject": TestGuideBriefing(
@@ -1558,7 +1558,7 @@ TEST_GUIDE_BRIEFS: dict[str, TestGuideBriefing] = {
         ),
         timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
         prep="Guide preparation: be ready to commit once the required evidence is clear.",
-        controls="Use Up/Down to move the index, A/B/C/D/E or 1-5 to choose, then Enter to submit.",
+        controls="Use Up/Down to move the index, A/S/D/F/G or keypad 1-5 to choose.",
         app_flow="This primitive drill uses the normal System Logic guide flow but biases the answer set toward tempting distractors.",
     ),
     "system_logic_workout": TestGuideBriefing(
@@ -1570,7 +1570,7 @@ TEST_GUIDE_BRIEFS: dict[str, TestGuideBriefing] = {
         ),
         timing="Workout drill time: 90 minutes, plus block setup outside the timed blocks.",
         prep="Guide preparation: know the live System Logic controls first; the workout is for chaining them under pressure.",
-        controls="Use Left and Right to set workout or block difficulty, then use Up/Down plus A-E or 1-5 and Enter during blocks.",
+        controls="Use Left and Right to set workout or block difficulty, then use Up/Down plus A/S/D/F/G or keypad 1-5 during blocks.",
         app_flow="Each block gets an untimed setup screen, and every timed block reuses the live two-pane System Logic renderer.",
     ),
     "table_reading": TestGuideBriefing(
@@ -2403,9 +2403,9 @@ TEST_GUIDE_BRIEFS: dict[str, TestGuideBriefing] = {
     ),
     "spatial_integration": TestGuideBriefing(
         label="Spatial Integration",
-        assessment="Spatial test for building a 3-D air-ground picture from 2-D views.",
+        assessment="Spatial test for building an air-ground picture from flat map and profile views.",
         tasks=(
-            "Interpret top, oblique, horizontal, and vertical viewpoints together.",
+            "Interpret top-down, profile, and route-map viewpoints together.",
             "Track landmarks and aircraft positions across the three sections.",
         ),
         timing="Guide time including instructions: about 28 minutes.",
@@ -3252,7 +3252,7 @@ GUIDE_SKILL_CATALOG: tuple[GuideCognitiveDomainSpec, ...] = (
                     ),
                     GuideSkillSpec(
                         skill_id="three_d_movement_recall",
-                        label="3D Movement Recall",
+                        label="Movement Recall",
                         suggested_start_level=3,
                         recommended_training_band=_band(4, 7),
                         safe_pressure_band=_band(5, 8),

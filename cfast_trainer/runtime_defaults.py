@@ -39,7 +39,6 @@ def _normalize_window_mode(value: object) -> str | None:
 @dataclass(slots=True)
 class RuntimeDefaultsState:
     window_mode: str | None = None
-    use_opengl: bool | None = None
     auditory_noise_level: float | None = None
     auditory_distortion_level: float | None = None
     auditory_noise_source: str | None = None
@@ -47,7 +46,6 @@ class RuntimeDefaultsState:
     def to_dict(self) -> dict[str, object]:
         return {
             "window_mode": self.window_mode,
-            "use_opengl": self.use_opengl,
             "auditory_noise_level": self.auditory_noise_level,
             "auditory_distortion_level": self.auditory_distortion_level,
             "auditory_noise_source": self.auditory_noise_source,
@@ -79,8 +77,6 @@ class RuntimeDefaultsStore:
         if not isinstance(payload, dict):
             return
         self._state.window_mode = _normalize_window_mode(payload.get("window_mode"))
-        use_opengl = payload.get("use_opengl")
-        self._state.use_opengl = None if use_opengl is None else bool(use_opengl)
         self._state.auditory_noise_level = _clamp_ratio(payload.get("auditory_noise_level"))
         self._state.auditory_distortion_level = _clamp_ratio(
             payload.get("auditory_distortion_level")
@@ -110,13 +106,6 @@ class RuntimeDefaultsStore:
 
     def set_window_mode(self, value: str | None) -> None:
         self._state.window_mode = _normalize_window_mode(value)
-        self.save()
-
-    def stored_use_opengl(self) -> bool | None:
-        return self._state.use_opengl
-
-    def set_use_opengl(self, value: bool | None) -> None:
-        self._state.use_opengl = None if value is None else bool(value)
         self.save()
 
     def stored_auditory_noise_level(self) -> float | None:

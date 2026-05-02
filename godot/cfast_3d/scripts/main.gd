@@ -1,0 +1,652 @@
+extends Node3D
+
+const LISTEN_HOST := "127.0.0.1"
+const FLOOR_COLOR := Color(0.18, 0.26, 0.22, 1.0)
+const FOG_COLOR := Color(0.46, 0.52, 0.56, 1.0)
+const LINE_COLOR := Color(0.70, 0.78, 0.82, 1.0)
+const RED_COLOR := Color(0.95, 0.18, 0.15, 1.0)
+const BLUE_COLOR := Color(0.12, 0.42, 0.95, 1.0)
+const GREEN_COLOR := Color(0.22, 0.76, 0.34, 1.0)
+const AMBER_COLOR := Color(0.95, 0.66, 0.16, 1.0)
+const WHITE_COLOR := Color(0.92, 0.96, 0.98, 1.0)
+const BLACK_COLOR := Color(0.05, 0.06, 0.07, 1.0)
+const SKY_COLOR := Color(0.36, 0.55, 0.78, 1.0)
+const GROUND_COLOR := Color(0.42, 0.50, 0.26, 1.0)
+const CARD_COLOR := Color(0.74, 0.76, 0.78, 1.0)
+const PANEL_BLUE := Color(0.02, 0.05, 0.42, 1.0)
+const CANOPY_COLOR := Color(0.54, 0.86, 0.95, 1.0)
+
+var udp := PacketPeerUDP.new()
+var listen_port := 0
+var session_id := ""
+var initial_kind := "idle"
+var dynamic_root: Node3D
+var camera: Camera3D
+var overlay_label: Label
+var material_cache := {}
+var last_kind := ""
+
+
+func _ready() -> void:
+	_parse_user_args()
+	_build_world()
+	_bind_udp()
+	_present_idle()
+
+
+func _process(_delta: float) -> void:
+	while udp.get_available_packet_count() > 0:
+		var text := udp.get_packet().get_string_from_utf8()
+		var parsed = JSON.parse_string(text)
+		if typeof(parsed) == TYPE_DICTIONARY:
+			_handle_message(parsed)
+
+
+func _parse_user_args() -> void:
+	var args := OS.get_cmdline_user_args()
+	for i in range(args.size()):
+		var token := str(args[i])
+		if token == "--listen-port" and i + 1 < args.size():
+			listen_port = int(args[i + 1])
+		elif token == "--session-id" and i + 1 < args.size():
+			session_id = str(args[i + 1])
+		elif token == "--initial-kind" and i + 1 < args.size():
+			initial_kind = str(args[i + 1])
+
+
+func _bind_udp() -> void:
+	if listen_port <= 0:
+		overlay_label.text = "CFAST Godot companion waiting for --listen-port"
+		return
+	var err := udp.bind(listen_port, LISTEN_HOST)
+	if err != OK:
+		overlay_label.text = "CFAST Godot companion UDP bind failed: " + str(err)
+	else:
+		overlay_label.text = "CFAST Godot companion ready"
+
+
+func _build_world() -> void:
+	var env := Environment.new()
+	env.background_mode = Environment.BG_COLOR
+	env.background_color = FOG_COLOR
+	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
+	env.ambient_light_color = Color(0.80, 0.84, 0.86, 1.0)
+	env.ambient_light_energy = 0.78
+	env.fog_enabled = true
+	env.fog_light_color = FOG_COLOR
+	env.fog_density = 0.045
+	var world := WorldEnvironment.new()
+	world.environment = env
+	add_child(world)
+
+	var sun := DirectionalLight3D.new()
+	sun.name = "SimpleDirectionalLight"
+	sun.light_energy = 0.86
+	sun.shadow_enabled = false
+	sun.rotation_degrees = Vector3(-46.0, -28.0, 0.0)
+	add_child(sun)
+
+	camera = Camera3D.new()
+	camera.name = "CompanionCamera"
+	camera.current = true
+	camera.fov = 58.0
+	camera.near = 0.05
+	camera.far = 90.0
+	add_child(camera)
+	_set_camera(Vector3(0.0, 3.0, 10.0), Vector3(0.0, 1.0, -3.0))
+
+	dynamic_root = Node3D.new()
+	dynamic_root.name = "DynamicScene"
+	add_child(dynamic_root)
+
+	var canvas := CanvasLayer.new()
+	add_child(canvas)
+	overlay_label = Label.new()
+	overlay_label.position = Vector2(12, 10)
+	overlay_label.size = Vector2(920, 72)
+	overlay_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	overlay_label.add_theme_font_size_override("font_size", 18)
+	overlay_label.add_theme_color_override("font_color", Color(0.92, 0.96, 0.98, 1.0))
+	canvas.add_child(overlay_label)
+
+
+func _handle_message(message: Dictionary) -> void:
+	if str(message.get("command", "")) == "quit":
+		get_tree().quit()
+		return
+	_apply_window_mode(str(message.get("window_mode", "")))
+	var kind := str(message.get("kind", "idle"))
+	var payload = message.get("payload", {})
+	var title := str(message.get("title", "CFAST Godot Companion"))
+	var phase := str(message.get("phase", ""))
+	overlay_label.text = title + "  |  " + phase + "  |  Godot companion"
+	_clear_dynamic()
+	match kind:
+		"auditory_capacity":
+			_present_auditory(_as_dict(payload))
+		"rapid_tracking":
+			_present_rapid_tracking(_as_dict(payload))
+		"spatial_integration":
+			_present_spatial_integration(_as_dict(payload))
+		"trace_test_1":
+			_present_trace_test_1(_as_dict(payload))
+		"trace_test_2":
+			_present_trace_test_2(_as_dict(payload))
+		"instrument_comprehension":
+			_present_instrument_comprehension(_as_dict(payload))
+		_:
+			_present_idle()
+	last_kind = kind
+
+
+func _apply_window_mode(mode_value: String) -> void:
+	var token := mode_value.strip_edges().to_lower()
+	if token == "fullscreen" or token == "borderless":
+		DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_FULLSCREEN)
+	elif token == "maximized":
+		DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_MAXIMIZED)
+	elif token == "windowed":
+		DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_WINDOWED)
+
+
+func _as_dict(value) -> Dictionary:
+	if typeof(value) == TYPE_DICTIONARY:
+		return value
+	return {}
+
+
+func _clear_dynamic() -> void:
+	for child in dynamic_root.get_children():
+		child.queue_free()
+
+
+func _present_idle() -> void:
+	_set_camera(Vector3(0.0, 3.2, 9.5), Vector3(0.0, 1.0, -2.5))
+	_make_floor(22.0, 22.0)
+	for x in range(-4, 5):
+		_make_box("GridLineX", Vector3(float(x) * 2.0, 0.03, -4.0), Vector3(0.018, 0.018, 9.0), LINE_COLOR)
+	for z in range(0, 8):
+		_make_box("GridLineZ", Vector3(0.0, 0.035, -float(z) * 1.2), Vector3(9.0, 0.018, 0.018), LINE_COLOR)
+
+
+func _present_auditory(payload: Dictionary) -> void:
+	_set_camera(Vector3(0.0, 1.7, 7.4), Vector3(0.0, 0.9, -5.8))
+	_make_floor(8.0, 18.0)
+	_make_box("TunnelBackWall", Vector3(0.0, 1.0, -10.8), Vector3(3.1, 1.05, 0.035), Color(0.06, 0.11, 0.20, 1.0))
+	_make_box("TubeLeft", Vector3(-3.0, 1.0, -4.8), Vector3(0.08, 1.0, 8.5), Color(0.18, 0.32, 0.39, 1.0))
+	_make_box("TubeRight", Vector3(3.0, 1.0, -4.8), Vector3(0.08, 1.0, 8.5), Color(0.18, 0.32, 0.39, 1.0))
+	for i in range(8):
+		var z := -float(i) * 1.35 - 0.8
+		_make_box("TubeRibTop", Vector3(0.0, 2.03, z), Vector3(3.05, 0.04, 0.04), Color(0.36, 0.52, 0.58, 1.0))
+		_make_box("TubeRibFloor", Vector3(0.0, 0.04, z), Vector3(3.05, 0.025, 0.035), Color(0.27, 0.42, 0.46, 1.0))
+		_make_box("TubeRibLeft", Vector3(-2.96, 1.0, z), Vector3(0.03, 1.0, 0.035), Color(0.30, 0.48, 0.54, 1.0))
+		_make_box("TubeRibRight", Vector3(2.96, 1.0, z), Vector3(0.03, 1.0, 0.035), Color(0.30, 0.48, 0.54, 1.0))
+	for i in range(12):
+		var z_swirl := -0.9 - float(i) * 0.82
+		var half := 2.4 - float(i % 4) * 0.15
+		var tint := Color(0.08 + float(i % 3) * 0.02, 0.17, 0.31 + float(i % 4) * 0.03, 0.65)
+		_make_box("VortexH", Vector3(0.0, 1.0, z_swirl), Vector3(half, 0.012, 0.012), tint, Vector3(0.0, 0.0, float(i) * 16.0))
+		_make_box("VortexV", Vector3(0.0, 1.0, z_swirl), Vector3(0.012, half * 0.38, 0.012), tint, Vector3(0.0, 0.0, float(i) * 16.0))
+	_make_box("CrosshairH", Vector3(0.0, 1.0, -1.0), Vector3(2.85, 0.01, 0.012), Color(0.86, 0.14, 0.18, 1.0))
+	_make_box("CrosshairV", Vector3(0.0, 1.0, -1.0), Vector3(0.012, 0.96, 0.012), Color(0.86, 0.14, 0.18, 1.0))
+
+	var ball := _as_dict(payload.get("ball", {}))
+	var ball_x := _float(ball.get("x", 0.0)) * 2.5
+	var ball_y := 1.0 + (_float(ball.get("y", 0.0)) * 1.2)
+	var ball_z := -1.15 - (_float(ball.get("forward_norm", 0.0)) * 3.0)
+	_make_sphere("Ball", Vector3(ball_x, ball_y, ball_z), 0.35, _color_by_name(str(ball.get("color", "white"))))
+
+	var gates = payload.get("gates", [])
+	if typeof(gates) == TYPE_ARRAY:
+		for gate in gates:
+			var gate_dict := _as_dict(gate)
+			var gx := _float(gate_dict.get("x_norm", 0.0)) * 1.35
+			var gy := 1.0 + (_float(gate_dict.get("y_norm", 0.0)) * 1.0)
+			var gz := -3.0 - (_float(gate_dict.get("world_distance", 5.0)) * 0.18)
+			var color := _color_by_name(str(gate_dict.get("color", "blue")))
+			if _float(gate_dict.get("flash_strength", 0.0)) > 0.05:
+				color = _color_by_name(str(gate_dict.get("flash_color", "white")))
+			_make_gate(Vector3(gx, gy, gz), color, str(gate_dict.get("shape", "circle")))
+
+
+func _present_rapid_tracking(payload: Dictionary) -> void:
+	var camera_payload := _as_dict(payload.get("camera", {}))
+	var yaw := deg_to_rad(_float(camera_payload.get("yaw_deg", 0.0)) * 0.35)
+	var pitch: float = float(clamp(_float(camera_payload.get("pitch_deg", 0.0)) * 0.04, -0.6, 0.6))
+	_set_camera(Vector3(sin(yaw) * 4.2, 3.0 + pitch, 8.5), Vector3(0.0, 0.9, -5.2))
+	_make_terrain_chunks(int(payload.get("scene_seed", 1)), 8)
+	_make_low_hills(int(payload.get("scene_seed", 1)))
+	var target := _as_dict(payload.get("target", {}))
+	var tx := _float(target.get("rel_x", 0.0)) * 5.0
+	var ty := 0.75 + (_float(target.get("rel_y", 0.0)) * 2.0)
+	var color := GREEN_COLOR if bool(target.get("visible", true)) else Color(0.55, 0.62, 0.62, 1.0)
+	_make_tracking_target(str(target.get("kind", "target")), Vector3(tx, ty, -5.0), color)
+	_make_capture_box(_as_dict(payload.get("capture", {})))
+	_make_reticle(_as_dict(payload.get("reticle", {})))
+	_make_ambient_targets(int(payload.get("scene_seed", 1)), 5)
+
+
+func _present_spatial_integration(payload: Dictionary) -> void:
+	var scene_view := str(payload.get("scene_view", "map")).to_lower()
+	if scene_view.find("horizontal") >= 0 or scene_view.find("front") >= 0:
+		_set_camera(Vector3(0.0, 2.2, 9.5), Vector3(0.0, 0.7, -3.2))
+	elif scene_view.find("vertical") >= 0 or scene_view.find("side") >= 0:
+		_set_camera(Vector3(8.0, 3.4, 2.0), Vector3(0.0, 0.8, -3.2))
+	else:
+		_set_camera(Vector3(0.0, 8.0, 10.5), Vector3(0.0, 0.0, -3.2))
+	var grid := _as_dict(payload.get("grid", {}))
+	var cols: int = int(max(4, int(grid.get("cols", 8))))
+	var rows: int = int(max(4, int(grid.get("rows", 8))))
+	_make_floor(float(cols) + 4.0, float(rows) + 4.0)
+	for x in range(cols + 1):
+		_make_box("GridX", Vector3((float(x) - cols * 0.5), 0.035, -float(rows) * 0.5), Vector3(0.012, 0.012, float(rows) * 0.5), LINE_COLOR)
+	for y in range(rows + 1):
+		_make_box("GridY", Vector3(0.0, 0.04, -(float(y) - rows * 0.5)), Vector3(float(cols) * 0.5, 0.012, 0.012), LINE_COLOR)
+	_draw_hills(payload.get("hills", []), cols, rows)
+	_draw_landmarks(payload.get("landmarks", []), cols, rows)
+	_draw_route(payload.get("route_points", []), cols, rows)
+	var aircraft := _as_dict(payload.get("aircraft", {}))
+	var current := _as_dict(aircraft.get("current", {}))
+	var velocity := _as_dict(aircraft.get("velocity", {}))
+	var heading := rad_to_deg(atan2(_float(velocity.get("x", 0.0)), -_float(velocity.get("y", -1.0))))
+	_make_aircraft("Aircraft", _grid_to_world(current, cols, rows) + Vector3(0.0, 0.55, 0.0), GREEN_COLOR, Vector3(0.0, heading, 0.0), 0.82)
+
+
+func _present_trace_test_1(payload: Dictionary) -> void:
+	_set_camera(Vector3(0.0, 5.0, 15.0), Vector3(0.0, 2.0, -10.0))
+	_make_sky_stage()
+	_draw_lattice()
+	_make_command_cue_panel(str(payload.get("active_command", "")))
+	var frames = payload.get("frames", [])
+	if typeof(frames) == TYPE_ARRAY:
+		for frame in frames:
+			var frame_dict := _as_dict(frame)
+			var pos := _world_position(_as_dict(frame_dict.get("position", {})), 0.055, 0.055, 0.055)
+			var role := str(frame_dict.get("role", "blue"))
+			var attitude := _as_dict(frame_dict.get("attitude", {}))
+			var hpr := Vector3(
+				-_float(attitude.get("pitch_deg", 0.0)),
+				_float(frame_dict.get("travel_heading_deg", 0.0)),
+				-_float(attitude.get("roll_deg", 0.0))
+			)
+			_make_aircraft(role, pos + Vector3(0.0, 0.7, -6.0), RED_COLOR if role == "red" else BLUE_COLOR, hpr, 0.92)
+
+
+func _present_trace_test_2(payload: Dictionary) -> void:
+	_set_camera(Vector3(0.0, 5.2, 14.0), Vector3(0.0, 1.6, -8.0))
+	_make_sky_stage()
+	_draw_lattice()
+	var aircraft = payload.get("aircraft", [])
+	var show_trails := str(payload.get("trial_stage", "")).to_lower().find("observe") >= 0
+	if typeof(aircraft) == TYPE_ARRAY:
+		for track in aircraft:
+			var track_dict := _as_dict(track)
+			var color := _rgb_color(track_dict.get("color_rgb", []), _color_by_name(str(track_dict.get("color_name", "blue"))))
+			var current := _world_position(_as_dict(track_dict.get("current_position", {})), 0.07, 0.07, 0.07) + Vector3(0.0, 0.7, -8.0)
+			if show_trails:
+				_draw_waypoints(track_dict.get("waypoints", []), color)
+			var hpr := _track_hpr(track_dict)
+			_make_aircraft("Trace2Aircraft", current, color, hpr, 0.86)
+
+
+func _present_instrument_comprehension(payload: Dictionary) -> void:
+	_set_camera(Vector3(0.0, 3.0, 11.0), Vector3(0.0, 1.3, -3.5))
+	_make_box("InstrumentBack", Vector3(0.0, 1.4, -4.2), Vector3(7.6, 3.15, 0.05), PANEL_BLUE)
+	var mode := str(payload.get("option_render_mode", ""))
+	if mode == "aircraft":
+		_make_instrument_prompt_dials(_as_dict(payload.get("prompt_state", {})))
+		var opts = payload.get("options", [])
+		if typeof(opts) == TYPE_ARRAY:
+			var aircraft_card_xs := [-1.65, 1.65, -3.1, 0.0, 3.1]
+			for i in range(min(5, opts.size())):
+				var option := _as_dict(opts[i])
+				var x: float = float(aircraft_card_xs[i])
+				var y: float = 1.75 if i < 2 else 0.08
+				_make_aircraft_card(option, Vector3(x, y, -4.05), 1.0)
+	elif mode == "instrument_panel":
+		_make_aircraft_card({
+			"state": payload.get("prompt_state", {}),
+			"view_preset": payload.get("prompt_view_preset", "front_left"),
+			"code": 0
+		}, Vector3(0.0, 2.18, -4.05), 1.2)
+		var opts2 = payload.get("options", [])
+		if typeof(opts2) == TYPE_ARRAY:
+			var panel_card_xs := [-3.2, -1.6, 0.0, 1.6, 3.2]
+			for i in range(min(5, opts2.size())):
+				var option2 := _as_dict(opts2[i])
+				var x2: float = float(panel_card_xs[i])
+				_make_instrument_panel_card(option2, Vector3(x2, 0.05, -4.05), 0.92)
+
+
+func _make_sky_stage() -> void:
+	_make_box("SkyBackdrop", Vector3(0.0, 2.8, -15.5), Vector3(12.0, 5.8, 0.05), SKY_COLOR)
+	_make_box("HazeLayer", Vector3(0.0, 0.62, -15.45), Vector3(12.0, 0.62, 0.055), Color(0.59, 0.52, 0.48, 1.0))
+	_make_floor(20.0, 26.0)
+
+
+func _make_low_hills(seed_value: int) -> void:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = seed_value + 73
+	for i in range(10):
+		var x := rng.randf_range(-7.5, 7.5)
+		var z := rng.randf_range(-11.0, -4.5)
+		var height := rng.randf_range(0.18, 0.65)
+		_make_box("LowHill", Vector3(x, height * 0.5 - 0.04, z), Vector3(rng.randf_range(0.7, 1.8), height, rng.randf_range(0.8, 2.0)), Color(0.27, 0.35, 0.20, 1.0))
+
+
+func _make_tracking_target(kind: String, pos: Vector3, color: Color) -> void:
+	var token := kind.to_lower()
+	if token.find("air") >= 0 or token.find("plane") >= 0 or token.find("fixed") >= 0:
+		_make_aircraft("TrackingAircraft", pos, color, Vector3(0.0, 88.0, 0.0), 0.78)
+	elif token.find("heli") >= 0:
+		_make_box("HeliBody", pos, Vector3(0.38, 0.20, 0.18), color)
+		_make_box("HeliTail", pos + Vector3(0.0, 0.02, 0.45), Vector3(0.08, 0.06, 0.44), color.darkened(0.12))
+		_make_box("HeliRotor", pos + Vector3(0.0, 0.28, 0.0), Vector3(0.92, 0.016, 0.05), color.lightened(0.22))
+	else:
+		_make_box("VehicleTarget", pos, Vector3(0.38, 0.20, 0.28), color)
+		_make_box("VehicleTurret", pos + Vector3(0.0, 0.22, -0.02), Vector3(0.18, 0.10, 0.16), color.lightened(0.16))
+
+
+func _make_command_cue_panel(active_command: String) -> void:
+	var cmds := ["LEFT", "RIGHT", "PUSH", "PULL"]
+	for i in range(cmds.size()):
+		var color := AMBER_COLOR if active_command.to_upper() == cmds[i] else Color(0.30, 0.32, 0.36, 1.0)
+		_make_box("CommandCue", Vector3(4.6, 2.9 - float(i) * 0.35, -7.4), Vector3(0.35, 0.11, 0.025), color)
+
+
+func _track_hpr(track: Dictionary) -> Vector3:
+	var points = track.get("waypoints", [])
+	if typeof(points) == TYPE_ARRAY and points.size() >= 2:
+		var a := _world_position(_as_dict(points[max(0, points.size() - 2)]), 0.07, 0.07, 0.07)
+		var b := _world_position(_as_dict(points[points.size() - 1]), 0.07, 0.07, 0.07)
+		var diff := b - a
+		if diff.length() > 0.001:
+			var yaw := rad_to_deg(atan2(diff.x, -diff.z))
+			var pitch := -rad_to_deg(atan2(diff.y, max(0.001, Vector2(diff.x, diff.z).length())))
+			return Vector3(pitch, yaw, 0.0)
+	return Vector3.ZERO
+
+
+func _make_instrument_prompt_dials(state: Dictionary) -> void:
+	var bank: float = float(clamp(_float(state.get("bank_deg", 0.0)), -45.0, 45.0))
+	var pitch: float = float(clamp(_float(state.get("pitch_deg", 0.0)), -20.0, 20.0))
+	var heading := int(_float(state.get("heading_deg", 0.0))) % 360
+	_make_box("AttitudeDial", Vector3(-0.75, 2.55, -4.0), Vector3(0.48, 0.48, 0.035), BLACK_COLOR)
+	_make_box("HorizonSky", Vector3(-0.75, 2.62 + pitch * 0.012, -3.96), Vector3(0.42, 0.19, 0.03), SKY_COLOR, Vector3(0.0, 0.0, bank))
+	_make_box("HorizonGround", Vector3(-0.75, 2.43 + pitch * 0.012, -3.955), Vector3(0.42, 0.19, 0.03), Color(0.64, 0.39, 0.13, 1.0), Vector3(0.0, 0.0, bank))
+	_make_box("HeadingDial", Vector3(0.75, 2.55, -4.0), Vector3(0.48, 0.48, 0.035), BLACK_COLOR)
+	_make_aircraft("HeadingIcon", Vector3(0.75, 2.55, -3.92), RED_COLOR, Vector3(0.0, float(heading), 0.0), 0.24)
+
+
+func _make_aircraft_card(option: Dictionary, pos: Vector3, size: float) -> void:
+	var state := _as_dict(option.get("state", {}))
+	var preset := str(option.get("view_preset", "front_left"))
+	var code := int(option.get("code", 0))
+	_make_box("AircraftCard", pos, Vector3(1.12 * size, 0.70 * size, 0.04), CARD_COLOR)
+	_make_box("AircraftCardSky", pos + Vector3(0.0, 0.12 * size, 0.045), Vector3(0.96 * size, 0.30 * size, 0.025), SKY_COLOR)
+	_make_box("AircraftCardGround", pos + Vector3(0.0, -0.25 * size, 0.05), Vector3(0.96 * size, 0.18 * size, 0.025), GROUND_COLOR)
+	var hpr := _instrument_aircraft_hpr(state, preset)
+	_make_aircraft("InstrumentAircraft", pos + Vector3(0.0, 0.03 * size, 0.18), RED_COLOR, hpr, 0.48 * size)
+	if code > 0:
+		_make_box("OptionBadge", pos + Vector3(-0.92 * size, -0.54 * size, 0.095), Vector3(0.14 * size, 0.09 * size, 0.02), BLACK_COLOR)
+
+
+func _make_instrument_panel_card(option: Dictionary, pos: Vector3, size: float) -> void:
+	var state := _as_dict(option.get("state", {}))
+	var code := int(option.get("code", 0))
+	_make_box("PanelCard", pos, Vector3(0.72 * size, 0.58 * size, 0.04), Color(0.45, 0.45, 0.45, 1.0))
+	var bank: float = float(clamp(_float(state.get("bank_deg", 0.0)), -45.0, 45.0))
+	var pitch: float = float(clamp(_float(state.get("pitch_deg", 0.0)), -20.0, 20.0))
+	var heading := int(_float(state.get("heading_deg", 0.0))) % 360
+	_make_box("PanelAttitude", pos + Vector3(0.0, 0.17 * size, 0.06), Vector3(0.22 * size, 0.18 * size, 0.025), BLACK_COLOR)
+	_make_box("PanelHorizon", pos + Vector3(0.0, 0.17 * size + pitch * 0.006, 0.08), Vector3(0.20 * size, 0.018 * size, 0.016), WHITE_COLOR, Vector3(0.0, 0.0, bank))
+	_make_box("PanelHeading", pos + Vector3(0.0, -0.15 * size, 0.06), Vector3(0.22 * size, 0.16 * size, 0.025), BLACK_COLOR)
+	_make_aircraft("PanelHeadingIcon", pos + Vector3(0.0, -0.15 * size, 0.10), RED_COLOR, Vector3(0.0, float(heading), 0.0), 0.14 * size)
+	if code > 0:
+		_make_box("PanelBadge", pos + Vector3(-0.56 * size, -0.43 * size, 0.09), Vector3(0.10 * size, 0.065 * size, 0.018), BLACK_COLOR)
+
+
+func _instrument_aircraft_hpr(state: Dictionary, preset: String) -> Vector3:
+	var heading := _float(state.get("heading_deg", 0.0))
+	var pitch := _float(state.get("pitch_deg", 0.0))
+	var bank := _float(state.get("bank_deg", 0.0))
+	var token := preset.to_lower()
+	var view_yaw := 0.0
+	var view_pitch := 0.0
+	if token.find("front_right") >= 0:
+		view_yaw = -32.0
+	elif token.find("profile_left") >= 0:
+		view_yaw = 88.0
+	elif token.find("profile_right") >= 0:
+		view_yaw = -88.0
+	elif token.find("top") >= 0:
+		view_pitch = -62.0
+	else:
+		view_yaw = 32.0
+	return Vector3(-pitch + view_pitch, heading + view_yaw, -bank)
+
+
+func _make_floor(width: float, depth: float) -> MeshInstance3D:
+	return _make_box("TerrainFloor", Vector3(0.0, -0.04, -depth * 0.32), Vector3(width * 0.5, 0.04, depth * 0.5), FLOOR_COLOR)
+
+
+func _make_terrain_chunks(seed_value: int, radius: int) -> void:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = seed_value
+	for x in range(-radius, radius + 1):
+		for z in range(-radius, 2):
+			var h := rng.randf_range(0.02, 0.22)
+			var tint := Color(0.16 + h, 0.25 + h * 0.5, 0.18, 1.0)
+			_make_box("TerrainChunk", Vector3(float(x), -0.08 + h * 0.5, float(z)), Vector3(0.49, h, 0.49), tint)
+
+
+func _make_ambient_targets(seed_value: int, count_hint: int) -> void:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = seed_value + 5103
+	var count: int = int(clamp(count_hint, 3, 8))
+	for i in range(count):
+		var x := rng.randf_range(-5.5, 5.5)
+		var z := rng.randf_range(-10.5, -3.0)
+		_make_box("AmbientTarget", Vector3(x, 0.42, z), Vector3(0.22, 0.32, 0.22), Color(0.28, 0.34, 0.32, 1.0))
+
+
+func _make_capture_box(capture: Dictionary) -> void:
+	var half_w: float = float(max(0.4, _float(capture.get("half_width", 0.16)) * 10.0))
+	var half_h: float = float(max(0.3, _float(capture.get("half_height", 0.13)) * 7.0))
+	var z := -4.4
+	var color := AMBER_COLOR if bool(capture.get("target_in_capture_box", false)) else LINE_COLOR
+	_make_box("CaptureTop", Vector3(0.0, 1.25 + half_h, z), Vector3(half_w, 0.025, 0.025), color)
+	_make_box("CaptureBottom", Vector3(0.0, 1.25 - half_h, z), Vector3(half_w, 0.025, 0.025), color)
+	_make_box("CaptureLeft", Vector3(-half_w, 1.25, z), Vector3(0.025, half_h, 0.025), color)
+	_make_box("CaptureRight", Vector3(half_w, 1.25, z), Vector3(0.025, half_h, 0.025), color)
+
+
+func _make_reticle(reticle: Dictionary) -> void:
+	var x := _float(reticle.get("x", 0.0)) * 5.0
+	var y := 1.25 + (_float(reticle.get("y", 0.0)) * 2.0)
+	_make_box("ReticleH", Vector3(x, y, -4.2), Vector3(0.42, 0.018, 0.018), WHITE_COLOR)
+	_make_box("ReticleV", Vector3(x, y, -4.2), Vector3(0.018, 0.42, 0.018), WHITE_COLOR)
+
+
+func _draw_hills(hills, cols: int, rows: int) -> void:
+	if typeof(hills) != TYPE_ARRAY:
+		return
+	for hill in hills:
+		var h := _as_dict(hill)
+		var pos := _grid_to_world(h, cols, rows)
+		var radius: float = float(max(0.35, float(h.get("radius", 1)) * 0.22))
+		var height: float = float(max(0.25, float(h.get("height", 1)) * 0.24))
+		_make_box("Hill", pos + Vector3(0.0, height * 0.5, 0.0), Vector3(radius, height, radius), Color(0.32, 0.42, 0.28, 1.0))
+
+
+func _draw_landmarks(landmarks, cols: int, rows: int) -> void:
+	if typeof(landmarks) != TYPE_ARRAY:
+		return
+	for landmark in landmarks:
+		var item := _as_dict(landmark)
+		var pos := _grid_to_world(item, cols, rows)
+		_make_box("Landmark", pos + Vector3(0.0, 0.32, 0.0), Vector3(0.22, 0.32, 0.22), _color_for_landmark(str(item.get("kind", "landmark"))))
+
+
+func _draw_route(points, cols: int, rows: int) -> void:
+	if typeof(points) != TYPE_ARRAY:
+		return
+	var previous := Vector3.ZERO
+	var have_previous := false
+	for point in points:
+		var current := _grid_to_world(_as_dict(point), cols, rows) + Vector3(0.0, 0.16, 0.0)
+		_make_sphere("RoutePoint", current, 0.12, AMBER_COLOR)
+		if have_previous:
+			_make_segment(previous, current, AMBER_COLOR, 0.05)
+		previous = current
+		have_previous = true
+
+
+func _draw_lattice() -> void:
+	for x in range(-4, 5):
+		_make_box("LatticeX", Vector3(float(x), 0.04, -8.0), Vector3(0.012, 0.012, 7.0), Color(0.34, 0.43, 0.49, 1.0))
+	for z in range(0, 15):
+		_make_box("LatticeZ", Vector3(0.0, 0.05, -float(z)), Vector3(4.0, 0.012, 0.012), Color(0.34, 0.43, 0.49, 1.0))
+
+
+func _draw_waypoints(points, color: Color) -> void:
+	if typeof(points) != TYPE_ARRAY:
+		return
+	var previous := Vector3.ZERO
+	var have_previous := false
+	for point in points:
+		var current := _world_position(_as_dict(point), 0.07, 0.07, 0.07) + Vector3(0.0, 0.45, -8.0)
+		_make_sphere("Trace2Waypoint", current, 0.09, color)
+		if have_previous:
+			_make_segment(previous, current, color, 0.035)
+		previous = current
+		have_previous = true
+
+
+func _make_gate(pos: Vector3, color: Color, shape: String) -> void:
+	_make_box("GateTop", pos + Vector3(0.0, 0.58, 0.0), Vector3(0.82, 0.05, 0.05), color)
+	_make_box("GateBottom", pos + Vector3(0.0, -0.58, 0.0), Vector3(0.82, 0.05, 0.05), color)
+	_make_box("GateLeft", pos + Vector3(-0.82, 0.0, 0.0), Vector3(0.05, 0.58, 0.05), color)
+	_make_box("GateRight", pos + Vector3(0.82, 0.0, 0.0), Vector3(0.05, 0.58, 0.05), color)
+	if shape.to_lower() == "triangle":
+		_make_box("GateMarker", pos + Vector3(0.0, 0.0, 0.02), Vector3(0.18, 0.18, 0.05), AMBER_COLOR)
+
+
+func _make_aircraft(name_value: String, pos: Vector3, color: Color, hpr: Vector3 = Vector3.ZERO, size: float = 1.0) -> Node3D:
+	var root := Node3D.new()
+	root.name = name_value
+	root.position = pos
+	root.rotation_degrees = hpr
+	dynamic_root.add_child(root)
+	_make_box_child(root, name_value + "Fuselage", Vector3(0.0, 0.0, -0.02 * size), Vector3(0.13 * size, 0.11 * size, 0.58 * size), color)
+	_make_box_child(root, name_value + "Nose", Vector3(0.0, 0.0, -0.48 * size), Vector3(0.09 * size, 0.08 * size, 0.22 * size), color.lightened(0.10))
+	_make_box_child(root, name_value + "Wing", Vector3(0.0, 0.0, -0.02 * size), Vector3(0.62 * size, 0.030 * size, 0.13 * size), color.darkened(0.12))
+	_make_box_child(root, name_value + "Tailplane", Vector3(0.0, 0.06 * size, 0.43 * size), Vector3(0.28 * size, 0.030 * size, 0.08 * size), color.lightened(0.05))
+	_make_box_child(root, name_value + "Fin", Vector3(0.0, 0.18 * size, 0.40 * size), Vector3(0.040 * size, 0.18 * size, 0.07 * size), color.lightened(0.18))
+	_make_box_child(root, name_value + "Canopy", Vector3(0.0, 0.10 * size, -0.22 * size), Vector3(0.10 * size, 0.055 * size, 0.13 * size), CANOPY_COLOR)
+	return root
+
+
+func _make_segment(a: Vector3, b: Vector3, color: Color, width: float) -> void:
+	if a.distance_to(b) < 0.01:
+		return
+	var center := (a + b) * 0.5
+	var node := _make_box("Segment", center, Vector3(width, width, a.distance_to(b) * 0.5), color)
+	node.look_at(b, Vector3.UP)
+
+
+func _make_box(name_value: String, pos: Vector3, scale_value: Vector3, color: Color, rotation_value: Vector3 = Vector3.ZERO) -> MeshInstance3D:
+	return _make_box_child(dynamic_root, name_value, pos, scale_value, color, rotation_value)
+
+
+func _make_box_child(parent: Node3D, name_value: String, pos: Vector3, scale_value: Vector3, color: Color, rotation_value: Vector3 = Vector3.ZERO) -> MeshInstance3D:
+	var mesh := BoxMesh.new()
+	mesh.size = Vector3(1.0, 1.0, 1.0)
+	var node := MeshInstance3D.new()
+	node.name = name_value
+	node.mesh = mesh
+	node.position = pos
+	node.rotation_degrees = rotation_value
+	node.scale = scale_value
+	node.material_override = _material(color)
+	parent.add_child(node)
+	return node
+
+
+func _make_sphere(name_value: String, pos: Vector3, radius: float, color: Color) -> MeshInstance3D:
+	var mesh := SphereMesh.new()
+	mesh.radial_segments = 12
+	mesh.rings = 6
+	var node := MeshInstance3D.new()
+	node.name = name_value
+	node.mesh = mesh
+	node.position = pos
+	node.scale = Vector3(radius, radius, radius)
+	node.material_override = _material(color)
+	dynamic_root.add_child(node)
+	return node
+
+
+func _material(color: Color) -> StandardMaterial3D:
+	var key := color.to_html(false)
+	if material_cache.has(key):
+		return material_cache[key]
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = color
+	mat.roughness = 1.0
+	mat.metallic = 0.0
+	material_cache[key] = mat
+	return mat
+
+
+func _set_camera(position_value: Vector3, target: Vector3) -> void:
+	camera.position = position_value
+	camera.look_at(target, Vector3.UP)
+
+
+func _grid_to_world(point: Dictionary, cols: int, rows: int) -> Vector3:
+	return Vector3(float(point.get("x", 0)) - (float(cols) - 1.0) * 0.5, 0.0, -(float(point.get("y", 0)) - (float(rows) - 1.0) * 0.5))
+
+
+func _world_position(point: Dictionary, scale_x: float, scale_y: float, scale_z: float) -> Vector3:
+	return Vector3(_float(point.get("x", 0.0)) * scale_x, _float(point.get("z", 0.0)) * scale_z, -_float(point.get("y", 0.0)) * scale_y)
+
+
+func _float(value) -> float:
+	if typeof(value) == TYPE_FLOAT or typeof(value) == TYPE_INT:
+		return float(value)
+	return float(str(value))
+
+
+func _color_by_name(name_value: String) -> Color:
+	var token := name_value.to_lower()
+	if token.find("red") >= 0:
+		return RED_COLOR
+	if token.find("blue") >= 0:
+		return BLUE_COLOR
+	if token.find("green") >= 0:
+		return GREEN_COLOR
+	if token.find("yellow") >= 0 or token.find("amber") >= 0 or token.find("orange") >= 0:
+		return AMBER_COLOR
+	if token.find("black") >= 0:
+		return BLACK_COLOR
+	if token.find("white") >= 0:
+		return WHITE_COLOR
+	return Color(0.55, 0.70, 0.80, 1.0)
+
+
+func _color_for_landmark(kind: String) -> Color:
+	var token := kind.to_lower()
+	if token.find("tower") >= 0:
+		return Color(0.72, 0.72, 0.68, 1.0)
+	if token.find("water") >= 0 or token.find("lake") >= 0:
+		return Color(0.20, 0.46, 0.72, 1.0)
+	if token.find("road") >= 0:
+		return Color(0.45, 0.43, 0.39, 1.0)
+	return Color(0.62, 0.54, 0.32, 1.0)
+
+
+func _rgb_color(value, fallback: Color) -> Color:
+	if typeof(value) != TYPE_ARRAY or value.size() < 3:
+		return fallback
+	return Color(float(value[0]) / 255.0, float(value[1]) / 255.0, float(value[2]) / 255.0, 1.0)

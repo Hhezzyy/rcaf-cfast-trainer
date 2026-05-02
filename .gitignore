@@ -9,3 +9,6 @@ data/
 .DS_Store
 Thumbs.db
 .pytest_cache_local/
+godot/cfast_3d/.godot/
+godot/cfast_3d/.import/
+godot/cfast_3d/**/*.uid

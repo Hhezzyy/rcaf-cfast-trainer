@@ -109,8 +109,8 @@ def build_sl_workout_plan(*, duration_scale: float = 1.0) -> AntWorkoutPlan:
         ),
         notes=(
             "Block setup screens do not count toward the 90-minute drill clock.",
-            "Every block reuses the live System Logic two-pane guide layout with the right-side index and A-E answer row.",
-            "Controls stay keyboard-only throughout: Up/Down to move the index, A-E or 1-5 to choose, then Enter to submit.",
+            "Every block reuses the live System Logic two-pane guide layout with the right-side index and A/S/D/F/G answer row.",
+            "Controls stay keyboard-only throughout: Up/Down to move the index, A/S/D/F/G or keypad 1-5 to choose.",
         ),
         blocks=blocks,
     )

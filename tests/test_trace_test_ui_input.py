@@ -2,16 +2,8 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from importlib.machinery import ModuleSpec
-import sys
-from types import ModuleType
 
 import pygame
-
-if "moderngl" not in sys.modules:
-    moderngl_stub = ModuleType("moderngl")
-    moderngl_stub.__spec__ = ModuleSpec("moderngl", loader=None)
-    sys.modules["moderngl"] = moderngl_stub
 
 from cfast_trainer.app import App, CognitiveTestScreen, DifficultySettingsStore, MenuItem, MenuScreen
 from cfast_trainer.cognitive_core import Phase
@@ -63,7 +55,6 @@ def _build_screen(
     app = App(
         surface=surface,
         font=font,
-        opengl_enabled=False,
         difficulty_settings_store=difficulty_settings_store,
     )
     app.push(MenuScreen(app, "Main Menu", [MenuItem("Quit", app.quit)], is_root=True))

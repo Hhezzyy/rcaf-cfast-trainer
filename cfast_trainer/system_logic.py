@@ -165,7 +165,7 @@ class SystemLogicGenerator:
         prompt = (
             f"{payload.scenario_code}\n"
             f"{payload.question}\n"
-            "Use 1-4 or Up/Down to inspect folders. Answer with A-E or keypad 1-5."
+            "Use 1-4 or Up/Down to inspect folders. Answer with A/S/D/F/G or keypad 1-5."
         )
         return Problem(prompt=prompt, answer=payload.correct_choice_code, payload=payload)
 
@@ -1607,7 +1607,7 @@ def build_system_logic_test(
         "",
         "Controls during questions:",
         "- 1 / 2 / 3 / 4 or Up / Down: inspect index entries 1-4",
-        "- A / B / C / D / E or keypad 1-5: answer immediately",
+        "- A / S / D / F / G or keypad 1-5: answer immediately",
         "",
         "Scoring is exact correct / incorrect.",
         "Once the timed block starts, continue until completion.",

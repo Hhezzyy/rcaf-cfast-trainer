@@ -6,6 +6,7 @@ import pytest
 
 from cfast_trainer.ant_drills import AntDrillMode
 from cfast_trainer.cognitive_core import Phase
+from cfast_trainer.rapid_tracking import RapidTrackingLayoutPolicy, RapidTrackingPayload
 from cfast_trainer.rt_drills import (
     RtDrillConfig,
     build_rt_air_speed_run_drill,
@@ -19,8 +20,6 @@ from cfast_trainer.rt_drills import (
     build_rt_rudder_horizontal_prime_drill,
     build_rt_terrain_recovery_run_drill,
 )
-from cfast_trainer.rapid_tracking import RapidTrackingPayload
-from cfast_trainer.rapid_tracking import RapidTrackingLayoutPolicy
 
 
 @dataclass
@@ -115,15 +114,27 @@ def test_rt_drills_are_deterministic_for_same_seed_and_controls(builder) -> None
     ("builder", "expected_targets", "expected_challenges"),
     (
         (build_rt_lock_anchor_drill, ("soldier", "truck"), ("lock_quality",)),
-        (build_rt_building_handoff_prime_drill, ("building", "soldier", "truck"), ("handoff_reacquisition",)),
+        (
+            build_rt_building_handoff_prime_drill,
+            ("building", "soldier", "truck"),
+            ("handoff_reacquisition",),
+        ),
         (
             build_rt_terrain_recovery_run_drill,
             ("soldier", "truck", "helicopter"),
             ("occlusion_recovery", "handoff_reacquisition"),
         ),
-        (build_rt_capture_timing_prime_drill, ("soldier", "truck", "helicopter"), ("capture_timing",)),
+        (
+            build_rt_capture_timing_prime_drill,
+            ("soldier", "truck", "helicopter"),
+            ("capture_timing",),
+        ),
         (build_rt_ground_tempo_run_drill, ("soldier", "truck"), ("ground_tempo", "lock_quality")),
-        (build_rt_rudder_horizontal_prime_drill, ("soldier", "truck"), ("ground_tempo", "capture_timing")),
+        (
+            build_rt_rudder_horizontal_prime_drill,
+            ("soldier", "truck"),
+            ("ground_tempo", "capture_timing"),
+        ),
         (build_rt_air_speed_run_drill, ("helicopter", "jet"), ("air_speed", "capture_timing")),
         (
             build_rt_obscured_target_prediction_drill,
@@ -150,6 +161,49 @@ def test_rt_focused_drills_emit_expected_target_kinds_and_challenges(
     assert isinstance(payload, RapidTrackingPayload)
     assert payload.active_target_kinds == expected_targets
     assert payload.active_challenges == expected_challenges
+
+
+def test_rt_drill_result_metrics_include_semantic_reacquisition_fields() -> None:
+    clock = FakeClock()
+    drill = build_rt_terrain_recovery_run_drill(
+        clock=clock,
+        seed=91,
+        difficulty=0.5,
+        mode=AntDrillMode.BUILD,
+        config=RtDrillConfig(scored_duration_s=18.0),
+    )
+    drill.start_practice()
+
+    drill._engine._sim_elapsed_s = 1.0
+    drill._engine._record_visibility_breakdown(
+        dt=0.4,
+        tracking_error=0.11,
+        on_target=True,
+        hidden=True,
+        cover_state="terrain",
+    )
+    drill._engine._update_reacquisition_metrics(on_target=False, hidden=True)
+    drill._engine._sim_elapsed_s = 1.4
+    drill._engine._record_visibility_breakdown(
+        dt=0.6,
+        tracking_error=0.08,
+        on_target=True,
+        hidden=False,
+        cover_state="partial",
+    )
+    drill._engine._update_reacquisition_metrics(on_target=True, hidden=False)
+
+    metrics = drill.result_metrics()
+    assert metrics["occlusion_episode_count"] == "1"
+    assert metrics["reacquisition_count"] == "1"
+    assert metrics["reacquisition_success_ratio"] == "1.000000"
+    assert float(metrics["mean_reacquisition_time_s"]) == pytest.approx(0.0)
+    assert float(metrics["best_reacquisition_time_s"]) == pytest.approx(0.0)
+    assert metrics["slow_reacquisition_count"] == "0"
+    assert float(metrics["obscured_mean_error"]) == pytest.approx(0.11)
+    assert float(metrics["visible_mean_error"]) == pytest.approx(0.08)
+    assert float(metrics["terrain_cover_time_s"]) == pytest.approx(0.4)
+    assert float(metrics["water_cover_time_s"]) == pytest.approx(0.6)
 
 
 def test_rt_mixed_tempo_repeats_fixed_six_segment_cycle() -> None:

@@ -4,8 +4,8 @@ Rapid Tracking now lives behind the stable `cfast_trainer.rapid_tracking` import
 
 - `simulation.py` owns deterministic runtime reset/reseed hooks on top of the legacy RT core.
 - `scene.py` adds the exercise lifecycle used by the app shell: `enter()`, `exit()`, `reset()`, `handle_event()`, `render()`, `resize()`, and `snapshot()`.
-- `renderer.py` owns the RT-specific HUD, the package-local schematic view, GL scene queueing, and the dev panel.
-- `procgen.py` exposes the current compound-style generator behind `TrainingWorldBuilder` so richer terrain/road settlement generation can plug in later without disturbing the rest of the exercise.
+- `renderer.py` owns the flat pygame tracking field, reticle, capture box, HUD, and dev panel.
+- `cfast_trainer/godot_bridge.py` can stream Rapid Tracking snapshots to the optional Godot companion window.
 
 ## Lifecycle
 
@@ -27,12 +27,7 @@ When app dev tools are enabled:
 ## Simulation vs Rendering
 
 - The simulation remains deterministic and renderer-agnostic.
-- The Modern GL path is still the canonical 3D scene renderer through the shared `RapidTrackingGlScene`.
-- The package renderer owns only presentation: queueing the GL scene, drawing the package-local schematic view, and drawing RT HUD/debug/dev overlays. Shared renderer startup failure policy and diagnostics live in `cfast_trainer/app.py`.
-- Rapid Tracking scenery now prefers file-backed OBJ assets through `assets/render/manifest.json`; any asset-level primitive substitution there is separate from app-shell renderer bootstrap failure handling.
-- Static RT roads, buildings, terrain, and distant backdrop features are cached twice: first as deterministic scene instances by `scene_seed`, then as pretransformed world-space triangle groups for coarse culling and cheaper far-scene rendering.
-- Dynamic RT renderables stay separate from that cache: active targets, filtered ambient movers, the capture box, reticle, and debug overlays are still evaluated per frame.
-
-## Future Procgen Hooks
-
-`TrainingWorldBuilder` is the extension seam for richer training worlds. The current `RapidTrackingV1TrainingWorldBuilder` still uses the existing compound layout, but future builders can add terrain, movement-cost fields, POI scoring, road routing, local settlement layout, and validation/repair without changing the exercise lifecycle or shell integration.
+- The pygame presentation remains the authoritative control surface and fallback renderer.
+- When Godot 4 is installed, the app launches the companion project for an FPS-style low-poly terrain/target view. It receives target, reticle, capture-box, camera, and scene payload state over localhost UDP JSON.
+- Dynamic renderables are evaluated per frame from the engine payload: active target position, capture box, reticle, and debug data.
+- The package has no Python-side depth renderer or ModernGL/OpenGL dependency.

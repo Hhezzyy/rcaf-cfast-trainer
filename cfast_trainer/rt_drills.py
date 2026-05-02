@@ -179,6 +179,15 @@ class RapidTrackingContinuousDrill:
             "on_target_ratio": f"{float(base.on_target_ratio):.6f}",
             "obscured_time_s": f"{float(base.obscured_time_s):.6f}",
             "obscured_tracking_ratio": f"{float(base.obscured_tracking_ratio):.6f}",
+            "visible_mean_error": f"{float(base.visible_mean_error):.6f}",
+            "visible_rms_error": f"{float(base.visible_rms_error):.6f}",
+            "obscured_mean_error": f"{float(base.obscured_mean_error):.6f}",
+            "obscured_rms_error": f"{float(base.obscured_rms_error):.6f}",
+            "prediction_score_ratio": f"{float(base.prediction_score_ratio):.6f}",
+            "terrain_cover_time_s": f"{float(base.terrain_cover_time_s):.6f}",
+            "portal_cover_time_s": f"{float(base.portal_cover_time_s):.6f}",
+            "water_cover_time_s": f"{float(base.water_cover_time_s):.6f}",
+            "building_cover_time_s": f"{float(base.building_cover_time_s):.6f}",
             "moving_target_ratio": f"{float(base.moving_target_ratio):.6f}",
             "capture_points": str(int(base.capture_points)),
             "capture_hits": str(int(base.capture_hits)),
@@ -188,6 +197,12 @@ class RapidTrackingContinuousDrill:
             "capture_score_ratio": f"{float(base.capture_score_ratio):.6f}",
             "overshoot_count": str(int(base.overshoot_count)),
             "reversal_count": str(int(base.reversal_count)),
+            "occlusion_episode_count": str(int(base.occlusion_episode_count)),
+            "reacquisition_count": str(int(base.reacquisition_count)),
+            "reacquisition_success_ratio": f"{float(base.reacquisition_success_ratio):.6f}",
+            "best_reacquisition_time_s": f"{float(base.best_reacquisition_time_s):.6f}",
+            "mean_reacquisition_time_s": f"{float(base.mean_reacquisition_time_s):.6f}",
+            "slow_reacquisition_count": str(int(base.slow_reacquisition_count)),
         }
 
 
@@ -381,7 +396,10 @@ def build_rt_lock_anchor_drill(
             "Rapid Tracking: Lock Anchor",
             "",
             "Work the open soldier and truck tracks first.",
-            "Keep the target centered, let the HUD lock settle, and capture only when the center box is clean.",
+            (
+                "Keep the target centered, let the HUD lock settle, and capture only when "
+                "the center box is clean."
+            ),
             "Capture controls stay live: configured trigger, Space, or left-click.",
         ),
         segments=_single_segment(
@@ -475,7 +493,10 @@ def build_rt_terrain_recovery_run_drill(
             "Rapid Tracking: Terrain Recovery Run",
             "",
             "Use terrain losses to train prediction and quick reacquisition.",
-            "Expect soldier, truck, and helicopter targets to disappear behind ridges and come back fast.",
+            (
+                "Expect soldier, truck, and helicopter targets to disappear behind ridges "
+                "and come back fast."
+            ),
             "Capture remains active during recovery windows.",
         ),
         segments=_single_segment(
@@ -521,9 +542,18 @@ def build_rt_obscured_target_prediction_drill(
         instructions=(
             "Rapid Tracking: Obscured Target Prediction",
             "",
-            "Terrain-only occlusion block. Stay ahead of the hidden path and reacquire on the expected emergence line.",
-            "This strip removes the handoff mix so the cost is predicting motion through obscured segments.",
-            "Capture remains live, but the main score comes from predictive tracking through cover.",
+            (
+                "Terrain-only occlusion block. Stay ahead of the hidden path and reacquire "
+                "on the expected emergence line."
+            ),
+            (
+                "This strip removes the handoff mix so the cost is predicting motion "
+                "through obscured segments."
+            ),
+            (
+                "Capture remains live, but the main score comes from predictive tracking "
+                "through cover."
+            ),
         ),
         segments=_single_segment(
             label="Obscured Prediction",
@@ -569,7 +599,10 @@ def build_rt_capture_timing_prime_drill(
             "Rapid Tracking: Capture Timing Prime",
             "",
             "Keep tracking live, but bias the block toward cleaner camera-box captures.",
-            "Targets run a little slower and the capture box is more forgiving than the pressure sets.",
+            (
+                "Targets run a little slower and the capture box is more forgiving than "
+                "the pressure sets."
+            ),
         ),
         segments=_single_segment(
             label="Capture Timing",
@@ -614,7 +647,10 @@ def build_rt_ground_tempo_run_drill(
         instructions=(
             "Rapid Tracking: Ground Tempo Run",
             "",
-            "Ground-only tempo block with quicker soldier and truck changes and less assist than the anchors.",
+            (
+                "Ground-only tempo block with quicker soldier and truck changes and less "
+                "assist than the anchors."
+            ),
             "Keep the lock clean while the script speeds up.",
         ),
         segments=_single_segment(
@@ -660,8 +696,14 @@ def build_rt_rudder_horizontal_prime_drill(
         instructions=(
             "Rapid Tracking: Rudder Horizontal Prime",
             "",
-            "Ground-target block for rudder-led left/right control with joystick Y still handling up/down.",
-            "Keep the target centered, hold the lock steady, and capture cleanly once the center box is settled.",
+            (
+                "Ground-target block for rudder-led left/right control with joystick Y "
+                "still handling up/down."
+            ),
+            (
+                "Keep the target centered, hold the lock steady, and capture cleanly once "
+                "the center box is settled."
+            ),
         ),
         segments=_single_segment(
             label="Rudder Horizontal",
@@ -707,7 +749,10 @@ def build_rt_air_speed_run_drill(
         instructions=(
             "Rapid Tracking: Air Speed Run",
             "",
-            "Bias the script to helicopter and jet passes with tighter preview timing and faster speed changes.",
+            (
+                "Bias the script to helicopter and jet passes with tighter preview timing "
+                "and faster speed changes."
+            ),
             "Capture stays active, but the main cost is staying ahead of the air target.",
         ),
         segments=_single_segment(
@@ -871,7 +916,10 @@ def build_rt_mixed_tempo_drill(
             "Rapid Tracking: Mixed Tempo",
             "",
             "Work the fixed six-segment cycle without losing the live capture rhythm.",
-            "Lock anchor, building handoff, terrain recovery, capture timing, ground tempo, and air speed repeat for the whole block.",
+            (
+                "Lock anchor, building handoff, terrain recovery, capture timing, ground "
+                "tempo, and air speed repeat for the whole block."
+            ),
         ),
         segments=_repeat_segments(total_duration_s=scored_duration_s, templates=templates),
     )
@@ -899,8 +947,14 @@ def build_rt_pressure_run_drill(
         instructions=(
             "Rapid Tracking: Pressure Run",
             "",
-            "All target kinds, all cover modes, and all handoff modes stay live for the full block.",
-            "Expect minimal assist, stronger turbulence, tighter previews, and the smallest capture box in this family.",
+            (
+                "All target kinds, all cover modes, and all handoff modes stay live for "
+                "the full block."
+            ),
+            (
+                "Expect minimal assist, stronger turbulence, tighter previews, and the "
+                "smallest capture box in this family."
+            ),
         ),
         segments=_single_segment(
             label="Pressure Run",

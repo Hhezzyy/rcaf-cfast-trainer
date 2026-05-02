@@ -3,25 +3,35 @@ from __future__ import annotations
 import pytest
 
 from cfast_trainer.aircraft_art import (
+    INSTRUMENT_AIRCRAFT_MESH_PATH,
     build_fixed_wing_mesh,
     fixed_wing_hpr_from_world_hpr,
     fixed_wing_hpr_from_world_tangent,
     fixed_wing_heading_from_screen_heading,
     instrument_card_pygame_palette,
+    load_fixed_wing_obj,
     project_fixed_wing_faces,
     screen_heading_deg_from_world_tangent,
 )
 
 
-def test_fixed_wing_mesh_contains_expected_roles_and_volume() -> None:
-    faces = build_fixed_wing_mesh()
+def test_fixed_wing_mesh_asset_loads_expected_roles_and_volume() -> None:
+    faces = load_fixed_wing_obj(INSTRUMENT_AIRCRAFT_MESH_PATH)
     roles = {face.role for face in faces}
     all_points = [point for face in faces for point in face.points]
+    x_values = [point[0] for point in all_points]
+    y_values = [point[1] for point in all_points]
     z_values = [point[2] for point in all_points]
 
-    assert roles == {"body", "accent", "canopy", "engine"}
-    assert len(faces) >= 30
-    assert max(z_values) - min(z_values) >= 2.05
+    assert roles == {"body", "accent", "canopy", "engine", "tail", "wing"}
+    assert len(faces) >= 55
+    assert max(x_values) - min(x_values) >= 8.0
+    assert max(y_values) - min(y_values) >= 5.8
+    assert max(z_values) - min(z_values) >= 1.9
+
+
+def test_cached_fixed_wing_mesh_matches_asset_loader() -> None:
+    assert build_fixed_wing_mesh() == load_fixed_wing_obj(INSTRUMENT_AIRCRAFT_MESH_PATH)
 
 
 def test_projected_fixed_wing_faces_are_deterministic_for_same_attitude() -> None:
@@ -43,7 +53,7 @@ def test_projected_fixed_wing_faces_are_deterministic_for_same_attitude() -> Non
     )
 
     assert first == second
-    assert len(first) >= 20
+    assert len(first) >= 35
 
 
 def test_projected_fixed_wing_faces_change_with_attitude() -> None:
@@ -72,6 +82,7 @@ def test_instrument_palette_keeps_distinct_aircraft_roles() -> None:
 
     assert palette.body != palette.canopy
     assert palette.body != palette.engine
+    assert palette.wing != palette.tail
 
 
 def test_fixed_wing_heading_from_screen_heading_preserves_cardinal_motion() -> None:

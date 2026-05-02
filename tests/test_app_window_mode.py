@@ -5,7 +5,6 @@ import pygame
 from cfast_trainer.app import (
     DisplayLifecycleState,
     _resolve_display_rebootstrap,
-    _resolve_use_opengl,
     _resolve_window_mode,
 )
 
@@ -53,24 +52,12 @@ def test_window_mode_ignores_stored_fullscreen_default_when_env_is_absent(monkey
     )
 
 
-def test_use_opengl_honors_env_override_and_stored_default(monkeypatch) -> None:
-    monkeypatch.setenv("CFAST_USE_OPENGL", "0")
-    assert _resolve_use_opengl(stored_default=True) is False
-
-    monkeypatch.setenv("CFAST_USE_OPENGL", "1")
-    assert _resolve_use_opengl(stored_default=False) is True
-
-    monkeypatch.delenv("CFAST_USE_OPENGL", raising=False)
-    assert _resolve_use_opengl(stored_default=False) is False
-    assert _resolve_use_opengl(stored_default=None) is True
-
-
 def test_display_rebootstrap_detects_stale_native_fullscreen_transition() -> None:
     state = DisplayLifecycleState(
         window_size=(1440, 900),
         surface_size=(960, 540),
         desktop_size=(1440, 900),
-        active_window_flags=pygame.RESIZABLE | pygame.OPENGL | pygame.DOUBLEBUF,
+        active_window_flags=pygame.RESIZABLE,
         window_mode="windowed",
     )
 
@@ -86,7 +73,7 @@ def test_display_rebootstrap_detects_restore_from_controlled_fullscreen() -> Non
         window_size=(1440, 872),
         surface_size=(1440, 900),
         desktop_size=(1440, 900),
-        active_window_flags=pygame.FULLSCREEN | pygame.OPENGL | pygame.DOUBLEBUF,
+        active_window_flags=pygame.FULLSCREEN,
         window_mode="fullscreen",
     )
 
@@ -102,7 +89,7 @@ def test_display_rebootstrap_ignores_healthy_large_window_surface_pairing() -> N
         window_size=(1440, 872),
         surface_size=(1440, 900),
         desktop_size=(1440, 900),
-        active_window_flags=pygame.RESIZABLE | pygame.OPENGL | pygame.DOUBLEBUF,
+        active_window_flags=pygame.RESIZABLE,
         window_mode="windowed",
     )
 

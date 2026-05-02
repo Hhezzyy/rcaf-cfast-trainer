@@ -20,6 +20,9 @@ from .cognitive_core import (
 
 TABLE_READING_MIN_SIZE = 5
 TABLE_READING_MAX_SIZE = 50
+TABLE_READING_DENSE_VALUE_SIZE = 30
+_DENSE_REVERSE_ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+_DENSE_REVERSE_STEP = 97
 
 
 @dataclass(frozen=True, slots=True)
@@ -203,6 +206,10 @@ def table_reading_table_size_for_difficulty(difficulty: float) -> int:
     return lerp_int(TABLE_READING_MIN_SIZE, TABLE_READING_MAX_SIZE, clamp01(difficulty))
 
 
+def table_reading_uses_dense_values(size: int) -> bool:
+    return int(size) >= TABLE_READING_DENSE_VALUE_SIZE
+
+
 def table_reading_family_for_payload(payload: TableReadingPayload) -> str:
     return str(payload.content_family or "unknown")
 
@@ -252,6 +259,15 @@ def _numeric_values(
     col_gain: int,
     cross: int,
 ) -> tuple[tuple[int, ...], ...]:
+    if table_reading_uses_dense_values(size):
+        return _dense_numeric_values(
+            size=size,
+            base=base,
+            row_gain=row_gain,
+            col_gain=col_gain,
+            cross=cross,
+        )
+
     row_stride = max(1, size) * (max(1, col_gain) + max(1, cross) + 3)
     rows: list[tuple[int, ...]] = []
     for row_idx in range(size):
@@ -261,6 +277,50 @@ def _numeric_values(
             value += (row_idx % 4) * row_gain
             value += ((row_idx + col_idx) % 5) * cross
             current.append(int(value))
+        rows.append(tuple(current))
+    return tuple(rows)
+
+
+def _dense_numeric_values(
+    *,
+    size: int,
+    base: int,
+    row_gain: int,
+    col_gain: int,
+    cross: int,
+) -> tuple[tuple[int, ...], ...]:
+    rows: list[tuple[int, ...]] = []
+    row_step = max(1, row_gain) + max(1, size) + 7
+    col_step = max(1, col_gain) + 11
+    cross_step = max(1, cross) + 3
+    for row_idx in range(size):
+        current: list[int] = []
+        for col_idx in range(size):
+            value = int(base)
+            value += row_idx * row_step
+            value += col_idx * col_step
+            value += row_idx * col_idx * cross_step
+            value += ((row_idx + col_idx) % 7) * max(1, cross)
+            current.append(value % 100)
+        rows.append(tuple(current))
+    return tuple(rows)
+
+
+def _dense_reverse_values(size: int, *, offset: int) -> tuple[tuple[str, ...], ...]:
+    alphabet = _DENSE_REVERSE_ALPHABET
+    base = len(alphabet)
+    capacity = base * base
+    total = max(1, int(size)) * max(1, int(size))
+    if total > capacity:
+        raise ValueError("Dense Table Reading reverse lookup requires more two-character codes")
+
+    rows: list[tuple[str, ...]] = []
+    cursor = int(offset) % capacity
+    for row_idx in range(size):
+        current: list[str] = []
+        for col_idx in range(size):
+            ordinal = (cursor + ((row_idx * size + col_idx) * _DENSE_REVERSE_STEP)) % capacity
+            current.append(f"{alphabet[ordinal // base]}{alphabet[ordinal % base]}")
         rows.append(tuple(current))
     return tuple(rows)
 
@@ -585,14 +645,16 @@ class TableReadingGenerator:
         profile: str,
     ) -> Problem:
         spec = self._select_part_one_spec(family)
-        table = self._part_one_table(spec=spec, size=table_reading_table_size_for_difficulty(difficulty))
+        size = table_reading_table_size_for_difficulty(difficulty)
+        table = self._reverse_lookup_table(spec=spec, size=size)
         row_idx, col_idx = self._select_indices(table, profile=profile)
         row_label = table.row_labels[row_idx]
         col_label = table.column_labels[col_idx]
-        correct_value = int(table.values[row_idx][col_idx])
+        target_value = str(table.values[row_idx][col_idx])
+        correct_value = int(target_value) if target_value.isdigit() else 0
         answer_text = f"{row_label}{col_label}"
         stem = (
-            f"In {table.title}, find the cell containing {correct_value}. "
+            f"In {table.title}, find the cell containing {target_value}. "
             f"Enter the {table.row_header} label followed by the {table.column_header} label with no spaces."
         )
         payload = self._payload(
@@ -613,7 +675,7 @@ class TableReadingGenerator:
             answer_mode=TableReadingAnswerMode.LETTER_STRING,
             correct_answer_text=answer_text,
             input_max_length=max(2, len(answer_text)),
-            variant_parts=("reverse", spec.family, correct_value, row_label, col_label),
+            variant_parts=("reverse", spec.family, target_value, row_label, col_label),
         )
         return Problem(prompt=stem, answer=0, payload=payload)
 
@@ -739,6 +801,21 @@ class TableReadingGenerator:
                 col_gain=spec.col_gain,
                 cross=spec.cross,
             ),
+        )
+
+    def _reverse_lookup_table(self, *, spec: _PartOneSpec, size: int) -> TableReadingTable:
+        if not table_reading_uses_dense_values(size):
+            return self._part_one_table(spec=spec, size=size)
+        labels = _alpha_labels(size)
+        alphabet_size = len(_DENSE_REVERSE_ALPHABET)
+        capacity = alphabet_size * alphabet_size
+        return TableReadingTable(
+            title=spec.title,
+            row_header=spec.row_header,
+            column_header=spec.column_header,
+            row_labels=labels,
+            column_labels=labels,
+            values=_dense_reverse_values(size, offset=self._rng.randint(0, capacity - 1)),
         )
 
     def _part_two_tables(
@@ -1010,12 +1087,12 @@ class TableReadingTest(TimedTextInputTest):
 
 def _input_hint_for_payload(payload: TableReadingPayload) -> str:
     if payload.answer_mode is TableReadingAnswerMode.MULTIPLE_CHOICE:
-        return "A/S/D/F/G or 1-5: answer | Tab: tables"
+        return "A/S/D/F/G or 1-5: answer | Left/Right or Tab: tables"
     if payload.answer_mode is TableReadingAnswerMode.NUMERIC:
-        return "Digits then Enter | Tab: tables"
+        return "Digits then Enter | Left/Right or Tab: tables"
     if payload.answer_mode is TableReadingAnswerMode.SINGLE_LETTER:
-        return "One letter then Enter | Tab: tables"
-    return "Letters then Enter | Tab: tables"
+        return "One letter then Enter | Left/Right or Tab: tables"
+    return "Letters then Enter | Left/Right or Tab: tables"
 
 
 def build_table_reading_test(
@@ -1036,7 +1113,7 @@ def build_table_reading_test(
         "Some items use choices, some require a typed number, and some require letters.",
         "",
         "Controls:",
-        "- Press Tab or Shift+Tab to switch information tabs",
+        "- Press Left/Right, Tab, or Shift+Tab to switch information tabs",
         "- Press A, S, D, F, or G for multiple-choice items",
         "- Type digits or letters for typed-answer items, then press Enter",
         "",

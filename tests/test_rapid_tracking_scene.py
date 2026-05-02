@@ -10,7 +10,6 @@ os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 import pygame
 
 from cfast_trainer.cognitive_core import Phase
-from cfast_trainer.gl_scenes import RapidTrackingGlScene
 from cfast_trainer.rapid_tracking import (
     RapidTrackingConfig,
     RapidTrackingPayload,
@@ -31,24 +30,8 @@ class FakeClock:
 
 @dataclass
 class FakeApp:
-    opengl_enabled: bool = True
-
-    def __post_init__(self) -> None:
-        self.queued: list[RapidTrackingGlScene] = []
-
-    def queue_gl_scene(self, scene: RapidTrackingGlScene) -> None:
-        self.queued.append(scene)
-
     def dev_tools_enabled(self) -> bool:
         return True
-
-    def renderer_diagnostic_code(self, scene: str) -> None:
-        _ = scene
-        return None
-
-    def note_renderer_fallback(self, *, scene: str, stage: str | None = None, path: str | None = None) -> None:
-        _ = (scene, stage, path)
-        return None
 
 
 def _sample_sequence(
@@ -153,11 +136,11 @@ def test_dev_hotkeys_toggle_debug_and_support_instruction_reset() -> None:
     assert engine.phase is Phase.INSTRUCTIONS
 
 
-def test_scene_render_queues_modern_gl_and_exposes_dev_buttons() -> None:
+def test_scene_render_uses_flat_renderer_and_exposes_dev_buttons() -> None:
     pygame.init()
     try:
         clock = FakeClock()
-        app = FakeApp(opengl_enabled=True)
+        app = FakeApp()
         engine = build_rapid_tracking_test(clock=clock, seed=551, difficulty=0.5)
         engine.bind_screen_context(
             app=app,
@@ -168,10 +151,6 @@ def test_scene_render_queues_modern_gl_and_exposes_dev_buttons() -> None:
         surface = pygame.Surface((960, 540))
 
         engine.render(surface)
-        assert app.queued
-        queued = app.queued[-1]
-        assert isinstance(queued, RapidTrackingGlScene)
-        assert isinstance(queued.payload, RapidTrackingPayload)
         assert set(engine._dev_button_hitboxes) >= {
             "reset",
             "reseed",

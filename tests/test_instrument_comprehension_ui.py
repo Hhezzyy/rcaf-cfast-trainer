@@ -27,7 +27,6 @@ from cfast_trainer.app import (
 from cfast_trainer.cognitive_core import Phase
 from cfast_trainer.cognitive_core import TestSnapshot as SnapshotModel
 from cfast_trainer.ic_drills import build_ic_description_run_drill
-from cfast_trainer.instrument_aircraft_cards import aircraft_card_semantic_drift_tags
 from cfast_trainer.instrument_comprehension import (
     InstrumentAircraftViewPreset,
     InstrumentComprehensionConfig,
@@ -87,14 +86,6 @@ class _FakeClock:
 
     def advance(self, dt: float) -> None:
         self.t += dt
-
-
-class _FakeGlRenderer:
-    def resize(self, *, window_size: tuple[int, int]) -> None:
-        _ = window_size
-
-    def render_frame(self, *, ui_surface: pygame.Surface, scene) -> None:
-        _ = (ui_surface, scene)
 
 
 class _RecordingFont:
@@ -169,7 +160,7 @@ def _build_reverse_payload() -> InstrumentComprehensionPayload:
         kind=InstrumentComprehensionTrialKind.AIRCRAFT_TO_INSTRUMENTS,
         prompt_state=options[2].state,
         prompt_description="",
-        prompt_view_preset=InstrumentAircraftViewPreset.TOP_OBLIQUE,
+        prompt_view_preset=InstrumentAircraftViewPreset.TOP_DOWN,
         options=options,
         option_render_mode=InstrumentOptionRenderMode.INSTRUMENT_PANEL,
         option_errors=(40, 24, 0, 18, 36),
@@ -249,10 +240,7 @@ def test_instrument_screen_renders_after_display_bootstrap_sync() -> None:
         bootstrap = DisplayBootstrapResult(
             display_surface=display_surface,
             app_surface=pygame.Surface(display_surface.get_size(), pygame.SRCALPHA),
-            gl_renderer=_FakeGlRenderer(),
-            active_window_flags=pygame.FULLSCREEN | pygame.OPENGL | pygame.DOUBLEBUF,
-            gl_requested=True,
-            gl_attempted=True,
+            active_window_flags=pygame.FULLSCREEN,
         )
         _apply_display_bootstrap_to_app(
             app=app,
@@ -766,6 +754,56 @@ def test_reverse_part_renders_aircraft_prompt_and_five_instrument_answer_cards(m
         pygame.quit()
 
 
+def test_aircraft_orientation_cards_draw_distinct_projected_planes() -> None:
+    _app, screen = _build_screen(_build_payload())
+    try:
+        rect = pygame.Rect(0, 0, 240, 160)
+        base = _base_state()
+        banked = replace(
+            base,
+            heading_deg=(base.heading_deg + 95) % 360,
+            bank_deg=-base.bank_deg,
+            pitch_deg=base.pitch_deg - 8,
+        )
+        front_left = pygame.Surface(rect.size, pygame.SRCALPHA)
+        changed_front_left = pygame.Surface(rect.size, pygame.SRCALPHA)
+        top_down = pygame.Surface(rect.size, pygame.SRCALPHA)
+
+        screen._draw_aircraft_orientation_card(
+            front_left,
+            rect,
+            base,
+            view_preset=InstrumentAircraftViewPreset.FRONT_LEFT,
+        )
+        screen._draw_aircraft_orientation_card(
+            changed_front_left,
+            rect,
+            banked,
+            view_preset=InstrumentAircraftViewPreset.FRONT_LEFT,
+        )
+        screen._draw_aircraft_orientation_card(
+            top_down,
+            rect,
+            base,
+            view_preset=InstrumentAircraftViewPreset.TOP_DOWN,
+        )
+
+        front_bounds = _red_bounds(front_left)
+        changed_bounds = _red_bounds(changed_front_left)
+        top_bounds = _red_bounds(top_down)
+        assert front_bounds is not None
+        assert changed_bounds is not None
+        assert top_bounds is not None
+        assert front_bounds != changed_bounds
+        assert front_bounds != top_bounds
+        assert pygame.image.tobytes(front_left, "RGBA") != pygame.image.tobytes(
+            changed_front_left, "RGBA"
+        )
+        assert pygame.image.tobytes(front_left, "RGBA") != pygame.image.tobytes(top_down, "RGBA")
+    finally:
+        pygame.quit()
+
+
 def test_part3_layout_uses_equal_rows_and_scales_with_surface() -> None:
     small_payload = _build_description_payload()
     _app, screen = _build_screen(small_payload)
@@ -849,113 +887,6 @@ def test_scored_instrument_screen_does_not_render_cannot_exit_copy() -> None:
         screen.render(surface)
 
         assert not any("cannot exit" in text.lower() for text in seen)
-    finally:
-        pygame.quit()
-
-
-def test_live_aircraft_cards_keep_aircraft_inside_small_wide_card_bounds() -> None:
-    _app, screen = _build_screen(_build_payload())
-    try:
-        screen._instrument_card_bank._generation_failed = True
-        screen._instrument_card_bank._allow_generation = False
-        canvas = pygame.Surface((960, 300), pygame.SRCALPHA)
-        rects = (
-            pygame.Rect(20, 20, 420, 110),
-            pygame.Rect(460, 20, 420, 110),
-            pygame.Rect(20, 160, 260, 86),
-            pygame.Rect(320, 160, 260, 86),
-            pygame.Rect(620, 160, 260, 86),
-        )
-        for rect, preset in zip(rects, InstrumentAircraftViewPreset, strict=False):
-            screen._draw_aircraft_orientation_card(canvas, rect, _base_state(), view_preset=preset)
-            bounds = _red_bounds_in_rect(canvas, rect)
-            assert bounds is not None, preset
-            min_x, min_y, max_x, max_y = bounds
-            inset = 6
-            assert min_x >= rect.x + inset, preset
-            assert min_y >= rect.y + inset, preset
-            assert max_x <= rect.right - inset, preset
-            assert max_y <= rect.bottom - inset, preset
-    finally:
-        pygame.quit()
-
-
-def test_live_instrument_screen_uses_software_or_cached_cards_without_gl_generation(
-    monkeypatch,
-) -> None:
-    _app, screen = _build_live_screen(_FakeInstrumentEngine(_build_payload()))
-    try:
-        surface = pygame.display.get_surface()
-        assert surface is not None
-        assert screen._instrument_card_bank._allow_generation is False
-
-        def fail_renderer():
-            raise AssertionError("standalone GL renderer should not be used during live IC rendering")
-
-        monkeypatch.setattr(screen._instrument_card_bank, "_get_renderer", fail_renderer)
-
-        screen.render(surface)
-
-        assert screen._instrument_part1_layout is not None
-    finally:
-        pygame.quit()
-
-
-def test_live_aircraft_cards_keep_reference_states_centered_and_semantic() -> None:
-    _app, screen = _build_screen(_build_payload())
-    try:
-        screen._instrument_card_bank._generation_failed = True
-        screen._instrument_card_bank._allow_generation = False
-        canvas = pygame.Surface((980, 360), pygame.SRCALPHA)
-        cases = (
-            (
-                pygame.Rect(20, 20, 420, 110),
-                InstrumentState(
-                    speed_kts=220,
-                    altitude_ft=5000,
-                    vertical_rate_fpm=0,
-                    bank_deg=0,
-                    pitch_deg=0,
-                    heading_deg=90,
-                    slip=0,
-                ),
-                InstrumentAircraftViewPreset.FRONT_LEFT,
-            ),
-            (
-                pygame.Rect(460, 20, 420, 110),
-                InstrumentState(
-                    speed_kts=220,
-                    altitude_ft=5000,
-                    vertical_rate_fpm=0,
-                    bank_deg=14,
-                    pitch_deg=0,
-                    heading_deg=90,
-                    slip=0,
-                ),
-                InstrumentAircraftViewPreset.FRONT_LEFT,
-            ),
-            (
-                pygame.Rect(20, 160, 420, 110),
-                InstrumentState(
-                    speed_kts=220,
-                    altitude_ft=5000,
-                    vertical_rate_fpm=0,
-                    bank_deg=0,
-                    pitch_deg=0,
-                    heading_deg=0,
-                    slip=0,
-                ),
-                InstrumentAircraftViewPreset.TOP_OBLIQUE,
-            ),
-        )
-        for rect, state, preset in cases:
-            screen._draw_aircraft_orientation_card(canvas, rect, state, view_preset=preset)
-            bounds = _red_bounds_in_rect(canvas, rect)
-            assert bounds is not None, preset
-            min_x, _min_y, max_x, _max_y = bounds
-            center_x = (min_x + max_x) / 2.0
-            assert abs(center_x - rect.centerx) <= 18.0, (preset, center_x, rect.centerx)
-            assert aircraft_card_semantic_drift_tags(state, view_preset=preset) == ()
     finally:
         pygame.quit()
 

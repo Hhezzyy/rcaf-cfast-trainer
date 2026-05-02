@@ -6,9 +6,9 @@ Offline-first training app for CFASC CFAST-style aircrew selection aptitude doma
 
 ### App Entrypoints
 
-- `python -m cfast_trainer` starts the app through `cfast_trainer/__main__.py`.
+- `./run.command` is the standard macOS launch path for day-to-day use. It runs the app through the local `.venv` without needing to activate the environment first.
+- `python -m cfast_trainer` is the underlying module entrypoint through `cfast_trainer/__main__.py`; use it for manual terminal runs, Windows runs, and debugging.
 - `cfast_trainer/app.py` is the main pygame shell, screen router, loader flow, pause flow, settings UI, and persistence glue.
-- `./run.command` is the macOS convenience launcher for a local `.venv`.
 
 ### Core Architecture
 
@@ -31,16 +31,15 @@ Offline-first training app for CFASC CFAST-style aircrew selection aptitude doma
 
 ### Rendering, Input, Persistence, Settings
 
-- Renderer bootstrap, failure handling, and diagnostics:
-  - `cfast_trainer/app.py`
-  - `cfast_trainer/modern_gl_renderer.py`
-  - `cfast_trainer/gl_scenes.py`
-  - `cfast_trainer/render_assets.py`
-- ModernGL renderer and optional model assets:
-  - `cfast_trainer/modern_gl_renderer.py`
-  - `cfast_trainer/gl_scenes.py`
-  - `cfast_trainer/render_assets.py`
-  - `assets/render/README.md`
+- Pygame remains the authoritative app window and control surface:
+  - `cfast_trainer/app.py` owns display bootstrap, menus, input, scoring flow, and shared test screens.
+  - Subsystems keep flat 2D pygame renderers as fallback.
+  - `cfast_trainer/godot_bridge.py` can launch the optional Godot 4 companion window for Auditory Capacity, Rapid Tracking, Spatial Integration, Trace Test 1, and Trace Test 2.
+  - Instrument Comprehension aircraft-image flows render local 3D mesh assets directly inside the pygame window.
+- Godot companion project:
+  - `godot/cfast_3d/`
+  - Python streams whitelisted visual state over localhost UDP JSON.
+  - Godot does not own timing, scoring, input, persistence, or menu navigation.
 - HOTAS/input calibration, profiles, and joystick bindings:
   - `cfast_trainer/app.py` (`InputProfilesStore`, `AxisCalibrationScreen`, `JoystickBindingsScreen`)
 - Persistence and history:
@@ -61,7 +60,7 @@ Offline-first training app for CFASC CFAST-style aircrew selection aptitude doma
 | Adaptive plan selection | `cfast_trainer/adaptive_scheduler.py`, `cfast_trainer/canonical_drill_registry.py`, `tests/test_adaptive_scheduler.py` | Ranking and drill selection are concentrated here. |
 | Benchmark battery order or summaries | `cfast_trainer/benchmark.py`, `tests/test_benchmark.py` | Probe order and session summary logic live together. |
 | Persistence/history regressions | `cfast_trainer/persistence.py`, `tests/test_persistence.py`, `tests/test_cognitive_test_screen_persistence.py` | DB schema, writes, and shell persistence hooks are covered there. |
-| ModernGL startup, bootstrap, or diagnostics issues | `cfast_trainer/app.py`, `cfast_trainer/modern_gl_renderer.py`, `tests/test_3d_renderer_selection.py`, `tests/test_gl_bootstrap.py` | Bootstrap, failure handling, diagnostics, and renderer selection are shared infra. |
+| Pygame rendering or display bootstrap issues | `cfast_trainer/app.py`, `tests/test_app_shell_hardening.py`, `tests/test_app_window_mode.py`, matching `tests/test_<subsystem>_ui.py` | Display setup and shared drawing paths are centralized in the shell. |
 | HOTAS/input binding problems | `cfast_trainer/app.py`, `tests/test_app_window_mode.py`, `tests/test_cognitive_test_screen_pause_menu.py`, `tests/test_sensory_motor_apparatus_ui.py` | Input stores and shell mapping screens live in `app.py`. |
 
 ### Major Test And Drill Subsystems
@@ -76,16 +75,16 @@ Offline-first training app for CFASC CFAST-style aircrew selection aptitude doma
 | Colours Letters Numbers | `cfast_trainer/colours_letters_numbers.py` | `cfast_trainer/cln_drills.py`, `cfast_trainer/cln_workouts.py` | `tests/test_colours_letters_numbers_core.py`, `tests/test_colours_letters_numbers_headless_sim.py`, `tests/test_cln_drills.py`, `tests/test_cln_workouts.py` |
 | Cognitive Updating | `cfast_trainer/cognitive_updating.py` | `cfast_trainer/cu_drills.py`, `cfast_trainer/cu_workouts.py` | `tests/test_cognitive_updating_core.py`, `tests/test_cognitive_updating_headless_sim.py`, `tests/test_cognitive_updating_ui.py`, `tests/test_cu_drills.py`, `tests/test_cu_workouts.py` |
 | Digit Recognition | `cfast_trainer/digit_recognition.py` | `cfast_trainer/dr_drills.py`, `cfast_trainer/dr_workouts.py` | `tests/test_digit_recognition_core.py`, `tests/test_digit_recognition_headless_sim.py`, `tests/test_dr_drills.py`, `tests/test_dr_workouts.py` |
-| Instrument Comprehension | `cfast_trainer/instrument_comprehension.py`, `cfast_trainer/instrument_aircraft_cards.py`, `cfast_trainer/instrument_orientation_solver.py` | `cfast_trainer/ic_drills.py`, `cfast_trainer/ic_workouts.py` | `tests/test_instrument_comprehension_core.py`, `tests/test_instrument_comprehension_headless_sim.py`, `tests/test_instrument_comprehension_ui.py`, `tests/test_instrument_aircraft_cards.py`, `tests/test_instrument_orientation_solver.py`, `tests/test_ic_drills.py`, `tests/test_ic_workouts.py` |
-| Rapid Tracking | `cfast_trainer/rapid_tracking/`, `cfast_trainer/rapid_tracking_view.py`, `cfast_trainer/rapid_tracking_gl.py` | `cfast_trainer/rt_drills.py`, `cfast_trainer/rt_workouts.py` | `tests/test_rapid_tracking_core.py`, `tests/test_rapid_tracking_ui.py`, `tests/test_rapid_tracking_scene.py`, `tests/test_rapid_tracking_headless_sim.py`, `tests/test_rapid_tracking_gl.py`, `tests/test_rt_drills.py`, `tests/test_rt_workouts.py` |
+| Instrument Comprehension | `cfast_trainer/instrument_comprehension.py`, `cfast_trainer/instrument_aircraft_cards.py`, `cfast_trainer/aircraft_art.py`, `cfast_trainer/instrument_orientation_solver.py` | `cfast_trainer/ic_drills.py`, `cfast_trainer/ic_workouts.py` | `tests/test_instrument_comprehension_core.py`, `tests/test_instrument_comprehension_headless_sim.py`, `tests/test_instrument_comprehension_ui.py`, `tests/test_instrument_aircraft_cards.py`, `tests/test_aircraft_art.py`, `tests/test_instrument_orientation_solver.py`, `tests/test_ic_drills.py`, `tests/test_ic_workouts.py` |
+| Rapid Tracking | `cfast_trainer/rapid_tracking/` | `cfast_trainer/rt_drills.py`, `cfast_trainer/rt_workouts.py` | `tests/test_rapid_tracking_core.py`, `tests/test_rapid_tracking_ui.py`, `tests/test_rapid_tracking_scene.py`, `tests/test_rapid_tracking_headless_sim.py`, `tests/test_rt_drills.py`, `tests/test_rt_workouts.py` |
 | Sensory Motor Apparatus | `cfast_trainer/sensory_motor_apparatus.py` | `cfast_trainer/sma_drills.py`, `cfast_trainer/sma_workouts.py` | `tests/test_sensory_motor_apparatus_core.py`, `tests/test_sensory_motor_apparatus_headless_sim.py`, `tests/test_sensory_motor_apparatus_ui.py`, `tests/test_sma_drills.py`, `tests/test_sma_workouts.py` |
 | Situational Awareness | `cfast_trainer/situational_awareness.py` | `cfast_trainer/sa_drills.py`, `cfast_trainer/sa_workouts.py` | `tests/test_situational_awareness_core.py`, `tests/test_situational_awareness_ui.py`, `tests/test_situational_awareness_headless_sim.py`, `tests/test_sa_drills.py`, `tests/test_sa_workouts.py` |
-| Spatial Integration | `cfast_trainer/spatial_integration.py`, `cfast_trainer/spatial_integration_gl.py` | `cfast_trainer/si_drills.py`, `cfast_trainer/si_workouts.py` | `tests/test_spatial_integration_core.py`, `tests/test_spatial_integration_ui.py`, `tests/test_spatial_integration_headless_sim.py`, `tests/test_spatial_integration_gl.py`, `tests/test_spatial_integration_drills.py`, `tests/test_spatial_integration_workouts.py` |
+| Spatial Integration | `cfast_trainer/spatial_integration.py` | `cfast_trainer/si_drills.py`, `cfast_trainer/si_workouts.py` | `tests/test_spatial_integration_core.py`, `tests/test_spatial_integration_ui.py`, `tests/test_spatial_integration_headless_sim.py`, `tests/test_spatial_integration_drills.py`, `tests/test_spatial_integration_workouts.py` |
 | System Logic | `cfast_trainer/system_logic.py` | `cfast_trainer/sl_drills.py`, `cfast_trainer/sl_workouts.py` | `tests/test_system_logic_core.py`, `tests/test_system_logic_headless_sim.py`, `tests/test_system_logic_ui.py`, `tests/test_sl_drills.py`, `tests/test_sl_workouts.py` |
 | Table Reading | `cfast_trainer/table_reading.py`, `cfast_trainer/table_reading_cards/` | `cfast_trainer/tbl_drills.py`, `cfast_trainer/tbl_workouts.py` | `tests/test_table_reading_core.py`, `tests/test_table_reading_ui.py`, `tests/test_table_reading_headless_sim.py`, `tests/test_tbl_drills.py`, `tests/test_tbl_workouts.py` |
 | Target Recognition | `cfast_trainer/target_recognition.py` | `cfast_trainer/tr_drills.py`, `cfast_trainer/tr_workouts.py` | `tests/test_target_recognition_core.py`, `tests/test_target_recognition_ui.py`, `tests/test_target_recognition_headless_sim.py`, `tests/test_tr_drills.py`, `tests/test_tr_workouts.py` |
-| Trace Test 1 | `cfast_trainer/trace_test_1.py`, `cfast_trainer/trace_test_1_gl.py` | `cfast_trainer/trace_drills.py`, `cfast_trainer/trace_workouts.py` | `tests/test_trace_test_1_core.py`, `tests/test_trace_test_1_headless_sim.py`, `tests/test_trace_test_1_gl.py`, `tests/test_trace_drills.py`, `tests/test_trace_workouts.py` |
-| Trace Test 2 | `cfast_trainer/trace_test_2.py`, `cfast_trainer/trace_test_2_gl.py` | `cfast_trainer/trace_drills.py`, `cfast_trainer/trace_workouts.py` | `tests/test_trace_test_2_core.py`, `tests/test_trace_test_2_headless_sim.py`, `tests/test_trace_test_2_gl.py`, `tests/test_trace_drills.py`, `tests/test_trace_workouts.py` |
+| Trace Test 1 | `cfast_trainer/trace_test_1.py` | `cfast_trainer/trace_drills.py`, `cfast_trainer/trace_workouts.py` | `tests/test_trace_test_1_core.py`, `tests/test_trace_test_1_headless_sim.py`, `tests/test_trace_drills.py`, `tests/test_trace_workouts.py` |
+| Trace Test 2 | `cfast_trainer/trace_test_2.py` | `cfast_trainer/trace_drills.py`, `cfast_trainer/trace_workouts.py` | `tests/test_trace_test_2_core.py`, `tests/test_trace_test_2_headless_sim.py`, `tests/test_trace_drills.py`, `tests/test_trace_workouts.py` |
 | Vigilance | `cfast_trainer/vigilance.py` | `cfast_trainer/vig_drills.py`, `cfast_trainer/vig_workouts.py` | `tests/test_vigilance_core.py`, `tests/test_vigilance_headless_sim.py`, `tests/test_vigilance_ui.py`, `tests/test_vigilance_smoke_ui.py`, `tests/test_vig_drills.py`, `tests/test_vig_workouts.py` |
 | Visual Search | `cfast_trainer/visual_search.py` | `cfast_trainer/vs_drills.py`, `cfast_trainer/vs_workouts.py` | `tests/test_visual_search_core.py`, `tests/test_visual_search_ui.py`, `tests/test_visual_search_headless_sim.py`, `tests/test_vs_drills.py`, `tests/test_vs_workouts.py` |
 
@@ -99,7 +98,7 @@ Offline-first training app for CFASC CFAST-style aircrew selection aptitude doma
 - Benchmark map: `docs/subsystems/benchmark/README.md`
 - Adaptive scheduler map: `docs/subsystems/adaptive-scheduler/README.md`
 - Rapid Tracking local map: `cfast_trainer/rapid_tracking/README.md`
-- Render asset map: `assets/render/README.md`
+- Godot companion renderer: `docs/godot-companion.md`
 - Contributor workflow and branch selection: `docs/codex-playbook.md`
 - Test coverage overview: `docs/test-matrix.md`
 - Screenshot convention: `docs/screenshots/README.md`
@@ -111,6 +110,7 @@ GitHub may only visibly show `main` from the remote view, but branch selection i
 - CPython 3.11+ (3.13 tested)
 - VS Code with the Python and Pylance extensions
 - Git (recommended for moving between machines)
+- Optional on macOS: Godot 4.6.2 for the companion 3D window. The app falls back to pygame if Godot is unavailable.
 
 ## Setup (Windows 11)
 
@@ -150,9 +150,38 @@ GitHub may only visibly show `main` from the remote view, but branch selection i
    python -m pip install -r requirements-dev.txt
    ```
 
-4. In VS Code, select the `.venv` interpreter.
+4. Install or verify Godot for the optional companion renderer:
 
-Optional: install `requirements-3d.txt` when working on richer 3D asset paths.
+   ```bash
+   ./scripts/ensure_godot_macos.sh
+   ```
+
+5. Launch the app with the project shortcut:
+
+   ```bash
+   ./run.command
+   ```
+
+   The shortcut also runs the Godot ensure script and exports
+   `CFAST_GODOT_BIN=/Applications/Godot.app/Contents/MacOS/Godot` when available.
+   You can also double-click `run.command` in Finder. If you want a desktop launcher,
+   create a Finder alias to this file rather than copying it, because the shortcut
+   expects `.venv` to live beside it in the repo.
+
+6. In VS Code, select the `.venv` interpreter.
+
+`requirements.txt` is the normal interactive app dependency set. There is no Python-side
+OpenGL/ModernGL dependency. Godot is installed as a separate macOS app when the companion
+renderer is desired.
+
+Godot companion commands:
+
+```bash
+./scripts/ensure_godot_macos.sh
+/Applications/Godot.app/Contents/MacOS/Godot --headless --path godot/cfast_3d --import
+/Applications/Godot.app/Contents/MacOS/Godot --path godot/cfast_3d --windowed --resolution 960x540 --max-fps 60
+./run.command
+```
 
 ## VS Code
 
@@ -163,7 +192,8 @@ Optional: install `requirements-3d.txt` when working on richer 3D asset paths.
 
 - `python --version` should report 3.11+.
 - `python -m pytest` runs the test suite.
-- `python -m cfast_trainer` opens the app (main menu).
+- On macOS, `./run.command` is the expected daily launch path and opens the app through the local `.venv`.
+- `python -m cfast_trainer` opens the same app manually when the virtual environment is active.
 - `python -m cfast_trainer --headless-sim boot` exercises the shell without opening a real window.
 
 ## Share / Move Between PC And Mac

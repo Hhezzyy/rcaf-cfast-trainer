@@ -9,11 +9,11 @@ This task adds cognitive tests under a "Tests" submenu:
 - Table Reading (cross-reference lookup tables)
 - Sensory Motor Apparatus (joystick/pedal coordination tracking)
 - Rapid Tracking (moving/stationary/obscured target tracking)
-- Spatial Integration (multi-view 2-D to 3-D reconstruction)
+- Spatial Integration (multi-view map/profile reconstruction)
 - Auditory Capacity (multichannel auditory + psychomotor load)
 - Situational Awareness (mixed verbal/numerical/pictorial updates)
-- Trace Test 1 (3-D orientation change discrimination)
-- Trace Test 2 (3-D movement memory and recall)
+- Trace Test 1 (orientation change discrimination)
+- Trace Test 2 (movement memory and recall)
 
 Deterministic timing/scoring/RNG/state lives in cfast_trainer/* (core modules).
 """
@@ -52,13 +52,6 @@ from .abd_drills import (
     build_abd_test_style_family_run_drill,
 )
 from .abd_workouts import abd_workout_menu_entries, build_abd_workout_plan
-from .aircraft_art import (
-    build_pygame_palette,
-    draw_fixed_wing_pygame,
-    fixed_wing_heading_from_screen_heading,
-    instrument_card_pygame_palette,
-    project_fixed_wing_faces,
-)
 from .ant_drills import (
     ANT_DRILL_MODE_PROFILES,
     AntDistanceScanConfig,
@@ -159,6 +152,7 @@ from .benchmark import BenchmarkSession, BenchmarkStage, build_benchmark_plan
 from .clock import PausableClock, RealClock
 from .cognitive_core import Phase, TestSnapshot
 from .cognitive_updating import (
+    COGNITIVE_UPDATING_DOMAIN_ORDER,
     CognitiveUpdatingPayload,
     CognitiveUpdatingRuntime,
     CognitiveUpdatingRuntimeSnapshot,
@@ -234,21 +228,7 @@ from .dr_drills import (
     build_dr_visible_family_primer_drill,
 )
 from .dr_workouts import build_dr_workout_plan, dr_workout_menu_entries
-from .gl_scenes import (
-    AuditoryGlScene,
-    GlScene,
-    RapidTrackingGlScene,
-    SpatialIntegrationGlScene,
-    TraceTest1GlScene,
-    TraceTest2GlScene,
-    gl_scene_name,
-)
-from .modern_gl_renderer import ModernInstrumentCardRenderer, ModernSceneRenderer
-from .render_assets import RenderAssetCatalog, RenderAssetResolutionError
-from .instrument_aircraft_cards import (
-    InstrumentAircraftCardSpriteBank,
-    instrument_aircraft_card_view_projection,
-)
+from .godot_bridge import GODOT_BACKEND_NAME, GodotBridgeManager, godot_kind_for_snapshot
 from .instrument_comprehension import (
     InstrumentAircraftViewPreset,
     InstrumentComprehensionInstructionPage,
@@ -261,6 +241,7 @@ from .instrument_comprehension import (
     altimeter_hand_turns,
     build_instrument_comprehension_test,
 )
+from .instrument_aircraft_cards import InstrumentAircraftCardSpriteBank
 from .instrument_orientation_solver import (
     InstrumentAttitudeDisplayObservation,
     InstrumentHeadingDisplayObservation,
@@ -317,11 +298,6 @@ from .rt_drills import (
     build_rt_pressure_run_drill,
     build_rt_rudder_horizontal_prime_drill,
     build_rt_terrain_recovery_run_drill,
-)
-from .rapid_tracking_gl import (
-    build_scene_target as build_rapid_tracking_scene_target,
-    camera_rig_state as rapid_tracking_camera_rig_state,
-    overlay_from_target_rel as rapid_tracking_overlay_from_target_rel,
 )
 from .rt_workouts import build_rt_workout_plan, rt_workout_menu_entries
 from .results import attempt_result_from_engine, theoretical_score_calibration
@@ -385,7 +361,6 @@ from .spatial_integration import (
     SpatialIntegrationTrialStage,
     build_spatial_integration_test,
 )
-from .spatial_integration_gl import build_scene_layout as build_spatial_integration_scene_layout
 from .spatial_integration_visuals import spatial_integration_visual_spec
 from .system_logic import (
     SystemLogicAnswerChoice,
@@ -459,10 +434,7 @@ from .trace_test_1 import (
     TraceTest1TrialStage,
     build_trace_test_1_test,
     trace_test_1_answer_code,
-)
-from .trace_test_1_gl import (
-    aircraft_screen_poses_for_payload as trace_test_1_aircraft_screen_poses_for_payload,
-    project_scene_position as trace_test_1_project_scene_position,
+    trace_test_1_normalized_position,
 )
 from .trace_test_2 import (
     TraceTest2AircraftTrack,
@@ -471,10 +443,6 @@ from .trace_test_2 import (
     TraceTest2TrialStage,
     build_trace_test_2_test,
     trace_test_2_track_position,
-)
-from .trace_test_2_gl import (
-    aircraft_screen_pose_for_track as trace_test_2_aircraft_screen_pose_for_track,
-    project_point as trace_test_2_project_point,
 )
 from .trace_workouts import (
     build_trace_test_1_workout_plan,
@@ -505,6 +473,7 @@ from .vs_workouts import build_vs_workout_plan, vs_workout_menu_entries
 _SETTINGS_UNSET = object()
 _AUDITORY_GUIDE_LANES = (-0.16, 0.10, -0.24, 0.18, 0.0, 0.26)
 DEV_TOOLS_ENV = "CFAST_ENABLE_DEV_TOOLS"
+ENABLE_GODOT_IN_TESTS_ENV = "CFAST_ENABLE_GODOT_IN_TESTS"
 DIFFICULTY_SETTINGS_STORE_ENV = "CFAST_DIFFICULTY_SETTINGS_PATH"
 TEST_SEED_SETTINGS_STORE_ENV = "CFAST_TEST_SEED_SETTINGS_PATH"
 RAPID_TRACKING_SETTINGS_STORE_ENV = "CFAST_RAPID_TRACKING_SETTINGS_PATH"
@@ -564,31 +533,119 @@ def _install_pausable_engine_clock(engine: object | None) -> PausableClock | Non
     return wrapped
 
 
+def _iter_reachable_runtime_engines(engine: object | None) -> list[object]:
+    if engine is None:
+        return []
+    found: list[object] = []
+    seen: set[int] = set()
+    stack: list[object] = [engine]
+    while stack:
+        current = stack.pop()
+        if current is None:
+            continue
+        current_id = id(current)
+        if current_id in seen:
+            continue
+        seen.add(current_id)
+        found.append(current)
+
+        current_engine = getattr(current, "current_engine", None)
+        if callable(current_engine):
+            try:
+                child = current_engine()
+            except Exception:
+                child = None
+            if child is not None:
+                stack.append(child)
+
+        for attr in ("_current_engine", "_engine"):
+            try:
+                child = getattr(current, attr, None)
+            except Exception:
+                child = None
+            if child is not None:
+                stack.append(child)
+    return found
+
+
+def _install_reachable_pausable_engine_clocks(engine: object | None) -> list[PausableClock]:
+    clocks: list[PausableClock] = []
+    seen: set[int] = set()
+    for target in _iter_reachable_runtime_engines(engine):
+        clock = _install_pausable_engine_clock(target)
+        if clock is None:
+            continue
+        clock_id = id(clock)
+        if clock_id in seen:
+            continue
+        seen.add(clock_id)
+        clocks.append(clock)
+    return clocks
+
+
 def _set_engine_clock_paused(engine: object | None, paused: bool) -> PausableClock | None:
-    clock = _install_pausable_engine_clock(engine)
-    if clock is None:
+    clocks = _install_reachable_pausable_engine_clocks(engine)
+    if not clocks:
         return None
-    if paused:
-        clock.pause()
-    else:
-        clock.resume()
-    return clock
+    for clock in clocks:
+        if paused:
+            clock.pause()
+        else:
+            clock.resume()
+    return clocks[0]
 
 
 def _set_session_current_engine_clock_paused(
     session: object | None,
     paused: bool,
 ) -> PausableClock | None:
-    if session is None:
-        return None
-    current_engine = getattr(session, "current_engine", None)
-    if not callable(current_engine):
-        return None
+    return _set_engine_clock_paused(session, paused)
+
+
+def _env_flag_truthy(value: object) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "on", "yes"}
+
+
+def _companion_renderers_suppressed_by_environment(
+    *,
+    video_driver: str | None = None,
+    env: Mapping[str, str] | None = None,
+) -> bool:
+    source = os.environ if env is None else env
+    if _env_flag_truthy(source.get(ENABLE_GODOT_IN_TESTS_ENV)):
+        return False
+    resolved_video_driver = (
+        os.environ.get("SDL_VIDEODRIVER", "") if video_driver is None else video_driver
+    )
+    if str(resolved_video_driver).strip().lower() == "dummy":
+        return True
+    return "PYTEST_CURRENT_TEST" in source
+
+
+def _is_keypad_period_delete_submit_event(event: pygame.event.Event) -> bool:
+    if event.type not in (pygame.KEYDOWN, pygame.KEYUP):
+        return False
+    key = int(getattr(event, "key", 0))
+    if key == pygame.K_KP_PERIOD:
+        return True
+    if key != pygame.K_DELETE:
+        return False
+    keypad_period_scancode = getattr(pygame, "KSCAN_KP_PERIOD", None)
+    if keypad_period_scancode is None:
+        return False
     try:
-        engine = current_engine()
+        return int(getattr(event, "scancode", -1)) == int(keypad_period_scancode)
     except Exception:
-        return None
-    return _set_engine_clock_paused(engine, paused)
+        return False
+
+
+def _normalize_keyboard_event(event: pygame.event.Event) -> pygame.event.Event:
+    if not _is_keypad_period_delete_submit_event(event):
+        return event
+    attrs = dict(getattr(event, "dict", {}))
+    attrs["key"] = pygame.K_KP_ENTER
+    attrs["unicode"] = ""
+    return pygame.event.Event(event.type, attrs)
 
 
 @dataclass(frozen=True, slots=True)
@@ -629,30 +686,10 @@ class HeadlessSimResult:
 
 
 @dataclass(frozen=True, slots=True)
-class OpenGLFailureInfo:
-    stage: str
-    summary: str
-    detail: str
-    requested: bool
-    attempted: bool
-    env_forced: bool = False
-    scene: str = "renderer"
-    path: str | None = None
-    diagnostic_code: str | None = None
-    exception_type: str | None = None
-    location: str | None = None
-    state: dict[str, object] | None = None
-
-
-@dataclass(frozen=True, slots=True)
 class DisplayBootstrapResult:
     display_surface: pygame.Surface
     app_surface: pygame.Surface
-    gl_renderer: "ModernSceneRenderer | None"
     active_window_flags: int
-    gl_requested: bool
-    gl_attempted: bool
-    gl_failure: OpenGLFailureInfo | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -3098,1159 +3135,12 @@ WINDOW_SIZE = (960, 540)
 TARGET_FPS = 60
 
 
-_AuditoryGlScene = AuditoryGlScene
-
-
-class _OpenGLSceneRenderer:
-    """Optional OpenGL renderer for the Auditory Capacity tube scene.
-
-    This keeps deterministic engine logic unchanged and only replaces the tube viewport
-    draw path when OpenGL is available.
-    """
-
-    def __init__(self, *, window_size: tuple[int, int]) -> None:
-        from OpenGL import GL as gl  # type: ignore[import-not-found]
-
-        self._gl = gl
-        self._win_w = max(1, int(window_size[0]))
-        self._win_h = max(1, int(window_size[1]))
-
-        tex = gl.glGenTextures(1)
-        if isinstance(tex, (tuple, list)):
-            tex = tex[0]
-        self._ui_texture_id = int(tex)
-        self._ui_tex_size: tuple[int, int] = (0, 0)
-        self._vortex_texture_id = self._create_texture_id()
-        self._vortex_tex_size: tuple[int, int] = (0, 0)
-        self._vortex_rgba: bytes = b""
-        self._last_scene_debug: dict[str, object] = {
-            "kind": "none",
-            "entity_count": 0,
-            "viewport": (self._win_w, self._win_h),
-        }
-        self._init_vortex_texture(size=640)
-
-        gl.glDisable(gl.GL_CULL_FACE)
-        gl.glDisable(gl.GL_LIGHTING)
-        gl.glEnable(gl.GL_BLEND)
-        gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA)
-        gl.glEnable(gl.GL_LINE_SMOOTH)
-        if hasattr(gl, "GL_LINE_SMOOTH_HINT") and hasattr(gl, "GL_NICEST"):
-            gl.glHint(gl.GL_LINE_SMOOTH_HINT, gl.GL_NICEST)
-        if hasattr(gl, "GL_MULTISAMPLE"):
-            gl.glEnable(gl.GL_MULTISAMPLE)
-        gl.glLineWidth(1.0)
-
-    def _create_texture_id(self) -> int:
-        tex = self._gl.glGenTextures(1)
-        if isinstance(tex, (tuple, list)):
-            tex = tex[0]
-        return int(tex)
-
-    def _init_vortex_texture(self, *, size: int) -> None:
-        gl = self._gl
-        tex_size = max(64, int(size))
-        self._vortex_rgba = self._build_vortex_rgba(size=tex_size)
-        self._vortex_tex_size = (tex_size, tex_size)
-
-        gl.glBindTexture(gl.GL_TEXTURE_2D, self._vortex_texture_id)
-        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR)
-        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
-        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_S, gl.GL_REPEAT)
-        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_T, gl.GL_REPEAT)
-        gl.glTexImage2D(
-            gl.GL_TEXTURE_2D,
-            0,
-            gl.GL_RGBA,
-            tex_size,
-            tex_size,
-            0,
-            gl.GL_RGBA,
-            gl.GL_UNSIGNED_BYTE,
-            self._vortex_rgba,
-        )
-
-    @staticmethod
-    def _build_vortex_rgba(*, size: int) -> bytes:
-        n = max(64, int(size))
-        cx = (n - 1) * 0.5
-        cy = (n - 1) * 0.5
-        inv = 1.0 / max(1.0, float(n - 1))
-        out = bytearray(n * n * 4)
-
-        for y in range(n):
-            ny = ((float(y) - cy) * 2.0) * inv
-            for x in range(n):
-                nx = ((float(x) - cx) * 2.0) * inv
-                r = math.sqrt((nx * nx) + (ny * ny))
-                a = math.atan2(ny, nx)
-                # Deterministic swirl field.
-                swirl = (
-                    math.sin((r * 23.0) - (a * 5.6))
-                    + math.cos((r * 31.0) + (a * 7.3))
-                    + math.sin((nx * 17.0) - (ny * 13.0))
-                )
-                swirl_n = (swirl + 3.0) / 6.0
-                falloff = max(0.0, min(1.0, 1.25 - (r * 0.95)))
-                grain = math.sin((x * 0.173) + (y * 0.217)) * 0.09
-                lum = max(0.0, min(1.0, (swirl_n * 0.64) + (falloff * 0.30) + grain))
-
-                red = int(round(16 + (lum * 38)))
-                green = int(round(36 + (lum * 84)))
-                blue = int(round(68 + (lum * 146)))
-                alpha = 255
-
-                i = ((y * n) + x) * 4
-                out[i] = max(0, min(255, red))
-                out[i + 1] = max(0, min(255, green))
-                out[i + 2] = max(0, min(255, blue))
-                out[i + 3] = alpha
-
-        return bytes(out)
-
-    def resize(self, *, window_size: tuple[int, int]) -> None:
-        self._win_w = max(1, int(window_size[0]))
-        self._win_h = max(1, int(window_size[1]))
-
-    def render_frame(
-        self,
-        *,
-        ui_surface: pygame.Surface,
-        scene: GlScene | None,
-    ) -> None:
-        gl = self._gl
-
-        gl.glViewport(0, 0, self._win_w, self._win_h)
-        gl.glClearColor(0.01, 0.02, 0.06, 1.0)
-        gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT)
-
-        if scene is not None:
-            self._draw_scene(scene=scene)
-        else:
-            self._last_scene_debug = {
-                "kind": "none",
-                "entity_count": 0,
-                "viewport": (self._win_w, self._win_h),
-            }
-
-        self._draw_ui_surface(ui_surface=ui_surface)
-
-    def debug_last_scene(self) -> dict[str, object]:
-        return dict(self._last_scene_debug)
-
-    def _draw_scene(self, *, scene: GlScene) -> None:
-        kind = gl_scene_name(scene)
-        entity_count = 0
-        if isinstance(scene, AuditoryGlScene):
-            entity_count = self._draw_auditory_scene(scene=scene)
-        elif isinstance(scene, RapidTrackingGlScene):
-            entity_count = self._draw_rapid_tracking_scene(scene=scene)
-        elif isinstance(scene, SpatialIntegrationGlScene):
-            entity_count = self._draw_spatial_integration_scene(scene=scene)
-        elif isinstance(scene, TraceTest1GlScene):
-            entity_count = self._draw_trace_test_1_scene(scene=scene)
-        else:
-            entity_count = self._draw_trace_test_2_scene(scene=scene)
-        self._last_scene_debug = {
-            "kind": kind,
-            "entity_count": int(entity_count),
-            "viewport": (self._win_w, self._win_h),
-        }
-
-    def _draw_auditory_scene(self, *, scene: AuditoryGlScene) -> int:
-        gl = self._gl
-        rect = scene.world
-        payload = scene.payload
-        time_fill_ratio = scene.time_fill_ratio
-
-        vw = max(1, int(rect.w))
-        vh = max(1, int(rect.h))
-        vx = int(rect.x)
-        vy = int(self._win_h - rect.bottom)
-
-        gl.glEnable(gl.GL_SCISSOR_TEST)
-        gl.glScissor(vx, vy, vw, vh)
-        gl.glClearColor(0.03, 0.06, 0.15, 1.0)
-        gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT)
-        gl.glDisable(gl.GL_SCISSOR_TEST)
-
-        gl.glViewport(vx, vy, vw, vh)
-        self._set_ortho_2d(width=vw, height=vh)
-        gl.glDisable(gl.GL_DEPTH_TEST)
-        gl.glEnable(gl.GL_TEXTURE_2D)
-        gl.glBindTexture(gl.GL_TEXTURE_2D, self._vortex_texture_id)
-        gl.glColor4f(1.0, 1.0, 1.0, 1.0)
-        gl.glBegin(gl.GL_QUADS)
-        gl.glTexCoord2f(0.0, 0.0)
-        gl.glVertex2f(0.0, 0.0)
-        gl.glTexCoord2f(1.0, 0.0)
-        gl.glVertex2f(float(vw), 0.0)
-        gl.glTexCoord2f(1.0, 1.0)
-        gl.glVertex2f(float(vw), float(vh))
-        gl.glTexCoord2f(0.0, 1.0)
-        gl.glVertex2f(0.0, float(vh))
-        gl.glEnd()
-        gl.glDisable(gl.GL_TEXTURE_2D)
-
-        cx = float(vw) * 0.50
-        cy = float(vh) * 0.50
-        max_r = min(vw, vh) * 0.54
-        rings_2d = 20
-        for idx in range(rings_2d):
-            t = idx / float(max(1, rings_2d - 1))
-            r = max_r * (0.10 + (0.90 * t))
-            alpha = 0.12 * (1.0 - t)
-            gl.glColor4f(0.10, 0.18, 0.38, alpha)
-            gl.glBegin(gl.GL_LINE_LOOP)
-            seg = 48
-            for n in range(seg):
-                a = (n / float(seg)) * math.tau
-                gl.glVertex2f(cx + (math.cos(a) * r), cy + (math.sin(a) * r * 0.94))
-            gl.glEnd()
-
-        gl.glBegin(gl.GL_TRIANGLE_FAN)
-        gl.glColor4f(0.04, 0.10, 0.28, 0.04)
-        gl.glVertex2f(cx, cy)
-        seg = 64
-        for n in range(seg + 1):
-            a = (n / float(seg)) * math.tau
-            gl.glColor4f(0.01, 0.02, 0.08, 0.34)
-            gl.glVertex2f(cx + (math.cos(a) * max_r), cy + (math.sin(a) * max_r * 0.92))
-        gl.glEnd()
-
-        self._set_perspective(
-            fovy_deg=46.0,
-            aspect=max(0.20, vw / float(vh)),
-            z_near=0.10,
-            z_far=80.0,
-        )
-        gl.glEnable(gl.GL_DEPTH_TEST)
-
-        tube_rx = 0.88
-        tube_ry = 0.54
-        z_near = 2.0
-        z_far = 26.0
-        ring_steps = 28
-        ring_count = 24
-
-        ring_centers: list[tuple[float, float, float, float]] = []
-        for idx in range(ring_count):
-            t = idx / float(max(1, ring_count - 1))
-            z = self._auditory_depth_to_scene_z(t, z_near=z_near, z_far=z_far)
-            off_x, off_y = self._tube_offset_at_depth(z=z, z_near=z_near, z_far=z_far)
-            ring_centers.append((z, off_x, off_y, t))
-            lum = 0.76 - (0.54 * t)
-            gl.glColor4f(0.10 * lum, 0.38 * lum, 0.90 * lum, 0.84)
-            gl.glBegin(gl.GL_LINE_LOOP)
-            for n in range(ring_steps):
-                a = (n / float(ring_steps)) * math.tau
-                gl.glVertex3f(
-                    off_x + (math.cos(a) * tube_rx),
-                    off_y + (math.sin(a) * tube_ry),
-                    z,
-                )
-            gl.glEnd()
-
-        wall_segments = 24
-        for idx in range(len(ring_centers) - 1):
-            z0, off_x0, off_y0, t0 = ring_centers[idx]
-            z1, off_x1, off_y1, t1 = ring_centers[idx + 1]
-            depth_mix = (t0 + t1) * 0.5
-            alpha = 0.07 + (0.08 * (1.0 - depth_mix))
-            gl.glBegin(gl.GL_QUAD_STRIP)
-            for n in range(wall_segments + 1):
-                a = (n / float(wall_segments)) * math.tau
-                pulse = 0.62 + (0.38 * math.cos((a * 2.0) - (depth_mix * math.tau * 1.15)))
-                gl.glColor4f(0.05 * pulse, 0.16 * pulse, 0.34 + (0.22 * pulse), alpha)
-                gl.glVertex3f(
-                    off_x0 + (math.cos(a) * tube_rx),
-                    off_y0 + (math.sin(a) * tube_ry),
-                    z0,
-                )
-                gl.glColor4f(
-                    0.05 * pulse,
-                    0.15 * pulse,
-                    0.30 + (0.18 * pulse),
-                    alpha * 0.94,
-                )
-                gl.glVertex3f(
-                    off_x1 + (math.cos(a) * tube_rx),
-                    off_y1 + (math.sin(a) * tube_ry),
-                    z1,
-                )
-            gl.glEnd()
-
-        for a in (0.0, math.pi * 0.5, math.pi, math.pi * 1.5):
-            gl.glColor4f(0.16, 0.24, 0.46, 0.74)
-            gl.glBegin(gl.GL_LINE_STRIP)
-            for z, off_x, off_y, _ in ring_centers:
-                gl.glVertex3f(
-                    off_x + (math.cos(a) * tube_rx),
-                    off_y + (math.sin(a) * tube_ry),
-                    z,
-                )
-            gl.glEnd()
-
-        base_cross_x, base_cross_y = self._tube_offset_at_depth(
-            z=-3.1,
-            z_near=z_near,
-            z_far=z_far,
-        )
-        cross_x = 0.0
-        cross_y = 0.0
-        cross_z = -3.1
-
-        if payload is not None:
-            y_half_span = max(0.08, float(payload.tube_half_height))
-            x_half_span = max(0.08, float(payload.tube_half_width))
-            travel_distance = float(payload.presentation_travel_distance)
-
-            gates: list[tuple[float, AuditoryCapacityGate, float, float, float, int]] = []
-            visible_gates: list[tuple[float, AuditoryCapacityGate]] = []
-            for gate in payload.gates:
-                gate_world_distance = getattr(gate, "world_distance", None)
-                if gate_world_distance is None:
-                    distance = gate_distance_from_x_norm(
-                        float(gate.x_norm),
-                        travel_distance=travel_distance,
-                        spawn_x_norm=float(AUDITORY_GATE_SPAWN_X_NORM),
-                        player_x_norm=float(AUDITORY_GATE_PLAYER_X_NORM),
-                        retire_x_norm=float(AUDITORY_GATE_RETIRE_X_NORM),
-                    )
-                else:
-                    distance = float(gate_world_distance)
-                if distance < (travel_distance + AUDITORY_GATE_BEHIND_DISTANCE_OFFSET):
-                    continue
-                visible_gates.append((distance, gate))
-            visible_gates.sort(key=lambda item: float(item[0]), reverse=True)
-            for visible_idx, (distance, gate) in enumerate(visible_gates[:6]):
-                depth_norm = self._auditory_gate_depth_norm_from_distance(
-                    distance=distance,
-                    travel_distance=travel_distance,
-                )
-                z = self._auditory_depth_to_scene_z(depth_norm, z_near=z_near, z_far=z_far)
-                if z > -0.8:
-                    continue
-                gate_off_x, gate_off_y = self._tube_offset_at_depth(
-                    z=z,
-                    z_near=z_near,
-                    z_far=z_far,
-                )
-                gy = max(-1.0, min(1.0, gate.y_norm / y_half_span)) * (tube_ry * 0.92)
-                gx = gate_off_x
-                gy = gate_off_y + gy
-                radius = 0.11 + (max(0.06, min(0.36, gate.aperture_norm)) * 1.10)
-                gates.append((z, gate, gx, gy, radius, visible_idx))
-
-            for z, gate, gx, gy, radius, _visible_idx in sorted(gates, key=lambda g: g[0]):
-                color = self._auditory_gate_visual_rgbf(gate)
-                dz = 0.30
-                gl.glColor4f(color[0] * 0.36, color[1] * 0.42, color[2] * 0.48, 0.24)
-                self._draw_gate_shape_filled_3d(
-                    shape=gate.shape,
-                    x=gx,
-                    y=gy,
-                    z=z + (dz * 0.5),
-                    radius=radius * 0.95,
-                )
-                gl.glColor4f(color[0], color[1], color[2], 0.95)
-                self._draw_gate_shape_wire_3d(shape=gate.shape, x=gx, y=gy, z=z + dz, radius=radius)
-                self._draw_gate_shape_wire_3d(shape=gate.shape, x=gx, y=gy, z=z, radius=radius)
-                gl.glColor4f(
-                    min(1.0, color[0] + 0.24),
-                    min(1.0, color[1] + 0.24),
-                    min(1.0, color[2] + 0.24),
-                    0.72,
-                )
-                self._draw_gate_shape_wire_3d(
-                    shape=gate.shape,
-                    x=gx,
-                    y=gy,
-                    z=z + (dz * 0.38),
-                    radius=radius * 0.92,
-                )
-                gl.glColor4f(color[0] * 0.78, color[1] * 0.78, color[2] * 0.78, 0.72)
-                gl.glBegin(gl.GL_LINES)
-                gl.glVertex3f(gx - radius, gy, z)
-                gl.glVertex3f(gx - radius, gy, z + dz)
-                gl.glVertex3f(gx + radius, gy, z)
-                gl.glVertex3f(gx + radius, gy, z + dz)
-                gl.glVertex3f(gx, gy - radius, z)
-                gl.glVertex3f(gx, gy - radius, z + dz)
-                gl.glVertex3f(gx, gy + radius, z)
-                gl.glVertex3f(gx, gy + radius, z + dz)
-                gl.glEnd()
-
-            bx = max(-1.0, min(1.0, payload.ball_x / x_half_span)) * (tube_rx * 0.90)
-            by = max(-1.0, min(1.0, payload.ball_y / y_half_span)) * (tube_ry * 0.90)
-            ball_depth_norm = float(BALL_FORWARD_IDLE_NORM)
-            ball_z = self._auditory_depth_to_scene_z(ball_depth_norm, z_near=z_near, z_far=z_far)
-            ball_r = 0.10
-            ball_off_x, ball_off_y = self._tube_offset_at_depth(
-                z=ball_z,
-                z_near=z_near,
-                z_far=z_far,
-            )
-            cross_z = ball_z + 0.002
-
-            ball_contact = float(payload.ball_contact_ratio)
-            if ball_contact >= 1.0:
-                ball_fill = (0.95, 0.35, 0.38)
-                ball_edge = (0.95, 0.35, 0.38, 0.98)
-            else:
-                flash_color = self._gate_color(payload.ball_visual_color)
-                ball_fill = self._mix_rgb3(
-                    (0.92, 0.95, 1.0),
-                    flash_color,
-                    mix=float(payload.ball_visual_strength),
-                )
-                ball_edge_rgb = self._mix_rgb3(ball_fill, (1.0, 1.0, 1.0), mix=0.18)
-                ball_edge = (ball_edge_rgb[0], ball_edge_rgb[1], ball_edge_rgb[2], 0.98)
-
-            gl.glColor4f(0.56, 0.60, 0.70, 0.78)
-            self._draw_filled_disc_3d(
-                x=bx + (ball_r * 0.20),
-                y=by - (ball_r * 0.25),
-                z=ball_z - 0.05,
-                radius=ball_r * 0.92,
-            )
-            gl.glColor4f(ball_fill[0], ball_fill[1], ball_fill[2], 0.98)
-            self._draw_filled_disc_3d(x=bx, y=by, z=ball_z, radius=ball_r)
-            gl.glColor4f(ball_edge[0], ball_edge[1], ball_edge[2], ball_edge[3])
-            self._draw_disc_outline_3d(x=bx, y=by, z=ball_z, radius=ball_r)
-            gl.glColor4f(1.0, 1.0, 1.0, 0.90)
-            self._draw_filled_disc_3d(
-                x=bx - (ball_r * 0.33),
-                y=by + (ball_r * 0.32),
-                z=ball_z + 0.001,
-                radius=ball_r * 0.28,
-            )
-
-            if ball_contact >= 1.0:
-                contact_strength = min(1.0, 0.35 + ((ball_contact - 1.0) * 4.2))
-                local_x = max(-1.0, min(1.0, payload.ball_x / x_half_span))
-                local_y = max(-1.0, min(1.0, payload.ball_y / y_half_span))
-                local_norm = math.hypot(local_x, local_y)
-                if local_norm > 1e-4:
-                    hit_x = ball_off_x + ((local_x / local_norm) * tube_rx)
-                    hit_y = ball_off_y + ((local_y / local_norm) * tube_ry)
-                    hit_r = 0.12 + (0.05 * contact_strength)
-                    gl.glColor4f(1.0, 0.40, 0.32, 0.62 + (0.18 * contact_strength))
-                    self._draw_disc_outline_3d(
-                        x=hit_x,
-                        y=hit_y,
-                        z=ball_z - 0.01,
-                        radius=hit_r,
-                    )
-                    gl.glBegin(gl.GL_LINES)
-                    gl.glVertex3f(hit_x, hit_y, ball_z - 0.02)
-                    gl.glVertex3f(
-                        hit_x - ((local_x / local_norm) * 0.28),
-                        hit_y - ((local_y / local_norm) * 0.18),
-                        ball_z - 0.02,
-                    )
-                    gl.glEnd()
-
-        gl.glDisable(gl.GL_DEPTH_TEST)
-        gl.glColor4f(0.72, 0.18, 0.22, 0.84)
-        gl.glBegin(gl.GL_LINES)
-        gl.glVertex3f(cross_x, cross_y + (tube_ry * 0.96), cross_z)
-        gl.glVertex3f(cross_x, cross_y - (tube_ry * 0.96), cross_z)
-        gl.glVertex3f(cross_x - (tube_rx * 0.96), cross_y, cross_z)
-        gl.glVertex3f(cross_x + (tube_rx * 0.96), cross_y, cross_z)
-        gl.glEnd()
-
-        self._set_ortho_2d(width=vw, height=vh)
-
-        gl.glColor4f(0.08, 0.18, 0.56, 0.92)
-        gl.glBegin(gl.GL_QUADS)
-        gl.glVertex2f(0.0, float(vh - 18))
-        gl.glVertex2f(float(vw), float(vh - 18))
-        gl.glVertex2f(float(vw), float(vh))
-        gl.glVertex2f(0.0, float(vh))
-        gl.glEnd()
-
-        if runtime_visible_timers_enabled():
-            gl.glColor4f(0.46, 0.50, 0.62, 0.70)
-            bar_w = 132.0
-            bar_h = 15.0
-            bar_x = float(vw) - bar_w - 16.0
-            bar_y = 12.0
-            gl.glBegin(gl.GL_QUADS)
-            gl.glVertex2f(bar_x, bar_y)
-            gl.glVertex2f(bar_x + bar_w, bar_y)
-            gl.glVertex2f(bar_x + bar_w, bar_y + bar_h)
-            gl.glVertex2f(bar_x, bar_y + bar_h)
-            gl.glEnd()
-
-            gl.glColor4f(0.16, 0.18, 0.22, 0.78)
-            gl.glBegin(gl.GL_LINE_LOOP)
-            gl.glVertex2f(bar_x, bar_y)
-            gl.glVertex2f(bar_x + bar_w, bar_y)
-            gl.glVertex2f(bar_x + bar_w, bar_y + bar_h)
-            gl.glVertex2f(bar_x, bar_y + bar_h)
-            gl.glEnd()
-
-            inner_x = bar_x + 4.0
-            inner_y = bar_y + 4.0
-            inner_w = bar_w - 8.0
-            inner_h = bar_h - 8.0
-            gl.glColor4f(0.12, 0.14, 0.18, 0.84)
-            gl.glBegin(gl.GL_QUADS)
-            gl.glVertex2f(inner_x, inner_y)
-            gl.glVertex2f(inner_x + inner_w, inner_y)
-            gl.glVertex2f(inner_x + inner_w, inner_y + inner_h)
-            gl.glVertex2f(inner_x, inner_y + inner_h)
-            gl.glEnd()
-
-            fill_ratio = 0.72 if time_fill_ratio is None else max(0.0, min(1.0, time_fill_ratio))
-            fill_w = max(0.0, inner_w * fill_ratio)
-            gl.glColor4f(0.76, 0.80, 0.86, 0.90)
-            if fill_w > 0.0:
-                gl.glBegin(gl.GL_QUADS)
-                gl.glVertex2f(inner_x, inner_y)
-                gl.glVertex2f(inner_x + fill_w, inner_y)
-                gl.glVertex2f(inner_x + fill_w, inner_y + inner_h)
-                gl.glVertex2f(inner_x, inner_y + inner_h)
-                gl.glEnd()
-                gl.glColor4f(0.94, 0.96, 0.98, 0.70)
-                gl.glBegin(gl.GL_LINES)
-                gl.glVertex2f(inner_x + 1.0, inner_y + 1.0)
-                gl.glVertex2f(inner_x + max(2.0, fill_w - 1.0), inner_y + 1.0)
-                gl.glEnd()
-
-        gl.glColor4f(0.16, 0.34, 0.84, 0.90)
-        gl.glBegin(gl.GL_LINE_LOOP)
-        gl.glVertex2f(1.0, 1.0)
-        gl.glVertex2f(float(vw - 1), 1.0)
-        gl.glVertex2f(float(vw - 1), float(vh - 1))
-        gl.glVertex2f(1.0, float(vh - 1))
-        gl.glEnd()
-        gl.glColor4f(0.38, 0.52, 0.88, 0.72)
-        gl.glBegin(gl.GL_LINE_LOOP)
-        gl.glVertex2f(4.0, 4.0)
-        gl.glVertex2f(float(vw - 4), 4.0)
-        gl.glVertex2f(float(vw - 4), float(vh - 4))
-        gl.glVertex2f(4.0, float(vh - 4))
-        gl.glEnd()
-        gate_count = len(payload.gates) if payload is not None else 0
-        return max(1, gate_count + (1 if payload is not None else 0))
-
-    def _prepare_scene_rect(
-        self,
-        *,
-        rect: pygame.Rect,
-        clear_rgba: tuple[float, float, float, float],
-    ) -> tuple[int, int]:
-        gl = self._gl
-        vw = max(1, int(rect.w))
-        vh = max(1, int(rect.h))
-        vx = int(rect.x)
-        vy = int(self._win_h - rect.bottom)
-        gl.glEnable(gl.GL_SCISSOR_TEST)
-        gl.glScissor(vx, vy, vw, vh)
-        gl.glClearColor(*clear_rgba)
-        gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT)
-        gl.glDisable(gl.GL_SCISSOR_TEST)
-        gl.glViewport(vx, vy, vw, vh)
-        self._set_ortho_2d(width=vw, height=vh)
-        gl.glDisable(gl.GL_DEPTH_TEST)
-        return vw, vh
-
-    def _draw_quad_2d(
-        self,
-        *,
-        x0: float,
-        y0: float,
-        x1: float,
-        y1: float,
-        color: tuple[float, float, float, float],
-    ) -> None:
-        gl = self._gl
-        gl.glColor4f(*color)
-        gl.glBegin(gl.GL_QUADS)
-        gl.glVertex2f(x0, y0)
-        gl.glVertex2f(x1, y0)
-        gl.glVertex2f(x1, y1)
-        gl.glVertex2f(x0, y1)
-        gl.glEnd()
-
-    def _draw_line_2d(
-        self,
-        *,
-        start: tuple[float, float],
-        end: tuple[float, float],
-        color: tuple[float, float, float, float],
-        width: float = 1.0,
-    ) -> None:
-        gl = self._gl
-        gl.glLineWidth(max(1.0, float(width)))
-        gl.glColor4f(*color)
-        gl.glBegin(gl.GL_LINES)
-        gl.glVertex2f(start[0], start[1])
-        gl.glVertex2f(end[0], end[1])
-        gl.glEnd()
-        gl.glLineWidth(1.0)
-
-    def _draw_circle_2d(
-        self,
-        *,
-        center: tuple[float, float],
-        radius: float,
-        color: tuple[float, float, float, float],
-        filled: bool = True,
-        segments: int = 28,
-    ) -> None:
-        gl = self._gl
-        gl.glColor4f(*color)
-        mode = gl.GL_TRIANGLE_FAN if filled else gl.GL_LINE_LOOP
-        gl.glBegin(mode)
-        if filled:
-            gl.glVertex2f(center[0], center[1])
-        for idx in range(segments + (1 if filled else 0)):
-            angle = (idx / float(max(1, segments))) * math.tau
-            gl.glVertex2f(
-                center[0] + (math.cos(angle) * radius),
-                center[1] + (math.sin(angle) * radius),
-            )
-        gl.glEnd()
-
-    def _draw_aircraft_marker_2d(
-        self,
-        *,
-        center: tuple[float, float],
-        heading_deg: float,
-        size: float,
-        color: tuple[float, float, float, float],
-        outline: tuple[float, float, float, float],
-        pitch_deg: float = 0.0,
-        bank_deg: float = 0.0,
-        view_yaw_deg: float = 0.0,
-        view_pitch_deg: float = 20.0,
-    ) -> None:
-        gl = self._gl
-        palette = build_pygame_palette(
-            body_color=tuple(max(0, min(255, int(round(channel * 255.0)))) for channel in color[:3]),
-            outline_color=tuple(max(0, min(255, int(round(channel * 255.0)))) for channel in outline[:3]),
-        )
-        role_colors = {
-            "body": palette.body,
-            "accent": palette.accent,
-            "canopy": palette.canopy,
-            "engine": palette.engine,
-        }
-        projected = project_fixed_wing_faces(
-            heading_deg=self._screen_heading_to_fixed_wing_heading(heading_deg),
-            pitch_deg=float(pitch_deg),
-            bank_deg=float(bank_deg),
-            cx=int(round(center[0])),
-            cy=int(round(center[1])),
-            scale=max(8.0, float(size)),
-            view_yaw_deg=view_yaw_deg,
-            view_pitch_deg=view_pitch_deg,
-        )
-        for face in projected:
-            base = role_colors.get(face.role, palette.body)
-            fill = tuple(max(0, min(255, int(round(channel * face.shade)))) for channel in base)
-            gl.glColor4f(fill[0] / 255.0, fill[1] / 255.0, fill[2] / 255.0, color[3])
-            gl.glBegin(gl.GL_TRIANGLE_FAN)
-            for px, py in face.points:
-                gl.glVertex2f(float(px), float(py))
-            gl.glEnd()
-            gl.glColor4f(*outline)
-            gl.glBegin(gl.GL_LINE_LOOP)
-            for px, py in face.points:
-                gl.glVertex2f(float(px), float(py))
-            gl.glEnd()
-
-    def _draw_rapid_tracking_scene(self, *, scene: RapidTrackingGlScene) -> int:
-        rect = scene.world
-        payload = scene.payload
-        vw, vh = self._prepare_scene_rect(rect=rect, clear_rgba=(0.03, 0.08, 0.08, 1.0))
-        horizon = vh * 0.48
-        if payload is not None:
-            rig = rapid_tracking_camera_rig_state(
-                elapsed_s=float(payload.phase_elapsed_s),
-                seed=int(payload.scene_seed),
-                progress=float(payload.scene_progress),
-                camera_yaw_deg=float(payload.camera_yaw_deg),
-                camera_pitch_deg=float(payload.camera_pitch_deg),
-                zoom=float(payload.capture_zoom),
-                target_kind=str(payload.target_kind),
-                target_world_x=float(payload.target_world_x),
-                target_world_y=float(payload.target_world_y),
-                focus_world_x=float(payload.focus_world_x),
-                focus_world_y=float(payload.focus_world_y),
-                turbulence_strength=float(payload.turbulence_strength),
-            )
-            horizon = max(vh * 0.28, min(vh * 0.70, vh * (0.60 - (rig.view_pitch_deg / 90.0))))
-
-        band_h = max(1.0, vh / 10.0)
-        for idx in range(10):
-            y0 = vh - ((idx + 1) * band_h)
-            y1 = vh - (idx * band_h)
-            mix = idx / 9.0
-            self._draw_quad_2d(
-                x0=0.0,
-                y0=y0,
-                x1=float(vw),
-                y1=y1,
-                color=(0.08 + (0.12 * mix), 0.20 + (0.20 * mix), 0.28 + (0.18 * mix), 1.0),
-            )
-        self._draw_quad_2d(
-            x0=0.0,
-            y0=0.0,
-            x1=float(vw),
-            y1=horizon,
-            color=(0.10, 0.22, 0.16, 1.0),
-        )
-        for lane in range(-4, 5):
-            bottom_x = (vw * 0.5) + (lane * vw * 0.11)
-            top_x = (vw * 0.5) + (lane * 18.0)
-            self._draw_line_2d(
-                start=(bottom_x, 0.0),
-                end=(top_x, horizon),
-                color=(0.14, 0.40, 0.28, 0.55),
-            )
-        self._draw_line_2d(
-            start=(0.0, horizon),
-            end=(float(vw), horizon),
-            color=(0.56, 0.76, 0.70, 0.64),
-        )
-
-        if payload is None:
-            return 0
-
-        target = build_rapid_tracking_scene_target(payload=payload, size=(vw, vh))
-        overlay = target.overlay
-        target_center = (float(overlay.screen_x), float(vh - overlay.screen_y))
-        if scene.active_phase:
-            pulse = 0.4 + (0.6 * math.sin(pygame.time.get_ticks() / 220.0))
-            self._draw_quad_2d(
-                x0=0.0,
-                y0=0.0,
-                x1=12.0,
-                y1=float(vh),
-                color=(0.16, 0.56, 0.42, 0.10 + (0.08 * pulse)),
-            )
-            self._draw_quad_2d(
-                x0=float(vw - 12),
-                y0=0.0,
-                x1=float(vw),
-                y1=float(vh),
-                color=(0.60, 0.34, 0.18, 0.10 + (0.08 * pulse)),
-            )
-
-        cx = vw * 0.5
-        cy = vh * 0.5
-        box_half_w = max(18.0, ((vw * 0.5) - 12.0) * float(payload.capture_box_half_width))
-        box_half_h = max(14.0, ((vh * 0.5) - 12.0) * 0.90 * float(payload.capture_box_half_height))
-        box_color = (0.56, 0.94, 0.74, 0.85) if payload.target_in_capture_box else (0.52, 0.72, 0.66, 0.78)
-        self._draw_line_2d(start=(cx - box_half_w, cy - box_half_h), end=(cx + box_half_w, cy - box_half_h), color=box_color, width=2.0)
-        self._draw_line_2d(start=(cx + box_half_w, cy - box_half_h), end=(cx + box_half_w, cy + box_half_h), color=box_color, width=2.0)
-        self._draw_line_2d(start=(cx + box_half_w, cy + box_half_h), end=(cx - box_half_w, cy + box_half_h), color=box_color, width=2.0)
-        self._draw_line_2d(start=(cx - box_half_w, cy + box_half_h), end=(cx - box_half_w, cy - box_half_h), color=box_color, width=2.0)
-        self._draw_line_2d(start=(cx - 12.0, cy), end=(cx + 12.0, cy), color=box_color)
-        self._draw_line_2d(start=(cx, cy - 12.0), end=(cx, cy + 12.0), color=box_color)
-
-        if not payload.target_visible:
-            self._draw_circle_2d(center=target_center, radius=22.0, color=(0.03, 0.05, 0.05, 0.92))
-            self._draw_circle_2d(center=target_center, radius=22.0, color=(0.54, 0.64, 0.60, 0.80), filled=False)
-            return 1
-
-        if target.kind == "building":
-            half_w = 18.0 if target.variant == "tower" else 28.0
-            half_h = 36.0 if target.variant == "tower" else 18.0
-            self._draw_quad_2d(
-                x0=target_center[0] - half_w,
-                y0=target_center[1] - half_h,
-                x1=target_center[0] + half_w,
-                y1=target_center[1] + half_h,
-                color=(0.62, 0.78, 0.74, 0.92),
-            )
-            self._draw_circle_2d(
-                center=target_center,
-                radius=38.0,
-                color=(0.86, 0.98, 0.94, 0.55),
-                filled=False,
-            )
-        elif target.kind == "truck":
-            self._draw_quad_2d(
-                x0=target_center[0] - 20.0,
-                y0=target_center[1] - 8.0,
-                x1=target_center[0] + 20.0,
-                y1=target_center[1] + 8.0,
-                color=(0.88, 0.78, 0.36, 0.94),
-            )
-            self._draw_circle_2d(center=(target_center[0] - 12.0, target_center[1] - 10.0), radius=4.0, color=(0.10, 0.12, 0.12, 1.0))
-            self._draw_circle_2d(center=(target_center[0] + 12.0, target_center[1] - 10.0), radius=4.0, color=(0.10, 0.12, 0.12, 1.0))
-        elif target.kind == "soldier":
-            self._draw_circle_2d(center=(target_center[0], target_center[1] + 11.0), radius=4.0, color=(0.92, 0.82, 0.74, 0.96))
-            self._draw_line_2d(start=(target_center[0], target_center[1] + 8.0), end=(target_center[0], target_center[1] - 12.0), color=(0.86, 0.44, 0.38, 0.95), width=2.0)
-            self._draw_line_2d(start=(target_center[0] - 7.0, target_center[1]), end=(target_center[0] + 7.0, target_center[1]), color=(0.86, 0.44, 0.38, 0.95), width=2.0)
-            self._draw_line_2d(start=(target_center[0], target_center[1] - 12.0), end=(target_center[0] - 6.0, target_center[1] - 22.0), color=(0.86, 0.44, 0.38, 0.95), width=2.0)
-            self._draw_line_2d(start=(target_center[0], target_center[1] - 12.0), end=(target_center[0] + 6.0, target_center[1] - 22.0), color=(0.86, 0.44, 0.38, 0.95), width=2.0)
-        elif target.kind == "helicopter":
-            self._draw_circle_2d(center=target_center, radius=11.0, color=(0.58, 0.90, 0.76, 0.95))
-            self._draw_line_2d(start=(target_center[0] - 18.0, target_center[1] + 16.0), end=(target_center[0] + 18.0, target_center[1] + 16.0), color=(0.90, 0.96, 0.98, 0.85))
-            self._draw_line_2d(start=(target_center[0] + 8.0, target_center[1]), end=(target_center[0] + 24.0, target_center[1]), color=(0.90, 0.96, 0.98, 0.82))
-        else:
-            heading_deg = math.degrees(math.atan2(float(payload.target_vy), float(payload.target_vx))) - 90.0
-            self._draw_aircraft_marker_2d(
-                center=target_center,
-                heading_deg=heading_deg,
-                size=14.0,
-                color=(0.46, 0.78, 0.98, 0.96),
-                outline=(0.94, 0.98, 1.0, 0.88),
-            )
-
-        self._draw_circle_2d(center=target_center, radius=30.0, color=(0.92, 0.98, 0.96, 0.64), filled=False)
-        return 1
-
-    def _draw_spatial_integration_scene(self, *, scene: SpatialIntegrationGlScene) -> int:
-        rect = scene.world
-        payload = scene.payload
-        vw, vh = self._prepare_scene_rect(rect=rect, clear_rgba=(0.05, 0.08, 0.16, 1.0))
-        layout = build_spatial_integration_scene_layout(payload=payload, size=(vw, vh))
-        horizon = float(vh - layout.horizon_y)
-        if layout.scene_view is SpatialIntegrationSceneView.TOPDOWN:
-            self._draw_quad_2d(x0=0.0, y0=0.0, x1=float(vw), y1=float(vh), color=(0.24, 0.42, 0.22, 1.0))
-            for idx in range(1, 6):
-                x = (idx / 6.0) * vw
-                self._draw_line_2d(start=(x, 0.0), end=(x, float(vh)), color=(0.62, 0.74, 0.58, 0.32))
-                y = (idx / 6.0) * vh
-                self._draw_line_2d(start=(0.0, y), end=(float(vw), y), color=(0.62, 0.74, 0.58, 0.32))
-        else:
-            self._draw_quad_2d(x0=0.0, y0=horizon, x1=float(vw), y1=float(vh), color=(0.42, 0.60, 0.82, 1.0))
-            self._draw_quad_2d(x0=0.0, y0=0.0, x1=float(vw), y1=horizon, color=(0.30, 0.44, 0.22, 1.0))
-            self._draw_line_2d(start=(0.0, horizon), end=(float(vw), horizon), color=(0.82, 0.88, 0.82, 0.60))
-
-        for marker in layout.landmarks:
-            center = (float(marker.screen_x), float(vh - marker.screen_y))
-            self._draw_circle_2d(center=center, radius=7.0, color=(0.98, 0.88, 0.42, 0.94))
-            self._draw_circle_2d(center=center, radius=11.0, color=(0.98, 0.94, 0.72, 0.44), filled=False)
-
-        prev = (float(layout.aircraft_prev[0]), float(vh - layout.aircraft_prev[1]))
-        now = (float(layout.aircraft_now[0]), float(vh - layout.aircraft_now[1]))
-        self._draw_line_2d(start=prev, end=now, color=(0.94, 0.78, 0.32, 0.82), width=2.0)
-        if layout.aircraft_future is not None:
-            future = (float(layout.aircraft_future[0]), float(vh - layout.aircraft_future[1]))
-            self._draw_line_2d(start=now, end=future, color=(0.94, 0.56, 0.30, 0.82), width=2.0)
-        self._draw_circle_2d(center=prev, radius=5.0, color=(0.82, 0.88, 0.96, 0.78))
-        self._draw_circle_2d(center=now, radius=7.0, color=(0.94, 0.36, 0.30, 0.96))
-        return max(1, len(layout.landmarks) + 1)
-
-    def _draw_trace_test_1_scene(self, *, scene: TraceTest1GlScene) -> int:
-        rect = scene.world
-        vw, vh = self._prepare_scene_rect(rect=rect, clear_rgba=(0.07, 0.10, 0.24, 1.0))
-        payload = scene.payload
-        self._draw_quad_2d(x0=0.0, y0=0.0, x1=float(vw), y1=float(vh), color=(0.56, 0.70, 0.88, 1.0))
-        self._draw_quad_2d(
-            x0=0.0,
-            y0=float(vh * 0.52),
-            x1=float(vw),
-            y1=float(vh),
-            color=(0.48, 0.60, 0.74, 1.0),
-        )
-        self._draw_line_2d(
-            start=(0.0, float(vh * 0.52)),
-            end=(float(vw), float(vh * 0.52)),
-            color=(0.90, 0.94, 0.98, 0.46),
-        )
-        if payload is None:
-            return 0
-        target_pose, blue_poses = trace_test_1_aircraft_screen_poses_for_payload(
-            payload,
-            size=(vw, vh),
-        )
-
-        blue_colors = (
-            (0.34, 0.52, 0.90, 0.96),
-            (0.38, 0.60, 0.94, 0.96),
-            (0.42, 0.66, 0.96, 0.96),
-            (0.30, 0.46, 0.82, 0.96),
-        )
-        blue_outlines = (
-            (0.92, 0.96, 1.0, 0.88),
-            (0.90, 0.96, 1.0, 0.86),
-            (0.88, 0.94, 0.98, 0.84),
-            (0.84, 0.92, 0.98, 0.84),
-        )
-        for idx, (blue_frame, blue_pose) in enumerate(
-            zip(payload.scene.blue_frames, blue_poses, strict=True)
-        ):
-            blue_center, blue_scale = trace_test_1_project_scene_position(
-                blue_frame.position,
-                size=(vw, vh),
-            )
-            self._draw_aircraft_marker_2d(
-                center=(blue_center[0], float(vh - blue_center[1])),
-                heading_deg=blue_pose[0],
-                size=max(8.6, blue_scale * 10.2),
-                color=blue_colors[idx % len(blue_colors)],
-                outline=blue_outlines[idx % len(blue_outlines)],
-                pitch_deg=blue_pose[1],
-                bank_deg=blue_pose[2],
-                view_pitch_deg=0.0,
-            )
-
-        target_frame = payload.scene.red_frame
-        target_center, target_scale = trace_test_1_project_scene_position(
-            target_frame.position,
-            size=(vw, vh),
-        )
-        self._draw_aircraft_marker_2d(
-            center=(target_center[0], float(vh - target_center[1])),
-            heading_deg=target_pose[0],
-            size=max(11.6, target_scale * 13.0),
-            color=(0.92, 0.24, 0.24, 0.98),
-            outline=(1.0, 0.92, 0.92, 0.90),
-            pitch_deg=target_pose[1],
-            bank_deg=target_pose[2],
-            view_pitch_deg=0.0,
-        )
-        return 1 + len(payload.scene.blue_frames)
-
-    def _draw_trace_test_2_scene(self, *, scene: TraceTest2GlScene) -> int:
-        rect = scene.world
-        payload = scene.payload
-        vw, vh = self._prepare_scene_rect(rect=rect, clear_rgba=(0.06, 0.10, 0.24, 1.0))
-        horizon = vh * 0.26
-        self._draw_quad_2d(x0=0.0, y0=horizon, x1=float(vw), y1=float(vh), color=(0.50, 0.66, 0.86, 1.0))
-        self._draw_quad_2d(x0=0.0, y0=0.0, x1=float(vw), y1=horizon, color=(0.40, 0.46, 0.52, 1.0))
-        if payload is None:
-            return 0
-
-        progress = float(payload.observe_progress)
-        for track in payload.aircraft:
-            pos = trace_test_2_track_position(track=track, progress=progress)
-            center = trace_test_2_project_point(pos, size=(vw, vh))
-            pose = trace_test_2_aircraft_screen_pose_for_track(
-                track=track,
-                progress=progress,
-                size=(vw, vh),
-            )
-            self._draw_aircraft_marker_2d(
-                center=(center[0], float(vh - center[1])),
-                heading_deg=pose[0],
-                size=max(10.0, 14.0 - (abs(pose[1]) * 0.05)),
-                color=(
-                    track.color_rgb[0] / 255.0,
-                    track.color_rgb[1] / 255.0,
-                    track.color_rgb[2] / 255.0,
-                    0.96,
-                ),
-                outline=(0.96, 0.98, 1.0, 0.88),
-                pitch_deg=pose[1],
-                bank_deg=pose[2],
-                view_pitch_deg=22.0,
-            )
-        return len(payload.aircraft)
-
-    def _draw_ui_surface(self, *, ui_surface: pygame.Surface) -> None:
-        gl = self._gl
-        w = max(1, int(ui_surface.get_width()))
-        h = max(1, int(ui_surface.get_height()))
-
-        pixels = pygame.image.tostring(ui_surface, "RGBA", True)
-
-        gl.glViewport(0, 0, self._win_w, self._win_h)
-        gl.glDisable(gl.GL_DEPTH_TEST)
-        gl.glEnable(gl.GL_TEXTURE_2D)
-        gl.glBindTexture(gl.GL_TEXTURE_2D, self._ui_texture_id)
-        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR)
-        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
-        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE)
-        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE)
-
-        if self._ui_tex_size != (w, h):
-            gl.glTexImage2D(
-                gl.GL_TEXTURE_2D,
-                0,
-                gl.GL_RGBA,
-                w,
-                h,
-                0,
-                gl.GL_RGBA,
-                gl.GL_UNSIGNED_BYTE,
-                pixels,
-            )
-            self._ui_tex_size = (w, h)
-        else:
-            gl.glTexSubImage2D(
-                gl.GL_TEXTURE_2D,
-                0,
-                0,
-                0,
-                w,
-                h,
-                gl.GL_RGBA,
-                gl.GL_UNSIGNED_BYTE,
-                pixels,
-            )
-
-        gl.glMatrixMode(gl.GL_PROJECTION)
-        gl.glLoadIdentity()
-        gl.glOrtho(0.0, float(self._win_w), 0.0, float(self._win_h), -1.0, 1.0)
-        gl.glMatrixMode(gl.GL_MODELVIEW)
-        gl.glLoadIdentity()
-
-        gl.glColor4f(1.0, 1.0, 1.0, 1.0)
-        gl.glBegin(gl.GL_QUADS)
-        gl.glTexCoord2f(0.0, 0.0)
-        gl.glVertex2f(0.0, 0.0)
-        gl.glTexCoord2f(1.0, 0.0)
-        gl.glVertex2f(float(self._win_w), 0.0)
-        gl.glTexCoord2f(1.0, 1.0)
-        gl.glVertex2f(float(self._win_w), float(self._win_h))
-        gl.glTexCoord2f(0.0, 1.0)
-        gl.glVertex2f(0.0, float(self._win_h))
-        gl.glEnd()
-        gl.glDisable(gl.GL_TEXTURE_2D)
-
-    def _set_ortho_2d(self, *, width: int, height: int) -> None:
-        gl = self._gl
-        gl.glMatrixMode(gl.GL_PROJECTION)
-        gl.glLoadIdentity()
-        gl.glOrtho(0.0, float(width), 0.0, float(height), -1.0, 1.0)
-        gl.glMatrixMode(gl.GL_MODELVIEW)
-        gl.glLoadIdentity()
-
-    def _set_perspective(
-        self, *, fovy_deg: float, aspect: float, z_near: float, z_far: float
-    ) -> None:
-        gl = self._gl
-        fovy = float(fovy_deg)
-        near = max(0.01, float(z_near))
-        far = max(near + 0.10, float(z_far))
-        top = near * math.tan(math.radians(fovy * 0.5))
-        bottom = -top
-        right = top * float(aspect)
-        left = -right
-        gl.glMatrixMode(gl.GL_PROJECTION)
-        gl.glLoadIdentity()
-        gl.glFrustum(left, right, bottom, top, near, far)
-        gl.glMatrixMode(gl.GL_MODELVIEW)
-        gl.glLoadIdentity()
-
-    @staticmethod
-    def _tube_offset_at_depth(*, z: float, z_near: float, z_far: float) -> tuple[float, float]:
-        span = max(0.001, float(z_far) - float(z_near))
-        depth = max(0.0, min(1.0, ((-float(z)) - float(z_near)) / span))
-        curve = depth**1.18
-
-        # Deterministic S-curves that are gentle near the player and stronger farther out.
-        x_wave = (math.sin((depth * math.tau * 1.05) + 0.45) * 0.74) + (
-            math.sin((depth * math.tau * 2.25) - 0.35) * 0.26
-        )
-        y_wave = (math.sin((depth * math.tau * 1.45) + 1.45) * 0.72) + (
-            math.sin((depth * math.tau * 2.55) + 0.80) * 0.28
-        )
-
-        off_x = x_wave * (0.58 * curve)
-        off_y = y_wave * (0.35 * curve)
-        return off_x, off_y
-
-    @staticmethod
-    def _gate_color(name: str) -> tuple[float, float, float]:
-        palette = {
-            "RED": (0.92, 0.32, 0.34),
-            "ERROR_RED": (0.98, 0.46, 0.24),
-            "GREEN": (0.34, 0.88, 0.56),
-            "BLUE": (0.36, 0.62, 0.94),
-            "YELLOW": (0.94, 0.82, 0.34),
-            "WHITE": (0.92, 0.95, 1.0),
-        }
-        return palette.get(str(name).upper(), (0.86, 0.88, 0.92))
-
-    @staticmethod
-    def _mix_rgb3(
-        a: tuple[float, float, float],
-        b: tuple[float, float, float],
-        *,
-        mix: float,
-    ) -> tuple[float, float, float]:
-        m = max(0.0, min(1.0, float(mix)))
-        return (
-            (a[0] * (1.0 - m)) + (b[0] * m),
-            (a[1] * (1.0 - m)) + (b[1] * m),
-            (a[2] * (1.0 - m)) + (b[2] * m),
-        )
-
-    def _draw_gate_shape_wire_3d(
-        self, *, shape: str, x: float, y: float, z: float, radius: float
-    ) -> None:
-        gl = self._gl
-        token = str(shape).upper()
-        if token == "TRIANGLE":
-            gl.glBegin(gl.GL_LINE_LOOP)
-            for px, py in AUDITORY_TRIANGLE_GATE_POINTS:
-                gl.glVertex3f(x + (px * radius), y + (py * radius), z)
-            gl.glEnd()
-            return
-        if token == "SQUARE":
-            gl.glBegin(gl.GL_LINE_LOOP)
-            gl.glVertex3f(x - radius, y - radius, z)
-            gl.glVertex3f(x + radius, y - radius, z)
-            gl.glVertex3f(x + radius, y + radius, z)
-            gl.glVertex3f(x - radius, y + radius, z)
-            gl.glEnd()
-            return
-
-        self._draw_disc_outline_3d(x=x, y=y, z=z, radius=radius)
-
-    def _draw_gate_shape_filled_3d(
-        self, *, shape: str, x: float, y: float, z: float, radius: float
-    ) -> None:
-        gl = self._gl
-        token = str(shape).upper()
-        if token == "TRIANGLE":
-            gl.glBegin(gl.GL_TRIANGLES)
-            for px, py in AUDITORY_TRIANGLE_GATE_POINTS:
-                gl.glVertex3f(x + (px * radius), y + (py * radius), z)
-            gl.glEnd()
-            return
-        if token == "SQUARE":
-            gl.glBegin(gl.GL_QUADS)
-            gl.glVertex3f(x - radius, y - radius, z)
-            gl.glVertex3f(x + radius, y - radius, z)
-            gl.glVertex3f(x + radius, y + radius, z)
-            gl.glVertex3f(x - radius, y + radius, z)
-            gl.glEnd()
-            return
-        self._draw_filled_disc_3d(x=x, y=y, z=z, radius=radius)
-
-    def _draw_filled_disc_3d(self, *, x: float, y: float, z: float, radius: float) -> None:
-        gl = self._gl
-        gl.glBegin(gl.GL_TRIANGLE_FAN)
-        gl.glVertex3f(x, y, z)
-        segments = 28
-        for i in range(segments + 1):
-            a = (i / float(segments)) * math.tau
-            gl.glVertex3f(x + (math.cos(a) * radius), y + (math.sin(a) * radius), z)
-        gl.glEnd()
-
-    def _draw_disc_outline_3d(self, *, x: float, y: float, z: float, radius: float) -> None:
-        gl = self._gl
-        gl.glBegin(gl.GL_LINE_LOOP)
-        segments = 28
-        for i in range(segments):
-            a = (i / float(segments)) * math.tau
-            gl.glVertex3f(x + (math.cos(a) * radius), y + (math.sin(a) * radius), z)
-        gl.glEnd()
-
-
-_OpenGLSceneRenderer = ModernSceneRenderer
-_OpenGLAuditoryRenderer = ModernSceneRenderer
-
-
 class App:
     def __init__(
         self,
         surface: pygame.Surface,
         font: pygame.font.Font,
         *,
-        opengl_enabled: bool = False,
         window_mode: str = "windowed",
         headless_mode: bool = False,
         results_store: ResultsStore | None = None,
@@ -4265,10 +3155,8 @@ class App:
         self._font = font
         self._screens: list[Screen] = []
         self._running = True
-        self._opengl_enabled = bool(opengl_enabled)
         self._window_mode = str(window_mode).strip().lower() or "windowed"
         self._headless_mode = bool(headless_mode)
-        self._gl_scene: GlScene | None = None
         self._results_store = results_store
         self._input_profiles_store = input_profiles_store
         self._joystick_binding_router = JoystickBindingRouter(profiles=input_profiles_store)
@@ -4283,14 +3171,14 @@ class App:
         self._runtime_defaults_store = runtime_defaults_store
         self._app_version = str(app_version).strip() or "dev"
         self._activity_sessions: dict[int, _ActiveActivitySession] = {}
-        self._renderer_path = (
-            "MODERN_GL" if self._opengl_enabled else ("HEADLESS" if self._headless_mode else "FALLBACK_2D")
+        self._renderer_path = "HEADLESS" if self._headless_mode else "PYGAME_2D"
+        self._godot_bridge = GodotBridgeManager(
+            headless=(
+                self._headless_mode
+                or _companion_renderers_suppressed_by_environment()
+            ),
+            window_mode=self._window_mode,
         )
-        self._renderer_fallback_used = False
-        self._renderer_diagnostic_codes: dict[str, str] = {}
-        self._renderer_gl_requested = not self._headless_mode
-        self._renderer_gl_attempted = bool(opengl_enabled)
-        self._renderer_bootstrap_failure: OpenGLFailureInfo | None = None
         self._failure_recovery_used = False
         self._pending_renderer_action: str | None = None
         self._menu_banner_message: str | None = None
@@ -4325,10 +3213,6 @@ class App:
     @property
     def surface(self) -> pygame.Surface:
         return self._surface
-
-    @property
-    def opengl_enabled(self) -> bool:
-        return self._opengl_enabled
 
     def set_surface(self, surface: pygame.Surface) -> None:
         self._surface = surface
@@ -4457,14 +3341,6 @@ class App:
                 continue
             self._keyboard_menu_repeat_due_ms.pop(action, None)
 
-    def set_opengl_enabled(self, enabled: bool) -> None:
-        self._opengl_enabled = bool(enabled)
-        if not self._opengl_enabled:
-            self._gl_scene = None
-        self._renderer_path = (
-            "MODERN_GL" if self._opengl_enabled else ("HEADLESS" if self._headless_mode else "FALLBACK_2D")
-        )
-
     def push(self, screen: Screen) -> None:
         self._screens.append(screen)
 
@@ -4510,6 +3386,7 @@ class App:
                 self._results_store.close_app_session(exit_reason=exit_reason)
             except Exception:
                 pass
+        self.close_companion_renderers()
         self._running = False
 
     @property
@@ -4523,6 +3400,17 @@ class App:
     def headless_mode(self) -> bool:
         return bool(self._headless_mode)
 
+    def godot_bridge(self) -> GodotBridgeManager:
+        return self._godot_bridge
+
+    def close_companion_renderers(self) -> None:
+        try:
+            self._godot_bridge.close()
+        except Exception:
+            pass
+        if not self._headless_mode:
+            self.set_renderer_path("PYGAME_2D")
+
     def current_run_state(self) -> RunStateIndicator:
         screen = self._current_screen()
         activity_label = self._screen_activity_label(screen)
@@ -4535,8 +3423,6 @@ class App:
         warning = None
         if self._headless_mode:
             warning = "HEADLESS"
-        elif self.used_renderer_fallback():
-            warning = "FALLBACK"
         elif self.used_failure_recovery():
             warning = "RECOVERED"
         return RunStateIndicator(
@@ -4548,7 +3434,7 @@ class App:
         )
 
     def used_renderer_fallback(self) -> bool:
-        return bool(self._renderer_fallback_used)
+        return bool(self._godot_bridge.used_fallback())
 
     def used_failure_recovery(self) -> bool:
         return bool(self._failure_recovery_used)
@@ -4559,48 +3445,7 @@ class App:
     def set_window_mode(self, window_mode: str) -> None:
         token = str(window_mode).strip().lower()
         self._window_mode = token if token in {"windowed", "fullscreen", "borderless"} else "windowed"
-
-    def stored_use_opengl(self) -> bool | None:
-        if self._runtime_defaults_store is None:
-            return None
-        return self._runtime_defaults_store.stored_use_opengl()
-
-    def set_stored_use_opengl(self, value: bool | None) -> None:
-        if self._runtime_defaults_store is None:
-            return
-        self._runtime_defaults_store.set_use_opengl(value)
-
-    @staticmethod
-    def use_opengl_env_override() -> str | None:
-        raw = os.environ.get("CFAST_USE_OPENGL")
-        if raw is None:
-            return None
-        token = str(raw).strip()
-        return token or None
-
-    @classmethod
-    def use_opengl_env_forces_enabled(cls) -> bool:
-        return _parse_optional_env_bool(cls.use_opengl_env_override()) is True
-
-    def set_renderer_bootstrap_state(
-        self,
-        *,
-        requested: bool,
-        attempted: bool,
-        failure: OpenGLFailureInfo | None = None,
-    ) -> None:
-        self._renderer_gl_requested = bool(requested)
-        self._renderer_gl_attempted = bool(attempted)
-        self._renderer_bootstrap_failure = failure
-
-    def renderer_gl_requested(self) -> bool:
-        return bool(self._renderer_gl_requested)
-
-    def renderer_gl_attempted(self) -> bool:
-        return bool(self._renderer_gl_attempted)
-
-    def renderer_bootstrap_failure(self) -> OpenGLFailureInfo | None:
-        return self._renderer_bootstrap_failure
+        self._godot_bridge.set_window_mode(self._window_mode)
 
     def request_renderer_action(self, action: str) -> None:
         token = str(action).strip().lower()
@@ -4612,123 +3457,13 @@ class App:
         self._pending_renderer_action = None
         return action
 
-    def note_renderer_fallback(
-        self,
-        *,
-        scene: str | None = None,
-        stage: str | None = None,
-        path: str | None = None,
-    ) -> str | None:
-        self._renderer_fallback_used = True
-        if scene is None:
-            return None
-        code = _renderer_diagnostic_code(scene=scene, stage=stage, path=path)
-        self._renderer_diagnostic_codes[str(scene).strip().lower()] = code
-        return code
-
-    def set_renderer_diagnostic_code(self, scene: str, code: str | None) -> None:
-        key = str(scene).strip().lower()
-        token = "" if code is None else str(code).strip().upper()
-        if token == "":
-            self._renderer_diagnostic_codes.pop(key, None)
-            return
-        self._renderer_diagnostic_codes[key] = token
-
-    def renderer_diagnostic_code(self, scene: str) -> str | None:
-        token = self._renderer_diagnostic_codes.get(str(scene).strip().lower())
-        return None if token is None or token.strip() == "" else token
-
-    def _renderer_failure_activity_session_id(self) -> int | None:
-        screen = self._current_screen()
-        handle = getattr(screen, "_activity_session_handle", None)
-        value = getattr(handle, "activity_session_id", None)
-        if value is None:
-            return None
-        try:
-            return int(value)
-        except Exception:
-            return None
-
-    def _renderer_failure_state(self, failure: OpenGLFailureInfo) -> dict[str, object]:
-        screen = self._current_screen()
-        surface_size = self._surface.get_size()
-        state: dict[str, object] = {
-            "activity_label": self._screen_activity_label(screen),
-            "display_mode": str(self._window_mode).upper(),
-            "renderer_path": str(self._renderer_path),
-            "opengl_enabled": bool(self._opengl_enabled),
-            "renderer_gl_requested": bool(self._renderer_gl_requested),
-            "renderer_gl_attempted": bool(self._renderer_gl_attempted),
-            "headless_mode": bool(self._headless_mode),
-            "window_size": [int(surface_size[0]), int(surface_size[1])],
-            "video_driver": str(os.environ.get("SDL_VIDEODRIVER", "")).strip(),
-        }
-        if failure.path:
-            state["failure_path"] = str(failure.path)
-        if failure.state:
-            state.update({str(key): value for key, value in failure.state.items()})
-        return state
-
-    def _record_renderer_failure_diagnostic(self, failure: OpenGLFailureInfo) -> None:
-        if self._results_store is None:
-            return
-        try:
-            self._results_store.record_app_diagnostic(
-                category="renderer_failure",
-                subsystem=str(failure.scene).strip().lower() or "renderer",
-                status="failed",
-                stage=str(failure.stage).strip() or None,
-                summary=str(failure.summary).strip() or "Renderer failed.",
-                detail=str(failure.detail).strip(),
-                diagnostic_code=failure.diagnostic_code,
-                renderer_path=failure.path,
-                exception_type=failure.exception_type,
-                location=failure.location,
-                state=self._renderer_failure_state(failure),
-                activity_session_id=self._renderer_failure_activity_session_id(),
-                app_version=self._app_version,
-            )
-        except Exception:
-            return
-
     def _should_render_run_state_indicator(self) -> bool:
         state = self.current_run_state()
         return self._dev_tools_enabled or state.warning is not None
 
     def set_renderer_path(self, path: str) -> None:
         token = str(path).strip().upper()
-        self._renderer_path = token or "MODERN_GL"
-
-    def present_renderer_failure(self, failure: OpenGLFailureInfo) -> None:
-        scene_key = str(failure.scene).strip().lower()
-        if scene_key != "" and failure.diagnostic_code:
-            self.set_renderer_diagnostic_code(scene_key, failure.diagnostic_code)
-        self._record_renderer_failure_diagnostic(failure)
-        self._set_shell_pause_active(False)
-        screen = self._current_screen()
-        if self._screen_has_activity(screen):
-            emergency = getattr(screen, "shell_emergency_exit", None)
-            if callable(emergency):
-                try:
-                    emergency("renderer_failure_abort")
-                except Exception:
-                    self.pop_to_root()
-            else:
-                abort = getattr(screen, "abort_activity", None)
-                if callable(abort):
-                    try:
-                        abort("renderer_failure_abort")
-                    except Exception:
-                        pass
-                self.pop_to_root()
-        else:
-            self.pop_to_root()
-        self.push(OpenGLFailureScreen(self, failure=failure))
-
-    def dismiss_renderer_failure(self) -> None:
-        screen = self._current_screen()
-        if isinstance(screen, OpenGLFailureScreen):
-            self.pop()
+        self._renderer_path = token or ("HEADLESS" if self._headless_mode else "PYGAME_2D")
 
     def _current_screen(self) -> Screen | None:
         if not self._screens:
@@ -4944,6 +3679,7 @@ class App:
 
     def handle_event(self, event: pygame.event.Event) -> None:
         event = self._normalize_pointer_event(event)
+        event = _normalize_keyboard_event(event)
         if event.type == pygame.QUIT:
             self.quit()
             return
@@ -5092,7 +3828,6 @@ class App:
                         return
         if not self._screens:
             return
-        self._gl_scene = None
         try:
             self._screens[-1].render(self._surface)
         except Exception:
@@ -5105,41 +3840,6 @@ class App:
         self._render_menu_banner(self._surface)
         if self._should_render_run_state_indicator():
             self._render_run_state_indicator(self._surface)
-
-    def queue_gl_scene(self, scene: GlScene) -> None:
-        if not self._opengl_enabled:
-            return
-        self._gl_scene = scene
-
-    def consume_gl_scene(self) -> GlScene | None:
-        return self._gl_scene
-
-    def queue_auditory_gl_scene(
-        self,
-        *,
-        world: pygame.Rect,
-        payload: AuditoryCapacityPayload | None,
-        time_remaining_s: float | None,
-        time_fill_ratio: float | None,
-        frame_dt_s: float = 0.0,
-        advance_animation: bool = True,
-    ) -> None:
-        self.queue_gl_scene(
-            AuditoryGlScene(
-                world=pygame.Rect(world),
-                payload=payload,
-                time_remaining_s=time_remaining_s,
-                time_fill_ratio=time_fill_ratio,
-                frame_dt_s=float(frame_dt_s),
-                advance_animation=bool(advance_animation),
-            )
-        )
-
-    def consume_auditory_gl_scene(self) -> AuditoryGlScene | None:
-        scene = self.consume_gl_scene()
-        if isinstance(scene, AuditoryGlScene):
-            return scene
-        return None
 
     def start_activity_session(
         self,
@@ -11078,20 +9778,9 @@ class DisplaySettingsScreen:
         self._control_hitboxes: dict[tuple[int, str], pygame.Rect] = {}
 
     def _rows(self) -> list[tuple[str, str, str]]:
-        stored = self._app.stored_use_opengl()
-        if stored is None:
-            value = "AUTO"
-        else:
-            value = "ON" if stored else "OFF"
         return [
-            ("use_opengl", "OpenGL Renderer", value),
             ("back", "Back", "Return to Settings"),
         ]
-
-    def _toggle_use_opengl(self) -> None:
-        current = self._app.stored_use_opengl()
-        next_value = True if current is None else not current
-        self._app.set_stored_use_opengl(next_value)
 
     def handle_event(self, event: pygame.event.Event) -> None:
         rows = self._rows()
@@ -11107,12 +9796,6 @@ class DisplaySettingsScreen:
             pos = getattr(event, "pos", None)
             if pos is None:
                 return
-            for (idx, action), rect in self._control_hitboxes.items():
-                if rect.collidepoint(pos):
-                    self._selected = idx
-                    if rows[idx][0] == "use_opengl" and action == "toggle":
-                        self._toggle_use_opengl()
-                    return
             for idx, rect in self._row_hitboxes.items():
                 if rect.collidepoint(pos):
                     self._selected = idx
@@ -11132,10 +9815,6 @@ class DisplaySettingsScreen:
         if key in (pygame.K_DOWN, pygame.K_s):
             self._selected = (self._selected + 1) % max(1, len(rows))
             return
-        if key in (pygame.K_LEFT, pygame.K_a, pygame.K_RIGHT, pygame.K_d):
-            if rows[self._selected][0] == "use_opengl":
-                self._toggle_use_opengl()
-            return
         if key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE):
             self._activate_row(rows[self._selected][0])
 
@@ -11143,8 +9822,6 @@ class DisplaySettingsScreen:
         if key == "back":
             self._app.pop()
             return
-        if key == "use_opengl":
-            self._toggle_use_opengl()
 
     def render(self, surface: pygame.Surface) -> None:
         w, h = surface.get_size()
@@ -11164,7 +9841,7 @@ class DisplaySettingsScreen:
         title = self._title_font.render("Display Settings", True, text_main)
         surface.blit(title, title.get_rect(midtop=(panel.centerx, panel.y + 14)))
         subtitle = self._hint_font.render(
-            "OpenGL changes apply on the next renderer bootstrap or app launch.",
+            "Rendering is pygame-only; window mode is selected at launch.",
             True,
             text_muted,
         )
@@ -11196,36 +9873,17 @@ class DisplaySettingsScreen:
             label_surf = self._item_font.render(label_text, True, label_color)
             surface.blit(label_surf, (row.x + 12, row.y + (row.h - label_surf.get_height()) // 2))
 
-            if key == "back":
-                value_surf = self._hint_font.render(value, True, value_color)
-                surface.blit(value_surf, value_surf.get_rect(midright=(row.right - 14, row.centery)))
-            else:
-                value_box = pygame.Rect(row.right - 120, row.y + 6, 108, row.h - 12)
-                self._control_hitboxes[(idx, "toggle")] = value_box.copy()
-                pygame.draw.rect(surface, (14, 26, 78), value_box, border_radius=5)
-                pygame.draw.rect(surface, (92, 112, 168), value_box, 1, border_radius=5)
-                value_surf = self._hint_font.render(value, True, text_main)
-                surface.blit(value_surf, value_surf.get_rect(center=value_box.center))
+            value_surf = self._hint_font.render(value, True, value_color)
+            surface.blit(value_surf, value_surf.get_rect(midright=(row.right - 14, row.centery)))
 
             y += row_h + gap
 
-        note_lines = [
-            f"Stored preference: {_resolve_use_opengl(stored_default=self._app.stored_use_opengl()) and 'GL requested' or '2D requested'}",
-        ]
-        env_override = self._app.use_opengl_env_override()
-        if env_override is not None:
-            note_lines.append(
-                f"CFAST_USE_OPENGL={env_override!r} currently overrides the stored setting."
-            )
         footer = self._hint_font.render(
-            "Left/Right/Enter toggles OpenGL. Esc returns to Settings.",
+            "Enter or Esc returns to Settings.",
             True,
             text_muted,
         )
         surface.blit(footer, footer.get_rect(midbottom=(panel.centerx, panel.bottom - 12)))
-        for idx, line in enumerate(note_lines):
-            note = self._hint_font.render(line, True, text_muted)
-            surface.blit(note, note.get_rect(midbottom=(panel.centerx, panel.bottom - 40 - (idx * 22))))
 
     def poll_bound_input(self) -> None:
         while self._app.consume_bound_action("menu_up"):
@@ -11241,179 +9899,6 @@ class DisplaySettingsScreen:
         while self._app.consume_bound_action("menu_right"):
             self.handle_event(
                 pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RIGHT, "unicode": ""})
-            )
-        while self._app.consume_bound_action("menu_select"):
-            self.handle_event(
-                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "unicode": ""})
-            )
-        while self._app.consume_bound_action("menu_back"):
-            self.handle_event(
-                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_ESCAPE, "unicode": ""})
-            )
-
-
-class OpenGLFailureScreen:
-    def __init__(self, app: App, *, failure: OpenGLFailureInfo) -> None:
-        self._app = app
-        self._failure = failure
-        self._selected = 0
-        self._title_font = pygame.font.Font(None, 44)
-        self._item_font = pygame.font.Font(None, 32)
-        self._body_font = pygame.font.Font(None, 28)
-        self._hint_font = pygame.font.Font(None, 22)
-        self._row_hitboxes: dict[int, pygame.Rect] = {}
-
-    def _rows(self) -> list[tuple[str, str, str, bool]]:
-        return [("quit", "Quit", "Exit the app.", True)]
-
-    def _activate_selected(self) -> None:
-        action, _label, _detail, enabled = self._rows()[self._selected % len(self._rows())]
-        if not enabled:
-            return
-        if action == "quit":
-            self._app.quit(exit_reason="renderer_failure_quit", exit_code=1)
-
-    def handle_event(self, event: pygame.event.Event) -> None:
-        rows = self._rows()
-        if event.type == pygame.MOUSEMOTION:
-            pos = getattr(event, "pos", None)
-            if pos is not None:
-                for idx, rect in self._row_hitboxes.items():
-                    if rect.collidepoint(pos):
-                        self._selected = idx
-                        break
-            return
-        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-            pos = getattr(event, "pos", None)
-            if pos is None:
-                return
-            for idx, rect in self._row_hitboxes.items():
-                if rect.collidepoint(pos):
-                    self._selected = idx
-                    self._activate_selected()
-                    return
-            return
-        if event.type != pygame.KEYDOWN:
-            return
-
-        key = event.key
-        if key in (pygame.K_ESCAPE, pygame.K_BACKSPACE):
-            self._app.quit(exit_reason="renderer_failure_quit", exit_code=1)
-            return
-        if key in (pygame.K_UP, pygame.K_w):
-            self._selected = (self._selected - 1) % max(1, len(rows))
-            return
-        if key in (pygame.K_DOWN, pygame.K_s):
-            self._selected = (self._selected + 1) % max(1, len(rows))
-            return
-        if key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE):
-            self._activate_selected()
-
-    def render(self, surface: pygame.Surface) -> None:
-        w, h = surface.get_size()
-        bg = (10, 10, 18)
-        panel_bg = (24, 22, 44)
-        border = (246, 210, 168)
-        text_main = (255, 242, 220)
-        text_muted = (226, 210, 188)
-        active_bg = (255, 243, 224)
-        active_text = (64, 30, 18)
-
-        surface.fill(bg)
-        panel = pygame.Rect(max(20, w // 10), max(20, h // 12), w - max(40, w // 5), h - max(40, h // 6))
-        pygame.draw.rect(surface, panel_bg, panel, border_radius=14)
-        pygame.draw.rect(surface, border, panel, 2, border_radius=14)
-
-        title = self._title_font.render("Renderer Error", True, text_main)
-        surface.blit(title, title.get_rect(midtop=(panel.centerx, panel.y + 18)))
-
-        summary = self._body_font.render(self._failure.summary, True, text_main)
-        surface.blit(summary, summary.get_rect(midtop=(panel.centerx, panel.y + 66)))
-
-        body = pygame.Rect(panel.x + 28, panel.y + 108, panel.w - 56, 170)
-        detail_lines = [self._failure.detail]
-        if self._failure.diagnostic_code:
-            detail_lines.append(f"Report code: {self._failure.diagnostic_code}")
-        if self._failure.location:
-            detail_lines.append(f"Location: {self._failure.location}")
-        detail_lines.append("The interactive app requires the ModernGL renderer.")
-        self._draw_wrapped_text(
-            surface,
-            "\n\n".join(detail_lines),
-            body,
-            color=text_muted,
-            font=self._hint_font,
-            max_lines=10,
-        )
-
-        rows = self._rows()
-        self._selected %= max(1, len(rows))
-        self._row_hitboxes = {}
-        list_rect = pygame.Rect(panel.x + 28, body.bottom + 10, panel.w - 56, panel.bottom - body.bottom - 58)
-        gap = 10
-        row_h = 54
-        y = list_rect.y
-        for idx, (_action, label, detail, enabled) in enumerate(rows):
-            row = pygame.Rect(list_rect.x, y, list_rect.w, row_h)
-            self._row_hitboxes[idx] = row.copy()
-            selected = idx == self._selected
-            if selected:
-                pygame.draw.rect(surface, active_bg, row, border_radius=8)
-                pygame.draw.rect(surface, border, row, 2, border_radius=8)
-            else:
-                pygame.draw.rect(surface, (38, 34, 64), row, border_radius=8)
-                pygame.draw.rect(surface, (138, 118, 106), row, 1, border_radius=8)
-            label_color = active_text if selected else text_main
-            detail_color = (120, 78, 52) if selected else text_muted
-            if not enabled:
-                label_color = (150, 132, 120)
-                detail_color = (132, 118, 108)
-            title_surf = self._item_font.render(label, True, label_color)
-            surface.blit(title_surf, (row.x + 14, row.y + 8))
-            detail_surf = self._hint_font.render(detail, True, detail_color)
-            surface.blit(detail_surf, (row.x + 14, row.y + 30))
-            y += row_h + gap
-
-        footer = self._hint_font.render("Enter or Esc quits the app.", True, text_muted)
-        surface.blit(footer, footer.get_rect(midbottom=(panel.centerx, panel.bottom - 16)))
-
-    def _draw_wrapped_text(
-        self,
-        surface: pygame.Surface,
-        text: str,
-        rect: pygame.Rect,
-        *,
-        color: tuple[int, int, int],
-        font: pygame.font.Font,
-        max_lines: int,
-    ) -> None:
-        lines = []
-        for paragraph in str(text).splitlines():
-            words = paragraph.split()
-            if not words:
-                lines.append("")
-                continue
-            current = words[0]
-            for word in words[1:]:
-                candidate = f"{current} {word}"
-                if font.size(candidate)[0] <= rect.w:
-                    current = candidate
-                else:
-                    lines.append(current)
-                    current = word
-            lines.append(current)
-        y = rect.y
-        for line in lines[:max_lines]:
-            surf = font.render(line, True, color)
-            surface.blit(surf, (rect.x, y))
-            y += font.get_linesize() + 2
-
-    def poll_bound_input(self) -> None:
-        while self._app.consume_bound_action("menu_up"):
-            self.handle_event(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_UP, "unicode": ""}))
-        while self._app.consume_bound_action("menu_down"):
-            self.handle_event(
-                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_DOWN, "unicode": ""})
             )
         while self._app.consume_bound_action("menu_select"):
             self.handle_event(
@@ -11666,7 +10151,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
 
         # Cached procedural sprites for Instrument Comprehension dials.
         self._instrument_sprite_cache: dict[tuple[object, ...], pygame.Surface] = {}
-        self._instrument_card_bank = InstrumentAircraftCardSpriteBank(allow_generation=False)
+        self._instrument_card_bank = InstrumentAircraftCardSpriteBank()
         self._instrument_part1_layout: _InstrumentPart1Layout | None = None
         self._instrument_part3_layout: _InstrumentPart3Layout | None = None
 
@@ -11753,7 +10238,6 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         self._tr_system_feedback_code = ""
         self._tr_system_pending_cycle_index: int | None = None
         self._tr_system_pending_target_code = ""
-        self._tr_system_pending_columns: list[list[str]] | None = None
         self._tr_scene_payload_id: int | None = None
         self._tr_scene_rng: random.Random | None = None
         self._tr_scene_glyphs: dict[int, _TargetRecognitionSceneGlyph] = {}
@@ -11766,7 +10250,6 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         self._tr_scene_live_counts_by_label: dict[str, int] = {}
         self._tr_scene_target_alpha_by_label: dict[str, float] = {}
         self._tr_scene_target_cap = 5
-        self._tr_scene_next_target_add_ms = 0
         self._tr_scene_spawn_accum_s = 0.0
         self._tr_scene_next_spawn_after_s = 0.0
         self._tr_scene_spawn_timer_armed = False
@@ -11778,12 +10261,6 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         self._tr_scene_anim_frame = 0.0
         self._tr_scene_last_update_ms = 0
         self._tr_scene_ambient_shapes: list[_TargetRecognitionAmbientShape] = []
-        self._tr_scene_fog_offset_x = 0.0
-        self._tr_scene_fog_offset_y = 0.0
-        self._tr_scene_fog_velocity_x = 0.0
-        self._tr_scene_fog_velocity_y = 0.0
-        self._tr_scene_fog_tile: pygame.Surface | None = None
-        self._tr_scene_fog_tile_seed = 0
         self._tr_scene_base_cache: pygame.Surface | None = None
         self._tr_scene_base_cache_size: tuple[int, int] = (0, 0)
         self._tr_scene_base_cache_seed = 0
@@ -11816,8 +10293,8 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         self._auditory_live_world_frame: pygame.Surface | None = None
         self._auditory_frozen_world_frame: pygame.Surface | None = None
         self._auditory_freeze_key: tuple[str, Phase, tuple[int, int]] | None = None
-        self._auditory_gl_timer_seed: int | None = None
-        self._auditory_gl_timer_last_frame_s: float | None = None
+        self._auditory_frame_timer_seed: int | None = None
+        self._auditory_frame_timer_last_frame_s: float | None = None
         self._auditory_testing_menu = os.environ.get(
             "CFAST_AUDITORY_TESTING_MENU", "1"
         ).strip().lower() not in {
@@ -11913,6 +10390,34 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             return self._test_code
         token = str(getattr(self._engine, "_difficulty_code", "") or "").strip()
         return token or None
+
+    @staticmethod
+    def _fallback_intro_briefing(
+        snap: TestSnapshot,
+        *,
+        intro_code: str | None,
+    ) -> TestGuideBriefing:
+        title = str(snap.title).strip() or "Instructions"
+        prompt_lines = tuple(
+            line.strip() for line in str(snap.prompt).splitlines() if line.strip() != ""
+        )
+        if not prompt_lines:
+            prompt_lines = ("Review the display and response format before starting.",)
+        controls = str(snap.input_hint).strip() or "Press Enter to continue."
+        runtime_note = (
+            f"Runtime code: {intro_code}."
+            if intro_code is not None and intro_code.strip() != ""
+            else "Runtime code was not provided."
+        )
+        return TestGuideBriefing(
+            label=title,
+            assessment="Runtime drill instructions.",
+            tasks=prompt_lines[:5],
+            timing="Use the on-screen timer and item cap when the block starts.",
+            prep="Review the task display and any demo board before starting.",
+            controls=controls,
+            app_flow=f"{runtime_note} Enter advances from this screen.",
+        )
 
     def _intro_has_practice(self) -> bool:
         raw = getattr(self._engine, "practice_questions", getattr(self._engine, "_practice_questions", 0))
@@ -12015,15 +10520,6 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         stage = self._small_font.render(stage_label, True, (188, 204, 228))
         surface.blit(stage, stage.get_rect(midtop=(panel.centerx, panel.y + 74)))
 
-        diagnostic_code: str | None = None
-        if self._is_rapid_tracking_snapshot(snap) and not self._app.opengl_enabled:
-            diagnostic_code = self._app.note_renderer_fallback(
-                scene="rapid_tracking",
-                stage="loading",
-                path="fallback_2d",
-            )
-            self._set_runtime_diagnostic_code(diagnostic_code)
-
         dot_count = (pygame.time.get_ticks() // 220) % 4
         detail = self._small_font.render(
             f"Please wait{'.' * dot_count}",
@@ -12041,14 +10537,6 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             font=self._small_font,
             max_lines=4,
         )
-
-        if diagnostic_code:
-            code_surf = self._tiny_font.render(
-                f"Rapid Tracking report code: {diagnostic_code}",
-                True,
-                (188, 204, 228),
-            )
-            surface.blit(code_surf, code_surf.get_rect(midtop=(panel.centerx, panel.y + 146)))
 
         footer = self._tiny_font.render(
             "Keyboard, mouse, joystick, and pause inputs are temporarily disabled.",
@@ -12134,12 +10622,9 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         if snap.phase not in (Phase.INSTRUCTIONS, Phase.PRACTICE_DONE):
             return
         intro_code = self._resolved_intro_test_code()
-        if intro_code is None:
-            return
-
-        briefing = TEST_GUIDE_BRIEFS.get(intro_code)
+        briefing = TEST_GUIDE_BRIEFS.get(intro_code) if intro_code is not None else None
         if briefing is None:
-            return
+            briefing = self._fallback_intro_briefing(snap, intro_code=intro_code)
 
         loading = not self._intro_loading_complete(snap.phase)
         is_practice_stage = snap.phase is Phase.INSTRUCTIONS
@@ -12401,114 +10886,29 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             setattr(self._engine, "_result_metrics_overrides", overrides)
         return overrides
 
-    def _set_runtime_diagnostic_code(self, code: str | None) -> None:
-        token = "" if code is None else str(code).strip().upper()
-        overrides = self._runtime_result_overrides()
-        overrides["renderer_diagnostic_code"] = token
-
     def _set_rapid_tracking_runtime_metrics(
         self,
         *,
         payload: RapidTrackingPayload | None,
-        diagnostic_code: str | None,
     ) -> None:
         overrides = self._runtime_result_overrides()
-        overrides["renderer_diagnostic_code"] = (
-            "" if diagnostic_code is None else str(diagnostic_code).strip().upper()
-        )
-        overrides["renderer_backend"] = "modern_gl" if self._app.opengl_enabled else "fallback_2d"
-        overrides["renderer_gl_requested"] = (
-            "true" if self._app.renderer_gl_requested() else "false"
-        )
-        overrides["renderer_gl_attempted"] = (
-            "true" if self._app.renderer_gl_attempted() else "false"
-        )
+        backend = self._app.godot_bridge().renderer_backend_for("rapid_tracking")
+        overrides["renderer_backend"] = backend
         if payload is not None:
             overrides["control_scheme"] = str(payload.control_scheme)
 
-    def _runtime_diagnostic_code(self) -> str | None:
-        code = self._app.renderer_diagnostic_code("rapid_tracking")
-        token = "" if code is None else str(code).strip().upper()
-        return token or None
-
-    def _rapid_tracking_requires_modern_gl(self) -> bool:
-        if self._app.headless_mode():
-            return False
-        return str(os.environ.get("SDL_VIDEODRIVER", "")).strip().lower() != "dummy"
-
-    def _rapid_tracking_renderer_requirement_failure(
-        self,
-        snap: TestSnapshot,
-    ) -> OpenGLFailureInfo | None:
-        if not self._is_rapid_tracking_snapshot(snap):
-            return None
-        if not self._rapid_tracking_requires_modern_gl():
-            return None
-        if self._app.opengl_enabled:
-            return None
-
-        title = str(snap.title)
-        scene_label = "Dual-Task Bridge" if title.startswith("Dual-Task Bridge") else "Rapid Tracking"
-        bootstrap_failure = self._app.renderer_bootstrap_failure()
-        requested = self._app.renderer_gl_requested()
-        attempted = self._app.renderer_gl_attempted()
-        diagnostic_code = _renderer_diagnostic_code(
-            scene="rapid_tracking",
-            stage="preflight",
-            path="modern_gl",
-        )
-
-        if bootstrap_failure is not None:
-            detail = (
-                f"{scene_label} cannot continue because the required ModernGL renderer "
-                f"failed during startup. {bootstrap_failure.detail}"
-            ).strip()
-        elif not requested:
-            detail = (
-                f"{scene_label} cannot continue because the ModernGL renderer is disabled "
-                "for this run. Re-enable OpenGL in Settings before launching this activity."
-            )
-        elif attempted:
-            detail = (
-                f"{scene_label} cannot continue because no active ModernGL renderer is "
-                "available after initialization was attempted."
-            )
-        else:
-            detail = (
-                f"{scene_label} cannot continue because the ModernGL renderer is unavailable "
-                "in this environment."
-            )
-
-        state = {
-            "activity_title": title,
-            "renderer_gl_requested": requested,
-            "renderer_gl_attempted": attempted,
-            "renderer_bootstrap_failed": bootstrap_failure is not None,
-            "bootstrap_stage": "" if bootstrap_failure is None else str(bootstrap_failure.stage),
-        }
-        return OpenGLFailureInfo(
-            stage="preflight",
-            summary=f"{scene_label} requires the ModernGL renderer.",
-            detail=detail,
-            requested=requested,
-            attempted=attempted,
-            env_forced=self._app.use_opengl_env_forces_enabled(),
-            scene="rapid_tracking",
-            path="modern_gl_required",
-            diagnostic_code=diagnostic_code,
-            exception_type=None if bootstrap_failure is None else bootstrap_failure.exception_type,
-            location=None if bootstrap_failure is None else bootstrap_failure.location,
-            state=state,
-        )
-
-    def _shared_pause_status_note(self) -> str | None:
-        snap = self._engine.snapshot()
-        if not self._is_rapid_tracking_snapshot(snap):
-            return None
-        code = self._runtime_diagnostic_code()
-        if code is None:
-            return None
-        return f"Rapid Tracking report code: {code}"
+    def _sync_godot_companion(self, snap: TestSnapshot, payload: object | None) -> None:
+        kind = godot_kind_for_snapshot(snap)
+        if kind is None:
+            self._app.godot_bridge().idle()
+            if not self._app.headless_mode():
+                self._app.set_renderer_path("PYGAME_2D")
+            return
+        active = self._app.godot_bridge().sync(snap, payload)
+        if active:
+            self._app.set_renderer_path(GODOT_BACKEND_NAME.upper())
+        elif not self._app.headless_mode():
+            self._app.set_renderer_path("PYGAME_2D")
 
     def _persist_staged_difficulty_level(self) -> int:
         level = self._staged_difficulty_level
@@ -12613,15 +11013,10 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
 
     def _sync_pausable_clock_state(self) -> None:
         should_pause = self._runtime_frozen()
-        clock = self._review_clock or _install_pausable_engine_clock(self._engine)
+        clock = _set_engine_clock_paused(self._engine, should_pause)
         if clock is None:
             return
         self._review_clock = clock
-        if should_pause and not self._review_clock.is_paused():
-            self._review_clock.pause()
-            return
-        if not should_pause and self._review_clock.is_paused():
-            self._review_clock.resume()
 
     def _review_now_s(self) -> float:
         if self._review_clock is not None:
@@ -13284,6 +11679,12 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                         self._cognitive_updating_refresh_runtime_state()
                         return
                     if action == "comms_submit":
+                        if runtime.submit_comms_update():
+                            self._cognitive_updating_refresh_runtime_state()
+                            self._input = ""
+                            return
+                        if snap.phase is not Phase.PRACTICE:
+                            return
                         raw_submission = runtime.build_submission_raw()
                         if raw_submission == "":
                             return
@@ -13377,6 +11778,12 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 self._cognitive_updating_sync_payload(cognitive_updating_payload)
                 runtime = self._cognitive_updating_runtime
                 if runtime is None:
+                    return
+                if runtime.submit_comms_update():
+                    self._cognitive_updating_refresh_runtime_state()
+                    self._input = ""
+                    return
+                if snap.phase is not Phase.PRACTICE:
                     return
                 raw_submission = runtime.build_submission_raw()
                 if raw_submission == "":
@@ -13699,6 +12106,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
 
             if self._apply_system_logic_choice_key(key=key, option_count=len(system_logic_payload.answer_choices)):
                 return
+            return
 
         if math_payload is not None:
             option_count = max(1, len(math_payload.options))
@@ -13729,6 +12137,12 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             if key == pygame.K_TAB:
                 mod = int(getattr(event, "mod", 0))
                 self._table_reading_shift_tab(table_payload, -1 if (mod & pygame.KMOD_SHIFT) else 1)
+                return
+            if key == pygame.K_LEFT:
+                self._table_reading_shift_tab(table_payload, -1)
+                return
+            if key == pygame.K_RIGHT:
+                self._table_reading_shift_tab(table_payload, 1)
                 return
             if key == pygame.K_BACKSPACE:
                 self._input = self._input[:-1]
@@ -14289,32 +12703,32 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             "Spatial Integration"
         )
 
-    def _reset_auditory_gl_frame_timer(self) -> None:
-        self._auditory_gl_timer_seed = None
-        self._auditory_gl_timer_last_frame_s = None
+    def _reset_auditory_frame_timer(self) -> None:
+        self._auditory_frame_timer_seed = None
+        self._auditory_frame_timer_last_frame_s = None
 
-    def _next_auditory_gl_frame_dt(
+    def _next_auditory_frame_dt(
         self,
         *,
         payload: AuditoryCapacityPayload | None,
         advance_animation: bool,
     ) -> float:
         if payload is None:
-            self._reset_auditory_gl_frame_timer()
+            self._reset_auditory_frame_timer()
             return 0.0
 
         seed = int(payload.session_seed)
         now_s = self._review_now_s()
         if (
-            self._auditory_gl_timer_seed != seed
-            or self._auditory_gl_timer_last_frame_s is None
+            self._auditory_frame_timer_seed != seed
+            or self._auditory_frame_timer_last_frame_s is None
         ):
-            self._auditory_gl_timer_seed = seed
-            self._auditory_gl_timer_last_frame_s = now_s
+            self._auditory_frame_timer_seed = seed
+            self._auditory_frame_timer_last_frame_s = now_s
             return 0.0
 
-        dt_s = max(0.0, float(now_s) - float(self._auditory_gl_timer_last_frame_s))
-        self._auditory_gl_timer_last_frame_s = now_s
+        dt_s = max(0.0, float(now_s) - float(self._auditory_frame_timer_last_frame_s))
+        self._auditory_frame_timer_last_frame_s = now_s
         if not advance_animation:
             return 0.0
         return min(0.25, dt_s)
@@ -14419,6 +12833,11 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
     def _reset_debug_input_state(self) -> None:
         self._input = ""
         self._math_choice = 1
+
+    def _clear_response_state_for_new_prompt(self) -> None:
+        self._input = ""
+        self._math_choice = 1
+        self._system_logic_choice = 1
 
     def _submit_debug_tokens(self, tokens: tuple[str, ...]) -> bool:
         submit = getattr(self._engine, "submit_answer", None)
@@ -14535,10 +12954,6 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         self._sync_pausable_clock_state()
         self._expire_review_state_if_needed()
         live_snap = self._engine.snapshot()
-        rapid_tracking_failure = self._rapid_tracking_renderer_requirement_failure(live_snap)
-        if rapid_tracking_failure is not None:
-            self._app.present_renderer_failure(rapid_tracking_failure)
-            return
         if self._runtime_frozen():
             snap = self._review_state.snapshot if self._review_state_active() else live_snap
         else:
@@ -14656,6 +13071,15 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                     str(payload.target_bearing_deg),
                     str(getattr(payload, "exact_value_deg", getattr(payload, "correct_value_deg", ""))),
                 )
+            elif isinstance(snap.payload, VisualSearchPayload):
+                payload = snap.payload
+                prompt_key = (
+                    snap.phase.value,
+                    str(payload.kind),
+                    str(payload.target),
+                    repr(tuple(str(cell) for cell in payload.cells)),
+                    repr(tuple(str(code) for code in payload.cell_codes)),
+                )
             elif isinstance(snap.payload, DigitRecognitionPayload):
                 payload = cast(DigitRecognitionPayload, snap.payload)
                 prompt_key = (
@@ -14667,7 +13091,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 )
         if prompt_key != self._input_prompt_key:
             if self._input_prompt_key is not None and prompt_key is not None:
-                self._input = ""
+                self._clear_response_state_for_new_prompt()
             self._input_prompt_key = prompt_key
 
         # Identify payloads.
@@ -14767,6 +13191,18 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         is_situational_awareness = sa_payload is not None or str(snap.title).startswith(
             "Situational Awareness"
         )
+        godot_payload: object | None = None
+        if is_rapid_tracking:
+            godot_payload = rapid_tracking_payload
+        elif is_spatial_integration:
+            godot_payload = spatial_payload
+        elif is_trace_test_1:
+            godot_payload = trace_test_1_payload
+        elif is_trace_test_2:
+            godot_payload = trace_test_2_payload
+        elif is_auditory_capacity:
+            godot_payload = ac
+        self._sync_godot_companion(snap, godot_payload)
         self._choice_option_hitboxes = {}
         self._table_reading_tab_hitboxes = {}
         self._system_logic_index_hitboxes = {}
@@ -15635,10 +14071,10 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
     def _system_logic_choice_from_key(key: int) -> int | None:
         mapping = {
             pygame.K_a: 1,
-            pygame.K_b: 2,
-            pygame.K_c: 3,
-            pygame.K_d: 4,
-            pygame.K_e: 5,
+            pygame.K_s: 2,
+            pygame.K_d: 3,
+            pygame.K_f: 4,
+            pygame.K_g: 5,
             pygame.K_1: 1,
             pygame.K_2: 2,
             pygame.K_3: 3,
@@ -15671,10 +14107,6 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             pygame.K_2: 2,
             pygame.K_3: 3,
             pygame.K_4: 4,
-            pygame.K_KP1: 1,
-            pygame.K_KP2: 2,
-            pygame.K_KP3: 3,
-            pygame.K_KP4: 4,
         }
         return mapping.get(key)
 
@@ -15688,7 +14120,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
 
     @staticmethod
     def _system_logic_choice_key_label(code: int) -> str:
-        labels = ("A", "B", "C", "D", "E")
+        labels = ("A", "S", "D", "F", "G")
         idx = int(code) - 1
         if 0 <= idx < len(labels):
             return labels[idx]
@@ -16011,6 +14443,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
 
     def close(self) -> None:
         self._clear_review_state()
+        self._app.close_companion_renderers()
         snap = self._engine.snapshot()
         if snap.phase is Phase.RESULTS:
             self._persist_results_if_needed(snap)
@@ -16396,16 +14829,8 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         resize_rt = getattr(self._engine, "resize", None)
         if callable(resize_rt):
             resize_rt(*surface.get_size())
-        diagnostic_code = self._app.renderer_diagnostic_code("rapid_tracking")
-        if not self._app.opengl_enabled:
-            diagnostic_code = self._app.note_renderer_fallback(
-                scene="rapid_tracking",
-                stage="runtime",
-                path="fallback_2d",
-            )
         self._set_rapid_tracking_runtime_metrics(
             payload=payload,
-            diagnostic_code=diagnostic_code,
         )
         render_rapid_tracking_screen(
             surface=surface,
@@ -16538,10 +14963,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             time_remaining_s=snap.time_remaining_s,
             time_fill_ratio=time_fill_ratio,
             freeze_mode=freeze_mode,
-            gl_scene_world=world,
         )
-        if self._app.opengl_enabled:
-            surface.fill((0, 0, 0, 0), world)
         surface.blit(world_frame, world.topleft)
 
         if is_active_play and payload is not None and not intro_loading:
@@ -16799,17 +15221,14 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         time_remaining_s: float | None,
         time_fill_ratio: float | None,
         freeze_mode: str | None,
-        gl_scene_world: pygame.Rect | None = None,
     ) -> pygame.Surface:
         advance_animation = freeze_mode is None
-        frame_dt_s = self._next_auditory_gl_frame_dt(
+        frame_dt_s = self._next_auditory_frame_dt(
             payload=payload,
             advance_animation=advance_animation,
         )
         if freeze_mode is None:
-            frame = pygame.Surface(size, pygame.SRCALPHA if self._app.opengl_enabled else 0)
-            if self._app.opengl_enabled:
-                frame.fill((0, 0, 0, 0))
+            frame = pygame.Surface(size)
             self._render_auditory_capacity_tube_chase_view(
                 surface=frame,
                 world=frame.get_rect(),
@@ -16818,7 +15237,6 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 time_fill_ratio=time_fill_ratio,
                 advance_animation=True,
                 frame_dt_s=frame_dt_s,
-                gl_scene_world=gl_scene_world,
             )
             self._auditory_live_world_frame = frame.copy()
             self._auditory_frozen_world_frame = None
@@ -16833,9 +15251,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             ):
                 self._auditory_frozen_world_frame = self._auditory_live_world_frame.copy()
             else:
-                frame = pygame.Surface(size, pygame.SRCALPHA if self._app.opengl_enabled else 0)
-                if self._app.opengl_enabled:
-                    frame.fill((0, 0, 0, 0))
+                frame = pygame.Surface(size)
                 self._render_auditory_capacity_tube_chase_view(
                     surface=frame,
                     world=frame.get_rect(),
@@ -16844,7 +15260,6 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                     time_fill_ratio=time_fill_ratio,
                     advance_animation=False,
                     frame_dt_s=frame_dt_s,
-                    gl_scene_world=gl_scene_world,
                 )
                 self._auditory_frozen_world_frame = frame
             self._auditory_freeze_key = freeze_key
@@ -17008,22 +15423,8 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         time_fill_ratio: float | None,
         frame_dt_s: float = 0.0,
         advance_animation: bool = True,
-        gl_scene_world: pygame.Rect | None = None,
     ) -> None:
-        _ = advance_animation
-        if self._app.opengl_enabled:
-            surface.fill((0, 0, 0, 0), world)
-            pygame.draw.rect(surface, (20, 42, 140), world, 2)
-            pygame.draw.rect(surface, (78, 104, 178), world.inflate(-4, -4), 1)
-            self._app.queue_auditory_gl_scene(
-                world=pygame.Rect(gl_scene_world if gl_scene_world is not None else world),
-                payload=payload,
-                time_remaining_s=time_remaining_s,
-                time_fill_ratio=time_fill_ratio,
-                frame_dt_s=float(frame_dt_s),
-                advance_animation=bool(advance_animation),
-            )
-            return
+        _ = (advance_animation, time_remaining_s, time_fill_ratio, frame_dt_s)
         self._draw_auditory_capacity_fixed_tunnel(surface, world=world, payload=payload)
 
     @staticmethod
@@ -17849,11 +16250,11 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         if snap.phase in (Phase.PRACTICE, Phase.SCORED):
             if payload is not None:
                 if payload.answer_mode is TableReadingAnswerMode.MULTIPLE_CHOICE:
-                    footer = "Tab: Switch view  |  A/S/D/F/G or 1-5: Answer  |  Up/Down: Move"
+                    footer = "Left/Right or Tab: Switch view  |  A/S/D/F/G or 1-5: Answer  |  Up/Down: Move"
                 elif payload.answer_mode is TableReadingAnswerMode.NUMERIC:
-                    footer = "Tab: Switch view  |  Digits: Type answer  |  Enter: Submit"
+                    footer = "Left/Right or Tab: Switch view  |  Digits: Type answer  |  Enter: Submit"
                 else:
-                    footer = "Tab: Switch view  |  Letters: Type answer  |  Enter: Submit"
+                    footer = "Left/Right or Tab: Switch view  |  Letters: Type answer  |  Enter: Submit"
             else:
                 footer = "Enter: Submit"
         elif snap.phase in (Phase.INSTRUCTIONS, Phase.PRACTICE_DONE):
@@ -17984,6 +16385,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         cols = len(table.column_labels) + 1
         if rows <= 0 or cols <= 0:
             return
+        dense_grid = max(rows - 1, cols - 1) >= 30
 
         cell_w = max(1, grid.w // cols)
         cell_h = max(1, grid.h // rows)
@@ -17991,12 +16393,18 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         draw_h = cell_h * rows
         start_x = grid.x + (grid.w - draw_w) // 2
         start_y = grid.y + (grid.h - draw_h) // 2
-        cell_font_size = max(8, min(18, cell_h + 5, max(8, cell_w // 2 + 4)))
+        if dense_grid:
+            cell_font_size = max(5, min(16, cell_h + 3, max(5, cell_w // 2 + 3)))
+        else:
+            cell_font_size = max(8, min(18, cell_h + 5, max(8, cell_w // 2 + 4)))
         dense_font = pygame.font.Font(None, cell_font_size)
-        header_font = pygame.font.Font(None, max(8, min(18, cell_font_size + 1)))
+        header_font = pygame.font.Font(
+            None,
+            max(5 if dense_grid else 8, min(18, cell_font_size + 1)),
+        )
         draw_lines = cell_w >= 5 and cell_h >= 5
 
-        corner_label = f"{table.row_header}/{table.column_header}"
+        corner_label = "" if dense_grid else f"{table.row_header}/{table.column_header}"
         for row_idx in range(rows):
             for col_idx in range(cols):
                 cell = pygame.Rect(
@@ -18028,8 +16436,13 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                     value = str(table.values[row_idx - 1][col_idx - 1])
                     font = dense_font
 
-                if cell_w >= 7 and cell_h >= 7:
-                    clipped = self._fit_label(font, value, cell.w - 3)
+                if cell_w >= (5 if dense_grid else 7) and cell_h >= (5 if dense_grid else 7):
+                    is_body_value = row_idx > 0 and col_idx > 0
+                    pad = 1 if dense_grid else 3
+                    if dense_grid and is_body_value and len(value) <= 2:
+                        clipped = value
+                    else:
+                        clipped = self._fit_label(font, value, cell.w - pad)
                     text = font.render(clipped, True, text_color)
                     surface.blit(text, text.get_rect(center=cell.center))
 
@@ -18559,7 +16972,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 )
 
         if snap.phase in (Phase.PRACTICE, Phase.SCORED):
-            footer = "1-4 or Up/Down: Index  |  A-E or keypad 1-5: Answer"
+            footer = "1-4 or Up/Down: Index  |  A/S/D/F/G or keypad 1-5: Answer"
         elif snap.phase in (Phase.INSTRUCTIONS, Phase.PRACTICE_DONE):
             footer = "Enter: Continue  |  Esc/Backspace: Back"
         else:
@@ -18699,6 +17112,9 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 comms_swap_in_s=payload.comms_time_limit_s,
                 current_comms_code=payload.comms_code,
                 next_comms_code=None,
+                pending_comms_code="",
+                comms_update_window_open=False,
+                comms_code_warning=False,
                 objective_deadline_left_s=payload.objective_deadline_s,
                 state_code=payload.comms_code,
                 operation_score_hint=0.0,
@@ -18718,13 +17134,9 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 objective_drop_complete=False,
             )
 
-        active_domain_tokens = {
-            str(token).strip().lower().replace("-", "_").replace(" ", "_")
-            for token in payload.active_domains
-        }
-        ui_active_domains = {token for token in active_domain_tokens if token != "state_code"}
         active_domains_label = ", ".join(
-            str(token).replace("_", " ").title() for token in payload.active_domains
+            str(token).replace("_", " ").title()
+            for token in COGNITIVE_UPDATING_DOMAIN_ORDER
         )
         focus_txt = self._tiny_font.render(
             f"Focus: {payload.focus_label} | Active: {active_domains_label}",
@@ -18781,39 +17193,10 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         def _set_hitbox(scope: str, code: str, rect: pygame.Rect) -> None:
             self._cognitive_updating_hitboxes[f"{scope}|{code}"] = rect
 
-        def _page_domain(page_idx: int) -> str | None:
-            return {
-                1: "objectives",
-                2: "controls",
-                3: "navigation",
-                4: "sensors",
-                5: "engine",
-            }.get(page_idx)
-
-        def _page_is_dimmed(page_idx: int) -> bool:
-            domain = _page_domain(page_idx)
-            return domain is not None and domain not in ui_active_domains
-
         def _draw_page(panel_rect: pygame.Rect, page_idx: int, scope: str) -> None:
             if page_idx == 0:
                 lines_rect = panel_rect.inflate(-22, -20)
                 line_y = lines_rect.y
-                current_code_label = f"Current code: {runtime_snap.current_comms_code}"
-                countdown_label = f"Code changes in: {_mmss(runtime_snap.comms_swap_in_s)}"
-                current_code_txt = self._small_font.render(
-                    self._fit_label(self._small_font, current_code_label, lines_rect.w),
-                    True,
-                    text_main,
-                )
-                countdown_txt = self._tiny_font.render(
-                    self._fit_label(self._tiny_font, countdown_label, lines_rect.w),
-                    True,
-                    text_muted,
-                )
-                status_gap = 4
-                status_h = current_code_txt.get_height() + status_gap + countdown_txt.get_height()
-                status_y = max(lines_rect.y, lines_rect.bottom - status_h)
-                message_bottom = max(lines_rect.y, status_y - 8)
                 message_lines = tuple(
                     str(line).strip()
                     for line in runtime_snap.message_lines
@@ -18822,18 +17205,13 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 for line in message_lines:
                     if line == "":
                         continue
-                    if line_y + self._app.font.get_linesize() > message_bottom:
+                    if line_y + self._app.font.get_linesize() > lines_rect.bottom:
                         break
                     rendered = self._app.font.render(
                         self._fit_label(self._app.font, line, lines_rect.w), True, text_main
                     )
                     surface.blit(rendered, (lines_rect.x, line_y))
                     line_y += max(34, self._app.font.get_linesize() + 8)
-                surface.blit(current_code_txt, (lines_rect.x, status_y))
-                surface.blit(
-                    countdown_txt,
-                    (lines_rect.x, status_y + current_code_txt.get_height() + status_gap),
-                )
                 return
 
             if page_idx == 1:
@@ -19101,25 +17479,66 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 _set_hitbox(scope, "pump_on", on_btn)
                 _set_hitbox(scope, "pump_off", off_btn)
 
+                status_y = comms_rect.y + 38
+                if runtime_snap.comms_update_window_open and runtime_snap.next_comms_code is not None:
+                    countdown_label = f"Update in: {_mmss(runtime_snap.comms_swap_in_s)}"
+                    message_txt = self._tiny_font.render(
+                        self._fit_label(self._tiny_font, "Check Messages", comms_rect.w - 24),
+                        True,
+                        text_main,
+                    )
+                    countdown_txt = self._tiny_font.render(
+                        self._fit_label(self._tiny_font, countdown_label, comms_rect.w - 24),
+                        True,
+                        text_muted,
+                    )
+                    surface.blit(message_txt, (comms_rect.x + 12, status_y))
+                    status_y += message_txt.get_height() + 1
+                    surface.blit(countdown_txt, (comms_rect.x + 12, status_y))
+                    status_y += countdown_txt.get_height() + 1
+                else:
+                    idle_txt = self._tiny_font.render(
+                        self._fit_label(self._tiny_font, "Await message code", comms_rect.w - 24),
+                        True,
+                        text_muted,
+                    )
+                    surface.blit(idle_txt, (comms_rect.x + 12, status_y))
+                    status_y += idle_txt.get_height() + 1
+                if runtime_snap.comms_code_warning:
+                    warn_txt = self._tiny_font.render(
+                        self._fit_label(self._tiny_font, "Comms code warning", comms_rect.w - 24),
+                        True,
+                        (255, 188, 80),
+                    )
+                    surface.blit(warn_txt, (comms_rect.x + 12, status_y))
+                    status_y += warn_txt.get_height() + 1
+
                 submit_w = max(52, min(66, comms_rect.w // 3))
                 box_w = max(70, comms_rect.w - submit_w - 36)
-                box = pygame.Rect(comms_rect.x + 12, comms_rect.y + 52, box_w, 52)
+                box_y = max(comms_rect.y + 52, min(status_y + 4, comms_rect.bottom - 88))
+                box = pygame.Rect(comms_rect.x + 12, box_y, box_w, 42)
                 pygame.draw.rect(surface, (230, 157, 38), box, border_radius=4)
+                comms_display = self._cognitive_updating_comms_input
+                comms_color = (20, 20, 22)
+                pending_submitted = comms_display == "" and bool(runtime_snap.pending_comms_code)
                 comms_txt = self._app.font.render(
-                    self._cognitive_updating_comms_input, True, (20, 20, 22)
+                    comms_display, True, comms_color
                 )
                 surface.blit(comms_txt, (box.x + 8, box.y + (box.h - comms_txt.get_height()) // 2))
-                submit = pygame.Rect(box.right + 8, box.y, submit_w, 52)
+                if pending_submitted:
+                    pending_txt = self._tiny_font.render("Submitted", True, text_muted)
+                    surface.blit(pending_txt, (box.x + 8, max(box.y - pending_txt.get_height() - 1, comms_rect.y + 34)))
+                submit = pygame.Rect(box.right + 8, box.y, submit_w, 42)
                 submit_color = (
                     (0, 176, 0) if len(self._cognitive_updating_comms_input) == 4 else header_blue
                 )
                 pygame.draw.rect(surface, submit_color, submit, border_radius=4)
                 _set_hitbox(scope, "comms_submit", submit)
 
-                key_y = comms_rect.bottom - 44
+                key_y = comms_rect.bottom - 38
                 key_w = max(26, min(72, (comms_rect.w - 28) // 4))
                 for idx, digit in enumerate(("1", "2", "3", "4")):
-                    key = pygame.Rect(comms_rect.x + 8 + idx * (key_w + 2), key_y, key_w, 38)
+                    key = pygame.Rect(comms_rect.x + 8 + idx * (key_w + 2), key_y, key_w, 32)
                     pygame.draw.rect(surface, (70, 70, 72), key)
                     pygame.draw.rect(surface, (40, 40, 42), key, 1)
                     key_txt = self._app.font.render(digit, True, text_main)
@@ -19341,10 +17760,9 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                     row_h,
                 )
                 active = idx == active_idx
-                domain_active = not _page_is_dimmed(idx)
                 pygame.draw.rect(
                     surface,
-                    accent_orange if active else (header_blue if domain_active else (27, 67, 103)),
+                    accent_orange if active else header_blue,
                     btn,
                     border_radius=6,
                 )
@@ -19352,7 +17770,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 text = self._small_font.render(
                     _label(name, center=False),
                     True,
-                    text_main if domain_active else text_muted,
+                    text_main,
                 )
                 surface.blit(text, text.get_rect(center=btn.center))
                 _set_hitbox(scope, f"tab:{idx}", btn)
@@ -19367,15 +17785,6 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             pygame.draw.rect(surface, border, page_rect, 2)
             page_idx = active_idx % 6
             _draw_page(page_rect, page_idx, scope)
-            if _page_is_dimmed(page_idx):
-                overlay = pygame.Surface((page_rect.w, page_rect.h), pygame.SRCALPHA)
-                overlay.fill((10, 14, 20, 138))
-                surface.blit(overlay, page_rect.topleft)
-                inactive_txt = self._small_font.render("TRAINING INACTIVE", True, text_main)
-                surface.blit(
-                    inactive_txt,
-                    inactive_txt.get_rect(center=(page_rect.centerx, page_rect.y + 22)),
-                )
 
         panel_gap = 10
         panel_top = warning.bottom + 8
@@ -20168,13 +18577,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 off_surf = self._small_font.render("OFF", True, text_main)
                 surface.blit(off_surf, off_surf.get_rect(center=value_rect.center))
             elif panel_key == "scene":
-                lines = []
-                for line in self._tr_scene_active_targets:
-                    count = int(self._tr_scene_live_counts_by_label.get(line, 0))
-                    if count > 1:
-                        lines.append(f"{line} x{count}")
-                    else:
-                        lines.append(str(line))
+                live_lines = [str(line) for line in self._tr_scene_active_targets]
                 objective_label = str(getattr(payload, "scene_objective_label", "")).strip()
                 y = value_rect.y
                 line_h = self._tiny_font.get_linesize() + 1
@@ -20183,13 +18586,15 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                     objective_surf = self._tiny_font.render(objective_label, True, text_muted)
                     surface.blit(objective_surf, (value_rect.x, y))
                     y += line_h
-                    if not lines and not bool(payload.scene_has_target):
-                        lines = ["No live targets"]
-                    lines = lines[: max(0, self._tr_scene_target_cap - 1)]
+                    if not live_lines and not bool(payload.scene_has_target):
+                        live_lines = ["No live targets"]
+                    lines = live_lines[: max(0, self._tr_scene_target_cap - 1)]
                 else:
+                    target_instruction = str(getattr(payload, "scene_target", "")).strip()
+                    lines = live_lines if live_lines else ([target_instruction] if target_instruction else [])
                     lines = lines[: self._tr_scene_target_cap]
                 for line in lines:
-                    alpha_key = str(line).split(" x", 1)[0]
+                    alpha_key = str(line)
                     fade = float(self._tr_scene_target_alpha_by_label.get(alpha_key, 1.0))
                     line_color = self._target_recognition_blend_color(text_muted, text_main, fade)
                     surf = self._tiny_font.render(line, True, line_color)
@@ -20331,9 +18736,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 return f"{objective_label}: {total_live} live."
             if len(active_targets) == 1:
                 label = active_targets[0]
-                count = max(1, int(self._tr_scene_live_counts_by_label.get(label, 1)))
-                suffix = f" x{count}" if count > 1 else ""
-                return f"Scene active: {label}{suffix} live."
+                return f"Scene active: {label} live."
             return f"Scene active: {total_live} live targets."
 
         return "Scene active: currently clear."
@@ -20357,20 +18760,24 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         shape_defs = (
             ("Trucks", TargetRecognitionSceneEntity("truck", "friendly", False, False)),
             ("Tanks", TargetRecognitionSceneEntity("tank", "friendly", False, False)),
-            ("Buildings", TargetRecognitionSceneEntity("building", "friendly", False, False)),
+            ("Bldgs", TargetRecognitionSceneEntity("building", "friendly", False, False)),
+            ("Beacons", TargetRecognitionSceneEntity("beacon", "friendly", False, False)),
+            ("Unknown", TargetRecognitionSceneEntity("unknown", "friendly", False, False)),
         )
+        shape_step = max(44, (rect.w - 16) // max(1, len(shape_defs)))
         for idx, (label, entity) in enumerate(shape_defs):
             cy = y0 + 7
+            x = x_l + idx * shape_step
             self._draw_target_recognition_symbol(
                 surface,
                 entity=entity,
-                cx=x_l + 4 + idx * max(44, rect.w // 3),
+                cx=x + 4,
                 cy=cy,
                 size=6,
                 color=(230, 230, 230, 255),
             )
             surf = self._tiny_font.render(label, True, text)
-            surface.blit(surf, (x_l + 14 + idx * max(44, rect.w // 3), cy - 7))
+            surface.blit(surf, (x + 14, cy - 7))
 
         # Affiliation row.
         aff_defs = (
@@ -20449,13 +18856,6 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             hit_r = max(8, int(size * hit_scale))
             hit = pygame.Rect(rect.x + cx - hit_r, rect.y + cy - hit_r, hit_r * 2, hit_r * 2)
             self._tr_scene_symbol_hitboxes.append((hit, glyph_id))
-
-        self._draw_target_recognition_clouds(
-            scene,
-            payload,
-            phase_s=self._tr_timer_time_s,
-        )
-        self._draw_target_recognition_scene_fog(scene)
 
         surface.blit(scene, rect.topleft)
         pygame.draw.rect(surface, (78, 98, 138), rect, 1)
@@ -20580,6 +18980,22 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 (int(cx + math.cos(a0 - 2.12) * (s + 2)), int(cy + math.sin(a0 - 2.12) * (s + 2))),
             )
             pygame.draw.polygon(surface, color, pts, line_w)
+        elif entity.shape == "beacon":
+            self._draw_target_recognition_beacon(
+                surface,
+                cx=cx,
+                cy=cy,
+                size=s,
+                color=color,
+            )
+        elif entity.shape == "unknown":
+            self._draw_target_recognition_unknown(
+                surface,
+                cx=cx,
+                cy=cy,
+                size=s,
+                color=color,
+            )
         else:
             points = []
             for i in range(6):
@@ -20655,6 +19071,8 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             "TRK": "truck",
             "TNK": "tank",
             "BLD": "building",
+            "BCN": "beacon",
+            "UNK": "unknown",
         }.get(shape_code, "truck")
         affiliation = {
             "H": "hostile",
@@ -20667,69 +19085,6 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             damaged=("D" in flags),
             high_priority=("P" in flags),
         )
-
-    def _draw_target_recognition_clouds(
-        self,
-        scene: pygame.Surface,
-        payload: TargetRecognitionPayload,
-        *,
-        phase_s: float,
-    ) -> None:
-        w, h = scene.get_size()
-        seed = self._target_recognition_scene_seed(payload) ^ 0x9E3779B9
-        rng = random.Random(seed)
-        t = max(0.0, float(phase_s))
-        drift_rng = random.Random(seed ^ 0xC13FADE)
-        heading = float(drift_rng.uniform(0.0, math.tau))
-        speed = float(drift_rng.uniform(5.0, 13.0))
-        drift_x = math.cos(heading) * speed * t
-        drift_y = math.sin(heading) * speed * t
-        span_w = max(1.0, float(w) * 1.36)
-        span_h = max(1.0, float(h) * 1.36)
-
-        haze = pygame.Surface((w, h), pygame.SRCALPHA)
-        haze.fill((194, 198, 194, 20))
-
-        def moving_point() -> tuple[float, float]:
-            bx = rng.uniform(-0.18 * w, 1.18 * w)
-            by = rng.uniform(-0.18 * h, 1.18 * h)
-            cx = ((bx + drift_x + (0.18 * w)) % span_w) - (0.18 * w)
-            cy = ((by + drift_y + (0.18 * h)) % span_h) - (0.18 * h)
-            return (cx, cy)
-
-        for _ in range(14):
-            cx, cy = moving_point()
-            radius = rng.uniform(max(58, w * 0.14), max(148, w * 0.31))
-            for i in range(3):
-                rr = int(radius * (1.0 - i * 0.22))
-                alpha = max(34, int(76 - i * 14))
-                shade = 188 - (i * 5)
-                pygame.draw.circle(haze, (shade, shade + 6, shade, alpha), (int(cx), int(cy)), rr)
-                pygame.draw.circle(
-                    haze,
-                    (shade, shade + 4, shade, max(24, alpha - 24)),
-                    (int(cx + rr * 0.34), int(cy - rr * 0.18)),
-                    int(rr * 0.72),
-                )
-
-        for _ in range(8):
-            cx, cy = moving_point()
-            radius = rng.uniform(max(42, w * 0.10), max(112, w * 0.22))
-            pygame.draw.circle(haze, (24, 30, 27, 82), (int(cx), int(cy)), int(radius))
-            pygame.draw.circle(
-                haze,
-                (12, 16, 14, 66),
-                (int(cx + radius * 0.2), int(cy - radius * 0.1)),
-                int(radius * 0.68),
-            )
-
-        haze.fill((184, 188, 184, 12), special_flags=pygame.BLEND_RGBA_ADD)
-        haze.fill((236, 236, 236, 8), special_flags=pygame.BLEND_RGBA_SUB)
-
-        scene.blit(haze, (0, 0))
-        veil = pygame.Surface((w, h), pygame.SRCALPHA)
-        veil.fill((150, 154, 150, 8))
-        scene.blit(veil, (0, 0))
 
     def _target_recognition_build_scene_ambient_shapes(
         self,
@@ -20807,39 +19162,6 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             )
             pygame.draw.polygon(scene, color, pts, 1)
 
-    def _target_recognition_build_scene_fog_tile(self, *, seed: int) -> pygame.Surface:
-        rng = random.Random(seed ^ 0xA2F1E3C5)
-        tile = pygame.Surface((96, 96), pygame.SRCALPHA)
-        for _ in range(26):
-            cx = int(rng.uniform(0, 95))
-            cy = int(rng.uniform(0, 95))
-            radius = int(rng.uniform(10, 28))
-            alpha = int(rng.uniform(20, 52))
-            shade = int(rng.uniform(126, 164))
-            pygame.draw.circle(tile, (shade, shade + 6, shade + 2, alpha), (cx, cy), radius)
-        for _ in range(12):
-            x1 = int(rng.uniform(0, 95))
-            y1 = int(rng.uniform(0, 95))
-            x2 = int(x1 + rng.uniform(-18, 18))
-            y2 = int(y1 + rng.uniform(-18, 18))
-            pygame.draw.line(tile, (188, 194, 196, int(rng.uniform(12, 28))), (x1, y1), (x2, y2), 1)
-        return tile
-
-    def _draw_target_recognition_scene_fog(self, scene: pygame.Surface) -> None:
-        tile = self._tr_scene_fog_tile
-        if tile is None:
-            return
-        w, h = scene.get_size()
-        tile_w, tile_h = tile.get_size()
-        offset_x = int(round(self._tr_scene_fog_offset_x)) % tile_w
-        offset_y = int(round(self._tr_scene_fog_offset_y)) % tile_h
-        fog = pygame.Surface((w, h), pygame.SRCALPHA)
-        for y in range(-offset_y, h, tile_h):
-            for x in range(-offset_x, w, tile_w):
-                fog.blit(tile, (x, y))
-        fog.fill((138, 144, 146, 18), special_flags=pygame.BLEND_RGBA_ADD)
-        scene.blit(fog, (0, 0))
-
     def _target_recognition_reset_scene_subtask(self) -> None:
         self._target_recognition_reset_runtime_timer()
         self._tr_scene_payload_id = None
@@ -20854,7 +19176,6 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         self._tr_scene_live_counts_by_label = {}
         self._tr_scene_target_alpha_by_label = {}
         self._tr_scene_target_cap = 5
-        self._tr_scene_next_target_add_ms = 0
         self._tr_scene_spawn_accum_s = 0.0
         self._tr_scene_next_spawn_after_s = 0.0
         self._tr_scene_spawn_timer_armed = False
@@ -20866,12 +19187,6 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         self._tr_scene_anim_frame = 0.0
         self._tr_scene_last_update_ms = 0
         self._tr_scene_ambient_shapes = []
-        self._tr_scene_fog_offset_x = 0.0
-        self._tr_scene_fog_offset_y = 0.0
-        self._tr_scene_fog_velocity_x = 0.0
-        self._tr_scene_fog_velocity_y = 0.0
-        self._tr_scene_fog_tile = None
-        self._tr_scene_fog_tile_seed = 0
         self._tr_scene_base_cache = None
         self._tr_scene_base_cache_size = (0, 0)
         self._tr_scene_base_cache_seed = 0
@@ -20895,28 +19210,14 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             self._tr_scene_active_targets = []
             self._tr_scene_live_counts_by_label = {}
             self._tr_scene_target_alpha_by_label = {}
-            if payload.scene_has_target and not clear_all_targets:
-                self._tr_scene_target_queue = list(payload.scene_target_options)
-                self._tr_scene_next_target_add_ms = now_ms + 1200
-            else:
-                self._tr_scene_next_target_add_ms = 0
             self._tr_scene_spawn_accum_s = 0.0
             self._tr_scene_next_spawn_after_s = 0.0
             self._tr_scene_spawn_timer_armed = False
             self._tr_scene_anim_frame = 0.0
             self._tr_scene_last_update_ms = now_ms
-            effect_rng = random.Random(seed ^ 0x9135B6A7)
-            fog_heading = float(effect_rng.uniform(0.0, math.tau))
-            fog_speed = float(effect_rng.uniform(5.0, 14.0))
-            self._tr_scene_fog_offset_x = 0.0
-            self._tr_scene_fog_offset_y = 0.0
-            self._tr_scene_fog_velocity_x = math.cos(fog_heading) * fog_speed
-            self._tr_scene_fog_velocity_y = math.sin(fog_heading) * fog_speed
             self._tr_scene_ambient_shapes = self._target_recognition_build_scene_ambient_shapes(
                 seed=seed
             )
-            self._tr_scene_fog_tile = self._target_recognition_build_scene_fog_tile(seed=seed)
-            self._tr_scene_fog_tile_seed = seed
             self._tr_scene_base_cache = None
             self._tr_scene_base_cache_size = (0, 0)
             self._tr_scene_base_cache_seed = 0
@@ -20970,6 +19271,15 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                         fade_in=False,
                         arm_spawn_timer=False,
                     )
+            elif payload.scene_has_target:
+                initial_label = self._target_recognition_scene_pick_spawn_label()
+                if initial_label is not None:
+                    self._target_recognition_scene_ensure_label_present(
+                        payload,
+                        initial_label,
+                        fade_in=False,
+                        arm_spawn_timer=True,
+                    )
 
         if self._tr_scene_payload_id != pid:
             return
@@ -20994,8 +19304,6 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 elif shape.alpha < shape.min_alpha:
                     shape.alpha = shape.min_alpha
                     shape.alpha_velocity = abs(shape.alpha_velocity)
-            self._tr_scene_fog_offset_x += self._tr_scene_fog_velocity_x * dt_s
-            self._tr_scene_fog_offset_y += self._tr_scene_fog_velocity_y * dt_s
 
         if payload.scene_has_target and not clear_all_targets:
             if self._tr_scene_spawn_timer_armed and self._tr_scene_next_spawn_after_s > 0.0:
@@ -21020,21 +19328,6 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                         self._target_recognition_scene_spawn_interval_s(payload)
                     )
                     spawn_loops += 1
-            if (
-                not self._tr_scene_spawn_timer_armed
-                and self._tr_scene_target_queue
-                and now_ms >= int(self._tr_scene_next_target_add_ms)
-            ):
-                initial_label = self._target_recognition_scene_pick_spawn_label()
-                if initial_label is not None:
-                    self._target_recognition_scene_ensure_label_present(
-                        payload,
-                        initial_label,
-                        fade_in=True,
-                        arm_spawn_timer=True,
-                    )
-                self._tr_scene_next_target_add_ms = 0
-
         self._target_recognition_scene_prune_completed_targets()
 
     def _target_recognition_scene_prune_completed_targets(self) -> None:
@@ -21092,6 +19385,13 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         self._tr_scene_spawn_timer_armed = True
         self._tr_scene_spawn_accum_s = 0.0
         self._tr_scene_next_spawn_after_s = self._target_recognition_scene_spawn_interval_s(payload)
+
+    def _target_recognition_scene_random_entity_opacity(self) -> tuple[float, float]:
+        if self._tr_scene_rng is None:
+            return (132.0, 168.0)
+        max_alpha = float(self._tr_scene_rng.uniform(118.0, 196.0))
+        alpha = float(self._tr_scene_rng.uniform(76.0, max_alpha))
+        return alpha, max_alpha
 
     def _target_recognition_handle_scene_press(
         self,
@@ -21152,8 +19452,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         glyph.nx, glyph.ny = self._target_recognition_scene_random_position()
         glyph.scale = float(self._tr_scene_rng.uniform(0.010, 0.024))
         glyph.heading = float(self._tr_scene_rng.uniform(0.0, math.tau))
-        glyph.alpha = 0.0
-        glyph.max_alpha = float(self._tr_scene_rng.uniform(128.0, 186.0))
+        glyph.alpha, glyph.max_alpha = self._target_recognition_scene_random_entity_opacity()
         glyph.matching_labels = ()
         glyph.entity = None
         glyph.live_target_label = ""
@@ -21167,7 +19466,11 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         for _ in range(72):
             damaged, high_priority = self._target_recognition_scene_roll_modifiers()
             candidate = TargetRecognitionSceneEntity(
-                shape=str(self._tr_scene_rng.choice(("truck", "tank", "building"))),
+                shape=str(
+                    self._tr_scene_rng.choice(
+                        ("truck", "tank", "building", "beacon", "unknown")
+                    )
+                ),
                 affiliation=str(self._tr_scene_rng.choice(("hostile", "friendly", "neutral"))),
                 damaged=damaged,
                 high_priority=high_priority,
@@ -21242,10 +19545,14 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                     labels=payload.scene_target_options,
                 )
                 preferred.live_target_label = label_key
+                target_alpha, target_max_alpha = (
+                    self._target_recognition_scene_random_entity_opacity()
+                )
+                preferred.max_alpha = target_max_alpha
                 if fade_in and current_count <= 0:
                     preferred.alpha = 0.0
                 else:
-                    preferred.alpha = preferred.max_alpha
+                    preferred.alpha = target_alpha
         if fade_in:
             if not label_was_active:
                 self._tr_scene_target_alpha_by_label[label_key] = 0.0
@@ -21336,14 +19643,16 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         entity: TargetRecognitionSceneEntity, label: str
     ) -> bool:
         txt = str(label).upper()
-        if "UNKNOWN" in txt or "BEACON" in txt:
-            return False
         if "TRUCK" in txt:
             shape = "truck"
         elif "TANK" in txt:
             shape = "tank"
         elif "BUILDING" in txt:
             shape = "building"
+        elif "BEACON" in txt:
+            shape = "beacon"
+        elif "UNKNOWN" in txt:
+            shape = "unknown"
         else:
             return False
         if "HOSTILE" in txt:
@@ -21369,14 +19678,16 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         label: str,
     ) -> TargetRecognitionSceneEntity | None:
         txt = str(label).upper()
-        if "UNKNOWN" in txt or "BEACON" in txt:
-            return None
         if "TRUCK" in txt:
             shape = "truck"
         elif "TANK" in txt:
             shape = "tank"
         elif "BUILDING" in txt:
             shape = "building"
+        elif "BEACON" in txt:
+            shape = "beacon"
+        elif "UNKNOWN" in txt:
+            shape = "unknown"
         else:
             return None
         if "HOSTILE" in txt:
@@ -21805,7 +20116,6 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         self._tr_system_feedback_code = ""
         self._tr_system_pending_cycle_index = None
         self._tr_system_pending_target_code = ""
-        self._tr_system_pending_columns = None
 
     def _target_recognition_sync_system_stream(self, payload: TargetRecognitionPayload) -> None:
         now_ms = self._runtime_now_ms()
@@ -21816,11 +20126,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             self._tr_system_cycle_index = 0
             self._tr_system_pending_cycle_index = None
             self._tr_system_pending_target_code = ""
-            self._tr_system_pending_columns = None
-            self._tr_system_columns = self._target_recognition_build_system_columns(
-                payload,
-                cycle_index=self._tr_system_cycle_index,
-            )
+            self._tr_system_columns = self._target_recognition_build_system_columns(payload)
             row_count = max(1, len(self._tr_system_columns[0])) if self._tr_system_columns else 1
             self._tr_system_row_offset = 0
             self._tr_system_row_frac = 0.0
@@ -21848,17 +20154,11 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         if system_feedback_hold:
             return
         if self._tr_system_pending_target_code:
-            if self._tr_system_pending_columns is not None:
-                self._tr_system_columns = [list(col) for col in self._tr_system_pending_columns]
             if self._tr_system_pending_cycle_index is not None:
                 self._tr_system_cycle_index = int(self._tr_system_pending_cycle_index)
             self._tr_system_target_code = str(self._tr_system_pending_target_code)
             self._tr_system_pending_target_code = ""
-            self._tr_system_pending_columns = None
             self._tr_system_pending_cycle_index = None
-            self._tr_system_row_offset = 0
-            self._tr_system_row_frac = 0.0
-            self._tr_system_last_step_ms = now_ms
 
         step = max(1000, int(self._tr_system_step_interval_ms))
         row_count = max(1, len(self._tr_system_columns[0])) if self._tr_system_columns else 1
@@ -21873,13 +20173,10 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
     def _target_recognition_build_system_columns(
         self,
         payload: TargetRecognitionPayload,
-        *,
-        cycle_index: int = 0,
     ) -> list[list[str]]:
         cols: list[list[str]] = []
         if payload.system_cycles:
-            cycle_idx = max(0, min(len(payload.system_cycles) - 1, int(cycle_index)))
-            source_cols = payload.system_cycles[cycle_idx].columns
+            source_cols = payload.system_cycles[0].columns
             for col in source_cols[:3]:
                 cols.append([str(v) for v in col])
         else:
@@ -21949,17 +20246,12 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         if payload.system_cycles:
             next_cycle_index = (self._tr_system_cycle_index + 1) % len(payload.system_cycles)
             self._tr_system_pending_cycle_index = next_cycle_index
-            self._tr_system_pending_columns = self._target_recognition_build_system_columns(
-                payload,
-                cycle_index=next_cycle_index,
-            )
             self._tr_system_pending_target_code = self._target_recognition_system_cycle_target(
                 payload,
                 cycle_index=next_cycle_index,
             )
         else:
             self._tr_system_pending_cycle_index = None
-            self._tr_system_pending_columns = None
             self._tr_system_pending_target_code = self._target_recognition_pick_next_system_target()
         self._tr_system_feedback_state = "ok"
         self._tr_system_feedback_until_ms = now_ms + 420
@@ -23265,129 +21557,68 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         payload: TraceTest1Payload | None,
         practice_mode: bool,
     ) -> None:
-        if self._app.opengl_enabled:
-            surface.fill((0, 0, 0, 0), rect)
-            pygame.draw.rect(surface, (208, 222, 248), rect, 1)
-            inner = rect.inflate(-8, -8)
-            if inner.w > 0 and inner.h > 0 and payload is not None:
-                self._app.queue_gl_scene(
-                    TraceTest1GlScene(
-                        world=pygame.Rect(inner),
-                        payload=payload,
-                        practice_mode=practice_mode,
-                    )
-                )
-            return
-        sky_top = (92, 138, 208)
-        sky_bottom = (128, 168, 222)
-        ground_top = (118, 142, 176)
-        ground_bottom = (96, 120, 154)
         border = (208, 222, 248)
-
-        if self._app.opengl_enabled:
-            pygame.draw.rect(surface, (8, 14, 62, 26), rect)
-        else:
-            pygame.draw.rect(surface, (8, 14, 62), rect)
+        pygame.draw.rect(surface, (8, 14, 62), rect)
         pygame.draw.rect(surface, border, rect, 1)
         inner = rect.inflate(-8, -8)
         if inner.w <= 0 or inner.h <= 0:
             return
-        for y in range(inner.h):
-            t = y / float(max(1, inner.h - 1))
-            if t < 0.52:
-                sky_t = t / 0.52
-                color = tuple(
-                    int(round(sky_top[idx] + (sky_bottom[idx] - sky_top[idx]) * sky_t))
-                    for idx in range(3)
-                )
-            else:
-                ground_t = (t - 0.52) / 0.48
-                color = tuple(
-                    int(round(ground_top[idx] + (ground_bottom[idx] - ground_top[idx]) * ground_t))
-                    for idx in range(3)
-                )
-            pygame.draw.line(surface, color, (inner.x, inner.y + y), (inner.right, inner.y + y))
-        pygame.draw.line(
-            surface,
-            (236, 244, 255),
-            (inner.x, inner.y + int(inner.h * 0.52)),
-            (inner.right, inner.y + int(inner.h * 0.52)),
-            1,
-        )
+        pygame.draw.rect(surface, (18, 32, 84), inner)
+        grid_color = (54, 76, 132)
+        for idx in range(1, 6):
+            x = inner.x + int(round(inner.w * idx / 6.0))
+            y = inner.y + int(round(inner.h * idx / 6.0))
+            pygame.draw.line(surface, grid_color, (x, inner.y), (x, inner.bottom), 1)
+            pygame.draw.line(surface, grid_color, (inner.x, y), (inner.right, y), 1)
+        center_lines = (126, 146, 190)
+        pygame.draw.line(surface, center_lines, (inner.centerx, inner.y), (inner.centerx, inner.bottom), 1)
+        pygame.draw.line(surface, center_lines, (inner.x, inner.centery), (inner.right, inner.centery), 1)
         if payload is None:
             return
-        target_pose, blue_poses = trace_test_1_aircraft_screen_poses_for_payload(
-            payload,
-            size=inner.size,
-        )
+        subtitle = "Practice" if practice_mode else "Scored"
+        surface.blit(self._tiny_font.render(subtitle, True, (214, 226, 248)), (inner.x + 8, inner.y + 6))
+
+        def project(position: tuple[float, float, float]) -> tuple[int, int]:
+            nx, ny = trace_test_1_normalized_position(position)
+            x = inner.x + int(round(max(0.0, min(1.0, nx)) * inner.w))
+            y = inner.y + int(round(max(0.0, min(1.0, ny)) * inner.h))
+            return (x, y)
+
+        def draw_marker(
+            frame: object,
+            *,
+            label: str,
+            color: tuple[int, int, int],
+            outline: tuple[int, int, int],
+            radius: int,
+        ) -> None:
+            pos = project(getattr(frame, "position"))
+            heading = math.radians(float(getattr(frame, "travel_heading_deg", 0.0)) - 90.0)
+            tip = (
+                pos[0] + int(round(math.cos(heading) * (radius + 10))),
+                pos[1] + int(round(math.sin(heading) * (radius + 10))),
+            )
+            pygame.draw.line(surface, outline, pos, tip, 2)
+            pygame.draw.circle(surface, color, pos, radius)
+            pygame.draw.circle(surface, outline, pos, radius, 2)
+            label_surf = self._tiny_font.render(label, True, (244, 248, 255))
+            surface.blit(label_surf, label_surf.get_rect(center=(pos[0], pos[1] - radius - 10)))
+
         blue_colors = ((74, 110, 206), (82, 126, 220), (88, 140, 226), (66, 98, 192))
-        for idx, (blue_frame, blue_pose) in enumerate(
-            zip(payload.scene.blue_frames, blue_poses, strict=True)
-        ):
-            blue_center, blue_scale = trace_test_1_project_scene_position(
-                blue_frame.position,
-                size=inner.size,
+        for idx, blue_frame in enumerate(payload.scene.blue_frames):
+            draw_marker(
+                blue_frame,
+                label=f"B{idx + 1}",
+                color=blue_colors[idx % len(blue_colors)],
+                outline=(226, 236, 252),
+                radius=7,
             )
-            self._draw_fixed_wing_fallback(
-                surface,
-                center=(inner.x + int(round(blue_center[0])), inner.y + int(round(blue_center[1]))),
-                body_color=blue_colors[idx % len(blue_colors)],
-                outline_color=(226, 236, 252),
-                scale=max(0.55, blue_scale * 0.82),
-                screen_heading_deg=blue_pose[0] - 90.0,
-                pitch_deg=blue_pose[1],
-                bank_deg=blue_pose[2],
-                view_pitch_deg=0.0,
-            )
-        target_center, target_scale = trace_test_1_project_scene_position(
-            payload.scene.red_frame.position,
-            size=inner.size,
-        )
-        self._draw_fixed_wing_fallback(
-            surface,
-            center=(inner.x + int(round(target_center[0])), inner.y + int(round(target_center[1]))),
-            body_color=(226, 58, 62),
-            outline_color=(255, 232, 232),
-            scale=max(0.68, target_scale * 0.95),
-            screen_heading_deg=target_pose[0] - 90.0,
-            pitch_deg=target_pose[1],
-            bank_deg=target_pose[2],
-            view_pitch_deg=0.0,
-        )
-        return
-
-    @staticmethod
-    def _screen_heading_to_fixed_wing_heading(screen_heading_deg: float) -> float:
-        return fixed_wing_heading_from_screen_heading(screen_heading_deg)
-
-    def _draw_fixed_wing_fallback(
-        self,
-        surface: pygame.Surface,
-        *,
-        center: tuple[int, int],
-        body_color: tuple[int, int, int],
-        outline_color: tuple[int, int, int],
-        scale: float,
-        screen_heading_deg: float,
-        pitch_deg: float = 0.0,
-        bank_deg: float = 0.0,
-        view_yaw_deg: float = 0.0,
-        view_pitch_deg: float = 20.0,
-    ) -> None:
-        draw_fixed_wing_pygame(
-            surface,
-            heading_deg=self._screen_heading_to_fixed_wing_heading(screen_heading_deg),
-            pitch_deg=float(pitch_deg),
-            bank_deg=float(bank_deg),
-            cx=int(center[0]),
-            cy=int(center[1]),
-            scale=max(8.5, float(scale) * 10.5),
-            palette=build_pygame_palette(
-                body_color=body_color,
-                outline_color=outline_color,
-            ),
-            view_yaw_deg=view_yaw_deg,
-            view_pitch_deg=view_pitch_deg,
+        draw_marker(
+            payload.scene.red_frame,
+            label=str(payload.active_command),
+            color=(226, 58, 62),
+            outline=(255, 232, 232),
+            radius=10,
         )
 
     @staticmethod
@@ -23404,65 +21635,63 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         world: pygame.Rect,
         payload: TraceTest2Payload | None,
     ) -> None:
-        sky_top = (64, 74, 90)
-        sky_bottom = (126, 166, 218)
-        ground_top = (86, 126, 168)
-        ground_bottom = (32, 54, 92)
-        horizon = world.y + int(world.h * 0.26)
-        for y in range(world.y, world.bottom):
-            if y < horizon:
-                t = (y - world.y) / float(max(1, horizon - world.y - 1))
-                color = tuple(
-                    int(round(sky_top[idx] + ((sky_bottom[idx] - sky_top[idx]) * t)))
-                    for idx in range(3)
-                )
-            else:
-                t = (y - horizon) / float(max(1, world.bottom - horizon - 1))
-                color = tuple(
-                    int(round(ground_top[idx] + ((ground_bottom[idx] - ground_top[idx]) * t)))
-                    for idx in range(3)
-                )
-            pygame.draw.line(surface, color, (world.x, y), (world.right, y))
-        pygame.draw.line(surface, (226, 236, 252), (world.x, horizon), (world.right, horizon), 1)
+        pygame.draw.rect(surface, (18, 30, 74), world)
+        grid_color = (54, 76, 124)
+        for idx in range(1, 6):
+            x = world.x + int(round(world.w * idx / 6.0))
+            y = world.y + int(round(world.h * idx / 6.0))
+            pygame.draw.line(surface, grid_color, (x, world.y), (x, world.bottom), 1)
+            pygame.draw.line(surface, grid_color, (world.x, y), (world.right, y), 1)
 
         if payload is None:
             return
 
+        samples = [point for track in payload.aircraft for point in track.waypoints]
+        progress = max(0.0, min(1.0, float(payload.observe_progress)))
+        samples.extend(
+            trace_test_2_track_position(track=track, progress=progress)
+            for track in payload.aircraft
+        )
+        if not samples:
+            return
+        min_x = min(float(point.x) for point in samples)
+        max_x = max(float(point.x) for point in samples)
+        min_y = min(float(point.y) for point in samples)
+        max_y = max(float(point.y) for point in samples)
+        min_z = min(float(point.z) for point in samples)
+        max_z = max(float(point.z) for point in samples)
+        span_x = max(1.0, max_x - min_x)
+        span_y = max(1.0, max_y - min_y)
+        span_z = max(1.0, max_z - min_z)
+
+        def project(pos: TraceTest2Point3) -> tuple[int, int]:
+            nx = (float(pos.x) - min_x) / span_x
+            ny = (float(pos.y) - min_y) / span_y
+            return (
+                world.x + 18 + int(round(nx * max(1, world.w - 36))),
+                world.bottom - 18 - int(round(ny * max(1, world.h - 36))),
+            )
+
         progress = max(0.0, min(1.0, float(payload.observe_progress)))
         for track in payload.aircraft:
             trail_points: list[tuple[int, int]] = []
-            for sample_idx in range(8):
-                sample_progress = progress * (sample_idx / 7.0)
+            for sample_idx in range(10):
+                sample_progress = progress * (sample_idx / 9.0)
                 pos = trace_test_2_track_position(track=track, progress=sample_progress)
-                px, py = trace_test_2_project_point(pos, size=world.size)
-                trail_points.append((world.x + int(round(px)), world.y + world.h - int(round(py))))
+                trail_points.append(project(pos))
             if len(trail_points) > 1:
                 pygame.draw.lines(surface, tuple(track.color_rgb), False, trail_points, 2)
 
             pos = trace_test_2_track_position(track=track, progress=progress)
-            center = trace_test_2_project_point(pos, size=world.size)
-            pose = trace_test_2_aircraft_screen_pose_for_track(
-                track=track,
-                progress=progress,
-                size=world.size,
-            )
-            screen_center = (
-                world.x + int(round(center[0])),
-                world.y + world.h - int(round(center[1])),
-            )
-            self._draw_fixed_wing_fallback(
-                surface,
-                center=screen_center,
-                body_color=tuple(track.color_rgb),
-                outline_color=(244, 248, 255),
-                scale=1.0,
-                screen_heading_deg=pose[0] - 90.0,
-                pitch_deg=pose[1],
-                bank_deg=pose[2],
-                view_pitch_deg=22.0,
-            )
+            screen_center = project(pos)
+            altitude = (float(pos.z) - min_z) / span_z
+            marker_r = 7 + int(round(altitude * 5.0))
+            pygame.draw.circle(surface, tuple(track.color_rgb), screen_center, marker_r)
+            pygame.draw.circle(surface, (244, 248, 255), screen_center, marker_r, 2)
             label = self._tiny_font.render(str(track.code), True, (244, 248, 255))
             surface.blit(label, label.get_rect(center=(screen_center[0], screen_center[1] - 18)))
+            alt_label = self._tiny_font.render(f"ALT {int(round(pos.z))}", True, (190, 204, 228))
+            surface.blit(alt_label, alt_label.get_rect(midtop=(screen_center[0], screen_center[1] + marker_r + 3)))
 
     def _render_trace_test_2_screen(
         self,
@@ -23493,23 +21722,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         surface.blit(title, title.get_rect(center=(w // 2, top_line_y - 8)))
 
         def render_scene(scene_rect: pygame.Rect, scene_payload: TraceTest2Payload | None) -> None:
-            if self._app.opengl_enabled:
-                surface.fill((0, 0, 0, 0), scene_rect)
-                pygame.draw.rect(surface, border, scene_rect, 1)
-                inner = scene_rect.inflate(-8, -8)
-                if inner.w > 0 and inner.h > 0 and scene_payload is not None:
-                    self._app.queue_gl_scene(
-                        TraceTest2GlScene(
-                            world=pygame.Rect(inner),
-                            payload=scene_payload,
-                            practice_mode=snap.phase is Phase.PRACTICE,
-                        )
-                    )
-                return
-            if self._app.opengl_enabled:
-                pygame.draw.rect(surface, (8, 14, 62, 26), scene_rect)
-            else:
-                pygame.draw.rect(surface, (8, 14, 62), scene_rect)
+            pygame.draw.rect(surface, (8, 14, 62), scene_rect)
             pygame.draw.rect(surface, border, scene_rect, 1)
             inner = scene_rect.inflate(-8, -8)
             if inner.w <= 0 or inner.h <= 0:
@@ -23678,9 +21891,8 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 scene_rect,
                 payload=payload,
                 heading_deg_override=demo_heading,
-                scene_view_override=SpatialIntegrationSceneView.OBLIQUE,
-                title_override="Sequential 3D Study View",
-                allow_external_3d=True,
+                scene_view_override=SpatialIntegrationSceneView.TOPDOWN,
+                title_override="Sequential Study Map",
             )
             pygame.draw.rect(surface, (14, 20, 68), info_rect)
             pygame.draw.rect(surface, border, info_rect, 1)
@@ -23727,7 +21939,6 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 heading_deg_override=view_heading_deg,
                 scene_view_override=None if active_view is None else active_view.scene_view,
                 title_override=active_view.label if active_view is not None else "Study View",
-                allow_external_3d=True,
             )
             pygame.draw.rect(surface, card_bg, right)
             pygame.draw.rect(surface, border, right, 1)
@@ -24097,89 +22308,6 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                     if token == cell_label:
                         pygame.draw.rect(surface, (92, 124, 196), cell, 3)
 
-    def _spatial_project_oblique(
-        self,
-        point: SpatialIntegrationPoint,
-        *,
-        rect: pygame.Rect,
-        grid_cols: int,
-        grid_rows: int,
-        alt_levels: int,
-        heading_deg: int,
-    ) -> tuple[float, float]:
-        cx = (grid_cols - 1) / 2.0
-        cy = (grid_rows - 1) / 2.0
-        px = float(point.x) - cx
-        py = float(point.y) - cy
-        ang = math.radians(float(heading_deg))
-        rx = (px * math.cos(ang)) - (py * math.sin(ang))
-        ry = (px * math.sin(ang)) + (py * math.cos(ang))
-        nx = (rx + max(grid_cols, grid_rows)) / (max(grid_cols, grid_rows) * 2.0)
-        ny = (ry + max(grid_cols, grid_rows)) / (max(grid_cols, grid_rows) * 2.0)
-        screen_x = rect.x + (rect.w * (0.22 + (nx * 0.56)))
-        screen_y = rect.bottom - (rect.h * (0.18 + (ny * 0.34) + (float(point.z) / max(1, alt_levels - 1)) * 0.28))
-        return (screen_x, screen_y)
-
-    def _draw_spatial_oblique_view(
-        self,
-        surface: pygame.Surface,
-        rect: pygame.Rect,
-        payload: SpatialIntegrationPayload | None,
-        *,
-        heading_deg: int,
-        title: str,
-    ) -> None:
-        pygame.draw.rect(surface, (14, 22, 54), rect)
-        pygame.draw.rect(surface, (228, 238, 255), rect, 1)
-        surface.blit(self._tiny_font.render(title, True, (236, 244, 255)), (rect.x + 8, rect.y + 6))
-        sky = pygame.Rect(rect.x + 8, rect.y + 24, rect.w - 16, int(rect.h * 0.42))
-        ground = pygame.Rect(rect.x + 8, sky.bottom, rect.w - 16, rect.bottom - sky.bottom - 8)
-        pygame.draw.rect(surface, (120, 156, 208), sky)
-        pygame.draw.rect(surface, (124, 150, 74), ground)
-        pygame.draw.line(surface, (224, 232, 246), (ground.x, ground.y), (ground.right, ground.y), 1)
-
-        if payload is None:
-            return
-        grid_cols = int(payload.grid_cols)
-        grid_rows = int(payload.grid_rows)
-        alt_levels = int(payload.alt_levels)
-        for hill in payload.hills:
-            center = self._spatial_project_oblique(
-                SpatialIntegrationPoint(int(hill.x), int(hill.y), int(hill.height)),
-                rect=ground,
-                grid_cols=grid_cols,
-                grid_rows=grid_rows,
-                alt_levels=alt_levels,
-                heading_deg=heading_deg,
-            )
-            rx = 18 + (int(hill.radius) * 8)
-            ry = 10 + (int(hill.radius) * 4)
-            pygame.draw.ellipse(surface, (106, 126, 76), pygame.Rect(center[0] - rx, center[1] - ry, rx * 2, ry * 2))
-        for landmark in payload.landmarks:
-            center = self._spatial_project_oblique(
-                SpatialIntegrationPoint(int(landmark.x), int(landmark.y), 1),
-                rect=ground,
-                grid_cols=grid_cols,
-                grid_rows=grid_rows,
-                alt_levels=alt_levels,
-                heading_deg=heading_deg,
-            )
-            pygame.draw.circle(surface, (240, 208, 92), (int(center[0]), int(center[1])), 6)
-            label = self._tiny_font.render(str(landmark.label), True, (18, 18, 22))
-            surface.blit(label, (int(center[0]) + 6, int(center[1]) - 10))
-        if payload.route_points:
-            pts = [
-                self._spatial_project_oblique(point, rect=ground, grid_cols=grid_cols, grid_rows=grid_rows, alt_levels=alt_levels, heading_deg=heading_deg)
-                for point in payload.route_points
-            ]
-            if len(pts) >= 2:
-                pygame.draw.lines(surface, (46, 90, 182), False, pts, 3)
-        if payload.part is SpatialIntegrationPart.AIRCRAFT:
-            now = self._spatial_project_oblique(payload.aircraft_now, rect=ground, grid_cols=grid_cols, grid_rows=grid_rows, alt_levels=alt_levels, heading_deg=heading_deg)
-            prev = self._spatial_project_oblique(payload.aircraft_prev, rect=ground, grid_cols=grid_cols, grid_rows=grid_rows, alt_levels=alt_levels, heading_deg=heading_deg)
-            pygame.draw.line(surface, (236, 236, 244), prev, now, 2)
-            pygame.draw.circle(surface, (230, 74, 62), (int(now[0]), int(now[1])), 7)
-
     def _draw_spatial_profile_view(
         self,
         surface: pygame.Surface,
@@ -24251,46 +22379,6 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             )
         self._draw_review_choice_overlay(surface, rect, option_code=int(opt.code))
 
-    def _draw_spatial_gl_landmark_callouts(
-        self,
-        surface: pygame.Surface,
-        rect: pygame.Rect,
-        *,
-        payload: SpatialIntegrationPayload | None,
-    ) -> None:
-        if payload is None or rect.w <= 0 or rect.h <= 0:
-            return
-        layout = build_spatial_integration_scene_layout(payload=payload, size=rect.size)
-        bounds = rect.inflate(-8, -8)
-        if bounds.w <= 0 or bounds.h <= 0:
-            bounds = rect
-        labels = sorted(layout.landmarks, key=lambda marker: (marker.screen_y, marker.screen_x, marker.label))
-        for idx, marker in enumerate(labels):
-            anchor = (
-                int(round(rect.x + float(marker.screen_x))),
-                int(round(rect.y + float(marker.screen_y))),
-            )
-            if (
-                anchor[0] < rect.x - 16
-                or anchor[0] > rect.right + 16
-                or anchor[1] < rect.y - 16
-                or anchor[1] > rect.bottom + 16
-            ):
-                continue
-            text = self._tiny_font.render(str(marker.label), True, (236, 244, 255))
-            bubble = text.get_rect()
-            place_right = (idx % 2) == 0
-            bubble_x = anchor[0] + 14 if place_right else anchor[0] - bubble.w - 24
-            bubble_y = anchor[1] - bubble.h - 8 - ((idx % 3) * 3)
-            bubble = pygame.Rect(bubble_x, bubble_y, bubble.w + 10, bubble.h + 4)
-            bubble.clamp_ip(bounds)
-            line_end = bubble.midleft if place_right else bubble.midright
-            pygame.draw.line(surface, (232, 226, 118), anchor, line_end, 1)
-            pygame.draw.circle(surface, (244, 236, 130), anchor, 2)
-            pygame.draw.rect(surface, (10, 18, 46), bubble, border_radius=4)
-            pygame.draw.rect(surface, (224, 236, 252), bubble, 1, border_radius=4)
-            surface.blit(text, text.get_rect(center=bubble.center))
-
     def _draw_spatial_terrain_scene(
         self,
         surface: pygame.Surface,
@@ -24300,789 +22388,30 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         heading_deg_override: int | None = None,
         scene_view_override: SpatialIntegrationSceneView | None = None,
         title_override: str | None = None,
-        allow_external_3d: bool = True,
     ) -> None:
-        if allow_external_3d and self._app.opengl_enabled:
-            surface.fill((0, 0, 0, 0), rect)
-            pygame.draw.rect(surface, (190, 204, 236), rect, 1)
-            inner = rect.inflate(-8, -8)
-            if inner.w > 0 and inner.h > 0:
-                self._app.queue_gl_scene(
-                    SpatialIntegrationGlScene(
-                        world=pygame.Rect(inner),
-                        payload=payload,
-                    )
-                )
-                tag = self._tiny_font.render(
-                    title_override or "3D air/ground picture", True, (224, 236, 252)
-                )
-                surface.blit(tag, (inner.x + 6, inner.y + 6))
-            return
-        panel_bg = (8, 12, 36)
-        panel_border = (190, 204, 236)
-        if self._app.opengl_enabled:
-            surface.fill((8, 12, 36, 24), rect)
-        else:
-            surface.fill(panel_bg, rect)
-        pygame.draw.rect(surface, panel_border, rect, 1)
-
-        view = rect.inflate(-8, -8)
+        _ = heading_deg_override
         scene_view = scene_view_override or (
-            payload.scene_view if payload is not None else SpatialIntegrationSceneView.OBLIQUE
+            payload.scene_view if payload is not None else SpatialIntegrationSceneView.TOPDOWN
         )
-        view_heading_deg = int(heading_deg_override or 0)
-        horizon_ratio = 0.16 if scene_view is SpatialIntegrationSceneView.TOPDOWN else 0.42
-        horizon = view.y + int(view.h * horizon_ratio)
-
-        # Spatial Integration keeps a built-in pygame scene renderer so the
-        # study loop remains playable when ModernGL is disabled or unavailable.
-
-        sky_top = (86, 132, 198)
-        sky_bottom = (238, 168, 142)
-        sky_h = max(1, horizon - view.y)
-        for i in range(sky_h):
-            t = i / max(1, sky_h - 1)
-            color = (
-                int(round(sky_top[0] + (sky_bottom[0] - sky_top[0]) * t)),
-                int(round(sky_top[1] + (sky_bottom[1] - sky_top[1]) * t)),
-                int(round(sky_top[2] + (sky_bottom[2] - sky_top[2]) * t)),
-            )
-            pygame.draw.line(surface, color, (view.x, view.y + i), (view.right, view.y + i))
-
-        seed = self._spatial_scene_seed(payload=payload)
-        rng = random.Random(seed)
-
-        cloud_count = 6
-        cloud_lane = max(12, int((horizon - view.y) * 0.18))
-        for idx in range(cloud_count):
-            lane_y = view.y + 10 + ((idx % 3) * cloud_lane)
-            cx = view.x + int(round(((idx + 1) / (cloud_count + 1)) * view.w)) + rng.randint(-42, 42)
-            cy = lane_y + rng.randint(-3, 3)
-            cw = 32 + (idx * 5)
-            ch = 10 + (idx % 3) * 3
-            alpha = max(58, min(110, 90 - (idx * 4)))
-            cloud_surf = pygame.Surface((cw + 18, ch + 10), pygame.SRCALPHA)
-            pygame.draw.ellipse(cloud_surf, (252, 244, 236, alpha), pygame.Rect(0, 2, cw, ch))
-            pygame.draw.ellipse(cloud_surf, (248, 240, 228, alpha), pygame.Rect(12, 0, cw // 2, ch))
-            pygame.draw.ellipse(
-                cloud_surf, (248, 240, 228, alpha), pygame.Rect(cw // 2, 3, cw // 2 + 6, ch)
-            )
-            surface.blit(cloud_surf, (cx, cy))
-
-        if scene_view is SpatialIntegrationSceneView.TOPDOWN:
-            ridge: list[tuple[int, int]] = [(view.x, horizon + 8)]
-            ridge_points = 10
-            for idx in range(ridge_points):
-                x = view.x + int((idx / max(1, ridge_points - 1)) * view.w)
-                y = horizon + rng.randint(-8, 6)
-                ridge.append((x, y))
-            ridge.append((view.right, horizon + 8))
-            mountains = [*ridge, (view.right, horizon + 36), (view.x, horizon + 36)]
-            pygame.draw.polygon(surface, (120, 136, 104), mountains)
-            pygame.draw.lines(surface, (142, 156, 128), False, ridge, 2)
-
-            ground_rect = pygame.Rect(view.x, horizon, view.w, view.bottom - horizon)
-            pygame.draw.rect(surface, (126, 150, 74), ground_rect)
-
-            for idx in range(8):
-                t = idx / 7.0
-                y = horizon + int((view.bottom - horizon) * t)
-                shade = int(round(154 - (idx * 6)))
-                pygame.draw.line(surface, (108, shade, 68), (view.x, y), (view.right, y), 1)
-
-            for idx in range(-6, 7):
-                x0 = view.centerx + int(idx * view.w * 0.075)
-                x1 = x0 + int(view.w * 0.12 * math.sin(idx * 0.85))
-                pygame.draw.line(surface, (118, 142, 70), (x0, horizon), (x1, view.bottom), 1)
-
-            contour_centers = (
-                (0.24, 0.42),
-                (0.64, 0.55),
-                (0.48, 0.72),
-            )
-            for idx, (cxn, cyn) in enumerate(contour_centers):
-                cx = view.x + int(view.w * cxn)
-                cy = horizon + int((view.bottom - horizon) * cyn)
-                rx = max(12, int(view.w * (0.12 + (idx * 0.03))))
-                ry = max(8, int(rx * 0.58))
-                pygame.draw.ellipse(
-                    surface, (136, 162, 82), pygame.Rect(cx - rx, cy - ry, rx * 2, ry * 2), 1
-                )
-        else:
-            ridge: list[tuple[int, int]] = [(view.x, horizon + 12)]
-            ridge_points = 10
-            for idx in range(ridge_points):
-                x = view.x + int((idx / max(1, ridge_points - 1)) * view.w)
-                y = horizon + rng.randint(-18, 10)
-                ridge.append((x, y))
-            ridge.append((view.right, horizon + 14))
-            mountains = [*ridge, (view.right, horizon + 56), (view.x, horizon + 56)]
-            pygame.draw.polygon(surface, (116, 130, 106), mountains)
-            pygame.draw.lines(surface, (142, 156, 134), False, ridge, 2)
-
-            ground_rect = pygame.Rect(view.x, horizon, view.w, view.bottom - horizon)
-            pygame.draw.rect(surface, (120, 144, 66), ground_rect)
-
-            path = [
-                (view.centerx - int(view.w * 0.16), view.bottom),
-                (view.centerx + int(view.w * 0.20), view.bottom),
-                (view.centerx + int(view.w * 0.05), horizon + 2),
-                (view.centerx - int(view.w * 0.03), horizon + 2),
-            ]
-            pygame.draw.polygon(surface, (146, 166, 82), path)
-
-            for idx in range(1, 8):
-                t = idx / 8.0
-                y = horizon + int((view.bottom - horizon) * (t**1.35))
-                x_off = int((1.0 - t) * view.w * 0.45)
-                pygame.draw.line(
-                    surface, (136, 158, 78), (view.centerx - x_off, y), (view.centerx + x_off, y), 1
-                )
-
-            for idx in range(-4, 5):
-                t = abs(idx) / 4.0
-                top_x = view.centerx + int(idx * view.w * 0.04)
-                bottom_x = view.centerx + int(idx * view.w * (0.13 + (0.18 * t)))
-                pygame.draw.line(
-                    surface, (126, 150, 70), (top_x, horizon), (bottom_x, view.bottom), 1
-                )
-
-        grid_cols = int(payload.grid_cols) if payload is not None else 5
-        grid_rows = int(payload.grid_rows) if payload is not None else 5
-        alt_levels = int(payload.alt_levels) if payload is not None else 4
-
-        if payload is None:
-            landmarks = (
-                ("BLD1", "building", 1, 0),
-                ("SOL1", "foot_soldiers", 3, 1),
-                ("SHP1", "sheep", 4, 2),
-            )
-            now_point = (2, 1, 1)
-            prev_point = (1, 0, 1)
-            velocity = (1, 1, 0)
-            show_motion = True
-            part = SpatialIntegrationPart.STATIC
-        else:
-            landmarks = tuple(
-                (str(landmark.label), str(landmark.kind), int(landmark.x), int(landmark.y))
-                for landmark in payload.landmarks
-            )
-            now_point = (
-                int(payload.aircraft_now.x),
-                int(payload.aircraft_now.y),
-                int(payload.aircraft_now.z),
-            )
-            prev_point = (
-                int(payload.aircraft_prev.x),
-                int(payload.aircraft_prev.y),
-                int(payload.aircraft_prev.z),
-            )
-            velocity = (
-                int(payload.velocity.dx),
-                int(payload.velocity.dy),
-                int(payload.velocity.dz),
-            )
-            show_motion = bool(payload.show_aircraft_motion) and prev_point != now_point
-            part = payload.part
-
-        asset_specs: list[tuple[float, str, float, float, float, float, float, float]] = []
-
-        def add_asset(
-            kind: str, *, gx: int, gy: int, air: bool = False, scale_bias: float = 1.0
-        ) -> None:
-            spec = spatial_integration_visual_spec(kind)
-            wx, wy, _wz, terrain = self._spatial_grid_to_world(
-                x=gx,
-                y=gy,
-                z=0,
-                grid_cols=grid_cols,
-                grid_rows=grid_rows,
-                alt_levels=alt_levels,
-            )
-            wx += rng.uniform(-0.26, 0.26)
-            wy = max(0.72, min(7.8, wy + rng.uniform(-0.28, 0.34)))
-            wz = terrain + 0.02
-            if air:
-                wz = terrain + rng.uniform(0.30, 1.00)
-                wy = max(0.72, min(7.8, wy + rng.uniform(-0.22, 0.24)))
-            shared_bias = 1.0 if spec is None else float(spec.scene_scale_bias)
-            scale = rng.uniform(0.76, 1.22) * float(scale_bias) * shared_bias
-            heading = rng.uniform(0.0, 359.0)
-            anim_phase = rng.uniform(0.0, math.tau)
-            anim_rate = rng.uniform(0.65, 1.85)
-            asset_specs.append((wy, kind, wx, wz, scale, heading, anim_phase, anim_rate))
-
-        required_kinds = (
-            ("building", False),
-            ("forest", False),
-            ("foot_soldiers", False),
-            ("sheep", False),
-            ("truck", False),
-            ("tent", False),
-            ("tower", False),
-        )
-        if part is SpatialIntegrationPart.AIRCRAFT:
-            required_kinds += (
-                ("helicopter", True),
-                ("fast_jet", True),
-            )
-        for kind, air in required_kinds:
-            add_asset(
-                kind,
-                gx=int(rng.randint(0, max(0, grid_cols - 1))),
-                gy=int(rng.randint(0, max(0, grid_rows - 1))),
-                air=air,
-                scale_bias=1.08 if air else 1.0,
-            )
-
-        for label, kind, gx, gy in landmarks:
-            add_asset(
-                kind or "building",
-                gx=int(gx),
-                gy=int(gy),
-                air=False,
-                scale_bias=1.0,
-            )
-
-        extra_count = 6 + max(grid_cols, grid_rows)
-        ambient_kinds = ("building", "forest", "truck", "tent", "foot_soldiers", "sheep", "radar")
-        for _ in range(extra_count):
-            kind = str(rng.choice(ambient_kinds))
-            add_asset(
-                kind,
-                gx=int(rng.randint(0, max(0, grid_cols - 1))),
-                gy=int(rng.randint(0, max(0, grid_rows - 1))),
-                air=False,
-                scale_bias=0.92,
-            )
-
-        for depth_y, kind, wx, wz, scale, heading, anim_phase, anim_rate in sorted(
-            asset_specs,
-            key=lambda it: self._spatial_view_depth(wx=it[2], wy=it[0], heading_deg=view_heading_deg),
-        ):
-            self._draw_spatial_scene_asset(
-                surface,
-                rect=view,
-                horizon_y=horizon,
-                scene_view=scene_view,
-                view_heading_deg=view_heading_deg,
-                kind=kind,
-                wx=wx,
-                wy=depth_y,
-                wz=wz,
-                scale=scale,
-                heading_deg=heading,
-                anim_s=0.0,
-                anim_phase=anim_phase,
-                anim_rate=anim_rate,
-            )
-
-        show_aircraft_entity = payload is None or part is SpatialIntegrationPart.AIRCRAFT
-        if show_aircraft_entity:
-            now_wx, now_wy, now_wz, now_terrain = self._spatial_grid_to_world(
-                x=now_point[0],
-                y=now_point[1],
-                z=now_point[2],
-                grid_cols=grid_cols,
-                grid_rows=grid_rows,
-                alt_levels=alt_levels,
-            )
-            live_wx = now_wx
-            live_wy = now_wy
-            live_wz = now_wz
-            prev_wx = now_wx
-            prev_wy = now_wy
-            prev_wz = now_wz
-            if show_motion:
-                prev_wx, prev_wy, prev_wz, _ = self._spatial_grid_to_world(
-                    x=prev_point[0],
-                    y=prev_point[1],
-                    z=prev_point[2],
-                    grid_cols=grid_cols,
-                    grid_rows=grid_rows,
-                    alt_levels=alt_levels,
-                )
-
-            live_terrain = self._spatial_terrain_height(wx=live_wx, wy=live_wy)
-            now_screen = self._spatial_project_point(
-                rect=view,
-                horizon_y=horizon,
-                scene_view=scene_view,
-                heading_deg=view_heading_deg,
-                wx=live_wx,
-                wy=live_wy,
-                wz=live_wz,
-            )
-            now_ground = self._spatial_project_point(
-                rect=view,
-                horizon_y=horizon,
-                scene_view=scene_view,
-                heading_deg=view_heading_deg,
-                wx=live_wx,
-                wy=live_wy,
-                wz=live_terrain + 0.02,
-            )
-            now_screen_vis = now_screen
-
-            if show_motion:
-                prev_screen = self._spatial_project_point(
-                    rect=view,
-                    horizon_y=horizon,
-                    scene_view=scene_view,
-                    heading_deg=view_heading_deg,
-                    wx=prev_wx,
-                    wy=prev_wy,
-                    wz=prev_wz,
-                )
-                ref_now_screen = self._spatial_project_point(
-                    rect=view,
-                    horizon_y=horizon,
-                    scene_view=scene_view,
-                    heading_deg=view_heading_deg,
-                    wx=now_wx,
-                    wy=now_wy,
-                    wz=now_wz,
-                )
-                pygame.draw.circle(surface, (210, 216, 236), prev_screen, 5, 1)
-                pygame.draw.circle(surface, (194, 208, 232), ref_now_screen, 4, 1)
-                pygame.draw.line(surface, (210, 216, 236), prev_screen, ref_now_screen, 1)
-
-            pygame.draw.line(surface, (204, 222, 242), now_ground, now_screen_vis, 1)
-            size = 7
-            craft = [
-                (now_screen_vis[0], now_screen_vis[1] - size),
-                (now_screen_vis[0] + int(size * 0.65), now_screen_vis[1] + size),
-                (now_screen_vis[0] - int(size * 0.65), now_screen_vis[1] + size),
-            ]
-            pygame.draw.polygon(surface, (76, 212, 236), craft)
-            pygame.draw.polygon(surface, (224, 246, 254), craft, 1)
-            pygame.draw.circle(surface, (232, 248, 255), now_screen_vis, 2)
-
-            if show_motion and (velocity[0] != 0 or velocity[1] != 0 or velocity[2] != 0):
-                pred = self._spatial_project_point(
-                    rect=view,
-                    horizon_y=horizon,
-                    scene_view=scene_view,
-                    heading_deg=view_heading_deg,
-                    wx=now_wx + (0.35 * velocity[0]),
-                    wy=max(0.6, now_wy + (0.35 * velocity[1])),
-                    wz=now_wz + (0.20 * velocity[2]),
-                )
-                pygame.draw.line(surface, (140, 226, 246), now_screen_vis, pred, 2)
-
-        tag = self._tiny_font.render(title_override or "3D air/ground picture", True, (224, 236, 252))
-        surface.blit(tag, (view.x + 6, view.y + 6))
-
-    def _draw_spatial_scene_asset(
-        self,
-        surface: pygame.Surface,
-        *,
-        rect: pygame.Rect,
-        horizon_y: int,
-        scene_view: SpatialIntegrationSceneView,
-        view_heading_deg: int,
-        kind: str,
-        wx: float,
-        wy: float,
-        wz: float,
-        scale: float,
-        heading_deg: float,
-        anim_s: float,
-        anim_phase: float = 0.0,
-        anim_rate: float = 1.0,
-    ) -> None:
-        if wy <= 0.01:
+        title = title_override or ("Profile View" if scene_view is SpatialIntegrationSceneView.PROFILE else "Map View")
+        if scene_view is SpatialIntegrationSceneView.PROFILE:
+            self._draw_spatial_profile_view(surface, rect, payload, title=title)
             return
-
-        shared_spec = spatial_integration_visual_spec(kind)
-        fill_rgb = (186, 198, 210) if shared_spec is None else shared_spec.scene_fill_rgb
-        accent_rgb = (148, 152, 158) if shared_spec is None else shared_spec.scene_accent_rgb
-        outline_rgb = (54, 60, 64) if shared_spec is None else shared_spec.scene_outline_rgb
-
-        phase = float(anim_phase)
-        wx_anim = float(wx)
-        wy_anim = max(0.35, float(wy))
-        wz_anim = float(wz)
-        heading_anim = float(heading_deg)
-
-        if kind == "truck":
-            drift = 0.11 * math.sin(phase * 0.86)
-            hd = math.radians(float(heading_deg))
-            wx_anim += drift * math.cos(hd)
-            wy_anim = max(0.55, wy_anim + (drift * 0.30 * math.sin(hd)))
-        elif kind == "foot_soldiers":
-            wx_anim += 0.06 * math.sin(phase * 0.78)
-        elif kind == "sheep":
-            wx_anim += 0.05 * math.sin(phase * 1.14)
-            wy_anim = max(0.55, wy_anim + 0.03 * math.cos(phase * 0.96))
-        elif kind == "helicopter":
-            wx_anim += 0.18 * math.cos(phase * 0.68)
-            wy_anim = max(0.55, wy_anim + 0.10 * math.sin(phase * 0.64))
-            wz_anim += 0.08 * math.sin(phase * 2.4)
-        elif kind == "fast_jet":
-            wx_anim += 0.42 * math.sin(phase * 1.20)
-            wy_anim = max(0.55, wy_anim + 0.22 * math.cos(phase * 0.94))
-            wz_anim += 0.12 * math.sin(phase * 1.86)
-            heading_anim += 24.0 * math.cos(phase * 0.52)
-
-        terrain = self._spatial_terrain_height(wx=wx_anim, wy=wy_anim)
-        ground = self._spatial_project_point(
-            rect=rect,
-            horizon_y=horizon_y,
-            scene_view=scene_view,
-            heading_deg=view_heading_deg,
-            wx=wx_anim,
-            wy=wy_anim,
-            wz=terrain + 0.01,
-        )
-        pos = self._spatial_project_point(
-            rect=rect,
-            horizon_y=horizon_y,
-            scene_view=scene_view,
-            heading_deg=view_heading_deg,
-            wx=wx_anim,
-            wy=wy_anim,
-            wz=wz_anim,
-        )
-
-        if (
-            pos[0] < rect.x - 30
-            or pos[0] > rect.right + 30
-            or pos[1] < rect.y - 30
-            or pos[1] > rect.bottom + 30
-        ):
-            return
-
-        depth_metric = self._spatial_view_depth(wx=wx_anim, wy=wy_anim, heading_deg=view_heading_deg)
-        if scene_view is SpatialIntegrationSceneView.TOPDOWN:
-            depth_for_size = max(0.90, 1.35 + (depth_metric * 0.22))
-            size_scale = 0.092
-        else:
-            depth_for_size = max(0.85, depth_metric)
-            size_scale = 0.080
-        base = max(
-            2,
-            int(
-                round((min(rect.w, rect.h) * size_scale * max(0.55, float(scale))) / depth_for_size)
+        self._draw_spatial_map_view(
+            surface,
+            rect,
+            payload,
+            landmarks=() if payload is None else payload.landmarks,
+            route_points=() if payload is None else payload.route_points,
+            aircraft_point=(
+                None
+                if payload is None or payload.part is SpatialIntegrationPart.STATIC
+                else payload.aircraft_now
             ),
+            interactive=False,
+            title=title,
         )
-        facing = 1 if math.cos(math.radians(heading_anim)) >= 0.0 else -1
-
-        shadow_w = max(3, int(base * 1.20))
-        shadow_h = max(2, int(base * 0.48))
-        shadow_rect = pygame.Rect(
-            ground[0] - (shadow_w // 2), ground[1] - (shadow_h // 2), shadow_w, shadow_h
-        )
-        pygame.draw.ellipse(surface, (64, 82, 46), shadow_rect)
-
-        if kind == "building":
-            bw = max(5, int(base * 1.15))
-            bh = max(6, int(base * 1.48))
-            body = pygame.Rect(ground[0] - (bw // 2), ground[1] - bh, bw, bh)
-            pygame.draw.rect(surface, fill_rgb, body)
-            pygame.draw.rect(surface, outline_rgb, body, 1)
-            roof = [
-                (body.x - 1, body.y),
-                (body.centerx, body.y - max(2, base // 2)),
-                (body.right + 1, body.y),
-            ]
-            pygame.draw.polygon(surface, accent_rgb, roof)
-            if bw >= 8 and bh >= 8:
-                window = pygame.Rect(body.x + 2, body.y + 2, 2, 2)
-                while window.y < body.bottom - 2:
-                    wx0 = body.x + 2
-                    while wx0 < body.right - 2:
-                        pygame.draw.rect(surface, (230, 232, 202), pygame.Rect(wx0, window.y, 2, 2))
-                        wx0 += 4
-                    window.y += 4
-            return
-
-        if kind == "tower":
-            tw = max(2, int(base * 0.40))
-            th = max(10, int(base * 2.35))
-            shaft = pygame.Rect(ground[0] - (tw // 2), ground[1] - th, tw, th)
-            pygame.draw.rect(surface, fill_rgb, shaft)
-            pygame.draw.rect(surface, outline_rgb, shaft, 1)
-            pygame.draw.line(
-                surface,
-                accent_rgb,
-                (shaft.centerx, shaft.y),
-                (shaft.centerx, shaft.y - max(3, base // 2)),
-                1,
-            )
-            if math.sin(phase * 6.0) >= 0.0:
-                pygame.draw.circle(surface, accent_rgb, (shaft.centerx, shaft.y - max(3, base // 2)), 2)
-            return
-
-        if kind == "forest":
-            offsets = (-base, 0, base)
-            for idx, dx in enumerate(offsets):
-                tx = ground[0] + dx
-                ty = ground[1] + (idx % 2)
-                th = max(5, int(base * (1.30 + (idx * 0.20))))
-                pygame.draw.line(surface, accent_rgb, (tx, ty), (tx, ty - max(2, th // 4)), 1)
-                sway = int(round(math.sin((phase * 1.5) + idx) * max(1, th // 8)))
-                tree = [
-                    (tx + sway, ty - th),
-                    (tx - max(2, th // 3), ty - max(2, th // 4)),
-                    (tx + max(2, th // 3), ty - max(2, th // 4)),
-                ]
-                pygame.draw.polygon(surface, fill_rgb, tree)
-                pygame.draw.polygon(surface, outline_rgb, tree, 1)
-            return
-
-        if kind == "truck":
-            bw = max(7, int(base * 1.65))
-            bh = max(4, int(base * 0.62))
-            bob = int(round(0.6 * math.sin(phase * 6.2)))
-            body = pygame.Rect(ground[0] - (bw // 2), ground[1] - bh - 1 + bob, bw, bh)
-            pygame.draw.rect(surface, fill_rgb, body)
-            pygame.draw.rect(surface, outline_rgb, body, 1)
-            cab_w = max(3, bw // 3)
-            if facing > 0:
-                cab = pygame.Rect(body.right - cab_w, body.y - 1, cab_w, bh - 1)
-            else:
-                cab = pygame.Rect(body.x, body.y - 1, cab_w, bh - 1)
-            pygame.draw.rect(surface, accent_rgb, cab)
-            wheel_r = 1 if base < 4 else 2
-            pygame.draw.circle(surface, (26, 26, 28), (body.x + 2, body.bottom), wheel_r)
-            pygame.draw.circle(surface, (26, 26, 28), (body.right - 2, body.bottom), wheel_r)
-            return
-
-        if kind == "tent":
-            tw = max(5, int(base * 1.36))
-            th = max(4, int(base * 0.92))
-            p1 = (ground[0] - (tw // 2), ground[1])
-            p2 = (ground[0] + (tw // 2), ground[1])
-            flap_wobble = int(round(math.sin(phase * 1.9) * max(1, th // 6)))
-            p3 = (ground[0] + flap_wobble, ground[1] - th)
-            pygame.draw.polygon(surface, fill_rgb, [p1, p2, p3])
-            pygame.draw.polygon(surface, outline_rgb, [p1, p2, p3], 1)
-            flap = [
-                (ground[0], ground[1] - th),
-                (ground[0], ground[1]),
-                (ground[0] + (tw // 3), ground[1]),
-            ]
-            pygame.draw.polygon(surface, accent_rgb, flap)
-            return
-
-        if kind == "foot_soldiers":
-            offsets = (-base, 0, base)
-            for idx, dx in enumerate(offsets):
-                sx = ground[0] + dx
-                sy = ground[1]
-                body_h = max(3, int(base * 0.92))
-                head_r = 1 if base < 4 else 2
-                pygame.draw.circle(surface, fill_rgb, (sx, sy - body_h), head_r)
-                pygame.draw.line(surface, fill_rgb, (sx, sy - body_h + head_r), (sx, sy - 1), 1)
-                leg_phase = phase * 5.2 + idx
-                step = 1 if math.sin(leg_phase) >= 0.0 else -1
-                pygame.draw.line(surface, outline_rgb, (sx, sy - 1), (sx - step, sy + 1), 1)
-                pygame.draw.line(surface, outline_rgb, (sx, sy - 1), (sx + step, sy + 1), 1)
-            return
-
-        if kind == "sheep":
-            offsets = (-base // 2, base // 2)
-            for idx, dx in enumerate(offsets):
-                sx = ground[0] + dx
-                sy = ground[1]
-                body = pygame.Rect(
-                    sx - max(2, base // 2),
-                    sy - max(2, base // 3),
-                    max(5, base),
-                    max(4, int(base * 0.65)),
-                )
-                pygame.draw.ellipse(surface, fill_rgb, body)
-                pygame.draw.ellipse(surface, outline_rgb, body, 1)
-                head_x = body.right - 1 if idx % 2 == 0 else body.x + 1
-                pygame.draw.circle(surface, accent_rgb, (head_x, body.y + body.h // 2), max(1, base // 5))
-                leg_y = body.bottom
-                pygame.draw.line(surface, accent_rgb, (body.x + 1, leg_y), (body.x + 1, leg_y + 2), 1)
-                pygame.draw.line(surface, accent_rgb, (body.right - 1, leg_y), (body.right - 1, leg_y + 2), 1)
-            return
-
-        if kind == "radar":
-            mast_h = max(6, int(base * 1.45))
-            pygame.draw.line(
-                surface, (176, 190, 198), (ground[0], ground[1]), (ground[0], ground[1] - mast_h), 1
-            )
-            dish_rect = pygame.Rect(
-                ground[0] - max(2, base // 2),
-                ground[1] - mast_h - max(2, base // 3),
-                max(4, base),
-                max(3, base // 2),
-            )
-            pygame.draw.arc(surface, (198, 210, 220), dish_rect, math.pi * 1.05, math.pi * 1.95, 1)
-            sweep = phase * 2.2
-            sx = int(round(dish_rect.centerx + math.cos(sweep) * max(2, dish_rect.w * 0.45)))
-            sy = int(round(dish_rect.centery + math.sin(sweep) * max(1, dish_rect.h * 0.35)))
-            pygame.draw.line(surface, (228, 240, 248), dish_rect.center, (sx, sy), 1)
-            return
-
-        if kind == "helicopter":
-            rw = max(6, int(base * 1.45))
-            rh = max(3, int(base * 0.62))
-            body = pygame.Rect(pos[0] - (rw // 2), pos[1] - (rh // 2), rw, rh)
-            pygame.draw.ellipse(surface, (96, 150, 96), body)
-            pygame.draw.ellipse(surface, (42, 84, 42), body, 1)
-            tail = (body.left - max(3, base), body.centery)
-            pygame.draw.line(surface, (70, 112, 70), (body.left, body.centery), tail, 1)
-            rotor_len = rw + max(3, base // 2)
-            rotor_a = phase * 11.0
-            rx = int(round(math.cos(rotor_a) * rotor_len))
-            ry = int(round(math.sin(rotor_a) * max(1, rotor_len // 5)))
-            pygame.draw.line(
-                surface,
-                (224, 236, 248),
-                (pos[0] - rx, pos[1] - rh - ry),
-                (pos[0] + rx, pos[1] - rh + ry),
-                1,
-            )
-            pygame.draw.line(
-                surface,
-                (214, 226, 238),
-                (pos[0] - ry, pos[1] - rh + rx // 5),
-                (pos[0] + ry, pos[1] - rh - rx // 5),
-                1,
-            )
-            skid_y = body.bottom
-            pygame.draw.line(
-                surface, (54, 66, 60), (body.left + 1, skid_y), (body.right - 1, skid_y), 1
-            )
-            return
-
-        if kind == "fast_jet":
-            span = max(6, int(base * 1.55))
-            length = max(8, int(base * 1.88))
-            nose = (pos[0] + (facing * length), pos[1])
-            wing_l = (pos[0] - (facing * max(2, length // 4)), pos[1] - span // 2)
-            wing_r = (pos[0] - (facing * max(2, length // 4)), pos[1] + span // 2)
-            tail = (pos[0] - (facing * length // 2), pos[1])
-            pygame.draw.polygon(surface, (174, 182, 194), [nose, wing_l, tail, wing_r])
-            pygame.draw.polygon(surface, (86, 92, 104), [nose, wing_l, tail, wing_r], 1)
-            contrail = (
-                tail[0] - (facing * max(6, int(base * 2.4))),
-                tail[1] + int(round(math.sin(phase * 7.0) * 1.6)),
-            )
-            pygame.draw.line(surface, (224, 230, 236), tail, contrail, 1)
-            return
-
-        pygame.draw.circle(surface, (186, 198, 210), pos, max(1, base // 3))
-
-    def _spatial_scene_seed(self, *, payload: SpatialIntegrationPayload | None) -> int:
-        if payload is None:
-            return 7919
-
-        seed = 2166136261
-
-        def mix(value: int) -> None:
-            nonlocal seed
-            seed ^= int(value) & 0xFFFFFFFF
-            seed = (seed * 16777619) & 0xFFFFFFFF
-
-        mix(payload.grid_cols)
-        mix(payload.grid_rows)
-        mix(payload.alt_levels)
-        mix(payload.aircraft_now.x)
-        mix(payload.aircraft_now.y)
-        mix(payload.aircraft_now.z)
-        mix(payload.aircraft_prev.x)
-        mix(payload.aircraft_prev.y)
-        mix(payload.aircraft_prev.z)
-        for landmark in payload.landmarks:
-            for ch in landmark.label:
-                mix(ord(ch))
-            mix(landmark.x)
-            mix(landmark.y)
-        return int(seed)
-
-    def _spatial_grid_to_world(
-        self,
-        *,
-        x: int,
-        y: int,
-        z: int,
-        grid_cols: int,
-        grid_rows: int,
-        alt_levels: int,
-    ) -> tuple[float, float, float, float]:
-        cols = max(1, int(grid_cols))
-        rows = max(1, int(grid_rows))
-        levels = max(1, int(alt_levels))
-
-        x_norm = 0.5 if cols <= 1 else float(x) / float(cols - 1)
-        y_norm = 0.5 if rows <= 1 else float(y) / float(rows - 1)
-        z_norm = 0.0 if levels <= 1 else float(z) / float(levels - 1)
-
-        wx = (x_norm - 0.5) * 3.2
-        wy = 1.1 + (y_norm * 6.2)
-        terrain = self._spatial_terrain_height(wx=wx, wy=wy)
-        wz = terrain + 0.05 + (z_norm * 0.95)
-        return wx, wy, wz, terrain
-
-    def _spatial_rotate_view_coords(
-        self,
-        *,
-        wx: float,
-        wy: float,
-        heading_deg: int,
-    ) -> tuple[float, float]:
-        if int(heading_deg) % 360 == 0:
-            return float(wx), float(wy)
-        cx = 0.0
-        cy = 4.2
-        dx = float(wx) - cx
-        dy = float(wy) - cy
-        ang = math.radians(float(heading_deg))
-        rx = (dx * math.cos(ang)) - (dy * math.sin(ang))
-        ry = (dx * math.sin(ang)) + (dy * math.cos(ang))
-        return float(rx + cx), float(ry + cy)
-
-    def _spatial_view_depth(self, *, wx: float, wy: float, heading_deg: int) -> float:
-        _rx, ry = self._spatial_rotate_view_coords(wx=wx, wy=wy, heading_deg=heading_deg)
-        return float(ry)
-
-    def _spatial_project_point(
-        self,
-        *,
-        rect: pygame.Rect,
-        horizon_y: int,
-        scene_view: SpatialIntegrationSceneView = SpatialIntegrationSceneView.OBLIQUE,
-        heading_deg: int = 0,
-        wx: float,
-        wy: float,
-        wz: float,
-    ) -> tuple[int, int]:
-        wx_view, wy_view = self._spatial_rotate_view_coords(
-            wx=float(wx),
-            wy=float(wy),
-            heading_deg=int(heading_deg),
-        )
-        if scene_view is SpatialIntegrationSceneView.TOPDOWN:
-            wy_norm = (float(wy_view) - 0.75) / 7.5
-            ny = max(0.0, min(1.0, wy_norm))
-            lateral = min(rect.w, rect.h) * 0.22 * (0.98 - (ny * 0.42))
-            sx = int(round(rect.centerx + (float(wx_view) * lateral)))
-            ground_top = max(rect.y + 2, int(horizon_y))
-            ground_span = max(1, rect.bottom - ground_top)
-            y_base = float(ground_top) + (ny * float(ground_span))
-            alt_lift = (float(wz) * min(rect.w, rect.h) * 0.11) / (1.0 + (ny * 0.8))
-            sy = int(round(y_base - alt_lift))
-            return sx, sy
-
-        depth = max(0.45, float(wy_view))
-        scale = min(rect.w, rect.h) * 1.12
-        cam_z = 0.58
-        sx = int(round(rect.centerx + (float(wx_view) / depth) * scale))
-        sy = int(round(float(horizon_y) + ((cam_z - float(wz)) / depth) * scale))
-        return sx, sy
-
-    def _spatial_terrain_height(self, *, wx: float, wy: float) -> float:
-        base = 0.02
-        ridge = 0.08 * math.sin((wx * 1.55) + 0.7) * math.exp(-((wy - 3.8) ** 2) * 0.16)
-        hill_a = 0.12 * math.exp(-(((wx + 0.8) ** 2) * 1.9) - (((wy - 2.9) ** 2) * 0.24))
-        hill_b = 0.10 * math.exp(-(((wx - 1.1) ** 2) * 1.5) - (((wy - 5.1) ** 2) * 0.30))
-        return float(base + ridge + hill_a + hill_b)
+        return
 
     def _draw_spatial_projection_panel(
         self,
@@ -26357,16 +23686,172 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         view_preset: InstrumentAircraftViewPreset = InstrumentAircraftViewPreset.FRONT_LEFT,
     ) -> None:
         border = (170, 184, 212)
-        self._draw_aircraft_card_backdrop(surface, rect)
-        sprite = self._instrument_card_bank.get_scaled_surface(
+        pygame.draw.rect(surface, (218, 224, 232), rect)
+        pygame.draw.rect(surface, border, rect, 1)
+        inner = rect.inflate(-8, -8)
+        if inner.w <= 0 or inner.h <= 0:
+            return
+
+        card = self._instrument_card_bank.get_scaled_surface(
             state=state,
-            size=(max(8, rect.w), max(8, rect.h)),
+            size=inner.size,
             view_preset=view_preset,
         )
-        if sprite is None:
-            raise RuntimeError("Modern instrument card renderer failed to generate a card sprite.")
-        surface.blit(sprite, rect.topleft)
+        surface.blit(card, inner.topleft)
         pygame.draw.rect(surface, border, rect, 1)
+
+    def _instrument_aircraft_projected_faces(
+        self,
+        state: InstrumentState,
+        *,
+        view_preset: InstrumentAircraftViewPreset,
+        center: tuple[int, int],
+        scale: float,
+    ) -> tuple[tuple[str, tuple[tuple[int, int], ...], float], ...]:
+        yaw, pitch, roll, forward_x_mix, forward_y_mix = self._instrument_aircraft_view_params(
+            view_preset
+        )
+        projected: list[tuple[float, str, tuple[tuple[int, int], ...], float]] = []
+        for role, face in self._instrument_aircraft_mesh():
+            rotated = tuple(
+                self._instrument_aircraft_view_point(
+                    point,
+                    heading_deg=float(state.heading_deg),
+                    pitch_deg=float(state.pitch_deg),
+                    bank_deg=float(state.bank_deg),
+                    view_yaw_deg=yaw,
+                    view_pitch_deg=pitch,
+                    view_roll_deg=roll,
+                )
+                for point in face
+            )
+            points: list[tuple[int, int]] = []
+            depth = 0.0
+            for x, y, z in rotated:
+                points.append(
+                    (
+                        int(round(center[0] + (x + y * forward_x_mix) * scale)),
+                        int(round(center[1] - (z + y * forward_y_mix) * scale)),
+                    )
+                )
+                depth += y
+            if self._polygon_area(points) < 1.0:
+                continue
+            shade = self._instrument_face_shade(rotated)
+            projected.append((depth / len(rotated), role, tuple(points), shade))
+        projected.sort(key=lambda item: item[0], reverse=True)
+        return tuple((role, points, shade) for _depth, role, points, shade in projected)
+
+    @staticmethod
+    def _instrument_aircraft_mesh() -> tuple[
+        tuple[str, tuple[tuple[float, float, float], ...]], ...
+    ]:
+        return (
+            ("body", ((-0.18, 3.25, 0.06), (0.18, 3.25, 0.06), (0.46, 0.6, 0.24), (-0.46, 0.6, 0.24))),
+            ("body", ((-0.46, 0.6, 0.24), (0.46, 0.6, 0.24), (0.30, -2.55, 0.08), (-0.30, -2.55, 0.08))),
+            ("accent", ((-0.30, -2.55, 0.08), (0.30, -2.55, 0.08), (0.12, -3.0, 0.02), (-0.12, -3.0, 0.02))),
+            ("body", ((-0.18, 0.45, 0.16), (-3.75, 0.15, 0.02), (-3.05, -0.70, -0.02), (-0.58, -0.20, 0.06))),
+            ("body", ((0.18, 0.45, 0.16), (0.58, -0.20, 0.06), (3.05, -0.70, -0.02), (3.75, 0.15, 0.02))),
+            ("accent", ((-0.12, -1.80, 0.20), (-1.32, -2.15, 0.20), (-1.02, -2.75, 0.06), (-0.18, -2.38, 0.08))),
+            ("accent", ((0.12, -1.80, 0.20), (0.18, -2.38, 0.08), (1.02, -2.75, 0.06), (1.32, -2.15, 0.20))),
+            ("accent", ((0.0, -2.20, 0.22), (0.0, -1.78, 1.30), (0.0, -2.65, 0.32))),
+            ("canopy", ((-0.18, 0.85, 0.36), (0.18, 0.85, 0.36), (0.22, 1.65, 0.64), (-0.22, 1.65, 0.64))),
+            ("engine", ((-0.98, 0.20, -0.05), (-0.70, 0.20, -0.05), (-0.70, -0.55, -0.08), (-0.98, -0.55, -0.08))),
+            ("engine", ((0.70, 0.20, -0.05), (0.98, 0.20, -0.05), (0.98, -0.55, -0.08), (0.70, -0.55, -0.08))),
+        )
+
+    @staticmethod
+    def _instrument_aircraft_view_params(
+        view_preset: InstrumentAircraftViewPreset,
+    ) -> tuple[float, float, float, float, float]:
+        if view_preset is InstrumentAircraftViewPreset.FRONT_RIGHT:
+            return (-34.0, 4.0, 0.0, 0.12, 0.26)
+        if view_preset is InstrumentAircraftViewPreset.PROFILE_LEFT:
+            return (86.0, 6.0, 0.0, 0.04, 0.18)
+        if view_preset is InstrumentAircraftViewPreset.PROFILE_RIGHT:
+            return (-86.0, 6.0, 0.0, 0.04, 0.18)
+        if view_preset is InstrumentAircraftViewPreset.TOP_DOWN:
+            return (0.0, 58.0, 0.0, 0.02, 0.04)
+        return (34.0, 4.0, 0.0, 0.12, 0.26)
+
+    @classmethod
+    def _instrument_aircraft_view_point(
+        cls,
+        point: tuple[float, float, float],
+        *,
+        heading_deg: float,
+        pitch_deg: float,
+        bank_deg: float,
+        view_yaw_deg: float,
+        view_pitch_deg: float,
+        view_roll_deg: float,
+    ) -> tuple[float, float, float]:
+        x, y, z = point
+        x, y, z = cls._rotate_y_axis(x, y, z, bank_deg)
+        y, z, x = cls._rotate_x_axis(y, z, x, pitch_deg)
+        x, y, z = cls._rotate_z_axis(x, y, z, -heading_deg)
+        x, y, z = cls._rotate_z_axis(x, y, z, -view_yaw_deg)
+        y, z, x = cls._rotate_x_axis(y, z, x, view_pitch_deg)
+        x, y, z = cls._rotate_y_axis(x, y, z, view_roll_deg)
+        return (x, y, z)
+
+    @staticmethod
+    def _rotate_z_axis(
+        x: float, y: float, z: float, degrees: float
+    ) -> tuple[float, float, float]:
+        rad = math.radians(float(degrees))
+        c = math.cos(rad)
+        s = math.sin(rad)
+        return (x * c - y * s, x * s + y * c, z)
+
+    @staticmethod
+    def _rotate_y_axis(
+        x: float, y: float, z: float, degrees: float
+    ) -> tuple[float, float, float]:
+        rad = math.radians(float(degrees))
+        c = math.cos(rad)
+        s = math.sin(rad)
+        return (x * c + z * s, y, -x * s + z * c)
+
+    @staticmethod
+    def _rotate_x_axis(
+        y: float, z: float, x: float, degrees: float
+    ) -> tuple[float, float, float]:
+        rad = math.radians(float(degrees))
+        c = math.cos(rad)
+        s = math.sin(rad)
+        return (y * c - z * s, y * s + z * c, x)
+
+    @classmethod
+    def _instrument_face_shade(cls, points: tuple[tuple[float, float, float], ...]) -> float:
+        if len(points) < 3:
+            return 1.0
+        ax, ay, az = points[0]
+        bx, by, bz = points[1]
+        cx, cy, cz = points[2]
+        ux, uy, uz = bx - ax, by - ay, bz - az
+        vx, vy, vz = cx - ax, cy - ay, cz - az
+        nx = uy * vz - uz * vy
+        ny = uz * vx - ux * vz
+        nz = ux * vy - uy * vx
+        mag = max(1e-6, math.sqrt(nx * nx + ny * ny + nz * nz))
+        nx, ny, nz = nx / mag, ny / mag, nz / mag
+        light = (-0.35, -0.28, 0.90)
+        dot = max(0.0, nx * light[0] + ny * light[1] + nz * light[2])
+        return max(0.58, min(1.20, 0.72 + dot * 0.42))
+
+    @staticmethod
+    def _shade_rgb(color: tuple[int, int, int], shade: float) -> tuple[int, int, int]:
+        return tuple(max(0, min(255, int(round(channel * shade)))) for channel in color)
+
+    @staticmethod
+    def _polygon_area(points: Sequence[tuple[int, int]]) -> float:
+        if len(points) < 3:
+            return 0.0
+        total = 0.0
+        for current, nxt in zip(points, (*points[1:], points[0]), strict=False):
+            total += (current[0] * nxt[1]) - (nxt[0] * current[1])
+        return abs(total) * 0.5
 
     def _draw_aircraft_card_backdrop(
         self,
@@ -26915,14 +24400,9 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                     value=str(scenario.edge_distances[idx]),
                 )
 
-        start_idx = scenario.route[0] if scenario.route else 0
         for idx, (x, y) in enumerate(node_px):
-            if idx == start_idx:
-                fill = (255, 18, 24)
-                outline = (128, 0, 0)
-            else:
-                fill = (244, 244, 244)
-                outline = (156, 156, 156)
+            fill = (244, 244, 244)
+            outline = (156, 156, 156)
             pygame.draw.circle(surface, fill, (x, y), 10)
             pygame.draw.circle(surface, outline, (x, y), 10, 2)
 
@@ -26930,23 +24410,6 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             lx = x + 14 if x < canvas.centerx else x - label.get_width() - 14
             ly = y - label.get_height() // 2
             surface.blit(label, (lx, ly))
-
-        if scenario.route:
-            start_x, start_y = node_px[start_idx]
-            parcel = pygame.Rect(start_x + 18, start_y - 18, 40, 32)
-            pygame.draw.rect(surface, (72, 170, 214), parcel)
-            pygame.draw.rect(surface, (28, 98, 136), parcel, 2)
-            box = pygame.Rect(parcel.x + 8, parcel.y + 6, 22, 16)
-            pygame.draw.rect(surface, (214, 182, 132), box)
-            pygame.draw.rect(surface, (118, 88, 48), box, 1)
-            pygame.draw.line(surface, (118, 88, 48), (box.x, box.y + 5), (box.right, box.y + 5), 1)
-            pygame.draw.line(
-                surface,
-                (118, 88, 48),
-                (box.centerx, box.y),
-                (box.centerx, box.bottom),
-                1,
-            )
 
         unit_label = {
             "km": "kilometres",
@@ -28296,20 +25759,7 @@ def _new_seed() -> int:
 
 
 def _is_enter_key(key: int) -> bool:
-    return key in (pygame.K_RETURN, pygame.K_KP_ENTER)
-
-
-def _parse_optional_env_bool(raw: str | None) -> bool | None:
-    if raw is None:
-        return None
-    token = str(raw).strip().lower()
-    if token == "":
-        return None
-    if token in {"1", "true", "on", "yes"}:
-        return True
-    if token in {"0", "false", "off", "no"}:
-        return False
-    return None
+    return key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_KP_PERIOD)
 
 
 def _resolve_window_mode(
@@ -28342,15 +25792,6 @@ def _resolve_window_mode(
     return "windowed"
 
 
-def _resolve_use_opengl(*, stored_default: bool | None) -> bool:
-    env_value = _parse_optional_env_bool(os.environ.get("CFAST_USE_OPENGL"))
-    if env_value is not None:
-        return bool(env_value)
-    if stored_default is not None:
-        return bool(stored_default)
-    return True
-
-
 def _exception_location(exc: BaseException) -> str | None:
     trace = traceback.extract_tb(exc.__traceback__)
     if not trace:
@@ -28361,53 +25802,6 @@ def _exception_location(exc: BaseException) -> str | None:
     if frame.name:
         location = f"{location} in {frame.name}"
     return location
-
-
-def _build_opengl_failure_info(
-    *,
-    stage: str,
-    requested: bool,
-    attempted: bool,
-    exc: Exception,
-) -> OpenGLFailureInfo:
-    stage_detail = {
-        "display_init": "creating the ModernGL display",
-        "renderer_init": "initializing the ModernGL renderer",
-        "resize": "resizing the renderer display",
-        "render": "rendering the frame",
-    }.get(stage, "using the renderer")
-    detail = str(exc).strip()
-    suffix = f": {detail}" if detail else ""
-    return OpenGLFailureInfo(
-        stage=stage,
-        summary="Renderer failed.",
-        detail=f"The app could not continue while {stage_detail}. {type(exc).__name__}{suffix}",
-        requested=bool(requested),
-        attempted=bool(attempted),
-        env_forced=_parse_optional_env_bool(os.environ.get("CFAST_USE_OPENGL")) is True,
-        scene="renderer",
-        path="modern_gl",
-        diagnostic_code=_renderer_diagnostic_code(
-            scene="renderer",
-            stage=stage,
-            path="modern_gl",
-        ),
-        exception_type=type(exc).__name__,
-        location=_exception_location(exc),
-    )
-
-
-def _renderer_diagnostic_code(*, scene: str, stage: str | None, path: str | None) -> str:
-    scene_token = {
-        "rapid_tracking": "RT",
-    }.get(str(scene).strip().lower(), "GL")
-    stage_token = (
-        "".join(ch for ch in str(stage or "runtime").upper() if ch.isalnum())[:4] or "RUNT"
-    )
-    path_token = (
-        "".join(ch for ch in str(path or "fallback").upper() if ch.isalnum())[:4] or "FB"
-    )
-    return f"{scene_token}-{stage_token}-{path_token}"
 
 
 def _window_flags_for_mode(window_mode: str) -> int:
@@ -28448,17 +25842,6 @@ def _window_size_for_mode(
     if desktop_size is not None:
         return desktop_size
     return (max(1, int(default_size[0])), max(1, int(default_size[1])))
-
-
-def _apply_opengl_display_attributes() -> None:
-    pygame.display.gl_set_attribute(pygame.GL_CONTEXT_MAJOR_VERSION, 3)
-    pygame.display.gl_set_attribute(pygame.GL_CONTEXT_MINOR_VERSION, 3)
-    pygame.display.gl_set_attribute(
-        pygame.GL_CONTEXT_PROFILE_MASK,
-        pygame.GL_CONTEXT_PROFILE_CORE,
-    )
-    pygame.display.gl_set_attribute(pygame.GL_DEPTH_SIZE, 24)
-    pygame.display.gl_set_attribute(pygame.GL_DOUBLEBUFFER, 1)
 
 
 def _read_display_lifecycle_state(
@@ -28532,8 +25915,8 @@ def _rebootstrap_display_for_transition(
     *,
     decision: DisplayRebootstrapDecision,
     video_driver: str,
-    want_gl: bool,
 ) -> DisplayBootstrapResult:
+    _ = video_driver
     pygame.display.quit()
     pygame.display.init()
     pygame.display.set_caption("RCAF CFAST Trainer")
@@ -28541,7 +25924,6 @@ def _rebootstrap_display_for_transition(
         window_size=decision.window_size,
         window_flags=_window_flags_for_mode(decision.window_mode),
         video_driver=video_driver,
-        want_gl=want_gl,
     )
 
 
@@ -28576,7 +25958,6 @@ def _capture_display_transition_frame(display_surface: pygame.Surface) -> pygame
 def _present_display_transition_frame(
     *,
     display_surface: pygame.Surface,
-    gl_renderer: ModernSceneRenderer | None,
     transition_frame: pygame.Surface | None,
 ) -> bool:
     if transition_frame is None:
@@ -28595,11 +25976,7 @@ def _present_display_transition_frame(
             except Exception:
                 return False
     try:
-        if gl_renderer is not None:
-            gl_renderer.resize(window_size=target_size)
-            gl_renderer.render_frame(ui_surface=frame, scene=None)
-        else:
-            display_surface.blit(frame, (0, 0))
+        display_surface.blit(frame, (0, 0))
         pygame.display.flip()
     except Exception:
         return False
@@ -28613,12 +25990,6 @@ def _apply_display_bootstrap_to_app(
     window_mode: str,
 ) -> None:
     app.set_window_mode(window_mode)
-    app.set_opengl_enabled(bootstrap.gl_renderer is not None)
-    app.set_renderer_bootstrap_state(
-        requested=bootstrap.gl_requested,
-        attempted=bootstrap.gl_attempted,
-        failure=bootstrap.gl_failure,
-    )
     app.set_surface(bootstrap.app_surface)
 
 
@@ -28627,62 +25998,18 @@ def _initialize_display_surfaces(
     window_size: tuple[int, int],
     window_flags: int,
     video_driver: str,
-    want_gl: bool,
 ) -> DisplayBootstrapResult:
-    opengl_window_flags = window_flags | pygame.OPENGL | pygame.DOUBLEBUF
-    can_try_gl = bool(want_gl and video_driver != "dummy")
+    _ = video_driver
     display_surface: pygame.Surface
     app_surface: pygame.Surface
-    gl_renderer: ModernSceneRenderer | None = None
     active_window_flags = window_flags
-    gl_failure: OpenGLFailureInfo | None = None
-
-    if can_try_gl:
-        try:
-            _apply_opengl_display_attributes()
-        except Exception:
-            pass
-        try:
-            display_surface = pygame.display.set_mode(window_size, opengl_window_flags)
-        except Exception as exc:
-            gl_failure = _build_opengl_failure_info(
-                stage="display_init",
-                requested=want_gl,
-                attempted=True,
-                exc=exc,
-            )
-        else:
-            try:
-                gl_renderer = ModernSceneRenderer(window_size=display_surface.get_size())
-            except Exception as exc:
-                gl_failure = _build_opengl_failure_info(
-                    stage="renderer_init",
-                    requested=want_gl,
-                    attempted=True,
-                    exc=exc,
-                )
-            else:
-                app_surface = pygame.Surface(display_surface.get_size(), pygame.SRCALPHA)
-                active_window_flags = opengl_window_flags
-                return DisplayBootstrapResult(
-                    display_surface=display_surface,
-                    app_surface=app_surface,
-                    gl_renderer=gl_renderer,
-                    active_window_flags=active_window_flags,
-                    gl_requested=bool(want_gl),
-                    gl_attempted=True,
-                )
 
     display_surface = pygame.display.set_mode(window_size, window_flags)
     app_surface = display_surface
     return DisplayBootstrapResult(
         display_surface=display_surface,
         app_surface=app_surface,
-        gl_renderer=gl_renderer,
         active_window_flags=active_window_flags,
-        gl_requested=bool(want_gl),
-        gl_attempted=bool(can_try_gl),
-        gl_failure=gl_failure,
     )
 
 
@@ -28726,18 +26053,13 @@ def run(
     window_size = _window_size_for_mode(window_mode=window_mode)
     window_flags = _window_flags_for_mode(window_mode)
 
-    want_gl = (not headless) and _resolve_use_opengl(
-        stored_default=runtime_defaults_store.stored_use_opengl()
-    )
     bootstrap = _initialize_display_surfaces(
         window_size=window_size,
         window_flags=window_flags,
         video_driver=video_driver,
-        want_gl=want_gl,
     )
     display_surface = bootstrap.display_surface
     app_surface = bootstrap.app_surface
-    gl_renderer = bootstrap.gl_renderer
     active_window_flags = bootstrap.active_window_flags
 
     font = pygame.font.Font(None, 36)
@@ -28754,7 +26076,6 @@ def run(
     app = App(
         surface=app_surface,
         font=font,
-        opengl_enabled=(gl_renderer is not None),
         window_mode=window_mode,
         headless_mode=headless,
         results_store=results_store,
@@ -31714,34 +29035,6 @@ def run(
     ]
 
     app.push(MenuScreen(app, "Main Menu", main_items, is_root=True))
-    if bootstrap.gl_failure is not None:
-        app.push(OpenGLFailureScreen(app, failure=bootstrap.gl_failure))
-
-    def _show_renderer_failure(failure: OpenGLFailureInfo) -> None:
-        nonlocal display_surface, gl_renderer, active_window_flags
-        window_size = display_surface.get_size()
-        try:
-            display_surface = pygame.display.set_mode(window_size, window_flags)
-        except Exception:
-            app.quit(exit_reason="renderer_failure_abort", exit_code=1)
-            return
-        gl_renderer = None
-        active_window_flags = window_flags
-        app.set_opengl_enabled(False)
-        app.set_renderer_bootstrap_state(
-            requested=bool(failure.requested),
-            attempted=bool(failure.attempted),
-            failure=failure,
-        )
-        app.set_surface(display_surface)
-        app.present_renderer_failure(failure)
-
-    def _apply_renderer_action(action: str) -> None:
-        nonlocal display_surface, gl_renderer, active_window_flags
-        token = str(action).strip().lower()
-        _ = (display_surface, gl_renderer, active_window_flags)
-        if token == "quit":
-            app.quit(exit_reason="renderer_failure_quit", exit_code=1)
 
     frame = 0
     resize_events: set[int] = {pygame.VIDEORESIZE}
@@ -31753,12 +29046,6 @@ def run(
         while app.running:
             if event_injector is not None:
                 event_injector(frame)
-
-            renderer_action = app.consume_renderer_action()
-            if renderer_action is not None:
-                _apply_renderer_action(renderer_action)
-                if not app.running:
-                    break
 
             for event in pygame.event.get():
                 if event.type in resize_events:
@@ -31777,134 +29064,38 @@ def run(
                         )
                     )
                     if next_w > 0 and next_h > 0:
-                        if gl_renderer is not None:
+                        try:
+                            display_surface = pygame.display.set_mode(
+                                (next_w, next_h), active_window_flags
+                            )
+                        except Exception:
                             try:
                                 display_surface = pygame.display.set_mode(
-                                    (next_w, next_h), active_window_flags
-                                )
-                            except Exception as exc:
-                                _show_renderer_failure(
-                                    _build_opengl_failure_info(
-                                        stage="resize",
-                                        requested=True,
-                                        attempted=True,
-                                        exc=exc,
-                                    )
-                                )
-                                continue
-                        else:
-                            try:
-                                display_surface = pygame.display.set_mode(
-                                    (next_w, next_h), active_window_flags
+                                    (next_w, next_h), window_flags
                                 )
                             except Exception:
-                                try:
-                                    display_surface = pygame.display.set_mode(
-                                        (next_w, next_h), window_flags
-                                    )
-                                except Exception:
-                                    app.recover_to_menu(
-                                        reason="renderer_failure_abort",
-                                        detail="renderer failure",
-                                    )
-                                    continue
-                                active_window_flags = window_flags
-                            app.set_surface(display_surface)
+                                app.recover_to_menu(
+                                    reason="display_resize_abort",
+                                    detail="display resize failure",
+                                )
+                                continue
+                            active_window_flags = window_flags
+                        app.set_surface(display_surface)
                 app.handle_event(event)
                 if not app.running:
                     break
 
             if not app.running:
                 break
-            if gl_renderer is not None:
-                current_display = pygame.display.get_surface()
-                if current_display is not None:
-                    display_surface = current_display
-                lifecycle_state = _read_display_lifecycle_state(
-                    display_surface=display_surface,
-                    active_window_flags=active_window_flags,
-                    window_mode=window_mode,
-                )
-                rebootstrap = _resolve_display_rebootstrap(lifecycle_state)
-                if rebootstrap is not None:
-                    transition_frame = _capture_display_transition_frame(display_surface)
-                    bootstrap = _rebootstrap_display_for_transition(
-                        decision=rebootstrap,
-                        video_driver=video_driver,
-                        want_gl=want_gl,
-                    )
-                    display_surface = bootstrap.display_surface
-                    gl_renderer = bootstrap.gl_renderer
-                    active_window_flags = bootstrap.active_window_flags
-                    window_mode = rebootstrap.window_mode
-                    window_flags = _window_flags_for_mode(window_mode)
-                    _apply_display_bootstrap_to_app(
-                        app=app,
-                        bootstrap=bootstrap,
-                        window_mode=window_mode,
-                    )
-                    _present_display_transition_frame(
-                        display_surface=display_surface,
-                        gl_renderer=gl_renderer,
-                        transition_frame=transition_frame,
-                    )
-                    if gl_renderer is None:
-                        continue
-                window_size = display_surface.get_size()
-                if app.surface.get_size() != window_size:
-                    app.set_surface(pygame.Surface(window_size, pygame.SRCALPHA))
-                try:
-                    gl_renderer.resize(window_size=window_size)
-                except Exception as exc:
-                    _show_renderer_failure(
-                        _build_opengl_failure_info(
-                            stage="resize",
-                            requested=True,
-                            attempted=True,
-                            exc=exc,
-                        )
-                    )
-                    continue
-                app.surface.fill((0, 0, 0, 0))
-            else:
-                current_display = pygame.display.get_surface()
-                if current_display is not None and app.surface is not current_display:
-                    display_surface = current_display
-                    app.set_surface(display_surface)
+            current_display = pygame.display.get_surface()
+            if current_display is not None and app.surface is not current_display:
+                display_surface = current_display
+                app.set_surface(display_surface)
 
-            try:
-                app.render()
-            except Exception as exc:
-                if gl_renderer is not None:
-                    _show_renderer_failure(
-                        _build_opengl_failure_info(
-                            stage="render",
-                            requested=True,
-                            attempted=True,
-                            exc=exc,
-                        )
-                    )
-                    continue
-                raise
+            app.render()
             if not app.running:
                 break
 
-            if gl_renderer is not None:
-                try:
-                    gl_renderer.render_frame(
-                        ui_surface=app.surface,
-                        scene=app.consume_gl_scene(),
-                    )
-                except Exception as exc:
-                    _show_renderer_failure(
-                        _build_opengl_failure_info(
-                            stage="render",
-                            requested=True,
-                            attempted=True,
-                            exc=exc,
-                        )
-                    )
-                    continue
             pygame.display.flip()
 
             frame += 1
@@ -31929,6 +29120,8 @@ def run(
                     "exit_code": app.exit_code,
                 }
             )
+        if app is not None:
+            app.close_companion_renderers()
         pygame.quit()
         if headless:
             for key, value in headless_env_previous.items():

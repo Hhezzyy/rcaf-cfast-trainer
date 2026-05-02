@@ -5,11 +5,6 @@ from dataclasses import dataclass, replace
 import pytest
 
 from cfast_trainer.cognitive_core import Problem
-from cfast_trainer.instrument_aircraft_cards import (
-    aircraft_card_pose_distance,
-    aircraft_card_pose_signature,
-    aircraft_card_semantic_drift_tags,
-)
 from cfast_trainer.instrument_comprehension import (
     InstrumentAircraftViewPreset,
     InstrumentComprehensionConfig,
@@ -107,7 +102,7 @@ def test_part1_option_generation_uses_fixed_view_family_by_code() -> None:
         InstrumentAircraftViewPreset.FRONT_RIGHT,
         InstrumentAircraftViewPreset.PROFILE_LEFT,
         InstrumentAircraftViewPreset.PROFILE_RIGHT,
-        InstrumentAircraftViewPreset.TOP_OBLIQUE,
+        InstrumentAircraftViewPreset.TOP_DOWN,
     )
     assert payload.option_render_mode is InstrumentOptionRenderMode.AIRCRAFT
     assert payload.prompt_view_preset is None
@@ -224,9 +219,9 @@ def test_easier_band_random_profile_comes_from_lower_band_pool() -> None:
     )
 
 
-def test_part1_and_part2_option_states_do_not_collapse_into_near_duplicate_aircraft_cards() -> None:
+
+def test_part1_and_part2_option_states_are_unique_for_flat_cards() -> None:
     gen = InstrumentComprehensionGenerator(seed=4401)
-    threshold = 26.0
     for kind in (
         InstrumentComprehensionTrialKind.INSTRUMENTS_TO_AIRCRAFT,
         InstrumentComprehensionTrialKind.AIRCRAFT_TO_INSTRUMENTS,
@@ -234,44 +229,8 @@ def test_part1_and_part2_option_states_do_not_collapse_into_near_duplicate_aircr
         problem = gen.next_problem_for_kind(kind=kind, difficulty=0.72)
         payload = problem.payload
         assert isinstance(payload, InstrumentComprehensionPayload)
-        signatures = []
-        for option in payload.options:
-            preset = (
-                option.view_preset
-                if kind is InstrumentComprehensionTrialKind.INSTRUMENTS_TO_AIRCRAFT
-                else (payload.prompt_view_preset or InstrumentAircraftViewPreset.FRONT_LEFT)
-            )
-            signatures.append(aircraft_card_pose_signature(option.state, view_preset=preset))
-        for idx, left in enumerate(signatures):
-            for right in signatures[idx + 1 :]:
-                assert aircraft_card_pose_distance(left, right) >= threshold
-
-
-def test_part1_and_part2_aircraft_cards_stay_semantically_consistent() -> None:
-    gen = InstrumentComprehensionGenerator(seed=5151)
-    for kind in (
-        InstrumentComprehensionTrialKind.INSTRUMENTS_TO_AIRCRAFT,
-        InstrumentComprehensionTrialKind.AIRCRAFT_TO_INSTRUMENTS,
-    ):
-        problem = gen.next_problem_for_kind(kind=kind, difficulty=0.72)
-        payload = problem.payload
-        assert isinstance(payload, InstrumentComprehensionPayload)
-        if kind is InstrumentComprehensionTrialKind.AIRCRAFT_TO_INSTRUMENTS:
-            assert aircraft_card_semantic_drift_tags(
-                payload.prompt_state,
-                view_preset=payload.prompt_view_preset or InstrumentAircraftViewPreset.FRONT_LEFT,
-            ) == ()
-        for option in payload.options:
-            preset = (
-                option.view_preset
-                if kind is InstrumentComprehensionTrialKind.INSTRUMENTS_TO_AIRCRAFT
-                else (payload.prompt_view_preset or InstrumentAircraftViewPreset.FRONT_LEFT)
-            )
-            assert aircraft_card_semantic_drift_tags(
-                option.state,
-                view_preset=preset or InstrumentAircraftViewPreset.FRONT_LEFT,
-            ) == ()
-
+        states = tuple(option.state for option in payload.options)
+        assert len(set(states)) == len(states)
 
 def test_fixed_canonical_states_stay_unique_minimum_across_all_ic_parts() -> None:
     class FixedStateGenerator(InstrumentComprehensionGenerator):

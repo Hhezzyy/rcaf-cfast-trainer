@@ -48,7 +48,7 @@ class InstrumentAircraftViewPreset(StrEnum):
     FRONT_RIGHT = "front_right"
     PROFILE_LEFT = "profile_left"
     PROFILE_RIGHT = "profile_right"
-    TOP_OBLIQUE = "top_oblique"
+    TOP_DOWN = "top_down"
 
 
 class InstrumentOptionRenderMode(StrEnum):
@@ -126,7 +126,7 @@ _PART1_VIEW_PRESETS: tuple[InstrumentAircraftViewPreset, ...] = (
     InstrumentAircraftViewPreset.FRONT_RIGHT,
     InstrumentAircraftViewPreset.PROFILE_LEFT,
     InstrumentAircraftViewPreset.PROFILE_RIGHT,
-    InstrumentAircraftViewPreset.TOP_OBLIQUE,
+    InstrumentAircraftViewPreset.TOP_DOWN,
 )
 _PART2_PROMPT_VIEW_PRESET = InstrumentAircraftViewPreset.FRONT_LEFT
 

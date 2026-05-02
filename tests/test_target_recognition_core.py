@@ -9,6 +9,7 @@ from cfast_trainer.target_recognition import (
     TargetRecognitionConfig,
     TargetRecognitionGenerator,
     TargetRecognitionPayload,
+    TargetRecognitionSceneCriteria,
     TargetRecognitionSceneEntity,
     TargetRecognitionScorer,
     TargetRecognitionSystemCycle,
@@ -48,6 +49,8 @@ def test_scene_spawn_pressure_scales_with_difficulty() -> None:
 
     assert high.scene_spawn_interval_range_s[0] < low.scene_spawn_interval_range_s[0]
     assert high.scene_spawn_interval_range_s[1] < low.scene_spawn_interval_range_s[1]
+    assert low.scene_spawn_interval_range_s == (8.5, 22.0)
+    assert high.scene_spawn_interval_range_s == (3.6, 11.0)
     assert high.scene_spawn_burst_chance > low.scene_spawn_burst_chance
     assert high.scene_spawn_burst_range == (1, 2)
 
@@ -79,25 +82,82 @@ def test_scene_target_is_specific_compound_instruction() -> None:
     for option in payload.scene_target_options:
         words = option.replace("(HP)", "").split()
         assert any(w in words for w in ("Hostile", "Friendly", "Neutral"))
-        assert any(w in words for w in ("Truck", "Tank", "Building"))
+        assert any(w in words for w in ("Truck", "Tank", "Building", "Beacon", "Unknown"))
 
 
-def test_system_panel_generates_three_columns_and_top_target_per_cycle() -> None:
+def test_scene_generation_includes_guide_beacon_and_unknown_types() -> None:
+    gen = TargetRecognitionGenerator(seed=4242)
+    shapes: set[str] = set()
+    labels: set[str] = set()
+    for _ in range(50):
+        payload = gen.next_problem(difficulty=0.8).payload
+        assert isinstance(payload, TargetRecognitionPayload)
+        shapes.update(entity.shape for entity in payload.scene_entities)
+        labels.update(payload.scene_target_options)
+
+    assert {"beacon", "unknown"} <= shapes
+    assert any("Beacon" in label for label in labels)
+    assert any("Unknown" in label for label in labels)
+    assert (
+        TargetRecognitionGenerator._scene_entity_code(
+            TargetRecognitionSceneEntity("beacon", "friendly", False, False)
+        )
+        == "BCN:F"
+    )
+    assert (
+        TargetRecognitionGenerator._scene_entity_code(
+            TargetRecognitionSceneEntity("unknown", "hostile", True, True)
+        )
+        == "UNK:HDP"
+    )
+
+
+def test_beacon_and_unknown_target_labels_keep_affiliation_designations() -> None:
+    assert (
+        TargetRecognitionGenerator._scene_criteria_label(
+            TargetRecognitionSceneCriteria("beacon", "friendly", None, None)
+        )
+        == "Friendly Beacon"
+    )
+    assert (
+        TargetRecognitionGenerator._scene_criteria_label(
+            TargetRecognitionSceneCriteria("unknown", "hostile", None, True)
+        )
+        == "Hostile Unknown (HP)"
+    )
+    assert (
+        TargetRecognitionGenerator._scene_criteria_label(
+            TargetRecognitionSceneCriteria("beacon", "neutral", True, None)
+        )
+        == "Damaged Neutral Beacon"
+    )
+
+
+def test_system_panel_generates_stable_board_with_varying_target_positions() -> None:
     gen = TargetRecognitionGenerator(seed=2026)
     p = gen.next_problem(difficulty=0.6)
     payload = p.payload
     assert isinstance(payload, TargetRecognitionPayload)
     assert payload.system_cycles
+    assert 8 <= len(payload.system_cycles) <= 12
 
+    first_board = payload.system_cycles[0].columns
+    positions: list[tuple[int, int]] = []
     for cycle in payload.system_cycles:
         assert len(cycle.columns) == 3
-        assert cycle.columns[1]
-        assert cycle.columns[1][0] == cycle.target
-        for idx, col in enumerate(cycle.columns):
-            if idx == 1:
-                assert cycle.target in col
-            else:
-                assert cycle.target not in col
+        assert cycle.columns == first_board
+        hits = [
+            (col_idx, row_idx)
+            for col_idx, col in enumerate(cycle.columns)
+            for row_idx, code in enumerate(col)
+            if code == cycle.target
+        ]
+        assert len(hits) == 1
+        positions.append(hits[0])
+
+    assert len(set(positions)) == len(positions)
+    assert len(set(positions)) > 1
+    assert any(pos != (1, 0) for pos in positions)
 
 
 def test_scoring_exact_and_estimation_behavior() -> None:

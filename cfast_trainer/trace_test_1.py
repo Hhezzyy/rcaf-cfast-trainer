@@ -251,6 +251,22 @@ def _tt1_build_lattice_path(plan: TraceTest1AircraftPlan) -> TraceLatticePath | 
     )
 
 
+def _tt1_visible_command_for_prompt(prompt: TraceTest1PromptPlan) -> TraceTest1Command:
+    path = _tt1_build_lattice_path(prompt.red_plan)
+    if path is None:
+        return prompt.red_plan.command
+    step_index = _tt1_command_step_index(prompt.red_plan)
+    if step_index >= len(path.steps):
+        return prompt.red_plan.command
+    action = path.steps[step_index].effective_action
+    return {
+        TraceLatticeAction.LEFT: TraceTest1Command.LEFT,
+        TraceLatticeAction.RIGHT: TraceTest1Command.RIGHT,
+        TraceLatticeAction.PUSH: TraceTest1Command.PUSH,
+        TraceLatticeAction.PULL: TraceTest1Command.PULL,
+    }.get(action, prompt.red_plan.command)
+
+
 def _tt1_heading_pitch_from_forward(
     forward: tuple[float, float, float],
 ) -> tuple[float, float]:
@@ -754,8 +770,6 @@ class TraceTest1Generator:
         self._pending_prompt: TraceTest1PromptPlan | None = None
 
     def next_problem(self, *, difficulty: float) -> Problem:
-        from .trace_scene_3d import classify_trace_test_1_view_maneuver
-
         tier = trace_test_1_difficulty_tier(difficulty=difficulty)
         self._ensure_tier_initialized(tier=tier)
         if self._pending_prompt is not None:
@@ -772,10 +786,7 @@ class TraceTest1Generator:
                 red_plan=red_plan,
                 blue_plans=blue_plans,
             )
-            classified_command = classify_trace_test_1_view_maneuver(
-                prompt=prompt,
-                viewpoint_bearing_deg=_VIEWPOINT_BEARING_DEG,
-            )
+            classified_command = _tt1_visible_command_for_prompt(prompt)
             if (
                 self._allowed_visible_commands is not None
                 and classified_command not in self._allowed_visible_commands

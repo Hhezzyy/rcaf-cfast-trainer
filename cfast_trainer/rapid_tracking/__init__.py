@@ -15,8 +15,8 @@ from .legacy import (
     RAPID_TRACKING_CONTROL_SCHEMES,
     RapidTrackingDriftGenerator,
     _ellipse_contains_point,
-    _repair_layout_for_visual_stability,
     _readable_layout_evaluation,
+    _repair_layout_for_visual_stability,
     _visual_stability_layout_summary,
     build_rapid_tracking_compound_layout,
     normalize_rapid_tracking_control_scheme,
@@ -26,13 +26,11 @@ from .legacy import (
     score_window,
     select_scene_seed,
 )
-from .procgen import (
-    RapidTrackingBackdropTerrain,
-    RapidTrackingV1TrainingWorldBuilder,
-    TrainingWorldBuilder,
-    build_distant_terrain_ring,
+from .renderer import (
+    RapidTrackingExerciseRenderer,
+    RapidTrackingUiContext,
+    render_rapid_tracking_screen,
 )
-from .renderer import RapidTrackingExerciseRenderer, RapidTrackingUiContext, render_rapid_tracking_screen
 from .scene import RapidTrackingEngine, RapidTrackingExercise
 from .simulation import RapidTrackingSimulation
 
@@ -80,16 +78,12 @@ __all__ = [
     "RapidTrackingTrainingProfile",
     "RapidTrackingTrainingSegment",
     "RapidTrackingUiContext",
-    "RapidTrackingV1TrainingWorldBuilder",
     "RapidTrackingCompoundLayout",
-    "RapidTrackingBackdropTerrain",
-    "TrainingWorldBuilder",
     "_ellipse_contains_point",
     "_repair_layout_for_visual_stability",
     "_readable_layout_evaluation",
     "_visual_stability_layout_summary",
     "build_rapid_tracking_compound_layout",
-    "build_distant_terrain_ring",
     "build_rapid_tracking_test",
     "normalize_rapid_tracking_control_scheme",
     "rapid_tracking_debug_lines",

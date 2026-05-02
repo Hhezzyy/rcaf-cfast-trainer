@@ -17,6 +17,7 @@ from cfast_trainer.table_reading import (
     build_table_reading_test,
     table_reading_table_size_for_difficulty,
     table_reading_family_for_payload,
+    table_reading_uses_dense_values,
 )
 
 
@@ -67,6 +68,47 @@ def test_table_reading_user_levels_map_linearly_to_table_size() -> None:
     assert sizes[5] == 30
     assert sizes[-1] == 50
     assert sizes == tuple(range(5, 51, 5))
+    assert table_reading_uses_dense_values(sizes[5]) is True
+
+
+def test_dense_high_difficulty_table_values_are_two_characters_or_less() -> None:
+    gen = TableReadingGenerator(seed=812)
+
+    payloads = tuple(
+        cast(
+            TableReadingPayload,
+            gen.next_problem_for_selection(difficulty=1.0, item_kind=item_kind).payload,
+        )
+        for item_kind in TableReadingItemKind
+    )
+
+    assert all(len(payload.primary_table.row_labels) == 50 for payload in payloads)
+    for payload in payloads:
+        for tab in payload.data_tabs:
+            for table in tab.tables:
+                values = tuple(str(value) for row in table.values for value in row)
+                assert values
+                assert max(len(value) for value in values) <= 2
+
+
+def test_dense_reverse_lookup_uses_unique_two_character_targets() -> None:
+    gen = TableReadingGenerator(seed=148)
+    payload = cast(
+        TableReadingPayload,
+        gen.next_problem_for_selection(
+            difficulty=1.0,
+            item_kind=TableReadingItemKind.REVERSE_LOOKUP,
+        ).payload,
+    )
+
+    values = tuple(str(value) for row in payload.primary_table.values for value in row)
+
+    assert len(values) == 2500
+    assert len(set(values)) == len(values)
+    assert {len(value) for value in values} == {2}
+    assert payload.correct_answer_text == (
+        f"{payload.primary_row_label}{payload.primary_column_label}"
+    )
 
 
 def test_generator_determinism_same_seed_same_sequence() -> None:

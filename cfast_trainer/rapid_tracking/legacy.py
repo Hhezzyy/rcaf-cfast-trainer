@@ -12,8 +12,12 @@ from ..clock import Clock
 from ..cognitive_core import Phase, QuestionEvent, SeededRng, TestSnapshot, clamp01, lerp_int
 from ..content_variants import content_metadata_from_payload
 from ..rapid_tracking_view import (
+    RAPID_TRACKING_PITCH_MAX_DEG,
+    RAPID_TRACKING_PITCH_MIN_DEG,
+    RapidTrackingCameraRigState,
     camera_pose_compat,
     estimated_target_world_z,
+    terrain_height,
     track_to_world_xy,
 )
 from ..rapid_tracking_view import (
@@ -22,8 +26,6 @@ from ..rapid_tracking_view import (
 from ..rapid_tracking_view import (
     target_projection as rapid_tracking_target_projection,
 )
-
-
 @dataclass(frozen=True, slots=True)
 class RapidTrackingConfig:
     # Candidate guide (page 12) describes ~16 minutes including instructions.
@@ -352,6 +354,21 @@ class RapidTrackingSummary:
     capture_score_ratio: float
     overshoot_count: int
     reversal_count: int
+    visible_mean_error: float = 0.0
+    visible_rms_error: float = 0.0
+    obscured_mean_error: float = 0.0
+    obscured_rms_error: float = 0.0
+    prediction_score_ratio: float = 0.0
+    terrain_cover_time_s: float = 0.0
+    portal_cover_time_s: float = 0.0
+    water_cover_time_s: float = 0.0
+    building_cover_time_s: float = 0.0
+    occlusion_episode_count: int = 0
+    reacquisition_count: int = 0
+    reacquisition_success_ratio: float = 0.0
+    best_reacquisition_time_s: float = 0.0
+    mean_reacquisition_time_s: float = 0.0
+    slow_reacquisition_count: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -414,6 +431,7 @@ _VISUAL_STABILITY_LOCAL_HILL_MAX_HEIGHT_SCALE = 4.2
 _VISUAL_STABILITY_CAMERA_KEEP_OUT_WORLD = 95.0
 _VISUAL_STABILITY_FOCUS_KEEP_OUT_WORLD = 70.0
 _VISUAL_STABILITY_CAMERA_SAMPLE_PROGRESS = (0.0, 0.20, 0.40, 0.60, 0.80, 1.00)
+_REACQUISITION_SLOW_THRESHOLD_S = 1.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -428,16 +446,26 @@ def rapid_tracking_target_label(*, kind: str, variant: str = "") -> str:
     target_kind = str(kind).strip().lower()
     target_variant = str(variant).strip().lower()
     if target_kind == "building":
-        if target_variant == "garage":
-            return "GARAGE"
+        if target_variant in {"garage", "bunker"}:
+            return "BUNKER"
         if target_variant == "tower":
             return "TOWER"
+        if target_variant in {"multifloor", "apartments"}:
+            return "MULTI-FLOOR BUILDING"
         return "HANGAR"
     if target_kind == "soldier":
         return "SOLDIER"
     if target_kind == "truck":
-        if target_variant in {"tracked", "armor", "armored"}:
+        if target_variant == "tank":
+            return "TANK"
+        if target_variant in {"apc", "wheeled"}:
             return "ARMOURED VEHICLE"
+        if target_variant in {"tracked", "armor", "armored"}:
+            return "TRACKED VEHICLE"
+        if target_variant in {"cargo", "delivery"}:
+            return "CARGO TRUCK"
+        if target_variant in {"car", "sedan"}:
+            return "CAR"
         return "VEHICLE"
     if target_kind == "helicopter":
         return "HELICOPTER"
@@ -450,16 +478,26 @@ def rapid_tracking_target_description(*, kind: str, variant: str = "") -> str:
     target_kind = str(kind).strip().lower()
     target_variant = str(variant).strip().lower()
     if target_kind == "building":
-        if target_variant == "garage":
-            return "TRACK THE GARAGE UNTIL THE NEXT TARGET EMERGES"
+        if target_variant in {"garage", "bunker"}:
+            return "TRACK THE BUNKER UNTIL THE NEXT TARGET EMERGES"
         if target_variant == "tower":
             return "TRACK THE TOWER DURING THE BUILDING HANDOFF"
+        if target_variant in {"multifloor", "apartments"}:
+            return "TRACK THE MULTI-FLOOR BUILDING DURING THE HANDOFF"
         return "TRACK THE HANGAR DURING THE BUILDING HANDOFF"
     if target_kind == "soldier":
         return "FOOT PATROL MOVING BETWEEN STRUCTURES AND COVER"
     if target_kind == "truck":
+        if target_variant == "tank":
+            return "TANK MOVING OFF ROAD BETWEEN POINTS OF INTEREST"
+        if target_variant in {"apc", "wheeled"}:
+            return "ARMOURED VEHICLE MOVING OFF ROAD BETWEEN POINTS OF INTEREST"
         if target_variant in {"tracked", "armor", "armored"}:
             return "TRACKED VEHICLE MOVING OFF ROAD BETWEEN POINTS OF INTEREST"
+        if target_variant in {"cargo", "delivery"}:
+            return "CARGO TRUCK MOVING THROUGH THE COMPOUND"
+        if target_variant in {"car", "sedan"}:
+            return "CAR MOVING THROUGH THE COMPOUND"
         return "ROAD VEHICLE MOVING THROUGH THE COMPOUND"
     if target_kind == "helicopter":
         return "ROTARY-WING AIRCRAFT CUTTING ACROSS THE COMPOUND"
@@ -478,8 +516,8 @@ def rapid_tracking_target_cue(*, kind: str, variant: str = "", handoff_mode: str
         cue = "BUILDING HANDOFF"
     elif target_kind == "truck":
         cue = (
-            "TRACKED VEHICLE / FAST"
-            if target_variant in {"tracked", "armor", "armored"}
+            "ARMOURED VEHICLE / FAST"
+            if target_variant in {"tracked", "armor", "armored", "tank", "apc", "wheeled"}
             else "ROAD MOVEMENT / FAST"
         )
     elif target_kind == "helicopter":
@@ -2443,7 +2481,7 @@ def _build_seeded_building_anchors(
                     y=float(base.y + off_y),
                 )
             )
-    poi_variants = ("garage", "hangar", "tower", "garage", "hangar", "tower")
+    poi_variants = ("bunker", "hangar", "tower", "multifloor", "hangar", "tower")
     for idx, poi in enumerate(pois):
         variant = poi_variants[idx % len(poi_variants)]
         anchors.append(
@@ -2881,7 +2919,7 @@ def _build_seeded_traffic_routes(
             )
         )
 
-    armor_variant_for_index = ("tracked", "tracked", "tracked")
+    armor_variant_for_index = ("tracked", "tank", "apc")
     for segment in roads:
         cover_mode, focus_anchor_id = _cover_for_points(points=segment.points, ridges=ridges)
         points = segment.points
@@ -3631,9 +3669,27 @@ class RapidTrackingEngine:
         self._scored_on_target_s = 0.0
         self._scored_obscured_s = 0.0
         self._scored_obscured_on_target_s = 0.0
+        self._scored_visible_s = 0.0
+        self._scored_visible_error_time = 0.0
+        self._scored_visible_error2_time = 0.0
+        self._scored_obscured_error_time = 0.0
+        self._scored_obscured_error2_time = 0.0
+        self._scored_terrain_cover_s = 0.0
+        self._scored_portal_cover_s = 0.0
+        self._scored_water_cover_s = 0.0
+        self._scored_building_cover_s = 0.0
         self._scored_moving_target_s = 0.0
         self._scored_overshoot_count = 0
         self._scored_reversal_count = 0
+        self._scored_occlusion_episode_count = 0
+        self._scored_reacquisition_count = 0
+        self._scored_reacquisition_opportunity_count = 0
+        self._scored_reacquisition_time_s = 0.0
+        self._scored_best_reacquisition_time_s: float | None = None
+        self._scored_slow_reacquisition_count = 0
+        self._reacquisition_was_hidden = False
+        self._reacquisition_pending = False
+        self._reacquisition_started_s = 0.0
         self._prev_err_sign_x: int | None = None
         self._prev_err_sign_y: int | None = None
 
@@ -4182,6 +4238,27 @@ class RapidTrackingEngine:
         if self._scored_obscured_s > 0.0:
             obscured_tracking_ratio = self._scored_obscured_on_target_s / self._scored_obscured_s
 
+        visible_mean_error = 0.0
+        visible_rms_error = 0.0
+        if self._scored_visible_s > 0.0:
+            visible_mean_error = self._scored_visible_error_time / self._scored_visible_s
+            visible_rms_error = math.sqrt(
+                self._scored_visible_error2_time / self._scored_visible_s
+            )
+
+        obscured_mean_error = 0.0
+        obscured_rms_error = 0.0
+        prediction_score_ratio = 0.0
+        if self._scored_obscured_s > 0.0:
+            obscured_mean_error = self._scored_obscured_error_time / self._scored_obscured_s
+            obscured_rms_error = math.sqrt(
+                self._scored_obscured_error2_time / self._scored_obscured_s
+            )
+            prediction_score_ratio = score_window(
+                mean_error=obscured_mean_error,
+                good_window_error=self._cfg.good_window_error,
+            )
+
         moving_target_ratio = (
             0.0 if duration_s <= 0.0 else min(1.0, self._scored_moving_target_s / duration_s)
         )
@@ -4197,6 +4274,23 @@ class RapidTrackingEngine:
             0.0
             if capture_max_points <= 0
             else float(self._capture_points) / float(capture_max_points)
+        )
+        reacquisition_count = int(self._scored_reacquisition_count)
+        reacquisition_opportunities = int(self._scored_reacquisition_opportunity_count)
+        reacquisition_success_ratio = (
+            0.0
+            if reacquisition_opportunities <= 0
+            else reacquisition_count / reacquisition_opportunities
+        )
+        best_reacquisition_time_s = (
+            0.0
+            if self._scored_best_reacquisition_time_s is None
+            else float(self._scored_best_reacquisition_time_s)
+        )
+        mean_reacquisition_time_s = (
+            0.0
+            if reacquisition_count <= 0
+            else float(self._scored_reacquisition_time_s) / float(reacquisition_count)
         )
 
         return RapidTrackingSummary(
@@ -4223,6 +4317,21 @@ class RapidTrackingEngine:
             capture_score_ratio=float(capture_score_ratio),
             overshoot_count=int(self._scored_overshoot_count),
             reversal_count=int(self._scored_reversal_count),
+            visible_mean_error=float(visible_mean_error),
+            visible_rms_error=float(visible_rms_error),
+            obscured_mean_error=float(obscured_mean_error),
+            obscured_rms_error=float(obscured_rms_error),
+            prediction_score_ratio=float(prediction_score_ratio),
+            terrain_cover_time_s=float(self._scored_terrain_cover_s),
+            portal_cover_time_s=float(self._scored_portal_cover_s),
+            water_cover_time_s=float(self._scored_water_cover_s),
+            building_cover_time_s=float(self._scored_building_cover_s),
+            occlusion_episode_count=int(self._scored_occlusion_episode_count),
+            reacquisition_count=reacquisition_count,
+            reacquisition_success_ratio=float(reacquisition_success_ratio),
+            best_reacquisition_time_s=float(best_reacquisition_time_s),
+            mean_reacquisition_time_s=float(mean_reacquisition_time_s),
+            slow_reacquisition_count=int(self._scored_slow_reacquisition_count),
         )
 
     def _reset_runtime_state(self, *, reset_scores: bool) -> None:
@@ -4256,9 +4365,27 @@ class RapidTrackingEngine:
             self._scored_on_target_s = 0.0
             self._scored_obscured_s = 0.0
             self._scored_obscured_on_target_s = 0.0
+            self._scored_visible_s = 0.0
+            self._scored_visible_error_time = 0.0
+            self._scored_visible_error2_time = 0.0
+            self._scored_obscured_error_time = 0.0
+            self._scored_obscured_error2_time = 0.0
+            self._scored_terrain_cover_s = 0.0
+            self._scored_portal_cover_s = 0.0
+            self._scored_water_cover_s = 0.0
+            self._scored_building_cover_s = 0.0
             self._scored_moving_target_s = 0.0
             self._scored_overshoot_count = 0
             self._scored_reversal_count = 0
+            self._scored_occlusion_episode_count = 0
+            self._scored_reacquisition_count = 0
+            self._scored_reacquisition_opportunity_count = 0
+            self._scored_reacquisition_time_s = 0.0
+            self._scored_best_reacquisition_time_s = None
+            self._scored_slow_reacquisition_count = 0
+            self._reacquisition_was_hidden = False
+            self._reacquisition_pending = False
+            self._reacquisition_started_s = 0.0
             self._prev_err_sign_x = None
             self._prev_err_sign_y = None
 
@@ -4291,6 +4418,81 @@ class RapidTrackingEngine:
                 self._prev_err_sign_x = current
             else:
                 self._prev_err_sign_y = current
+
+    def _world_to_track_xy(self, world_x: float, world_y: float) -> tuple[float, float]:
+        track_x = (
+            float(world_x)
+            - (float(self._compound_layout.path_lateral_bias) * 18.0)
+        ) / 38.0
+        track_y = ((float(world_y) - 82.0) / 72.0) - 0.18
+        return float(track_x), float(track_y)
+
+    def _record_visibility_breakdown(
+        self,
+        *,
+        dt: float,
+        tracking_error: float,
+        on_target: bool,
+        hidden: bool,
+        cover_state: str,
+    ) -> None:
+        sample_dt = max(0.0, float(dt))
+        if sample_dt <= 0.0:
+            return
+        error = max(0.0, float(tracking_error))
+        error2_time = (error * error) * sample_dt
+        error_time = error * sample_dt
+
+        if bool(hidden):
+            self._scored_obscured_s += sample_dt
+            self._scored_obscured_error_time += error_time
+            self._scored_obscured_error2_time += error2_time
+            if bool(on_target):
+                self._scored_obscured_on_target_s += sample_dt
+        else:
+            self._scored_visible_s += sample_dt
+            self._scored_visible_error_time += error_time
+            self._scored_visible_error2_time += error2_time
+
+        cover = str(cover_state).strip().lower()
+        if cover == "terrain":
+            self._scored_terrain_cover_s += sample_dt
+        elif cover == "portal":
+            self._scored_portal_cover_s += sample_dt
+        elif cover in {"water", "partial"}:
+            self._scored_water_cover_s += sample_dt
+        elif cover == "building":
+            self._scored_building_cover_s += sample_dt
+
+    def _update_reacquisition_metrics(self, *, on_target: bool, hidden: bool) -> None:
+        hidden_now = bool(hidden)
+        if hidden_now and not self._reacquisition_was_hidden:
+            self._scored_occlusion_episode_count += 1
+            self._reacquisition_pending = False
+        elif not hidden_now and self._reacquisition_was_hidden:
+            self._scored_reacquisition_opportunity_count += 1
+            self._reacquisition_pending = True
+            self._reacquisition_started_s = float(self._sim_elapsed_s)
+
+        if self._reacquisition_pending and hidden_now:
+            self._reacquisition_pending = False
+        elif self._reacquisition_pending and bool(on_target):
+            reacquisition_time_s = max(
+                0.0,
+                float(self._sim_elapsed_s - self._reacquisition_started_s),
+            )
+            self._scored_reacquisition_count += 1
+            self._scored_reacquisition_time_s += reacquisition_time_s
+            self._scored_best_reacquisition_time_s = (
+                reacquisition_time_s
+                if self._scored_best_reacquisition_time_s is None
+                else min(float(self._scored_best_reacquisition_time_s), reacquisition_time_s)
+            )
+            if reacquisition_time_s > _REACQUISITION_SLOW_THRESHOLD_S:
+                self._scored_slow_reacquisition_count += 1
+            self._reacquisition_pending = False
+
+        self._reacquisition_was_hidden = hidden_now
 
     def _reset_scene_state(self, *, reset_capture_totals: bool) -> None:
         self._camera_x = 0.0
@@ -4332,6 +4534,9 @@ class RapidTrackingEngine:
 
         self._terrain_ridge_y = 0.0
         self._target_terrain_occluded = False
+        self._reacquisition_was_hidden = False
+        self._reacquisition_pending = False
+        self._reacquisition_started_s = 0.0
 
         self._lock_hold_s = 0.0
         self._hud_visible_until_s = 0.0
@@ -4359,19 +4564,23 @@ class RapidTrackingEngine:
         self._advance_camera(dt)
         self._advance_target()
 
-        rig, projection, _target_world_x, _target_world_y, _focus_world_x, _focus_world_y = (
+        rig, projection, target_world_x, target_world_y, _focus_world_x, _focus_world_y = (
             self._current_camera_solution()
         )
         target_rel_x = projection.target_rel_x
         target_rel_y = projection.target_rel_y
         self._terrain_ridge_y = self._mountain_ridge_for(target_rel_x)
-        covered_by_segment = self._target_cover_state == "terrain"
+        scripted_cover_state = str(self._target_cover_state)
+        covered_by_segment = scripted_cover_state == "terrain"
         auto_occluded = False
-        if not covered_by_segment:
+        if not covered_by_segment and self._target_cover_state not in {"water", "partial"}:
             auto_occluded = self._is_occluded_by_terrain(
                 target_rel_x=target_rel_x,
                 target_rel_y=target_rel_y,
                 target_kind=self._target_kind,
+                rig=rig,
+                target_world_x=target_world_x,
+                target_world_y=target_world_y,
             )
         self._target_terrain_occluded = covered_by_segment or auto_occluded
 
@@ -4380,7 +4589,7 @@ class RapidTrackingEngine:
         tracking_error = math.sqrt((err_x * err_x) + (err_y * err_y))
 
         on_target = bool(projection.in_front) and tracking_error <= self._cfg.on_target_radius
-        target_in_capture_box = self._target_in_capture_box(require_visible=True)
+        target_in_capture_box = self._target_in_capture_box(require_visible=False)
         self._update_hud_lock_state(dt=dt, on_target=on_target)
         self._advance_capture_hold_state(dt=dt, target_in_box=target_in_capture_box)
 
@@ -4401,10 +4610,18 @@ class RapidTrackingEngine:
         if on_target:
             self._scored_on_target_s += dt
 
-        if self._target_terrain_occluded:
-            self._scored_obscured_s += dt
-            if on_target:
-                self._scored_obscured_on_target_s += dt
+        self._record_visibility_breakdown(
+            dt=dt,
+            tracking_error=tracking_error,
+            on_target=on_target,
+            hidden=bool(self._target_terrain_occluded),
+            cover_state=str(self._target_cover_state),
+        )
+
+        self._update_reacquisition_metrics(
+            on_target=on_target,
+            hidden=bool(self._target_terrain_occluded),
+        )
 
         if self._target_is_moving:
             self._scored_moving_target_s += dt
@@ -4698,11 +4915,19 @@ class RapidTrackingEngine:
         return 0.12 + major + mid + fine
 
     def _is_occluded_by_terrain(
-        self, *, target_rel_x: float, target_rel_y: float, target_kind: str
+        self,
+        *,
+        target_rel_x: float,
+        target_rel_y: float,
+        target_kind: str,
+        rig: object | None = None,
+        target_world_x: float | None = None,
+        target_world_y: float | None = None,
     ) -> bool:
         kind = str(target_kind).strip().lower()
         if kind == "building":
             return False
+        _ = (rig, target_world_x, target_world_y)
         if abs(target_rel_x) > (self._cfg.view_limit * 1.20):
             return False
 
@@ -4739,23 +4964,28 @@ class RapidTrackingEngine:
         if self._phase not in (Phase.PRACTICE, Phase.SCORED):
             return False
         self._capture_hold_active = True
+        self._capture_hold_blend = 1.0
         self._capture_hold_bonus_due_at_s = self._sim_elapsed_s + max(
             0.05,
             float(self._cfg.capture_hold_bonus_interval_s),
         )
-        self._capture_trigger()
+        self._capture_trigger(zoom_pulse=False)
         return True
 
     def _capture_hold_end(self) -> bool:
         if self._phase not in (Phase.PRACTICE, Phase.SCORED):
             self._capture_hold_active = False
             self._capture_hold_bonus_due_at_s = 0.0
+            self._capture_hold_blend = 0.0
+            self._capture_zoom_until_s = 0.0
             return False
         self._capture_hold_active = False
         self._capture_hold_bonus_due_at_s = 0.0
+        self._capture_hold_blend = 0.0
+        self._capture_zoom_until_s = 0.0
         return True
 
-    def _capture_trigger(self) -> bool:
+    def _capture_trigger(self, *, zoom_pulse: bool = True) -> bool:
         if self._phase not in (Phase.PRACTICE, Phase.SCORED):
             return False
         if (self._sim_elapsed_s - self._capture_last_at_s) < self._effective_capture_cooldown_s():
@@ -4775,7 +5005,8 @@ class RapidTrackingEngine:
             )
             self._capture_hits += 1
             self._capture_points += points
-            self._capture_zoom_until_s = self._sim_elapsed_s + self._cfg.capture_zoom_s
+            if zoom_pulse:
+                self._capture_zoom_until_s = self._sim_elapsed_s + self._cfg.capture_zoom_s
             self._capture_feedback = f"+{points}"
             self._capture_feedback_until_s = self._sim_elapsed_s + self._cfg.capture_flash_s
             return True
@@ -4957,6 +5188,29 @@ class RapidTrackingEngine:
             track_y=float(self._target_y),
             path_lateral_bias=float(self._compound_layout.path_lateral_bias),
         )
+
+    def _manual_legacy_target_override_active(self) -> bool:
+        return False
+
+    @staticmethod
+    def _bearing_deg(from_x: float, from_y: float, to_x: float, to_y: float) -> float:
+        return (
+            90.0
+            - math.degrees(math.atan2(float(to_y) - float(from_y), float(to_x) - float(from_x)))
+        ) % 360.0
+
+    @staticmethod
+    def _pitch_deg(
+        *,
+        from_x: float,
+        from_y: float,
+        from_z: float,
+        to_x: float,
+        to_y: float,
+        to_z: float,
+    ) -> float:
+        horizontal = math.hypot(float(to_x) - float(from_x), float(to_y) - float(from_y))
+        return math.degrees(math.atan2(float(to_z) - float(from_z), max(1e-3, horizontal)))
 
     def _current_camera_solution(
         self,

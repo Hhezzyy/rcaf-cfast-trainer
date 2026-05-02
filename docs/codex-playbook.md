@@ -20,16 +20,46 @@
 
 ## Run Commands
 
-- Main app:
+- Default macOS/operator launch:
+
+  ```bash
+  ./run.command
+  ```
+
+- The user normally intends to run the app through `run.command`. Treat that shortcut
+  as the default launch path unless the task explicitly involves Windows, CI, or a
+  manual/debug terminal run.
+- On macOS, `run.command` also checks/imports the optional Godot companion project before
+  launching Python. If Godot is unavailable, the app continues with pygame fallback.
+
+- Godot install/check:
+
+  ```bash
+  ./scripts/ensure_godot_macos.sh
+  ```
+
+- Godot import:
+
+  ```bash
+  /Applications/Godot.app/Contents/MacOS/Godot --headless --path godot/cfast_3d --import
+  ```
+
+- Manual Godot companion run:
+
+  ```bash
+  /Applications/Godot.app/Contents/MacOS/Godot --path godot/cfast_3d --windowed --resolution 960x540 --max-fps 60
+  ```
+
+- Manual equivalent when the virtual environment is already active:
 
   ```bash
   python -m cfast_trainer
   ```
 
-- macOS convenience launcher:
+- Manual equivalent without activating the virtual environment:
 
   ```bash
-  ./run.command
+  .venv/bin/python -m cfast_trainer
   ```
 
 - CLI entrypoint without module mode:
@@ -100,7 +130,6 @@
 - Visual Search dense late-level boards.
 - Situational Awareness grid plus cue card plus active query.
 - Benchmark/adaptive intro, block, and results transitions.
-- Renderer failure/diagnostic screens and any ModernGL/fallback mismatch.
 - HOTAS calibration, input profile, and joystick binding screens.
 
 ## Scoped Change Rules
@@ -125,10 +154,9 @@
 
 ### Rendering Bugs
 
-1. Decide whether the issue is ModernGL, the built-in pygame fallback, or shared renderer failure/diagnostics behavior.
-2. Inspect `cfast_trainer/app.py` bootstrap code first, then the renderer-specific module.
-3. Compare against `tests/test_3d_renderer_selection.py`, `tests/test_gl_bootstrap.py`, and any subsystem renderer tests.
-4. Use full-window screenshots and note platform, requested renderer mode, window mode, and any failure-screen diagnostic code.
+1. Start with the screen-specific pygame render path in `cfast_trainer/app.py` or the matching subsystem renderer.
+2. Compare against the closest `tests/test_*_ui.py` file and the app-shell/window-mode tests.
+3. Use full-window screenshots and note platform, window mode, and input hardware.
 
 ### Scoring Bugs
 

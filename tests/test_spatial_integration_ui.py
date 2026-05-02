@@ -2,21 +2,13 @@ from __future__ import annotations
 
 import os
 import re
-import sys
 from dataclasses import replace
 from dataclasses import dataclass
-from importlib.machinery import ModuleSpec
-from types import ModuleType
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 
 import pygame
-
-if "moderngl" not in sys.modules:
-    moderngl_stub = ModuleType("moderngl")
-    moderngl_stub.__spec__ = ModuleSpec("moderngl", loader=None)
-    sys.modules["moderngl"] = moderngl_stub
 
 from cfast_trainer.app import App, CognitiveTestScreen, MenuItem, MenuScreen
 from cfast_trainer.ant_drills import AntDrillMode
@@ -202,26 +194,6 @@ def test_study_scene_is_static_across_renders(monkeypatch) -> None:
         pygame.quit()
 
 
-def test_study_scene_opengl_overlay_keeps_landmark_callouts_hidden() -> None:
-    payload = _payload_for(part=SpatialIntegrationPart.STATIC, study=True, question_index=1)
-    app, screen = _build_screen(_FakeSpatialEngine(payload))
-    captured = _install_recording_fonts(screen)
-    queued: list[object] = []
-    app.set_opengl_enabled(True)
-    app.queue_gl_scene = lambda scene: queued.append(scene)  # type: ignore[method-assign]
-    try:
-        surface = pygame.display.get_surface()
-        assert surface is not None
-
-        screen.render(surface)
-
-        rendered_labels = {text for text in captured if text in {landmark.label for landmark in payload.landmarks}}
-        assert rendered_labels == set()
-        assert queued
-    finally:
-        pygame.quit()
-
-
 def test_study_scene_uses_same_scene_with_different_reference_view_heading() -> None:
     payload = _payload_for(part=SpatialIntegrationPart.STATIC, study=True, question_index=1)
     assert len(payload.reference_views) >= 2
@@ -239,7 +211,7 @@ def test_study_scene_uses_same_scene_with_different_reference_view_heading() -> 
         original_scene = screen._draw_spatial_terrain_scene
         original_compass = screen._draw_spatial_compass
 
-        def wrapped_scene(surface, rect, *, payload, heading_deg_override=None, scene_view_override=None, title_override=None, allow_external_3d=True):
+        def wrapped_scene(surface, rect, *, payload, heading_deg_override=None, scene_view_override=None, title_override=None):
             captured["heading"] = 0 if heading_deg_override is None else int(heading_deg_override)
             return original_scene(
                 surface,
@@ -248,7 +220,6 @@ def test_study_scene_uses_same_scene_with_different_reference_view_heading() -> 
                 heading_deg_override=heading_deg_override,
                 scene_view_override=scene_view_override,
                 title_override=title_override,
-                allow_external_3d=allow_external_3d,
             )
 
         def wrapped_compass(surface, rect, *, north_deg):
@@ -265,35 +236,16 @@ def test_study_scene_uses_same_scene_with_different_reference_view_heading() -> 
         pygame.quit()
 
 
-def test_study_scene_falls_back_to_builtin_renderer_when_external_3d_is_unavailable() -> None:
+def test_study_scene_draws_flat_map_renderer() -> None:
     payload = _payload_for(part=SpatialIntegrationPart.STATIC, study=True, question_index=1)
     _app, screen = _build_screen(_FakeSpatialEngine(payload))
-    asset_calls = {"count": 0, "kinds": set()}
     try:
         surface = pygame.display.get_surface()
         assert surface is not None
         crop = _study_scene_content_rect(size=surface.get_size())
 
-        original_asset = screen._draw_spatial_scene_asset
-
-        def wrapped_asset(*args, **kwargs):
-            asset_calls["count"] += 1
-            asset_calls["kinds"].add(str(kwargs.get("kind", "")))
-            return original_asset(*args, **kwargs)
-
-        screen._draw_spatial_scene_asset = wrapped_asset  # type: ignore[method-assign]
         screen.render(surface)
 
-        assert asset_calls["count"] > 0
-        assert {
-            "building",
-            "tower",
-            "truck",
-            "foot_soldiers",
-            "forest",
-            "tent",
-            "sheep",
-        } <= asset_calls["kinds"]
         assert pygame.transform.average_color(surface.subsurface(crop))[:3] != (0, 0, 0)
     finally:
         pygame.quit()

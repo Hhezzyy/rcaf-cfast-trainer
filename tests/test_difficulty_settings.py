@@ -18,8 +18,6 @@ from cfast_trainer.app import (
     JoystickBindingsScreen,
     MenuItem,
     MenuScreen,
-    OpenGLFailureInfo,
-    OpenGLFailureScreen,
     RapidTrackingSettingsScreen,
     RapidTrackingSettingsStore,
     TestSeedSettingsScreen,
@@ -411,20 +409,17 @@ def test_runtime_defaults_store_persists_display_and_auditory_values(tmp_path) -
     store = RuntimeDefaultsStore(path)
 
     assert store.stored_window_mode() is None
-    assert store.stored_use_opengl() is None
     assert store.stored_auditory_noise_level() is None
     assert store.stored_auditory_distortion_level() is None
     assert store.stored_auditory_noise_source() is None
 
     store.set_window_mode("borderless")
-    store.set_use_opengl(True)
     store.set_auditory_noise_level(0.3)
     store.set_auditory_distortion_level(0.6)
     store.set_auditory_noise_source("pink")
 
     reloaded = RuntimeDefaultsStore(path)
     assert reloaded.stored_window_mode() == "borderless"
-    assert reloaded.stored_use_opengl() is True
     assert reloaded.stored_auditory_noise_level() == pytest.approx(0.3)
     assert reloaded.stored_auditory_distortion_level() == pytest.approx(0.6)
     assert reloaded.stored_auditory_noise_source() == "pink"
@@ -498,65 +493,6 @@ def test_app_applies_and_saves_runtime_defaults(tmp_path) -> None:
         assert reloaded.stored_auditory_noise_level() == pytest.approx(0.6)
         assert reloaded.stored_auditory_distortion_level() == pytest.approx(0.3)
         assert reloaded.stored_auditory_noise_source() == "brown"
-    finally:
-        pygame.quit()
-
-
-def test_app_uses_stored_opengl_preference(tmp_path, monkeypatch) -> None:
-    pygame.init()
-    try:
-        surface = pygame.display.set_mode((960, 540))
-        font = pygame.font.Font(None, 36)
-        runtime_defaults = RuntimeDefaultsStore(tmp_path / "runtime-defaults.json")
-        runtime_defaults.set_use_opengl(False)
-        app = App(surface=surface, font=font, runtime_defaults_store=runtime_defaults)
-
-        assert runtime_defaults.stored_use_opengl() is False
-        assert app.stored_use_opengl() is False
-        app.set_stored_use_opengl(True)
-        assert app.stored_use_opengl() is True
-        assert runtime_defaults.stored_use_opengl() is True
-
-        monkeypatch.setenv("CFAST_USE_OPENGL", "0")
-        assert app.use_opengl_env_override() == "0"
-        assert app.use_opengl_env_forces_enabled() is False
-
-        monkeypatch.setenv("CFAST_USE_OPENGL", "1")
-        assert app.use_opengl_env_override() == "1"
-        assert app.use_opengl_env_forces_enabled() is True
-    finally:
-        pygame.quit()
-
-
-def test_renderer_failure_screen_only_exposes_quit_action() -> None:
-    pygame.init()
-    try:
-        surface = pygame.display.set_mode((960, 540))
-        font = pygame.font.Font(None, 36)
-        app = App(surface=surface, font=font)
-        root = MenuScreen(app, "Main Menu", [MenuItem("Quit", app.quit)], is_root=True)
-        app.push(root)
-        screen = OpenGLFailureScreen(
-            app,
-            failure=OpenGLFailureInfo(
-                stage="render",
-                summary="Renderer failed.",
-                detail="The app could not continue while rendering the frame.",
-                requested=True,
-                attempted=True,
-            ),
-        )
-        app.push(screen)
-
-        rows = screen._rows()
-        assert rows == [("quit", "Quit", "Exit the app.", True)]
-
-        screen.handle_event(
-            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "mod": 0, "unicode": ""})
-        )
-
-        assert app.running is False
-        assert app.exit_reason == "renderer_failure_quit"
     finally:
         pygame.quit()
 

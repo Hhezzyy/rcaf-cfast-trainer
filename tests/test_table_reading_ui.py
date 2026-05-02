@@ -1,19 +1,11 @@
 from __future__ import annotations
 
 import os
-import sys
 from dataclasses import dataclass
-from importlib.machinery import ModuleSpec
-from types import ModuleType
 from typing import cast
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
-
-if "moderngl" not in sys.modules:
-    moderngl_stub = ModuleType("moderngl")
-    moderngl_stub.__spec__ = ModuleSpec("moderngl", loader=None)
-    sys.modules["moderngl"] = moderngl_stub
 
 import pygame
 
@@ -96,10 +88,11 @@ def _sample_payload(
     part: TableReadingPart | None = None,
     item_kind: TableReadingItemKind | None = None,
     answer_mode: TableReadingAnswerMode | None = None,
+    difficulty: float = 0.5,
 ) -> TableReadingPayload:
     generator = TableReadingGenerator(seed=202)
     problem = generator.next_problem_for_selection(
-        difficulty=0.5,
+        difficulty=difficulty,
         part=part,
         item_kind=item_kind,
         answer_mode=answer_mode,
@@ -227,6 +220,67 @@ def test_table_reading_data_tabs_draw_only_their_assigned_tables(monkeypatch) ->
         pygame.quit()
 
 
+def test_table_reading_left_right_keys_switch_tabs_and_wrap() -> None:
+    payload = _sample_payload(item_kind=TableReadingItemKind.THREE_TABLE_LOOKUP)
+    _app, screen = _build_screen(
+        _FakeTableReadingEngine(payload, title="Table Reading")
+    )
+    try:
+        assert screen._table_reading_active_tab_index == 0
+
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RIGHT, "mod": 0, "unicode": ""})
+        )
+        assert screen._table_reading_active_tab_index == 1
+
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RIGHT, "mod": 0, "unicode": ""})
+        )
+        assert screen._table_reading_active_tab_index == 2
+
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RIGHT, "mod": 0, "unicode": ""})
+        )
+        assert screen._table_reading_active_tab_index == 0
+
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_LEFT, "mod": 0, "unicode": ""})
+        )
+        assert screen._table_reading_active_tab_index == 2
+    finally:
+        pygame.quit()
+
+
+def test_table_reading_up_down_still_move_multiple_choice_selection() -> None:
+    payload = _sample_payload(
+        part=TableReadingPart.PART_ONE,
+        item_kind=TableReadingItemKind.SINGLE_TABLE_LOOKUP,
+        answer_mode=TableReadingAnswerMode.MULTIPLE_CHOICE,
+    )
+    _app, screen = _build_screen(
+        _FakeTableReadingEngine(payload, title="Table Reading")
+    )
+    try:
+        assert screen._table_reading_active_tab_index == 0
+        assert screen._math_choice == 1
+
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_DOWN, "mod": 0, "unicode": ""})
+        )
+        assert screen._math_choice == 2
+        assert screen._input == "2"
+        assert screen._table_reading_active_tab_index == 0
+
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_UP, "mod": 0, "unicode": ""})
+        )
+        assert screen._math_choice == 1
+        assert screen._input == "1"
+        assert screen._table_reading_active_tab_index == 0
+    finally:
+        pygame.quit()
+
+
 def test_table_reading_tab_state_changes_by_mouse() -> None:
     payload = _sample_payload(item_kind=TableReadingItemKind.TWO_TABLE_LOOKUP)
     _app, screen = _build_screen(
@@ -242,6 +296,44 @@ def test_table_reading_tab_state_changes_by_mouse() -> None:
         )
 
         assert screen._table_reading_active_tab_index == 2
+    finally:
+        pygame.quit()
+
+
+def test_dense_table_reading_renderer_draws_short_body_values_without_clipping(monkeypatch) -> None:
+    payload = _sample_payload(
+        item_kind=TableReadingItemKind.SINGLE_TABLE_LOOKUP,
+        answer_mode=TableReadingAnswerMode.NUMERIC,
+        difficulty=1.0,
+    )
+    _app, screen = _build_screen(
+        _FakeTableReadingEngine(payload, title="Table Reading")
+    )
+    try:
+        surface = pygame.display.get_surface()
+        assert surface is not None
+        values = {str(value) for row in payload.primary_table.values for value in row}
+        assert max(len(value) for value in values) <= 2
+        clipped_body_values: list[str] = []
+        original = screen._fit_label
+
+        def wrapped(font, label, max_width):
+            result = original(font, label, max_width)
+            if str(label) in values:
+                clipped_body_values.append(str(label))
+                assert "..." not in result
+            return result
+
+        monkeypatch.setattr(screen, "_fit_label", wrapped)
+
+        screen.render(surface)
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RIGHT, "mod": 0, "unicode": ""})
+        )
+        screen.render(surface)
+
+        assert screen._table_reading_active_tab_index == 1
+        assert clipped_body_values == []
     finally:
         pygame.quit()
 

@@ -23,7 +23,7 @@ class TargetRecognitionConfig:
 
 @dataclass(frozen=True, slots=True)
 class TargetRecognitionSceneEntity:
-    shape: str  # "truck" | "tank" | "building"
+    shape: str  # "truck" | "tank" | "building" | "beacon" | "unknown"
     affiliation: str  # "hostile" | "friendly" | "neutral"
     damaged: bool
     high_priority: bool
@@ -103,7 +103,7 @@ class TargetRecognitionScorer(AnswerScorer):
 class TargetRecognitionGenerator:
     """Deterministic mixed-panel target-recognition trial stream."""
 
-    _SCENE_SHAPES = ("truck", "tank", "building")
+    _SCENE_SHAPES = ("truck", "tank", "building", "beacon", "unknown")
     _SCENE_AFFILIATIONS = ("hostile", "friendly", "neutral")
     _SCAN_TOKENS = ("<>", "<|", "|>", "[]", "{}", "()", "/\\", "\\/", "==", "=~", "><", "||", "<>", "{|}")
     _LIGHT_COLORS = ("G", "B", "Y", "R", "W")
@@ -155,7 +155,7 @@ class TargetRecognitionGenerator:
         system_cycles = self._build_system_cycles(
             row_count=system_row_count,
             first_target=system_target,
-            cycle_count=lerp_int(3, 5, d),
+            cycle_count=lerp_int(8, 12, d),
         )
         system_rows = system_cycles[0].columns[0] if system_cycles else ()
         system_step_interval_s = self._system_step_interval_s(d)
@@ -406,6 +406,8 @@ class TargetRecognitionGenerator:
             "truck": "TRK",
             "tank": "TNK",
             "building": "BLD",
+            "beacon": "BCN",
+            "unknown": "UNK",
         }.get(entity.shape, "UNK")
         side_code = {
             "hostile": "H",
@@ -457,15 +459,15 @@ class TargetRecognitionGenerator:
 
     def _scene_spawn_interval_range_s(self, difficulty: float) -> tuple[float, float]:
         d = clamp01(difficulty)
-        low = 14.0 - (d * 8.0)
-        high = 36.0 - (d * 18.0)
-        low = max(5.0, low)
+        low = 8.5 - (d * 4.9)
+        high = 22.0 - (d * 11.0)
+        low = max(3.0, low)
         high = max(low + 2.0, high)
         return (round(low, 2), round(high, 2))
 
     def _scene_spawn_burst_chance(self, difficulty: float) -> float:
         d = clamp01(difficulty)
-        return round(0.05 + (d * 0.25), 3)
+        return round(0.07 + (d * 0.28), 3)
 
     def _scene_spawn_burst_range(self, difficulty: float) -> tuple[int, int]:
         return (1, 2) if clamp01(difficulty) >= 0.72 else (1, 1)
@@ -480,24 +482,45 @@ class TargetRecognitionGenerator:
         rows = max(6, int(row_count))
         n_cycles = max(2, int(cycle_count))
         n_cols = 3
-        target_col = 1
 
-        targets = [first_target]
-        while len(targets) < n_cycles:
+        total_cells = rows * n_cols
+        board_codes = [str(first_target)]
+        seen_codes = {str(first_target)}
+        while len(board_codes) < total_cells:
             candidate = self._random_alnum_code(length=4)
-            if candidate in targets:
+            if candidate in seen_codes:
                 continue
-            targets.append(candidate)
+            seen_codes.add(candidate)
+            board_codes.append(candidate)
+
+        first_target_index = int(self._rng.randint(0, total_cells - 1))
+        board_codes[0], board_codes[first_target_index] = (
+            board_codes[first_target_index],
+            board_codes[0],
+        )
+
+        remaining_indices = [idx for idx in range(total_cells) if idx != first_target_index]
+        for idx in range(len(remaining_indices) - 1, 0, -1):
+            swap_idx = int(self._rng.randint(0, idx))
+            remaining_indices[idx], remaining_indices[swap_idx] = (
+                remaining_indices[swap_idx],
+                remaining_indices[idx],
+            )
+        target_indices = [first_target_index, *remaining_indices[: max(0, n_cycles - 1)]]
+
+        stable_columns = tuple(
+            tuple(board_codes[(col_idx * rows) + row_idx] for row_idx in range(rows))
+            for col_idx in range(n_cols)
+        )
 
         cycles: list[TargetRecognitionSystemCycle] = []
-        for target in targets:
-            cols: list[tuple[str, ...]] = []
-            for col_idx in range(n_cols):
-                values = [self._random_alnum_code(length=4, exclude=target) for _ in range(rows)]
-                if col_idx == target_col:
-                    values[0] = target
-                cols.append(tuple(values))
-            cycles.append(TargetRecognitionSystemCycle(target=target, columns=tuple(cols)))
+        for target_idx in target_indices:
+            cycles.append(
+                TargetRecognitionSystemCycle(
+                    target=board_codes[target_idx],
+                    columns=stable_columns,
+                )
+            )
         return tuple(cycles)
 
     def _random_alnum_code(self, *, length: int, exclude: str | None = None) -> str:

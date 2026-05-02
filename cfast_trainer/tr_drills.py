@@ -55,6 +55,8 @@ class _TargetRecognitionTrainingGenerator(TargetRecognitionGenerator):
         "truck": "All Trucks",
         "tank": "All Tanks",
         "building": "All Buildings",
+        "beacon": "All Beacons",
+        "unknown": "All Unknowns",
     }
 
     def __init__(
@@ -157,7 +159,7 @@ class _TargetRecognitionTrainingGenerator(TargetRecognitionGenerator):
         system_cycles = self._build_system_cycles(
             row_count=system_row_count,
             first_target=system_target,
-            cycle_count=lerp_int(3, 5, d),
+            cycle_count=lerp_int(8, 12, d),
         )
         system_rows = system_cycles[0].columns[0] if system_cycles else ()
 
@@ -649,20 +651,20 @@ class _TargetRecognitionTrainingGenerator(TargetRecognitionGenerator):
 
     def _scene_spawn_interval_range_s_for(self, difficulty: float) -> tuple[float, float]:
         base = {
-            AntDrillMode.BUILD: (13.0, 32.0),
-            AntDrillMode.TEMPO: (9.5, 24.0),
-            AntDrillMode.STRESS: (6.8, 18.0),
+            AntDrillMode.BUILD: (7.8, 19.2),
+            AntDrillMode.TEMPO: (5.7, 14.4),
+            AntDrillMode.STRESS: (4.1, 10.8),
         }[self._mode]
         delta = self._family_pace_delta()
-        low = max(4.0, base[0] + delta - (difficulty * 4.4))
-        high = max(low + 1.8, base[1] + (delta * 1.8) - (difficulty * 8.2))
+        low = max(3.0, base[0] + (delta * 0.6) - (difficulty * 2.64))
+        high = max(low + 1.5, base[1] + (delta * 1.08) - (difficulty * 4.92))
         return (round(low, 2), round(high, 2))
 
     def _scene_spawn_burst_chance_for(self, difficulty: float) -> float:
         base = {
-            AntDrillMode.BUILD: 0.06,
-            AntDrillMode.TEMPO: 0.13,
-            AntDrillMode.STRESS: 0.22,
+            AntDrillMode.BUILD: 0.08,
+            AntDrillMode.TEMPO: 0.15,
+            AntDrillMode.STRESS: 0.24,
         }[self._mode]
         style_bonus = {
             "steady": 0.0,

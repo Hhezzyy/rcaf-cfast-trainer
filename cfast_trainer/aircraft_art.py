@@ -3,9 +3,13 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from functools import lru_cache
+from pathlib import Path
 
 
 Point3 = tuple[float, float, float]
+INSTRUMENT_AIRCRAFT_MESH_PATH = (
+    Path(__file__).resolve().parent.parent / "assets" / "instrument_aircraft" / "fixed_wing.obj"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,6 +29,8 @@ class FixedWingProjectedFace:
 @dataclass(frozen=True, slots=True)
 class FixedWingPygamePalette:
     body: tuple[int, int, int]
+    wing: tuple[int, int, int]
+    tail: tuple[int, int, int]
     accent: tuple[int, int, int]
     canopy: tuple[int, int, int]
     engine: tuple[int, int, int]
@@ -32,13 +38,28 @@ class FixedWingPygamePalette:
 
 
 _DEFAULT_PYGAME_INSTRUMENT_PALETTE = FixedWingPygamePalette(
-    body=(222, 66, 68),
-    accent=(184, 34, 40),
-    canopy=(164, 226, 234),
-    engine=(134, 18, 24),
+    body=(218, 56, 62),
+    wing=(204, 44, 50),
+    tail=(182, 34, 44),
+    accent=(134, 24, 34),
+    canopy=(138, 218, 232),
+    engine=(94, 94, 102),
     outline=(244, 248, 255),
 )
-_FIXED_WING_MODEL_HPR_OFFSET_DEG = (0.0, 0.0, 0.0)
+_ROLE_ALIASES = {
+    "body": "body",
+    "fuselage": "body",
+    "nose": "accent",
+    "accent": "accent",
+    "canopy": "canopy",
+    "glass": "canopy",
+    "engine": "engine",
+    "nacelle": "engine",
+    "wing": "wing",
+    "tail": "tail",
+    "tailplane": "tail",
+    "vertical": "tail",
+}
 
 
 def instrument_card_pygame_palette() -> FixedWingPygamePalette:
@@ -53,17 +74,19 @@ def build_pygame_palette(
     engine_color: tuple[int, int, int] | None = None,
     outline_color: tuple[int, int, int] = (242, 246, 252),
 ) -> FixedWingPygamePalette:
-    body = tuple(max(0, min(255, int(channel))) for channel in body_color)
+    body = _rgb(body_color)
 
     def scaled(color: tuple[int, int, int], factor: float) -> tuple[int, int, int]:
         return tuple(max(0, min(255, int(round(float(channel) * factor)))) for channel in color)
 
     return FixedWingPygamePalette(
         body=body,
-        accent=accent_color or scaled(body, 0.78),
-        canopy=canopy_color or (164, 226, 234),
-        engine=engine_color or scaled(body, 0.58),
-        outline=tuple(max(0, min(255, int(channel))) for channel in outline_color),
+        wing=scaled(body, 0.94),
+        tail=scaled(body, 0.84),
+        accent=accent_color or scaled(body, 0.66),
+        canopy=canopy_color or (138, 218, 232),
+        engine=engine_color or (94, 94, 102),
+        outline=_rgb(outline_color),
     )
 
 
@@ -73,12 +96,7 @@ def fixed_wing_hpr(
     pitch_deg: float,
     roll_deg: float,
 ) -> tuple[float, float, float]:
-    offset_h, offset_p, offset_r = _FIXED_WING_MODEL_HPR_OFFSET_DEG
-    return (
-        float(heading_deg) + offset_h,
-        float(pitch_deg) + offset_p,
-        float(roll_deg) + offset_r,
-    )
+    return (float(heading_deg), float(pitch_deg), float(roll_deg))
 
 
 def fixed_wing_hpr_from_world_hpr(
@@ -95,13 +113,6 @@ def fixed_wing_hpr_from_world_hpr(
 
 
 def fixed_wing_heading_from_screen_heading(screen_heading_deg: float) -> float:
-    """Convert a 2-D screen tangent angle into the fixed-wing heading convention.
-
-    Screen headings use ``atan2(dy, dx)`` with 0 degrees pointing right and
-    -90 degrees pointing up. The fixed-wing mesh uses 0 degrees as straight
-    ahead/up on screen, 90 right, 180 down, and 270 left.
-    """
-
     return (float(screen_heading_deg) + 90.0) % 360.0
 
 
@@ -121,18 +132,17 @@ def screen_motion_heading_deg(
 def screen_heading_deg_from_world_tangent(
     tangent: Point3,
     *,
-    forward_x_mix: float = 0.11,
-    forward_y_mix: float = 0.31,
+    forward_x_mix: float = 0.10,
+    forward_y_mix: float = 0.26,
     minimum_distance: float = 1e-4,
 ) -> float | None:
     screen_dx = float(tangent[0]) + (float(tangent[1]) * float(forward_x_mix))
     screen_dy = -(float(tangent[2]) + (float(tangent[1]) * float(forward_y_mix)))
-    heading = screen_motion_heading_deg(
+    return screen_motion_heading_deg(
         (0.0, 0.0),
         (screen_dx, screen_dy),
         minimum_distance=minimum_distance,
     )
-    return heading
 
 
 def fixed_wing_hpr_from_screen_heading(
@@ -155,10 +165,7 @@ def fixed_wing_hpr_from_tangent(
     *,
     bank_deg: float = 0.0,
 ) -> tuple[float, float, float]:
-    return fixed_wing_hpr_from_world_tangent(
-        tangent=tangent,
-        roll_deg=float(bank_deg),
-    )
+    return fixed_wing_hpr_from_world_tangent(tangent=tangent, roll_deg=float(bank_deg))
 
 
 def fixed_wing_hpr_from_world_tangent(
@@ -180,108 +187,36 @@ def fixed_wing_hpr_from_world_tangent(
 
 @lru_cache(maxsize=1)
 def build_fixed_wing_mesh() -> tuple[FixedWingMeshFace, ...]:
+    return load_fixed_wing_obj(INSTRUMENT_AIRCRAFT_MESH_PATH)
+
+
+def load_fixed_wing_obj(path: Path | str) -> tuple[FixedWingMeshFace, ...]:
+    vertices: list[Point3] = []
     faces: list[FixedWingMeshFace] = []
-
-    fuselage_stations = _scale_station_heights(
-        (
-        (-3.15, 0.07, 0.10, -0.04),
-        (-2.50, 0.18, 0.20, -0.08),
-        (-1.70, 0.32, 0.30, -0.14),
-        (-0.35, 0.46, 0.38, -0.18),
-        (1.05, 0.52, 0.34, -0.16),
-        (2.20, 0.42, 0.28, -0.14),
-        (3.00, 0.20, 0.18, -0.08),
-        (3.42, 0.08, 0.10, -0.04),
-        ),
-        top_scale=1.52,
-        bottom_scale=1.65,
-    )
-    canopy_stations = _scale_station_heights(
-        (
-        (0.72, 0.16, 0.46, 0.28),
-        (1.42, 0.22, 0.64, 0.36),
-        (2.04, 0.17, 0.54, 0.33),
-        ),
-        top_scale=1.56,
-        bottom_scale=1.30,
-        top_bias=0.08,
-    )
-    engine_stations = _scale_station_heights(
-        (
-        (-0.04, 0.16, 0.10, -0.08),
-        (0.56, 0.20, 0.14, -0.12),
-        (1.20, 0.16, 0.10, -0.08),
-        ),
-        top_scale=1.34,
-        bottom_scale=1.36,
-    )
-
-    faces.extend(_loft_body(stations=fuselage_stations, role="body"))
-    faces.extend(_loft_body(stations=canopy_stations, role="canopy"))
-    faces.extend(_loft_body(stations=engine_stations, role="engine", x_center=-1.06))
-    faces.extend(_loft_body(stations=engine_stations, role="engine", x_center=1.06))
-
-    faces.extend(
-        _prism_from_surface(
-            role="body",
-            top_points=(
-                (-0.18, 0.36, 0.10),
-                (-3.86, 0.56, 0.16),
-                (-3.14, -0.54, 0.07),
-                (-0.62, -0.12, 0.08),
-            ),
-            offset=(0.0, 0.0, -0.10),
-        )
-    )
-    faces.extend(
-        _prism_from_surface(
-            role="body",
-            top_points=(
-                (0.18, 0.36, 0.10),
-                (0.62, -0.12, 0.08),
-                (3.14, -0.54, 0.07),
-                (3.86, 0.56, 0.16),
-            ),
-            offset=(0.0, 0.0, -0.10),
-        )
-    )
-    faces.extend(
-        _prism_from_surface(
-            role="body",
-            top_points=(
-                (-0.16, -1.94, 0.22),
-                (-1.56, -2.18, 0.28),
-                (-1.10, -2.78, 0.18),
-                (-0.22, -2.44, 0.20),
-            ),
-            offset=(0.0, 0.0, -0.08),
-        )
-    )
-    faces.extend(
-        _prism_from_surface(
-            role="body",
-            top_points=(
-                (0.16, -1.94, 0.22),
-                (0.22, -2.44, 0.20),
-                (1.10, -2.78, 0.18),
-                (1.56, -2.18, 0.28),
-            ),
-            offset=(0.0, 0.0, -0.08),
-        )
-    )
-    faces.extend(
-        _prism_from_surface(
-            role="accent",
-            top_points=(
-                (0.0, -2.42, 0.30),
-                (0.0, -2.04, 0.60),
-                (0.0, -1.66, 1.90),
-                (0.0, -2.10, 1.12),
-            ),
-            offset=(0.16, 0.0, 0.0),
-        )
-    )
-
+    current_role = "body"
+    source = Path(path)
+    for raw_line in source.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split()
+        head = parts[0]
+        if head == "v" and len(parts) >= 4:
+            vertices.append((float(parts[1]), float(parts[2]), float(parts[3])))
+            continue
+        if head in {"o", "g", "usemtl"} and len(parts) >= 2:
+            current_role = _role_from_token(" ".join(parts[1:]))
+            continue
+        if head == "f" and len(parts) >= 4:
+            points: list[Point3] = []
+            for token in parts[1:]:
+                idx = int(token.split("/", 1)[0])
+                if idx < 0:
+                    idx = len(vertices) + idx + 1
+                points.append(vertices[idx - 1])
+            faces.append(FixedWingMeshFace(role=current_role, points=tuple(points)))
+    if not faces:
+        raise ValueError(f"fixed-wing mesh has no faces: {source}")
     return tuple(faces)
 
 
@@ -296,8 +231,8 @@ def project_fixed_wing_faces(
     view_yaw_deg: float = 0.0,
     view_pitch_deg: float = 0.0,
     view_roll_deg: float = 0.0,
-    forward_x_mix: float = 0.11,
-    forward_y_mix: float = 0.31,
+    forward_x_mix: float = 0.10,
+    forward_y_mix: float = 0.26,
 ) -> tuple[FixedWingProjectedFace, ...]:
     projected: list[FixedWingProjectedFace] = []
     for face in build_fixed_wing_mesh():
@@ -330,13 +265,12 @@ def project_fixed_wing_faces(
             depth_sum += depth
         if _polygon_area(points_2d) < 1.0:
             continue
-        shade = _face_shade(rotated)
         projected.append(
             FixedWingProjectedFace(
                 role=face.role,
                 points=tuple(points_2d),
                 avg_depth=depth_sum / float(len(rotated)),
-                shade=shade,
+                shade=_face_shade(rotated),
             )
         )
     projected.sort(key=lambda item: item.avg_depth, reverse=True)
@@ -356,14 +290,16 @@ def draw_fixed_wing_pygame(
     view_yaw_deg: float = 0.0,
     view_pitch_deg: float = 0.0,
     view_roll_deg: float = 0.0,
-    forward_x_mix: float = 0.11,
-    forward_y_mix: float = 0.31,
+    forward_x_mix: float = 0.10,
+    forward_y_mix: float = 0.26,
 ) -> None:
     import pygame
 
     paint = palette or _DEFAULT_PYGAME_INSTRUMENT_PALETTE
     role_colors = {
         "body": paint.body,
+        "wing": paint.wing,
+        "tail": paint.tail,
         "accent": paint.accent,
         "canopy": paint.canopy,
         "engine": paint.engine,
@@ -396,27 +332,26 @@ def rotate_fixed_wing_point(
 ) -> Point3:
     x, y, z = point
 
-    roll = math.radians(bank_deg)
+    roll = math.radians(float(bank_deg))
     cos_r = math.cos(roll)
     sin_r = math.sin(roll)
     x1 = x * cos_r + z * sin_r
     y1 = y
     z1 = -x * sin_r + z * cos_r
 
-    pitch = math.radians(pitch_deg)
+    pitch = math.radians(float(pitch_deg))
     cos_p = math.cos(pitch)
     sin_p = math.sin(pitch)
     x2 = x1
     y2 = y1 * cos_p - z1 * sin_p
     z2 = y1 * sin_p + z1 * cos_p
 
-    yaw = math.radians(-heading_deg)
+    yaw = math.radians(-float(heading_deg))
     cos_y = math.cos(yaw)
     sin_y = math.sin(yaw)
     x3 = x2 * cos_y - y2 * sin_y
     y3 = x2 * sin_y + y2 * cos_y
-    z3 = z2
-    return (x3, y3, z3)
+    return (x3, y3, z2)
 
 
 def apply_fixed_wing_view_rotation(
@@ -457,8 +392,8 @@ def project_fixed_wing_point(
     cx: int,
     cy: int,
     scale: float,
-    forward_x_mix: float = 0.11,
-    forward_y_mix: float = 0.31,
+    forward_x_mix: float = 0.10,
+    forward_y_mix: float = 0.26,
 ) -> tuple[int, int, float]:
     x, y, z = point
     sx = int(round(cx + (x + (y * float(forward_x_mix))) * scale))
@@ -466,128 +401,36 @@ def project_fixed_wing_point(
     return sx, sy, y
 
 
-def _loft_body(
-    *,
-    stations: tuple[tuple[float, float, float, float], ...],
-    role: str,
-    x_center: float = 0.0,
-) -> tuple[FixedWingMeshFace, ...]:
-    faces: list[FixedWingMeshFace] = []
-    for left, right in zip(stations, stations[1:], strict=False):
-        y0, half_w0, z_top0, z_bottom0 = left
-        y1, half_w1, z_top1, z_bottom1 = right
-        left_top0 = (x_center - half_w0, y0, z_top0)
-        right_top0 = (x_center + half_w0, y0, z_top0)
-        left_bottom0 = (x_center - half_w0, y0, z_bottom0)
-        right_bottom0 = (x_center + half_w0, y0, z_bottom0)
-        left_top1 = (x_center - half_w1, y1, z_top1)
-        right_top1 = (x_center + half_w1, y1, z_top1)
-        left_bottom1 = (x_center - half_w1, y1, z_bottom1)
-        right_bottom1 = (x_center + half_w1, y1, z_bottom1)
-
-        faces.append(
-            FixedWingMeshFace(role=role, points=(left_top0, right_top0, right_top1, left_top1))
-        )
-        faces.append(
-            FixedWingMeshFace(
-                role=role,
-                points=(left_bottom0, left_bottom1, right_bottom1, right_bottom0),
-            )
-        )
-        faces.append(
-            FixedWingMeshFace(
-                role=role,
-                points=(left_top0, left_top1, left_bottom1, left_bottom0),
-            )
-        )
-        faces.append(
-            FixedWingMeshFace(
-                role=role,
-                points=(right_top0, right_bottom0, right_bottom1, right_top1),
-            )
-        )
-
-    y_tail, half_w_tail, z_top_tail, z_bottom_tail = stations[0]
-    y_nose, half_w_nose, z_top_nose, z_bottom_nose = stations[-1]
-    faces.append(
-        FixedWingMeshFace(
-            role=role,
-            points=(
-                (x_center - half_w_tail, y_tail, z_top_tail),
-                (x_center + half_w_tail, y_tail, z_top_tail),
-                (x_center + half_w_tail, y_tail, z_bottom_tail),
-                (x_center - half_w_tail, y_tail, z_bottom_tail),
-            ),
-        )
-    )
-    faces.append(
-        FixedWingMeshFace(
-            role=role,
-            points=(
-                (x_center - half_w_nose, y_nose, z_top_nose),
-                (x_center - half_w_nose, y_nose, z_bottom_nose),
-                (x_center + half_w_nose, y_nose, z_bottom_nose),
-                (x_center + half_w_nose, y_nose, z_top_nose),
-            ),
-        )
-    )
-    return tuple(faces)
+def _role_from_token(token: str) -> str:
+    normalized = token.strip().lower().replace("-", "_")
+    for key, role in _ROLE_ALIASES.items():
+        if key in normalized:
+            return role
+    return "body"
 
 
-def _scale_station_heights(
-    stations: tuple[tuple[float, float, float, float], ...],
-    *,
-    top_scale: float = 1.0,
-    bottom_scale: float = 1.0,
-    top_bias: float = 0.0,
-) -> tuple[tuple[float, float, float, float], ...]:
-    scaled: list[tuple[float, float, float, float]] = []
-    for y, half_w, z_top, z_bottom in stations:
-        scaled.append(
-            (
-                y,
-                half_w,
-                (float(z_top) * float(top_scale)) + float(top_bias),
-                float(z_bottom) * float(bottom_scale),
-            )
-        )
-    return tuple(scaled)
+def _rgb(color: tuple[int, int, int]) -> tuple[int, int, int]:
+    return tuple(max(0, min(255, int(channel))) for channel in color)
 
 
-def _prism_from_surface(
-    *,
-    role: str,
-    top_points: tuple[Point3, ...],
-    offset: Point3,
-) -> tuple[FixedWingMeshFace, ...]:
-    bottom_points = tuple(
-        (point[0] + offset[0], point[1] + offset[1], point[2] + offset[2]) for point in top_points
-    )
-    faces = [
-        FixedWingMeshFace(role=role, points=top_points),
-        FixedWingMeshFace(role=role, points=tuple(reversed(bottom_points))),
-    ]
-    for idx in range(len(top_points)):
-        next_idx = (idx + 1) % len(top_points)
-        faces.append(
-            FixedWingMeshFace(
-                role=role,
-                points=(
-                    top_points[idx],
-                    top_points[next_idx],
-                    bottom_points[next_idx],
-                    bottom_points[idx],
-                ),
-            )
-        )
-    return tuple(faces)
+def _shade_rgb(color: tuple[int, int, int], shade: float) -> tuple[int, int, int]:
+    return tuple(max(0, min(255, int(round(channel * shade)))) for channel in color)
+
+
+def _polygon_area(points: list[tuple[int, int]]) -> float:
+    if len(points) < 3:
+        return 0.0
+    total = 0.0
+    for current, nxt in zip(points, (*points[1:], points[0]), strict=False):
+        total += (current[0] * nxt[1]) - (nxt[0] * current[1])
+    return abs(total) * 0.5
 
 
 def _face_shade(points: tuple[Point3, ...]) -> float:
     normal = _face_normal(points)
     light = _normalize((-0.42, -0.34, 0.84))
     dot = max(0.0, _dot(normal, light))
-    return max(0.62, min(1.18, 0.72 + (dot * 0.42)))
+    return max(0.58, min(1.20, 0.70 + (dot * 0.45)))
 
 
 def _face_normal(points: tuple[Point3, ...]) -> Point3:
@@ -620,17 +463,3 @@ def _normalize(vec: Point3) -> Point3:
     if mag <= 1e-8:
         return (0.0, 0.0, 1.0)
     return (vec[0] / mag, vec[1] / mag, vec[2] / mag)
-
-
-def _shade_rgb(color: tuple[int, int, int], shade: float) -> tuple[int, int, int]:
-    return tuple(max(0, min(255, int(round(channel * shade)))) for channel in color)
-
-
-def _polygon_area(points: list[tuple[int, int]]) -> float:
-    if len(points) < 3:
-        return 0.0
-    total = 0.0
-    for current, nxt in zip(points, points[1:] + points[:1], strict=False):
-        total += (current[0] * nxt[1]) - (nxt[0] * current[1])
-    return abs(total) * 0.5
-

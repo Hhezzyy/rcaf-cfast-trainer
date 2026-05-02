@@ -1,15 +1,7 @@
 from __future__ import annotations
 
 import re
-import sys
 from dataclasses import dataclass
-from importlib.machinery import ModuleSpec
-from types import ModuleType
-
-if "moderngl" not in sys.modules:
-    moderngl_stub = ModuleType("moderngl")
-    moderngl_stub.__spec__ = ModuleSpec("moderngl", loader=None)
-    sys.modules["moderngl"] = moderngl_stub
 
 from cfast_trainer.cognitive_core import Phase
 from cfast_trainer.dr_drills import build_dr_visible_copy_drill

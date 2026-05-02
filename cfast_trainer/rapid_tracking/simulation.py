@@ -99,6 +99,8 @@ class RapidTrackingSimulation(_LegacyRapidTrackingEngine):
         self._debug_state.last_update_dt_s = max(0.0, now - last)
         super().update()
         self._debug_state.active_mode = _mode_for_phase(self.phase)
+        self._debug_state.route_id = str(getattr(self, "_segment_route_kind", "") or "")
+        self._debug_state.rail_id = ""
 
     def snapshot_state(self) -> dict[str, object]:
         return {
@@ -152,6 +154,8 @@ class RapidTrackingSimulation(_LegacyRapidTrackingEngine):
                 viewport_size=tuple(self._debug_state.viewport_size),
                 last_update_dt_s=float(self._debug_state.last_update_dt_s),
                 active_mode=str(self._debug_state.active_mode),
+                route_id=str(self._debug_state.route_id),
+                rail_id=str(self._debug_state.rail_id),
             ),
             "_dev_tools_enabled": bool(self.dev_tools_enabled),
         }

@@ -6,6 +6,7 @@ from typing import cast
 import pytest
 
 from cfast_trainer.cognitive_updating import (
+    AIR_SENSOR_INTERVAL_S,
     COGNITIVE_UPDATING_DOMAIN_ORDER,
     CognitiveUpdatingConfig,
     CognitiveUpdatingGenerator,
@@ -13,6 +14,7 @@ from cfast_trainer.cognitive_updating import (
     CognitiveUpdatingRuntime,
     CognitiveUpdatingScorer,
     CognitiveUpdatingTrainingProfile,
+    GROUND_SENSOR_INTERVAL_S,
     build_cognitive_updating_test,
     decode_cognitive_updating_submission_raw,
     _difficulty_params,
@@ -100,6 +102,8 @@ def test_generated_payload_has_multiple_components_and_submenus() -> None:
     assert 0 <= payload.dispenser_lit <= 4
     assert len(payload.comms_code) == 4
     assert payload.comms_code.isdigit()
+    assert payload.air_sensor_due_s == AIR_SENSOR_INTERVAL_S
+    assert payload.ground_sensor_due_s == GROUND_SENSOR_INTERVAL_S
 
 
 def test_default_difficulty_scales_active_domains_and_pressure_parameters() -> None:
@@ -114,8 +118,10 @@ def test_default_difficulty_scales_active_domains_and_pressure_parameters() -> N
     low_params = _difficulty_params(0.0)
     hard_params = _difficulty_params(1.0)
 
-    assert low.active_domains == ("controls", "navigation", "state_code")
+    assert low.active_domains == COGNITIVE_UPDATING_DOMAIN_ORDER
     assert hard.active_domains == COGNITIVE_UPDATING_DOMAIN_ORDER
+    assert low_params.active_domains == COGNITIVE_UPDATING_DOMAIN_ORDER
+    assert hard_params.active_domains == COGNITIVE_UPDATING_DOMAIN_ORDER
     assert low.pressure_drift_scale < hard.pressure_drift_scale
     assert low.speed_drift_scale < hard.speed_drift_scale
     assert low.tank_drain_scale < hard.tank_drain_scale
@@ -249,6 +255,59 @@ def test_comms_entry_clear_and_submit_do_not_mutate_other_subsystems() -> None:
     assert snap.tank_levels_l[0] < int(round(before[3][0]))
 
 
+def test_live_comms_update_does_not_advance_other_subtask_circuits() -> None:
+    clock = FakeClock()
+    payload = replace(
+        _payload_for(612),
+        pressure_value=100,
+        pump_on=True,
+        required_knots=120,
+        current_knots=120,
+        tank_levels_l=(440, 430, 420),
+        active_tank=1,
+        alpha_camera_due_s=35,
+        bravo_camera_due_s=55,
+        comms_time_limit_s=40,
+        objective_deadline_s=50,
+    )
+    runtime = CognitiveUpdatingRuntime(payload=payload, clock=clock)
+
+    clock.advance(12.0)
+    incoming = runtime.snapshot().next_comms_code
+    assert incoming is not None
+    before = (
+        runtime._pressure_value,
+        runtime._pump_on,
+        runtime._current_knots,
+        tuple(runtime._tank_levels),
+        runtime._active_tank,
+        runtime._alpha_next_due_s,
+        runtime._bravo_next_due_s,
+        runtime._air_next_due_s,
+        runtime._ground_next_due_s,
+        runtime._objective_deadline_s,
+        tuple(runtime._parcel_values),
+    )
+
+    for ch in incoming:
+        runtime.append_comms_digit(ch)
+    assert runtime.submit_comms_update() is True
+
+    assert (
+        runtime._pressure_value,
+        runtime._pump_on,
+        runtime._current_knots,
+        tuple(runtime._tank_levels),
+        runtime._active_tank,
+        runtime._alpha_next_due_s,
+        runtime._bravo_next_due_s,
+        runtime._air_next_due_s,
+        runtime._ground_next_due_s,
+        runtime._objective_deadline_s,
+        tuple(runtime._parcel_values),
+    ) == before
+
+
 def test_key_subsystem_actions_only_mutate_their_owned_subsystem_state() -> None:
     clock = FakeClock()
     payload = replace(
@@ -317,23 +376,71 @@ def test_sensor_activation_is_button_action_not_toggle() -> None:
     first = runtime.snapshot()
     assert first.air_sensor_armed is True
     assert first.event_count == before.event_count + 1
-    assert first.air_time_left_s > before.air_time_left_s
+    assert first.air_time_left_s == before.air_time_left_s
 
-    clock.advance(1.0)
+    clock.advance(27.0)
     runtime.toggle_sensor("air")
     second = runtime.snapshot()
     assert second.air_sensor_armed is True
     assert second.event_count == first.event_count + 1
-    assert second.air_time_left_s >= first.air_time_left_s - 1
+    assert second.air_time_left_s == AIR_SENSOR_INTERVAL_S
 
     clock.advance(1.0)
     third = runtime.snapshot()
     assert third.air_sensor_armed is False
 
 
+def test_fixed_sensor_cadence_repeats_from_runtime_start() -> None:
+    clock = FakeClock()
+    runtime = CognitiveUpdatingRuntime(payload=_payload_for(513), clock=clock)
+
+    start = runtime.snapshot()
+    assert start.air_time_left_s == AIR_SENSOR_INTERVAL_S
+    assert start.ground_time_left_s == GROUND_SENSOR_INTERVAL_S
+
+    clock.advance(30.0)
+    runtime.toggle_sensor("air")
+    after_air = runtime.snapshot()
+    assert after_air.air_time_left_s == AIR_SENSOR_INTERVAL_S
+    assert after_air.ground_time_left_s == GROUND_SENSOR_INTERVAL_S - AIR_SENSOR_INTERVAL_S
+
+    clock.advance(30.0)
+    runtime.toggle_sensor("air")
+    runtime.toggle_sensor("ground")
+    after_both = runtime.snapshot()
+    assert after_both.air_time_left_s == AIR_SENSOR_INTERVAL_S
+    assert after_both.ground_time_left_s == GROUND_SENSOR_INTERVAL_S
+
+
+def test_camera_cadence_repeats_from_runtime_start() -> None:
+    clock = FakeClock()
+    payload = replace(_payload_for(513), alpha_camera_due_s=20, bravo_camera_due_s=50)
+    runtime = CognitiveUpdatingRuntime(payload=payload, clock=clock)
+
+    clock.advance(5.0)
+    runtime.toggle_camera("alpha")
+    assert runtime._alpha_next_due_s == 20
+    assert runtime._alpha_hits == 0
+
+    clock.advance(15.0)
+    runtime.toggle_camera("alpha")
+    assert runtime._alpha_next_due_s == 40
+    assert runtime._alpha_hits == 1
+
+    clock.advance(13.0)
+    runtime.toggle_camera("alpha")
+    assert runtime._alpha_next_due_s == 40
+    assert runtime._alpha_hits == 1
+
+    clock.advance(7.0)
+    runtime.toggle_camera("alpha")
+    assert runtime._alpha_next_due_s == 60
+    assert runtime._alpha_hits == 2
+
+
 def test_camera_button_flashes_and_resets_due_message() -> None:
     clock = FakeClock()
-    payload = _payload_for(514)
+    payload = replace(_payload_for(514), alpha_camera_due_s=2, bravo_camera_due_s=80)
     runtime = CognitiveUpdatingRuntime(payload=payload, clock=clock)
 
     clock.advance(2.0)
@@ -353,7 +460,7 @@ def test_camera_button_flashes_and_resets_due_message() -> None:
 
 def test_message_lines_include_objective_and_comms_status_rows() -> None:
     clock = FakeClock()
-    payload = replace(_payload_for(515), comms_time_limit_s=40, message_reveal_comms_s=20.0)
+    payload = replace(_payload_for(515), comms_time_limit_s=60)
     runtime = CognitiveUpdatingRuntime(payload=payload, clock=clock)
 
     start = runtime.snapshot()
@@ -373,12 +480,13 @@ def test_message_lines_include_objective_and_comms_status_rows() -> None:
     assert lon.message_lines[1].startswith("Longitude: ")
     assert lon.message_lines[3] == ""
 
-    clock.advance(9.0)
+    clock.advance(4.0)
     comms = runtime.snapshot()
     assert comms.message_lines[2] == ""
     assert comms.message_lines[3].startswith("New Comms Code: ")
+    assert " in " not in comms.message_lines[3]
 
-    clock.advance(3.0)
+    clock.advance(8.0)
     timed = runtime.snapshot()
     assert timed.message_lines[2].startswith("Time: ")
     assert timed.message_lines[3].startswith("New Comms Code: ")
@@ -388,33 +496,30 @@ def test_comms_message_reveal_uses_remaining_time_threshold() -> None:
     clock = FakeClock()
     payload = replace(
         _payload_for(520),
-        comms_time_limit_s=30,
-        message_reveal_comms_s=20.0,
+        comms_time_limit_s=60,
     )
     runtime = CognitiveUpdatingRuntime(payload=payload, clock=clock)
 
-    clock.advance(9.9)
+    clock.advance(14.9)
     hidden = runtime.snapshot()
     assert hidden.next_comms_code is None
     assert hidden.message_lines[3] == ""
-    assert hidden.comms_swap_in_s == 21
+    assert hidden.comms_swap_in_s == 46
 
     clock.advance(0.1)
     revealed = runtime.snapshot()
     assert revealed.next_comms_code is not None
-    assert revealed.comms_swap_in_s == 20
-    assert revealed.message_lines[3] == f"New Comms Code: {revealed.next_comms_code} in 20s"
+    assert revealed.comms_swap_in_s == 45
+    assert revealed.message_lines[3] == f"New Comms Code: {revealed.next_comms_code}"
 
 
 def test_comms_code_rollover_replaces_target_and_clears_stale_entry() -> None:
     clock = FakeClock()
-    payload = replace(_payload_for(522), comms_time_limit_s=30, message_reveal_comms_s=20.0)
+    payload = replace(_payload_for(522), comms_time_limit_s=30)
     runtime = CognitiveUpdatingRuntime(payload=payload, clock=clock)
 
     start = runtime.snapshot()
     old_code = start.current_comms_code
-    for ch in old_code:
-        runtime.append_comms_digit(ch)
 
     clock.advance(10.0)
     warning = runtime.snapshot()
@@ -422,18 +527,24 @@ def test_comms_code_rollover_replaces_target_and_clears_stale_entry() -> None:
     incoming_code = warning.next_comms_code
     assert incoming_code != old_code
     assert warning.message_lines[3].startswith("New Comms Code: ")
+    for ch in incoming_code:
+        runtime.append_comms_digit(ch)
+    assert runtime.submit_comms_update() is True
+    submitted = runtime.snapshot()
+    assert submitted.pending_comms_code == incoming_code
+    assert submitted.comms_input == ""
 
     clock.advance(19.5)
     almost = runtime.snapshot()
     assert almost.current_comms_code == old_code
-    assert almost.comms_input == old_code
+    assert almost.pending_comms_code == incoming_code
     assert almost.comms_swap_in_s == 1
-    assert almost.message_lines[3] == f"New Comms Code: {incoming_code} in 01s"
+    assert almost.message_lines[3] == f"New Comms Code: {incoming_code}"
 
     clock.advance(0.4)
     still_pending = runtime.snapshot()
     assert still_pending.current_comms_code == old_code
-    assert still_pending.comms_input == old_code
+    assert still_pending.pending_comms_code == incoming_code
     assert still_pending.comms_swap_in_s == 1
 
     clock.advance(0.1)
@@ -441,8 +552,11 @@ def test_comms_code_rollover_replaces_target_and_clears_stale_entry() -> None:
     assert rolled.current_comms_code == incoming_code
     assert rolled.current_comms_code != old_code
     assert rolled.comms_input == ""
+    assert rolled.pending_comms_code == ""
+    assert rolled.comms_code_warning is False
+    assert "Comms Code" not in rolled.warning_lines
     assert rolled.comms_swap_in_s == 30
-    assert rolled.message_lines[3] == ""
+    assert rolled.message_lines[3].startswith("New Comms Code: ")
 
     for ch in old_code:
         runtime.append_comms_digit(ch)
@@ -461,6 +575,36 @@ def test_comms_code_rollover_replaces_target_and_clears_stale_entry() -> None:
     assert parsed is not None
     assert parsed.entered_code == rolled.current_comms_code
     assert parsed.state_code == rolled.current_comms_code
+
+
+def test_wrong_or_missing_comms_update_warns_until_current_code_acknowledged() -> None:
+    clock = FakeClock()
+    runtime = CognitiveUpdatingRuntime(
+        payload=replace(_payload_for(522), comms_time_limit_s=30),
+        clock=clock,
+    )
+
+    start = runtime.snapshot()
+    current = start.current_comms_code
+    incoming = start.next_comms_code
+    assert incoming is not None
+    wrong = next(code for code in ("1111", "2222", "3333") if code not in (current, incoming))
+    for ch in wrong:
+        runtime.append_comms_digit(ch)
+    assert runtime.submit_comms_update() is True
+
+    clock.advance(30.0)
+    missed = runtime.snapshot()
+    assert missed.current_comms_code == incoming
+    assert missed.comms_code_warning is True
+    assert "Comms Code" in missed.warning_lines
+
+    for ch in incoming:
+        runtime.append_comms_digit(ch)
+    assert runtime.submit_comms_update() is True
+    cleared = runtime.snapshot()
+    assert cleared.comms_code_warning is False
+    assert "Comms Code" not in cleared.warning_lines
 
 
 def test_objective_message_fragments_clear_after_successful_drop() -> None:
@@ -541,15 +685,15 @@ def test_sensor_message_panel_prioritizes_urgent_items_and_clears_completed_sens
     runtime = CognitiveUpdatingRuntime(payload=payload, clock=clock)
 
     start = runtime.snapshot()
-    assert _task_message_lines(start) == (
-        "Air Sensor due in: 08s",
-        "Ground Sensor due in: 10s",
-    )
+    start_lines = _task_message_lines(start)
+    assert start_lines[0] == "Air Sensor due in: 30s"
+    assert start_lines[1].startswith("Activate Alpha Camera at: ")
 
+    clock.advance(30.0)
     runtime.toggle_sensor("air")
     after = runtime.snapshot()
     assert all("Air Sensor" not in line for line in _task_message_lines(after))
-    assert any("Ground Sensor" in line for line in _task_message_lines(after))
+    assert any("Alpha Camera" in line for line in _task_message_lines(after))
 
 
 def test_message_panel_orders_overdue_task_before_nearest_due_task() -> None:
@@ -569,7 +713,7 @@ def test_message_panel_orders_overdue_task_before_nearest_due_task() -> None:
     task_lines = _task_message_lines(snap)
     assert len(task_lines) == 2
     assert task_lines[0].startswith("Activate Alpha Camera at: ")
-    assert task_lines[1] == "Air Sensor due in: 02s"
+    assert task_lines[1].startswith("Activate Bravo Camera at: ")
 
 
 def test_objective_dispenser_lights_match_reference_progression() -> None:
@@ -918,14 +1062,14 @@ def test_training_profile_payload_exposes_active_domains_family_and_focus() -> N
     )
     payload = cast(CognitiveUpdatingPayload, problem.payload)
 
-    assert payload.active_domains == ("navigation", "state_code")
+    assert payload.active_domains == COGNITIVE_UPDATING_DOMAIN_ORDER
     assert payload.scenario_family == "compressed"
     assert payload.focus_label == "Navigation"
     assert payload.starting_upper_tab_index == 3
     assert payload.starting_lower_tab_index == 1
 
 
-def test_inactive_domains_are_neutralized_for_focused_training_profiles() -> None:
+def test_focused_training_profiles_keep_all_domains_live() -> None:
     clock = FakeClock()
     payload = cast(
         CognitiveUpdatingPayload,
@@ -940,14 +1084,21 @@ def test_inactive_domains_are_neutralized_for_focused_training_profiles() -> Non
     )
     runtime = CognitiveUpdatingRuntime(payload=payload, clock=clock)
 
-    clock.advance(30.0)
-    snap = runtime.snapshot()
+    first = runtime.snapshot()
+    next_tank = 1 if first.active_tank != 1 else 2
+    runtime.set_active_tank(next_tank)
+    runtime.toggle_camera("alpha")
+    runtime.toggle_sensor("air")
+    for digit in "".join(f"{part:06d}" for part in payload.parcel_target):
+        runtime.append_parcel_digit(digit)
+    runtime.activate_dispenser()
 
-    assert snap.navigation_score == 100
-    assert snap.engine_score == 100
-    assert snap.sensors_score == 100
+    clock.advance(1.0)
+    snap = runtime.snapshot()
+    event_actions = {event.action for event in runtime.events()}
+
+    assert snap.active_tank == next_tank
+    assert snap.event_count >= 21
+    assert {"tank", "camera_alpha", "sensor_air", "parcel_digit", "objective_drop"} <= event_actions
     assert snap.objectives_score == 100
-    assert "Air Speed Warning" not in snap.warning_lines
-    assert "Engine Panel" not in snap.warning_lines
-    assert "Sensor Panel" not in snap.warning_lines
-    assert "Objective Warning" not in snap.warning_lines
+    assert snap.objective_drop_complete is False
