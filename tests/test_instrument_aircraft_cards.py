@@ -13,7 +13,15 @@ from cfast_trainer.instrument_aircraft_cards import (
     aircraft_card_semantic_drift_tags,
     aircraft_card_wing_tilt_px,
 )
-from cfast_trainer.instrument_comprehension import InstrumentAircraftViewPreset, InstrumentState
+from cfast_trainer.instrument_comprehension import (
+    InstrumentAircraftViewPreset,
+    InstrumentHeadingDisplayMode,
+    InstrumentState,
+)
+from cfast_trainer.instrument_orientation_solver import (
+    attitude_display_observation_from_state,
+    heading_display_observation_from_state,
+)
 
 
 def _state(*, heading_deg: int, pitch_deg: int, bank_deg: int) -> InstrumentState:
@@ -38,7 +46,33 @@ def test_card_key_normalizes_state_values() -> None:
     assert key.pitch_deg == 20
     assert key.bank_deg == -45
     assert key.view_preset is InstrumentAircraftViewPreset.FRONT_LEFT
-    assert key.filename() == "mesh_v1_front_left_h001_pp20_bm45.png"
+    assert key.filename() == "mesh_v3_mechanical_front_left_h001_pp20_bm45.png"
+
+
+def test_aircraft_cards_do_not_embed_instrument_overlay_pixels() -> None:
+    bank = InstrumentAircraftCardSpriteBank()
+    state = _state(heading_deg=90, pitch_deg=8, bank_deg=-16)
+
+    pygame.init()
+    try:
+        surface = bank.get_surface(
+            state=state,
+            view_preset=InstrumentAircraftViewPreset.FRONT_LEFT,
+        )
+        sample = pygame.Rect(8, 8, 130, 56)
+        instrument_like_pixels = 0
+        for y in range(sample.y, sample.bottom):
+            for x in range(sample.x, sample.right):
+                color = surface.get_at((x, y))
+                is_heading_yellow = color.r > 230 and color.g > 190 and color.b < 150
+                is_attitude_sky = color.r < 90 and color.g > 120 and color.b > 180
+                is_attitude_ground = color.r > 120 and 60 < color.g < 140 and color.b < 90
+                if is_heading_yellow or is_attitude_sky or is_attitude_ground:
+                    instrument_like_pixels += 1
+
+        assert instrument_like_pixels == 0
+    finally:
+        pygame.quit()
 
 
 def test_pose_signature_is_stable_and_changes_with_orientation() -> None:
@@ -48,7 +82,10 @@ def test_pose_signature_is_stable_and_changes_with_orientation() -> None:
 
     sig_a = aircraft_card_pose_signature(base, view_preset=InstrumentAircraftViewPreset.FRONT_LEFT)
     sig_b = aircraft_card_pose_signature(same, view_preset=InstrumentAircraftViewPreset.FRONT_LEFT)
-    sig_c = aircraft_card_pose_signature(different, view_preset=InstrumentAircraftViewPreset.FRONT_LEFT)
+    sig_c = aircraft_card_pose_signature(
+        different,
+        view_preset=InstrumentAircraftViewPreset.FRONT_LEFT,
+    )
 
     assert sig_a == sig_b
     assert aircraft_card_pose_distance(sig_a, sig_b) == pytest.approx(0.0)
@@ -70,6 +107,23 @@ def test_top_down_heading_projection_preserves_cardinals() -> None:
         projected = aircraft_card_projected_heading_deg(signature)
         error = abs(((projected - expected + 180.0) % 360.0) - 180.0)
         assert error <= 10.0, (heading_deg, projected, expected)
+
+
+def test_canonical_heading_projection_matches_gauge_cardinals_in_both_modes() -> None:
+    for mode in InstrumentHeadingDisplayMode:
+        for heading_deg in (0, 90, 180, 270):
+            state = _state(heading_deg=heading_deg, pitch_deg=0, bank_deg=0)
+            observation = heading_display_observation_from_state(state, mode)
+            signature = aircraft_card_pose_signature(
+                state,
+                view_preset=InstrumentAircraftViewPreset.FRONT_LEFT,
+            )
+            projected = aircraft_card_projected_heading_deg(signature)
+            expected = ((90.0 - float(observation.heading_deg) + 180.0) % 360.0) - 180.0
+            if expected == -180.0:
+                expected = 180.0
+            error = abs(((projected - expected + 180.0) % 360.0) - 180.0)
+            assert error <= 3.0, (mode, heading_deg, projected, expected)
 
 
 def test_signed_bank_deltas_stay_semantically_aligned() -> None:
@@ -108,6 +162,26 @@ def test_signed_bank_deltas_stay_semantically_aligned() -> None:
         assert right_delta < 0.0, (preset, right_delta)
 
 
+def test_canonical_bank_sign_matches_attitude_observation() -> None:
+    neutral = _state(heading_deg=90, pitch_deg=0, bank_deg=0)
+    neutral_tilt = aircraft_card_wing_tilt_px(
+        aircraft_card_pose_signature(
+            neutral,
+            view_preset=InstrumentAircraftViewPreset.FRONT_LEFT,
+        )
+    )
+    for bank_deg in (-20, 20):
+        state = _state(heading_deg=90, pitch_deg=0, bank_deg=bank_deg)
+        observation = attitude_display_observation_from_state(state)
+        signature = aircraft_card_pose_signature(
+            state,
+            view_preset=InstrumentAircraftViewPreset.FRONT_LEFT,
+        )
+        delta = aircraft_card_wing_tilt_px(signature) - neutral_tilt
+        assert (delta < 0.0) is (observation.bank_deg > 0)
+        assert (delta > 0.0) is (observation.bank_deg < 0)
+
+
 def test_pitch_metric_moves_symmetrically_around_level_flight() -> None:
     presets = (
         InstrumentAircraftViewPreset.FRONT_LEFT,
@@ -142,6 +216,26 @@ def test_pitch_metric_moves_symmetrically_around_level_flight() -> None:
         )
         assert descent_delta < 0.0, (preset, descent_delta)
         assert climb_delta > 0.0, (preset, climb_delta)
+
+
+def test_canonical_pitch_sign_matches_attitude_observation() -> None:
+    neutral = _state(heading_deg=90, pitch_deg=0, bank_deg=0)
+    neutral_pitch = aircraft_card_pitch_cue_px(
+        aircraft_card_pose_signature(
+            neutral,
+            view_preset=InstrumentAircraftViewPreset.FRONT_LEFT,
+        )
+    )
+    for pitch_deg in (-10, 10):
+        state = _state(heading_deg=90, pitch_deg=pitch_deg, bank_deg=0)
+        observation = attitude_display_observation_from_state(state)
+        signature = aircraft_card_pose_signature(
+            state,
+            view_preset=InstrumentAircraftViewPreset.FRONT_LEFT,
+        )
+        delta = aircraft_card_pitch_cue_px(signature) - neutral_pitch
+        assert (delta > 0.0) is (observation.pitch_deg > 0)
+        assert (delta < 0.0) is (observation.pitch_deg < 0)
 
 
 def _red_bounds(surface: pygame.Surface) -> tuple[int, int, int, int] | None:

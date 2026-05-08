@@ -88,7 +88,7 @@ def test_generator_emits_both_heading_display_modes() -> None:
     }
 
 
-def test_part1_option_generation_uses_fixed_view_family_by_code() -> None:
+def test_part1_option_generation_uses_one_canonical_aircraft_view() -> None:
     gen = InstrumentComprehensionGenerator(seed=31415)
     problem = gen.next_problem_for_kind(
         kind=InstrumentComprehensionTrialKind.INSTRUMENTS_TO_AIRCRAFT,
@@ -99,10 +99,10 @@ def test_part1_option_generation_uses_fixed_view_family_by_code() -> None:
 
     assert tuple(option.view_preset for option in payload.options) == (
         InstrumentAircraftViewPreset.FRONT_LEFT,
-        InstrumentAircraftViewPreset.FRONT_RIGHT,
-        InstrumentAircraftViewPreset.PROFILE_LEFT,
-        InstrumentAircraftViewPreset.PROFILE_RIGHT,
-        InstrumentAircraftViewPreset.TOP_DOWN,
+        InstrumentAircraftViewPreset.FRONT_LEFT,
+        InstrumentAircraftViewPreset.FRONT_LEFT,
+        InstrumentAircraftViewPreset.FRONT_LEFT,
+        InstrumentAircraftViewPreset.FRONT_LEFT,
     )
     assert payload.option_render_mode is InstrumentOptionRenderMode.AIRCRAFT
     assert payload.prompt_view_preset is None
@@ -153,6 +153,24 @@ def test_generator_correct_answer_is_unique_minimum_under_display_matching() -> 
         assert correct_option.distractor_profile_tag == "correct"
         assert payload.option_errors[problem.answer - 1] == min(payload.option_errors)
         assert payload.option_errors.count(min(payload.option_errors)) == 1
+
+
+def test_aircraft_orientation_prompts_and_correct_options_share_exact_instrument_state() -> None:
+    gen = InstrumentComprehensionGenerator(seed=54321)
+    for _ in range(80):
+        for kind in (
+            InstrumentComprehensionTrialKind.INSTRUMENTS_TO_AIRCRAFT,
+            InstrumentComprehensionTrialKind.AIRCRAFT_TO_INSTRUMENTS,
+        ):
+            problem = gen.next_problem_for_kind(kind=kind, difficulty=0.68)
+            payload = problem.payload
+            assert isinstance(payload, InstrumentComprehensionPayload)
+            correct_option = next(
+                option for option in payload.options if option.distractor_tag == "correct"
+            )
+
+            assert correct_option.code == problem.answer
+            assert correct_option.state == payload.prompt_state
 
 
 def test_common_misread_tags_appear_when_distinct() -> None:

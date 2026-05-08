@@ -402,8 +402,8 @@ def test_default_profile_gate_interval_shrinks_to_top_end_pressure() -> None:
         difficulty=_difficulty_ratio(10),
     )
 
-    assert low_engine._effective_gate_interval_s() == pytest.approx(4.2, abs=0.05)
-    assert high_engine._effective_gate_interval_s() == pytest.approx(1.6, abs=0.05)
+    assert low_engine._effective_gate_interval_s() == pytest.approx(3.85, abs=0.05)
+    assert high_engine._effective_gate_interval_s() == pytest.approx(1.5, abs=0.05)
     assert low_engine._effective_gate_interval_s() > mid_engine._effective_gate_interval_s()
     assert mid_engine._effective_gate_interval_s() > high_engine._effective_gate_interval_s()
 
@@ -439,7 +439,7 @@ def test_next_gate_directive_binds_replaces_and_clears_after_resolution() -> Non
             gate_id=11,
             x_norm=0.48,
             y_norm=0.0,
-            color="GREEN",
+            color="BLUE",
             shape="SQUARE",
             aperture_norm=0.18,
         ),
@@ -471,7 +471,7 @@ def test_next_gate_directive_binds_replaces_and_clears_after_resolution() -> Non
     assert engine._active_gate_directive is not None
     assert engine._active_gate_directive.target_gate_id == 12
 
-    pass_green = AuditoryCapacityInstructionEvent(
+    pass_blue = AuditoryCapacityInstructionEvent(
         event_id=11,
         timestamp_s=0.2,
         addressed_call_sign="EAGLE",
@@ -480,12 +480,12 @@ def test_next_gate_directive_binds_replaces_and_clears_after_resolution() -> Non
         payload=AuditoryCapacityGateDirective(
             action="PASS",
             match_kind="COLOR",
-            match_value="GREEN",
+            match_value="BLUE",
         ),
         expires_at_s=1.2,
         is_distractor=False,
     )
-    engine._activate_instruction(pass_green)
+    engine._activate_instruction(pass_blue)
     assert engine._active_gate_directive is not None
     assert engine._active_gate_directive.target_gate_id == 11
 
@@ -496,7 +496,7 @@ def test_next_gate_directive_binds_replaces_and_clears_after_resolution() -> Non
             gate_id=11,
             x_norm=0.0,
             y_norm=0.0,
-            color="GREEN",
+            color="BLUE",
             shape="SQUARE",
             aperture_norm=0.18,
             scored=False,
@@ -547,7 +547,7 @@ def test_briefing_script_uses_concise_instruction_copy() -> None:
     assert lines == [
         "Your call signs are EAGLE, RAVEN, VIPER. Respond only to those call signs.",
         (
-            "Use Q W E R for colour, keypad numbers for the ball, and type "
+            "Use Q E R for colour, keypad numbers for the ball, and type "
             f"{engine._instruction_digit_range_label()} sequences with Enter."
         ),
         "Press trigger or Space on the beep. Gate instructions apply to the next matching gate.",
@@ -639,7 +639,7 @@ def test_assigned_callsign_commands_update_state_and_external_distractor_is_scor
             at_s=0.10,
             call_sign="RAVEN",
             command_type=AuditoryCapacityCommandType.CHANGE_COLOUR,
-            payload="GREEN",
+            payload="BLUE",
             expires_at_s=1.00,
         ),
         _event(
@@ -665,9 +665,9 @@ def test_assigned_callsign_commands_update_state_and_external_distractor_is_scor
     clock.advance(0.11)
     engine.update()
     assert engine.snapshot().payload is not None
-    assert engine.snapshot().payload.color_command == "GREEN"
-    assert engine.set_colour("GREEN") is True
-    assert engine.snapshot().payload.ball_color == "GREEN"
+    assert engine.snapshot().payload.color_command == "BLUE"
+    assert engine.set_colour("BLUE") is True
+    assert engine.snapshot().payload.ball_color == "BLUE"
 
     clock.advance(0.22)
     engine.update()
@@ -681,7 +681,7 @@ def test_assigned_callsign_commands_update_state_and_external_distractor_is_scor
 
     payload = engine.snapshot().payload
     assert payload is not None
-    assert payload.ball_color == "GREEN"
+    assert payload.ball_color == "BLUE"
     assert payload.ball_number == 4
     assert payload.assigned_callsigns == ("EAGLE", "RAVEN", "VIPER")
     assert payload.correct_command_executions == 2
@@ -696,29 +696,29 @@ def test_logical_colour_persists_while_visual_colour_flash_returns_to_white() ->
             at_s=0.1,
             call_sign="RAVEN",
             command_type=AuditoryCapacityCommandType.CHANGE_COLOUR,
-            payload="GREEN",
+            payload="BLUE",
             expires_at_s=1.0,
         ),
-        expected_color="GREEN",
+        expected_color="BLUE",
         expected_number=None,
     )
 
-    assert engine.set_colour("GREEN") is True
+    assert engine.set_colour("BLUE") is True
     payload = engine.snapshot().payload
     assert payload is not None
-    assert payload.ball_color == "GREEN"
-    assert payload.ball_visual_color == "GREEN"
+    assert payload.ball_color == "BLUE"
+    assert payload.ball_visual_color == "BLUE"
     assert payload.ball_visual_strength > 0.9
 
     engine._sim_elapsed_s += 0.35
     payload = engine.snapshot().payload
     assert payload is not None
-    assert payload.ball_color == "GREEN"
+    assert payload.ball_color == "BLUE"
     assert payload.ball_visual_color == "WHITE"
     assert payload.ball_visual_strength == pytest.approx(0.0)
 
 
-def test_ball_visual_feedback_flashes_green_on_points_and_red_on_errors() -> None:
+def test_ball_visual_feedback_flashes_white_on_points_and_red_on_errors() -> None:
     _, engine = _build_engine()
     engine._pending_state_command = _PendingStateCommand(
         event=_event(
@@ -736,7 +736,7 @@ def test_ball_visual_feedback_flashes_green_on_points_and_red_on_errors() -> Non
     assert engine.set_number(4) is True
     payload = engine.snapshot().payload
     assert payload is not None
-    assert payload.ball_visual_color == "GREEN"
+    assert payload.ball_visual_color == "WHITE"
     assert payload.ball_visual_strength > 0.9
 
     assert engine.submit_answer("BLUE") is True
@@ -839,7 +839,7 @@ def test_forbidden_gate_rule_changes_gate_scoring() -> None:
             gate_id=1,
             x_norm=0.0,
             y_norm=0.0,
-            color="GREEN",
+            color="BLUE",
             shape="CIRCLE",
             aperture_norm=0.20,
             scored=False,
@@ -879,7 +879,7 @@ def test_gate_scoring_plane_does_not_move_with_ball_horizontal_offset() -> None:
             gate_id=9,
             x_norm=0.12,
             y_norm=0.0,
-            color="GREEN",
+            color="BLUE",
             shape="SQUARE",
             aperture_norm=0.20,
             scored=False,
@@ -976,7 +976,7 @@ def test_visual_slots_do_not_shift_when_earlier_gate_retires() -> None:
             gate_id=1,
             x_norm=-2.0,
             y_norm=0.0,
-            color="GREEN",
+            color="BLUE",
             shape="CIRCLE",
             aperture_norm=0.20,
             visual_slot_index=7,
@@ -1019,7 +1019,7 @@ def test_ball_forward_norm_stays_anchored_while_tunnel_progress_remains_determin
             gate_id=11,
             x_norm=1.20,
             y_norm=0.0,
-            color="GREEN",
+            color="BLUE",
             shape="CIRCLE",
             aperture_norm=0.20,
             visual_slot_index=7,
@@ -1043,7 +1043,7 @@ def test_ball_forward_norm_stays_anchored_while_tunnel_progress_remains_determin
             gate_id=11,
             x_norm=1.20,
             y_norm=0.0,
-            color="GREEN",
+            color="BLUE",
             shape="CIRCLE",
             aperture_norm=0.20,
             visual_slot_index=7,

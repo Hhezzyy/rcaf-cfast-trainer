@@ -333,22 +333,42 @@ def test_cln_main_math_accepts_number_row_keys_without_unicode() -> None:
         pygame.quit()
 
 
-def test_cln_main_math_accepts_numeric_keypad_digits() -> None:
-    _app, screen, engine = _build_screen(_build_payload(options_active=False))
+def test_cln_main_math_accepts_numeric_keypad_digits_and_period_submit() -> None:
+    app, _screen, engine = _build_screen(_build_payload(options_active=False))
     try:
         for key in (pygame.K_KP4, pygame.K_KP2):
-            screen.handle_event(
+            app.handle_event(
                 pygame.event.Event(pygame.KEYDOWN, {"key": key, "mod": 0, "unicode": ""})
             )
 
-        screen.handle_event(
+        app.handle_event(
+            pygame.event.Event(
+                pygame.KEYDOWN,
+                {"key": pygame.K_KP_PERIOD, "mod": 0, "unicode": "."},
+            )
+        )
+
+        assert engine.answers == ["42"]
+    finally:
+        pygame.quit()
+
+
+def test_cln_main_math_ignores_keypad_enter_submit() -> None:
+    app, _screen, engine = _build_screen(_build_payload(options_active=False))
+    try:
+        for key in (pygame.K_KP4, pygame.K_KP2):
+            app.handle_event(
+                pygame.event.Event(pygame.KEYDOWN, {"key": key, "mod": 0, "unicode": ""})
+            )
+
+        app.handle_event(
             pygame.event.Event(
                 pygame.KEYDOWN,
                 {"key": pygame.K_KP_ENTER, "mod": 0, "unicode": ""},
             )
         )
 
-        assert engine.answers == ["42"]
+        assert engine.answers == []
     finally:
         pygame.quit()
 

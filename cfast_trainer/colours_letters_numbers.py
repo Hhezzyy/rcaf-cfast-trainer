@@ -158,6 +158,38 @@ class ColoursLettersNumbersMemoryChallenge:
     expected_option_code: int
 
 
+def _ensure_memory_options_include_target(
+    target_sequence: str,
+    options: tuple[ColoursLettersNumbersOption, ...],
+) -> tuple[ColoursLettersNumbersOption, ...]:
+    sequence = str(target_sequence)
+    normalized = tuple(options)
+    if any(option.label == sequence for option in normalized):
+        return normalized
+    if not normalized:
+        return (ColoursLettersNumbersOption(code=1, label=sequence),)
+    repaired = list(normalized)
+    first = repaired[0]
+    repaired[0] = ColoursLettersNumbersOption(code=int(first.code), label=sequence)
+    return tuple(repaired)
+
+
+def ensure_memory_challenge_has_target(
+    challenge: ColoursLettersNumbersMemoryChallenge,
+) -> ColoursLettersNumbersMemoryChallenge:
+    options = _ensure_memory_options_include_target(challenge.target_sequence, challenge.options)
+    expected_option_code = next(
+        option.code for option in options if option.label == challenge.target_sequence
+    )
+    if options is challenge.options and expected_option_code == challenge.expected_option_code:
+        return challenge
+    return ColoursLettersNumbersMemoryChallenge(
+        target_sequence=challenge.target_sequence,
+        options=options,
+        expected_option_code=expected_option_code,
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class ColoursLettersNumbersGenerationProfile:
     sequence_min_easy: int = 5
@@ -279,12 +311,17 @@ class ColoursLettersNumbersGenerator:
     def next_memory_challenge(self, *, difficulty: float) -> ColoursLettersNumbersMemoryChallenge:
         difficulty = 0.0 if difficulty <= 0.0 else 1.0 if difficulty >= 1.0 else float(difficulty)
         sequence = self._build_sequence(difficulty=difficulty)
-        options = self._build_options(sequence, difficulty=difficulty)
-        expected_option_code = next((o.code for o in options if o.label == sequence), 1)
-        return ColoursLettersNumbersMemoryChallenge(
-            target_sequence=sequence,
-            options=options,
-            expected_option_code=expected_option_code,
+        options = _ensure_memory_options_include_target(
+            sequence,
+            self._build_options(sequence, difficulty=difficulty),
+        )
+        expected_option_code = next(option.code for option in options if option.label == sequence)
+        return ensure_memory_challenge_has_target(
+            ColoursLettersNumbersMemoryChallenge(
+                target_sequence=sequence,
+                options=options,
+                expected_option_code=expected_option_code,
+            )
         )
 
     def next_math_challenge(self, *, difficulty: float) -> tuple[str, int]:

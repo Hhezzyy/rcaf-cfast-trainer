@@ -14,16 +14,44 @@ from cfast_trainer.auditory_capacity_motion import (
 )
 
 
-def _follower(*, speed: float = 3.0) -> AuditoryTunnelFollower:
+def _follower(
+    *,
+    speed: float = 3.0,
+    seed: int = 17,
+    curvature: float = 1.0,
+) -> AuditoryTunnelFollower:
     return AuditoryTunnelFollower(
         AuditoryTunnelFollowerConfig(
-            session_seed=17,
+            session_seed=int(seed),
             speed_distance_per_s=float(speed),
             ball_radius=0.11,
             tunnel_inner_rx=2.24,
             tunnel_inner_rz=1.64,
             wall_half_length=4.0,
             roll_deg_per_distance=9.0,
+            tunnel_curvature_intensity=float(curvature),
+        )
+    )
+
+
+def _twisted_follower(
+    *,
+    speed: float = 3.0,
+    seed: int = 17,
+    curvature: float = 1.0,
+    twist: float = 0.72,
+) -> AuditoryTunnelFollower:
+    return AuditoryTunnelFollower(
+        AuditoryTunnelFollowerConfig(
+            session_seed=int(seed),
+            speed_distance_per_s=float(speed),
+            ball_radius=0.11,
+            tunnel_inner_rx=2.24,
+            tunnel_inner_rz=1.64,
+            wall_half_length=4.0,
+            roll_deg_per_distance=9.0,
+            tunnel_curvature_intensity=float(curvature),
+            tunnel_twist_intensity=float(twist),
         )
     )
 
@@ -60,6 +88,65 @@ def test_tunnel_follower_updates_centerline_frame_and_roll() -> None:
     assert after.center != pytest.approx(start.center)
     assert after.tangent != pytest.approx(start.tangent)
     assert after.ball_roll_deg != pytest.approx(start.ball_roll_deg)
+
+
+def test_tunnel_follower_uses_seeded_curvature_for_repeatable_centerline() -> None:
+    first = _follower(speed=2.0, seed=17, curvature=0.88)
+    repeated = _follower(speed=2.0, seed=17, curvature=0.88)
+    other_seed = _follower(speed=2.0, seed=99, curvature=0.88)
+    straight = _follower(speed=2.0, seed=17, curvature=0.0)
+
+    first_snapshot = first.update(0.75)
+    repeated_snapshot = repeated.update(0.75)
+    other_seed_snapshot = other_seed.update(0.75)
+    straight_snapshot = straight.update(0.75)
+
+    assert repeated_snapshot.center == pytest.approx(first_snapshot.center)
+    assert repeated_snapshot.tangent == pytest.approx(first_snapshot.tangent)
+    assert other_seed_snapshot.center != pytest.approx(first_snapshot.center)
+    assert straight_snapshot.center[0] == pytest.approx(0.0)
+    assert straight_snapshot.center[2] == pytest.approx(0.0)
+
+
+def test_tunnel_follower_twist_changes_frame_axes_without_moving_centerline() -> None:
+    plain = _follower(speed=0.0).snapshot()
+    twisted = _twisted_follower(speed=0.0, twist=0.72).snapshot()
+    repeated = _twisted_follower(speed=0.0, twist=0.72).snapshot()
+
+    assert twisted.center == pytest.approx(plain.center)
+    assert twisted.tangent == pytest.approx(plain.tangent)
+    assert twisted.right != pytest.approx(plain.right)
+    assert twisted.up != pytest.approx(plain.up)
+    assert twisted.twist_angle_rad == pytest.approx(repeated.twist_angle_rad)
+
+
+def test_ball_bound_uses_twisted_tunnel_frame_for_lateral_offsets() -> None:
+    plain = _follower(speed=0.0).snapshot()
+    twisted = _twisted_follower(speed=0.0, twist=0.72).snapshot()
+
+    plain_ball = auditory_ball_bound(
+        plain,
+        x=0.32,
+        y=0.20,
+        tube_half_width=0.72,
+        tube_half_height=0.52,
+        radius=0.11,
+        inner_rx=2.24,
+        inner_rz=1.64,
+    )
+    twisted_ball = auditory_ball_bound(
+        twisted,
+        x=0.32,
+        y=0.20,
+        tube_half_width=0.72,
+        tube_half_height=0.52,
+        radius=0.11,
+        inner_rx=2.24,
+        inner_rz=1.64,
+    )
+
+    assert twisted_ball.center != pytest.approx(plain_ball.center)
+    assert twisted_ball.radius == pytest.approx(plain_ball.radius)
 
 
 def test_gate_world_distance_projection_round_trips_without_moving_gate() -> None:

@@ -13,10 +13,33 @@ from .aircraft_art import (
     project_fixed_wing_point,
     rotate_fixed_wing_point,
 )
-from .instrument_comprehension import InstrumentAircraftViewPreset, InstrumentState
+from .instrument_comprehension import (
+    InstrumentAircraftViewPreset,
+    InstrumentHeadingDisplayMode,
+    InstrumentState,
+)
+from .instrument_orientation_solver import (
+    attitude_display_observation_from_state,
+    heading_display_observation_from_state,
+    normalize_instrument_state,
+)
 
 _CANONICAL_CARD_SIZE = (448, 280)
-_CARD_SPRITE_VERSION = "mesh_v1"
+_CARD_SPRITE_VERSION = "mesh_v3_mechanical"
+
+
+def aircraft_card_orientation_from_state(state: InstrumentState) -> tuple[int, int, int]:
+    normalized = normalize_instrument_state(state)
+    attitude = attitude_display_observation_from_state(normalized)
+    heading = heading_display_observation_from_state(
+        normalized,
+        InstrumentHeadingDisplayMode.MOVING_ARROW,
+    )
+    return (
+        int(heading.heading_deg) % 360,
+        int(attitude.pitch_deg),
+        int(attitude.bank_deg),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,10 +56,11 @@ class InstrumentAircraftCardKey:
         *,
         view_preset: InstrumentAircraftViewPreset = InstrumentAircraftViewPreset.FRONT_LEFT,
     ) -> InstrumentAircraftCardKey:
+        heading_deg, pitch_deg, bank_deg = aircraft_card_orientation_from_state(state)
         return cls(
-            heading_deg=int(state.heading_deg) % 360,
-            pitch_deg=max(-20, min(20, int(round(state.pitch_deg)))),
-            bank_deg=max(-45, min(45, int(round(state.bank_deg)))),
+            heading_deg=heading_deg,
+            pitch_deg=pitch_deg,
+            bank_deg=bank_deg,
             view_preset=view_preset,
         )
 
@@ -81,10 +105,11 @@ class InstrumentAircraftCardSemanticMetrics:
 
 _PRESET_PROJECTIONS: dict[InstrumentAircraftViewPreset, InstrumentAircraftCardViewProjection] = {
     InstrumentAircraftViewPreset.FRONT_LEFT: InstrumentAircraftCardViewProjection(
-        view_yaw_deg=28.0,
-        view_pitch_deg=4.0,
-        scale_ratio=0.107,
-        offset_y_ratio=-0.02,
+        view_yaw_deg=0.0,
+        view_pitch_deg=10.0,
+        scale_ratio=0.105,
+        forward_x_mix=0.0,
+        forward_y_mix=0.0,
     ),
     InstrumentAircraftViewPreset.FRONT_RIGHT: InstrumentAircraftCardViewProjection(
         view_yaw_deg=-28.0,
@@ -127,15 +152,16 @@ def aircraft_card_pose_signature(
     *,
     view_preset: InstrumentAircraftViewPreset = InstrumentAircraftViewPreset.FRONT_LEFT,
 ) -> InstrumentAircraftCardPoseSignature:
+    heading_deg, pitch_deg, bank_deg = aircraft_card_orientation_from_state(state)
     projection = instrument_aircraft_card_view_projection(view_preset)
     scale = 80.0
 
     def project(point: tuple[float, float, float]) -> tuple[int, int]:
         rotated = rotate_fixed_wing_point(
             point,
-            heading_deg=float(state.heading_deg),
-            pitch_deg=float(state.pitch_deg),
-            bank_deg=float(state.bank_deg),
+            heading_deg=float(heading_deg),
+            pitch_deg=float(pitch_deg),
+            bank_deg=float(bank_deg),
         )
         viewed = apply_fixed_wing_view_rotation(
             rotated,
@@ -154,9 +180,9 @@ def aircraft_card_pose_signature(
         return int(sx), int(sy)
 
     faces = project_fixed_wing_faces(
-        heading_deg=float(state.heading_deg),
-        pitch_deg=float(state.pitch_deg),
-        bank_deg=float(state.bank_deg),
+        heading_deg=float(heading_deg),
+        pitch_deg=float(pitch_deg),
+        bank_deg=float(bank_deg),
         cx=0,
         cy=0,
         scale=scale,
@@ -350,7 +376,9 @@ class InstrumentAircraftCardSpriteBank:
             forward_y_mix=projection.forward_y_mix,
         )
         pygame.draw.rect(surface, (170, 184, 212), surface.get_rect(), 1)
-        return self._normalize_surface(surface)
+        surface = self._normalize_surface(surface)
+        pygame.draw.rect(surface, (170, 184, 212), surface.get_rect(), 1)
+        return surface
 
     @staticmethod
     def _aircraft_bounds(surface: pygame.Surface) -> tuple[int, int, int, int] | None:

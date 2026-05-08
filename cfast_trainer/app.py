@@ -229,6 +229,13 @@ from .dr_drills import (
 )
 from .dr_workouts import build_dr_workout_plan, dr_workout_menu_entries
 from .godot_bridge import GODOT_BACKEND_NAME, GodotBridgeManager, godot_kind_for_snapshot
+from .godot_owned import (
+    GODOT_OWNED_KINDS,
+    GodotOwnedPayload,
+    build_godot_owned_test,
+    godot_kind_for_test_code,
+    spatial_integration_godot_config,
+)
 from .instrument_comprehension import (
     InstrumentAircraftViewPreset,
     InstrumentComprehensionInstructionPage,
@@ -639,11 +646,19 @@ def _is_keypad_period_delete_submit_event(event: pygame.event.Event) -> bool:
         return False
 
 
-def _normalize_keyboard_event(event: pygame.event.Event) -> pygame.event.Event:
+def _is_keypad_enter_event(event: pygame.event.Event) -> bool:
+    if event.type not in (pygame.KEYDOWN, pygame.KEYUP):
+        return False
+    return int(getattr(event, "key", 0)) == int(pygame.K_KP_ENTER)
+
+
+def _normalize_keyboard_event(event: pygame.event.Event) -> pygame.event.Event | None:
+    if _is_keypad_enter_event(event):
+        return None
     if not _is_keypad_period_delete_submit_event(event):
         return event
     attrs = dict(getattr(event, "dict", {}))
-    attrs["key"] = pygame.K_KP_ENTER
+    attrs["key"] = pygame.K_RETURN
     attrs["unicode"] = ""
     return pygame.event.Event(event.type, attrs)
 
@@ -759,6 +774,12 @@ class _SharedPauseMenuMixin:
         if callable(to_menu):
             to_menu()
 
+    def _shared_pause_supports_back_to_tests(self) -> bool:
+        return False
+
+    def _shared_pause_back_to_tests(self) -> None:
+        self._shared_pause_main_menu()
+
     def _shared_pause_settings_title(self) -> str:
         return "Pause Settings"
 
@@ -868,7 +889,7 @@ class _SharedPauseMenuMixin:
         if key == pygame.K_ESCAPE:
             self._shared_pause_cancel_seed_edit()
             return True
-        if key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+        if key == pygame.K_RETURN:
             self._shared_pause_finish_seed_edit()
             return True
         if key == pygame.K_BACKSPACE:
@@ -923,6 +944,111 @@ class _SharedPauseMenuMixin:
         items.append(("main_menu", "Main Menu"))
         return tuple(items)
 
+    def _companion_pause_menu_items(self) -> tuple[tuple[str, str], ...]:
+        items = list(self._pause_menu_items())
+        if self._shared_pause_supports_back_to_tests():
+            insert_at = next(
+                (idx for idx, (key, _label) in enumerate(items) if key == "main_menu"),
+                len(items),
+            )
+            items.insert(insert_at, ("back_to_tests", "Back to Tests"))
+        return tuple(items)
+
+    def shell_pause_companion_state(self, *, window_mode: str) -> dict[str, object]:
+        active = bool(getattr(self, "_pause_menu_active", False))
+        state: dict[str, object] = {
+            "active": active,
+            "window_mode": str(window_mode).strip().lower() or "windowed",
+        }
+        if not active:
+            return state
+        mode = str(getattr(self, "_pause_menu_mode", "menu") or "menu")
+        state["mode"] = mode
+        if mode == "settings":
+            rows = self._pause_settings_rows()
+            selected = int(getattr(self, "_pause_settings_selected", 0)) % max(1, len(rows))
+            adjustable = self._shared_pause_settings_adjustable_keys()
+            state.update(
+                {
+                    "title": self._shared_pause_settings_title(),
+                    "subtitle": self._shared_pause_settings_subtitle(),
+                    "selected": selected,
+                    "rows": [
+                        {
+                            "key": key,
+                            "label": label,
+                            "value": value,
+                            "adjustable": key in adjustable,
+                        }
+                        for key, label, value in rows
+                    ],
+                }
+            )
+            return state
+        items = self._companion_pause_menu_items()
+        current_items = self._pause_menu_items()
+        current_action = current_items[
+            int(getattr(self, "_pause_menu_selected", 0)) % max(1, len(current_items))
+        ][0]
+        selected = next(
+            (idx for idx, (key, _label) in enumerate(items) if key == current_action),
+            0,
+        )
+        state.update(
+            {
+                "title": "Paused",
+                "subtitle": self._pause_menu_subtitle(),
+                "selected": selected,
+                "rows": [
+                    {
+                        "key": key,
+                        "label": label,
+                        "value": "",
+                        "adjustable": False,
+                    }
+                    for key, label in items
+                ],
+            }
+        )
+        return state
+
+    def shell_pause_activate_action(self, action: str) -> bool:
+        token = str(action).strip().lower()
+        if token == "back_to_tests" and self._shared_pause_supports_back_to_tests():
+            self._set_pause_menu_state(False)
+            self._shared_pause_back_to_tests()
+            return True
+        items = self._pause_menu_items()
+        for idx, (key, _label) in enumerate(items):
+            if key == token:
+                self._pause_menu_mode = "menu"
+                self._pause_menu_selected = idx
+                self._activate_pause_menu_selection()
+                return True
+        return False
+
+    def shell_pause_activate_setting(self, key: str) -> bool:
+        token = str(key).strip()
+        rows = self._pause_settings_rows()
+        for idx, (row_key, _label, _value) in enumerate(rows):
+            if row_key == token:
+                self._pause_menu_mode = "settings"
+                self._pause_settings_selected = idx
+                self._activate_pause_setting(row_key)
+                return True
+        return False
+
+    def shell_pause_adjust_setting(self, *, key: str, direction: int) -> bool:
+        token = str(key).strip()
+        rows = self._pause_settings_rows()
+        for idx, (row_key, _label, _value) in enumerate(rows):
+            if row_key == token:
+                self._pause_menu_mode = "settings"
+                self._pause_settings_selected = idx
+                self._adjust_pause_setting(index=idx, direction=int(direction))
+                return True
+        return False
+
     def _pause_menu_options(self) -> tuple[str, ...]:
         return tuple(label for _key, label in self._pause_menu_items())
 
@@ -966,7 +1092,7 @@ class _SharedPauseMenuMixin:
         if key in (pygame.K_DOWN, pygame.K_s):
             self._pause_menu_selected = (self._pause_menu_selected + 1) % option_count
             return
-        if key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE):
+        if key in (pygame.K_RETURN, pygame.K_SPACE):
             self._activate_pause_menu_selection()
 
     def _activate_pause_menu_selection(self) -> None:
@@ -1043,7 +1169,7 @@ class _SharedPauseMenuMixin:
         if key in (pygame.K_RIGHT, pygame.K_d):
             self._adjust_pause_setting(index=self._pause_settings_selected, direction=1)
             return
-        if key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE):
+        if key in (pygame.K_RETURN, pygame.K_SPACE):
             self._activate_pause_setting(rows[self._pause_settings_selected][0])
 
     def _render_pause_overlay(self, surface: pygame.Surface) -> None:
@@ -1924,7 +2050,7 @@ class _AuditoryCapacityAudioAdapter:
         }
         token_bank.update(assigned_callsigns)
         token_bank.update(str(value) for value in range(10))
-        token_bank.update(("RED", "GREEN", "BLUE", "YELLOW", "CIRCLE", "TRIANGLE", "SQUARE"))
+        token_bank.update(("RED", "BLUE", "YELLOW", "CIRCLE", "TRIANGLE", "SQUARE"))
         for token in sorted(token_bank):
             self._load_speech_pcm(
                 text=token,
@@ -3177,7 +3303,6 @@ class App:
                 self._headless_mode
                 or _companion_renderers_suppressed_by_environment()
             ),
-            window_mode=self._window_mode,
         )
         self._failure_recovery_used = False
         self._pending_renderer_action: str | None = None
@@ -3445,7 +3570,12 @@ class App:
     def set_window_mode(self, window_mode: str) -> None:
         token = str(window_mode).strip().lower()
         self._window_mode = token if token in {"windowed", "fullscreen", "borderless"} else "windowed"
-        self._godot_bridge.set_window_mode(self._window_mode)
+
+    def godot_window_mode(self) -> str:
+        return str(self._godot_bridge.window_mode)
+
+    def set_godot_window_mode(self, window_mode: str) -> None:
+        self._godot_bridge.set_window_mode(window_mode)
 
     def request_renderer_action(self, action: str) -> None:
         token = str(action).strip().lower()
@@ -3609,7 +3739,7 @@ class App:
         if event.key in (pygame.K_DOWN, pygame.K_s):
             self._shell_pause_selected = (self._shell_pause_selected + 1) % len(items)
             return
-        if event.key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE):
+        if event.key in (pygame.K_RETURN, pygame.K_SPACE):
             self._activate_shell_pause_selection()
 
     def _activate_shell_pause_selection(self) -> None:
@@ -3638,6 +3768,145 @@ class App:
             if callable(emergency):
                 emergency("app_quit")
             self.quit(exit_reason="app_quit")
+
+    def _ensure_godot_pause_active(self) -> bool:
+        if self._shell_pause_active:
+            return True
+        return self._set_shell_pause_active(True)
+
+    def _dispatch_godot_pause_key(self, key: int) -> None:
+        if not self._ensure_godot_pause_active():
+            return
+        event = pygame.event.Event(pygame.KEYDOWN, {"key": int(key), "unicode": ""})
+        screen = self._current_screen()
+        if self._shell_pause_delegates_to_screen(screen):
+            handler = getattr(screen, "shell_pause_handle_event", None)
+            if callable(handler):
+                handler(event)
+                self._sync_shell_pause_screen_state(screen)
+            return
+        self._handle_shell_pause_event(event)
+
+    def _activate_godot_pause_action(self, action: str) -> None:
+        screen = self._current_screen()
+        if screen is None:
+            return
+        if str(action).strip().lower() not in {"back_to_tests", "main_menu"}:
+            if not self._ensure_godot_pause_active():
+                return
+        activator = getattr(screen, "shell_pause_activate_action", None)
+        if callable(activator):
+            if activator(str(action)):
+                self._sync_shell_pause_screen_state(screen)
+                return
+        if str(action).strip().lower() == "main_menu":
+            self._set_shell_pause_active(False)
+            to_menu = getattr(screen, "shell_pause_main_menu", None)
+            if callable(to_menu):
+                to_menu()
+            else:
+                self.pop_to_root()
+
+    def _activate_godot_pause_setting(self, key: str) -> None:
+        if not self._ensure_godot_pause_active():
+            return
+        screen = self._current_screen()
+        activator = getattr(screen, "shell_pause_activate_setting", None)
+        if callable(activator):
+            activator(str(key))
+            self._sync_shell_pause_screen_state(screen)
+
+    def _adjust_godot_pause_setting(self, *, key: str, direction: int) -> None:
+        if not self._ensure_godot_pause_active():
+            return
+        screen = self._current_screen()
+        adjuster = getattr(screen, "shell_pause_adjust_setting", None)
+        if callable(adjuster):
+            adjuster(key=str(key), direction=int(direction))
+            self._sync_shell_pause_screen_state(screen)
+
+    def _route_godot_control_command(self, message: Mapping[str, object]) -> None:
+        command = str(message.get("command", "")).strip().lower()
+        if command == "set_window_mode":
+            self.set_godot_window_mode(str(message.get("window_mode", message.get("mode", ""))))
+            return
+        if command in {
+            "auditory_ready",
+            "auditory_progress",
+            "auditory_event",
+            "auditory_complete",
+            "auditory_error",
+            "godot_ready",
+            "godot_progress",
+            "godot_event",
+            "godot_complete",
+            "godot_error",
+            "ready",
+            "progress",
+            "event",
+            "complete",
+            "error",
+        }:
+            screen = self._current_screen()
+            engine = getattr(screen, "_engine", None)
+            handler = getattr(engine, "apply_godot_authoritative_message", None)
+            if callable(handler):
+                handler(message)
+            return
+        if command == "pause_toggle":
+            self._set_shell_pause_active(not self._shell_pause_active)
+            return
+        if command == "resume":
+            self._set_shell_pause_active(False)
+            return
+        if command == "back_to_tests":
+            self._activate_godot_pause_action("back_to_tests")
+            return
+        if command == "main_menu":
+            self._activate_godot_pause_action("main_menu")
+            return
+        if command == "activate_action":
+            self._activate_godot_pause_action(str(message.get("action", "")))
+            return
+        if command == "activate_setting":
+            self._activate_godot_pause_setting(str(message.get("key", "")))
+            return
+        if command == "settings_back":
+            self._dispatch_godot_pause_key(pygame.K_ESCAPE)
+            return
+        if command == "menu_back":
+            self._dispatch_godot_pause_key(pygame.K_ESCAPE)
+            return
+        if command == "menu_up":
+            self._dispatch_godot_pause_key(pygame.K_UP)
+            return
+        if command == "menu_down":
+            self._dispatch_godot_pause_key(pygame.K_DOWN)
+            return
+        if command == "menu_left":
+            self._dispatch_godot_pause_key(pygame.K_LEFT)
+            return
+        if command == "menu_right":
+            self._dispatch_godot_pause_key(pygame.K_RIGHT)
+            return
+        if command == "menu_select":
+            self._dispatch_godot_pause_key(pygame.K_RETURN)
+            return
+        if command == "adjust_setting":
+            direction = int(message.get("direction", 0) or 0)
+            self._adjust_godot_pause_setting(key=str(message.get("key", "")), direction=direction)
+
+    def _poll_godot_control_commands(self) -> None:
+        poll = getattr(self._godot_bridge, "poll_control_commands", None)
+        if not callable(poll):
+            return
+        try:
+            commands = poll()
+        except Exception:
+            return
+        for command in commands:
+            if isinstance(command, Mapping):
+                self._route_godot_control_command(command)
 
     def _handle_emergency_hotkey(self) -> None:
         self._set_shell_pause_active(False)
@@ -3680,6 +3949,8 @@ class App:
     def handle_event(self, event: pygame.event.Event) -> None:
         event = self._normalize_pointer_event(event)
         event = _normalize_keyboard_event(event)
+        if event is None:
+            return
         if event.type == pygame.QUIT:
             self.quit()
             return
@@ -3726,6 +3997,7 @@ class App:
         try:
             self._joystick_binding_router.poll()
             self._poll_keyboard_menu_repeat_actions()
+            self._poll_godot_control_commands()
         except Exception:
             self.recover_to_menu(reason="input_failure_abort", detail="input failure")
             return
@@ -5374,7 +5646,7 @@ class BenchmarkScreen(_SharedPauseMenuMixin):
                 return
 
             if stage is BenchmarkStage.RESULTS:
-                if key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_BACKSPACE):
+                if key in (pygame.K_RETURN, pygame.K_BACKSPACE):
                     self._app.pop()
                 return
         elif stage is not BenchmarkStage.PROBE:
@@ -5904,7 +6176,7 @@ class AdaptiveSessionScreen(_SharedPauseMenuMixin):
             return
 
         if stage is AdaptiveStage.RESULTS:
-            if key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_BACKSPACE):
+            if key in (pygame.K_RETURN, pygame.K_BACKSPACE):
                 self._app.pop()
             return
 
@@ -7891,7 +8163,7 @@ class InputProfilesScreen:
             if key == pygame.K_BACKSPACE:
                 self._rename_buffer = self._rename_buffer[:-1]
                 return
-            if key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+            if key == pygame.K_RETURN:
                 if self._profiles.rename_profile(selected.profile_id, self._rename_buffer):
                     self._message = "Profile renamed."
                 self._renaming = False
@@ -7911,7 +8183,7 @@ class InputProfilesScreen:
         if key == pygame.K_DOWN:
             self._selected_index = (self._selected_index + 1) % len(profiles)
             return
-        if key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+        if key == pygame.K_RETURN:
             self._profiles.set_active_profile(selected.profile_id)
             self._message = f"Active profile set: {selected.name}"
             return
@@ -8366,7 +8638,7 @@ class JoystickBindingsScreen:
         if key == pygame.K_r:
             self._clear_selected_binding()
             return
-        if key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE):
+        if key in (pygame.K_RETURN, pygame.K_SPACE):
             row = rows[self._selected % len(rows)]
             if row.row_type == "back":
                 self._app.pop()
@@ -8534,7 +8806,7 @@ class MenuScreen:
             self._move(-1)
         elif key in (pygame.K_DOWN, pygame.K_s):
             self._move(1)
-        elif key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE):
+        elif key in (pygame.K_RETURN, pygame.K_SPACE):
             self._activate()
         elif key in (pygame.K_ESCAPE, pygame.K_BACKSPACE):
             self._back()
@@ -8786,7 +9058,7 @@ class DifficultySettingsScreen:
         if key in (pygame.K_RIGHT, pygame.K_d):
             self._adjust_row(rows[self._selected][0], 1)
             return
-        if key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE):
+        if key in (pygame.K_RETURN, pygame.K_SPACE):
             if rows[self._selected][0] == "back":
                 self._app.pop()
             elif rows[self._selected][0] == "override":
@@ -9350,7 +9622,7 @@ class TestSeedSettingsScreen:
             if key == pygame.K_ESCAPE:
                 self._cancel_seed_edit()
                 return
-            if key == pygame.K_RETURN or key == pygame.K_KP_ENTER:
+            if key == pygame.K_RETURN:
                 self._finish_seed_edit()
                 return
             if key == pygame.K_BACKSPACE:
@@ -9407,7 +9679,7 @@ class TestSeedSettingsScreen:
         if key in (pygame.K_RIGHT, pygame.K_d):
             self._adjust_row(rows[self._selected][0], "inc")
             return
-        if key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE):
+        if key in (pygame.K_RETURN, pygame.K_SPACE):
             self._activate_row(rows[self._selected][0])
 
     def _activate_row(self, key: str) -> None:
@@ -9659,7 +9931,7 @@ class RapidTrackingSettingsScreen:
             if rows[self._selected][0] == "invert_pitch":
                 self._toggle_invert_pitch()
             return
-        if key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE):
+        if key in (pygame.K_RETURN, pygame.K_SPACE):
             current = rows[self._selected][0]
             if current == "back":
                 self._app.pop()
@@ -9815,7 +10087,7 @@ class DisplaySettingsScreen:
         if key in (pygame.K_DOWN, pygame.K_s):
             self._selected = (self._selected + 1) % max(1, len(rows))
             return
-        if key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE):
+        if key in (pygame.K_RETURN, pygame.K_SPACE):
             self._activate_row(rows[self._selected][0])
 
     def _activate_row(self, key: str) -> None:
@@ -10898,15 +11170,22 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             overrides["control_scheme"] = str(payload.control_scheme)
 
     def _sync_godot_companion(self, snap: TestSnapshot, payload: object | None) -> None:
+        bridge = self._app.godot_bridge()
         kind = godot_kind_for_snapshot(snap)
         if kind is None:
-            self._app.godot_bridge().idle()
+            bridge.set_menu_state({"active": False, "window_mode": bridge.window_mode})
+            bridge.idle()
             if not self._app.headless_mode():
                 self._app.set_renderer_path("PYGAME_2D")
             return
-        active = self._app.godot_bridge().sync(snap, payload)
+        bridge.set_menu_state(self.shell_pause_companion_state(window_mode=bridge.window_mode))
+        active = bridge.sync(snap, payload)
         if active:
             self._app.set_renderer_path(GODOT_BACKEND_NAME.upper())
+        elif isinstance(payload, GodotOwnedPayload):
+            detail = bridge.last_error or "Godot is required for this 3D test"
+            if not self._activity_finalized:
+                self._app.recover_to_menu(reason="godot_required", detail=detail)
         elif not self._app.headless_mode():
             self._app.set_renderer_path("PYGAME_2D")
 
@@ -11254,7 +11533,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
 
         if self._review_state_active():
             blocking_review = self._review_state_blocks_runtime()
-            if event.type == pygame.KEYDOWN and event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_RETURN:
                 self._clear_review_state()
                 if blocking_review:
                     return
@@ -11724,7 +12003,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
 
         key = event.key
 
-        if key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+        if key == pygame.K_RETURN:
             if snap.phase in (Phase.INSTRUCTIONS, Phase.PRACTICE_DONE) and not self._intro_loading_complete(
                 snap.phase
             ):
@@ -12005,7 +12284,6 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 return
             color_key = {
                 pygame.K_q: "BLUE",
-                pygame.K_w: "GREEN",
                 pygame.K_e: "YELLOW",
                 pygame.K_r: "RED",
             }.get(key)
@@ -12950,6 +13228,48 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             elif phase is Phase.RESULTS:
                 self._engine._pending_done_action = None
 
+    def _render_godot_owned_screen(
+        self,
+        surface: pygame.Surface,
+        snap: TestSnapshot,
+        payload: GodotOwnedPayload,
+    ) -> None:
+        surface.fill((8, 13, 22))
+        w, h = surface.get_size()
+        title = self._app.font.render(str(snap.title), True, (238, 245, 255))
+        surface.blit(title, title.get_rect(midtop=(w // 2, 34)))
+
+        phase_label = str(snap.phase.value).replace("_", " ").title()
+        status = "Godot runtime starting" if snap.phase is not Phase.RESULTS else "Godot runtime complete"
+        if payload.error is not None:
+            status = "Godot runtime error"
+        body = pygame.Rect(max(32, w // 8), max(128, h // 4), w - max(64, w // 4), 170)
+        pygame.draw.rect(surface, (13, 26, 48), body, border_radius=10)
+        pygame.draw.rect(surface, (88, 126, 168), body, 1, border_radius=10)
+
+        lines = [
+            f"{phase_label} | {status}",
+            str(snap.prompt).split("\n")[0] if str(snap.prompt).strip() else "The live test is in the Godot window.",
+        ]
+        if snap.time_remaining_s is not None and snap.phase is Phase.SCORED:
+            remaining = max(0, int(round(float(snap.time_remaining_s))))
+            lines.append(f"Time remaining: {remaining // 60:02d}:{remaining % 60:02d}")
+        if payload.error is not None:
+            detail = str(payload.error.get("detail", payload.error.get("reason", "Unknown error")))
+            lines.append(detail)
+        y = body.y + 28
+        for line in lines[:5]:
+            rendered = self._small_font.render(line, True, (214, 226, 240))
+            surface.blit(rendered, rendered.get_rect(centerx=body.centerx, y=y))
+            y += 30
+
+        footer = self._tiny_font.render(
+            "Esc opens pause. Results save here when Godot reports completion.",
+            True,
+            (156, 176, 198),
+        )
+        surface.blit(footer, footer.get_rect(midbottom=(w // 2, h - 28)))
+
     def render(self, surface: pygame.Surface) -> None:
         self._sync_pausable_clock_state()
         self._expire_review_state_if_needed()
@@ -13096,6 +13416,9 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
 
         # Identify payloads.
         p = snap.payload
+        godot_owned_payload: GodotOwnedPayload | None = (
+            p if isinstance(p, GodotOwnedPayload) else None
+        )
         scenario: AirborneScenario | None = p if isinstance(p, AirborneScenario) else None
         abd: AnglesBearingsRuntimePayload | None = (
             p
@@ -13192,7 +13515,9 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             "Situational Awareness"
         )
         godot_payload: object | None = None
-        if is_rapid_tracking:
+        if godot_owned_payload is not None:
+            godot_payload = godot_owned_payload
+        elif is_rapid_tracking:
             godot_payload = rapid_tracking_payload
         elif is_spatial_integration:
             godot_payload = spatial_payload
@@ -13206,7 +13531,9 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         self._choice_option_hitboxes = {}
         self._table_reading_tab_hitboxes = {}
         self._system_logic_index_hitboxes = {}
-        if is_numerical_ops and snap.phase in (Phase.PRACTICE, Phase.SCORED):
+        if godot_owned_payload is not None:
+            self._render_godot_owned_screen(surface, snap, godot_owned_payload)
+        elif is_numerical_ops and snap.phase in (Phase.PRACTICE, Phase.SCORED):
             self._render_numerical_operations_question(surface, snap)
         elif is_math_reasoning:
             self._render_math_reasoning(surface, snap, mr, mr_training)
@@ -13288,7 +13615,9 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                         y += 26
 
         if snap.phase in (Phase.PRACTICE, Phase.SCORED):
-            if is_numerical_ops:
+            if godot_owned_payload is not None:
+                pass
+            elif is_numerical_ops:
                 self._render_numerical_operations_answer_box(surface, snap)
             elif is_math_reasoning:
                 self._render_math_reasoning_answer_box(surface, snap, mr_training)
@@ -14346,6 +14675,18 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         phase: Phase,
         payload: AuditoryCapacityPayload | None,
     ) -> None:
+        bridge = self._app.godot_bridge()
+        active_for = getattr(bridge, "is_active_for", None)
+        if callable(active_for) and bool(active_for("auditory_capacity")):
+            self._stop_auditory_audio()
+            return
+        if not callable(active_for):
+            try:
+                if str(bridge.renderer_backend_for("auditory_capacity")) == GODOT_BACKEND_NAME:
+                    self._stop_auditory_audio()
+                    return
+            except Exception:
+                pass
         if payload is None or phase not in (Phase.PRACTICE, Phase.SCORED):
             self._stop_auditory_audio()
             return
@@ -14410,6 +14751,19 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
 
     def shell_pause_restart(self) -> None:
         self.shell_pause_restart_with_seed(None)
+
+    def _shared_pause_supports_back_to_tests(self) -> bool:
+        return self._test_code is not None
+
+    def _shared_pause_back_to_tests(self) -> None:
+        self.shell_pause_back_to_tests()
+
+    def shell_pause_back_to_tests(self) -> None:
+        self._set_pause_menu_state(False)
+        self._activity_close_reason = "back_abort"
+        self._stop_auditory_audio()
+        self._stop_situational_awareness_audio()
+        self._app.pop()
 
     def shell_pause_main_menu(self) -> None:
         self._set_pause_menu_state(False)
@@ -15505,9 +15859,19 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         *,
         distance: float,
         ball_distance: float,
+        session_seed: int | None = None,
+        curvature_intensity: float = 1.0,
     ) -> tuple[float, float]:
-        center_x, center_z = tube_center_at_distance(float(distance))
-        ball_x, ball_z = tube_center_at_distance(float(ball_distance))
+        center_x, center_z = tube_center_at_distance(
+            float(distance),
+            session_seed=session_seed,
+            curvature_intensity=curvature_intensity,
+        )
+        ball_x, ball_z = tube_center_at_distance(
+            float(ball_distance),
+            session_seed=session_seed,
+            curvature_intensity=curvature_intensity,
+        )
         return (
             max(-1.0, min(1.0, (center_x - ball_x) / 5.8)),
             max(-1.0, min(1.0, (center_z - ball_z) / 3.6)),
@@ -15667,6 +16031,10 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         z_near = 2.0
         z_far = 26.0
         travel_distance = 0.0 if payload is None else float(payload.presentation_travel_distance)
+        session_seed = None if payload is None else int(payload.session_seed)
+        curvature_intensity = (
+            1.0 if payload is None else float(payload.tunnel_curvature_intensity)
+        )
         ball_distance = float(travel_distance)
         depth_samples = (0.02, 0.10, 0.18, 0.28, 0.40, 0.54, 0.68, 0.82, float(TUNNEL_EXIT_NORM))
         ring_poses: list[tuple[float, tuple[int, int], tuple[int, int]]] = []
@@ -15678,6 +16046,8 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             off_x, off_y = self._auditory_tube_offset_at_distance(
                 distance=tunnel_distance,
                 ball_distance=ball_distance,
+                session_seed=session_seed,
+                curvature_intensity=curvature_intensity,
             )
             cx = world.w // 2 + int(round(off_x * world.w * 0.18))
             cy = world.h // 2 - int(round(off_y * world.h * 0.15))
@@ -15736,6 +16106,8 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 off_x, off_y = self._auditory_tube_offset_at_distance(
                     distance=distance,
                     ball_distance=ball_distance,
+                    session_seed=session_seed,
+                    curvature_intensity=curvature_intensity,
                 )
                 cx = world.w // 2 + int(round(off_x * world.w * 0.18))
                 cy = world.h // 2 - int(round(off_y * world.h * 0.15))
@@ -15758,6 +16130,8 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             off_x, off_y = self._auditory_tube_offset_at_distance(
                 distance=ball_distance,
                 ball_distance=ball_distance,
+                session_seed=session_seed,
+                curvature_intensity=curvature_intensity,
             )
             cx = world.w // 2 + int(round(off_x * world.w * 0.18))
             cy = world.h // 2 - int(round(off_y * world.h * 0.15))
@@ -25759,7 +26133,7 @@ def _new_seed() -> int:
 
 
 def _is_enter_key(key: int) -> bool:
-    return key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_KP_PERIOD)
+    return int(key) == int(pygame.K_RETURN)
 
 
 def _resolve_window_mode(
@@ -26704,6 +27078,34 @@ def run(
         return "Building Airborne Numerical workout"
 
     def open_workout(workout_code: str) -> None:
+        godot_kind = godot_kind_for_test_code(workout_code)
+        if godot_kind in GODOT_OWNED_KINDS:
+            title = str(workout_code).replace("_", " ").title()
+            godot_config: dict[str, object] = {"workout": True}
+            if godot_kind == "spatial_integration":
+                godot_config = spatial_integration_godot_config(
+                    test_code=workout_code,
+                    mode="workout",
+                    duration_s=90.0 * 60.0,
+                    extra={"workout": True},
+                )
+            open_test(
+                test_code=workout_code,
+                title=title,
+                engine_factory=lambda difficulty, seed: build_godot_owned_test(
+                    clock=real_clock,
+                    seed=seed,
+                    difficulty=difficulty,
+                    kind=godot_kind,
+                    test_code=workout_code,
+                    title=title,
+                    duration_s=90.0 * 60.0,
+                    mode="workout",
+                    config=godot_config,
+                ),
+            )
+            return
+
         def _build_session(level: int) -> AntWorkoutSession:
             return AntWorkoutSession(
                 clock=real_clock,
@@ -27860,10 +28262,13 @@ def run(
         open_test(
             test_code="rapid_tracking",
             title="Rapid Tracking",
-            engine_factory=lambda difficulty, seed: build_rapid_tracking_test(
+            engine_factory=lambda difficulty, seed: build_godot_owned_test(
                 clock=real_clock,
                 seed=seed,
                 difficulty=difficulty,
+                kind="rapid_tracking",
+                test_code="rapid_tracking",
+                title="Rapid Tracking",
             ),
         )
 
@@ -27878,18 +28283,16 @@ def run(
             test_code=test_code,
             title=title,
             mode=mode,
-            engine_builder=lambda seed, difficulty, resolved_mode, scored_duration_s: builder(
+            engine_builder=lambda seed, difficulty, resolved_mode, scored_duration_s: build_godot_owned_test(
                 clock=real_clock,
                 seed=seed,
                 difficulty=difficulty,
-                mode=resolved_mode,
-                config=(
-                    None
-                    if scored_duration_s is None
-                    else RtDrillConfig(
-                        scored_duration_s=float(scored_duration_s),
-                    )
-                ),
+                kind="rapid_tracking",
+                test_code=test_code,
+                title=title,
+                duration_s=scored_duration_s,
+                mode=str(resolved_mode),
+                config={"drill": True},
             ),
         )
 
@@ -28027,10 +28430,19 @@ def run(
         open_test(
             test_code="spatial_integration",
             title="Spatial Integration",
-            engine_factory=lambda difficulty, seed: build_spatial_integration_test(
+            engine_factory=lambda difficulty, seed: build_godot_owned_test(
                 clock=real_clock,
                 seed=seed,
                 difficulty=difficulty,
+                kind="spatial_integration",
+                test_code="spatial_integration",
+                title="Spatial Integration",
+                duration_s=23.0 * 60.0,
+                config=spatial_integration_godot_config(
+                    test_code="spatial_integration",
+                    mode="standard",
+                    duration_s=23.0 * 60.0,
+                ),
             ),
         )
 
@@ -28045,18 +28457,20 @@ def run(
             test_code=test_code,
             title=title,
             mode=mode,
-            engine_builder=lambda seed, difficulty, resolved_mode, scored_duration_s: builder(
+            engine_builder=lambda seed, difficulty, resolved_mode, scored_duration_s: build_godot_owned_test(
                 clock=real_clock,
                 seed=seed,
                 difficulty=difficulty,
-                mode=resolved_mode,
-                config=(
-                    None
-                    if scored_duration_s is None
-                    else SiDrillConfig(
-                        practice_scenes_per_part=0,
-                        scored_duration_s=float(scored_duration_s),
-                    )
+                kind="spatial_integration",
+                test_code=test_code,
+                title=title,
+                duration_s=scored_duration_s,
+                mode=str(resolved_mode),
+                config=spatial_integration_godot_config(
+                    test_code=test_code,
+                    mode=str(resolved_mode),
+                    duration_s=scored_duration_s,
+                    extra={"drill": True},
                 ),
             ),
         )
@@ -28129,10 +28543,13 @@ def run(
         open_test(
             test_code="trace_test_1",
             title="Trace Test 1",
-            engine_factory=lambda difficulty, seed: build_trace_test_1_test(
+            engine_factory=lambda difficulty, seed: build_godot_owned_test(
                 clock=real_clock,
                 seed=seed,
                 difficulty=difficulty,
+                kind="trace_test_1",
+                test_code="trace_test_1",
+                title="Trace Test 1",
             ),
         )
 
@@ -28140,10 +28557,13 @@ def run(
         open_test(
             test_code="trace_test_2",
             title="Trace Test 2",
-            engine_factory=lambda difficulty, seed: build_trace_test_2_test(
+            engine_factory=lambda difficulty, seed: build_godot_owned_test(
                 clock=real_clock,
                 seed=seed,
                 difficulty=difficulty,
+                kind="trace_test_2",
+                test_code="trace_test_2",
+                title="Trace Test 2",
             ),
         )
 
@@ -28158,19 +28578,16 @@ def run(
             test_code=test_code,
             title=title,
             mode=mode,
-            engine_builder=lambda seed, difficulty, resolved_mode, scored_duration_s: builder(
+            engine_builder=lambda seed, difficulty, resolved_mode, scored_duration_s: build_godot_owned_test(
                 clock=real_clock,
                 seed=seed,
                 difficulty=difficulty,
-                mode=resolved_mode,
-                config=(
-                    None
-                    if scored_duration_s is None
-                    else TraceDrillConfig(
-                        practice_questions_per_segment=0,
-                        scored_duration_s=float(scored_duration_s),
-                    )
-                ),
+                kind=godot_kind_for_test_code(test_code) or "trace_test_1",
+                test_code=test_code,
+                title=title,
+                duration_s=scored_duration_s,
+                mode=str(resolved_mode),
+                config={"drill": True},
             ),
         )
 
@@ -28249,18 +28666,16 @@ def run(
             test_code=test_code,
             title=title,
             mode=mode,
-            engine_builder=lambda seed, difficulty, resolved_mode, scored_duration_s: builder(
+            engine_builder=lambda seed, difficulty, resolved_mode, scored_duration_s: build_godot_owned_test(
                 clock=real_clock,
                 seed=seed,
                 difficulty=difficulty,
-                mode=resolved_mode,
-                config=(
-                    None
-                    if scored_duration_s is None
-                    else AcDrillConfig(
-                        scored_duration_s=float(scored_duration_s),
-                    )
-                ),
+                kind="auditory_capacity",
+                test_code=test_code,
+                title=title,
+                duration_s=scored_duration_s,
+                mode=str(resolved_mode),
+                config={"drill": True},
             ),
         )
 
@@ -28332,10 +28747,13 @@ def run(
         open_test(
             test_code="auditory_capacity",
             title="Auditory Capacity",
-            engine_factory=lambda difficulty, seed: build_auditory_capacity_test(
+            engine_factory=lambda difficulty, seed: build_godot_owned_test(
                 clock=real_clock,
                 seed=seed,
                 difficulty=difficulty,
+                kind="auditory_capacity",
+                test_code="auditory_capacity",
+                title="Auditory Capacity",
             ),
         )
 

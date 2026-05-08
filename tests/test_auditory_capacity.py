@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import wave
 from dataclasses import dataclass
 from pathlib import Path
-import wave
 
 import pytest
 
@@ -12,6 +12,7 @@ from cfast_trainer.auditory_capacity import (
     AUDITORY_GATE_SPAWN_X_NORM,
     AUDITORY_TRIANGLE_GATE_POINTS,
     AuditoryCapacityConfig,
+    AuditoryCapacityScenarioGenerator,
     build_auditory_capacity_test,
     project_inside_tube,
     tube_contact_ratio,
@@ -24,7 +25,9 @@ from cfast_trainer.auditory_capacity_view import (
     run_start_distance,
     run_travel_distance,
     tube_center_at_distance,
+    tube_frame,
 )
+from cfast_trainer.cognitive_core import Phase
 
 
 @dataclass
@@ -45,10 +48,31 @@ def _difficulty_ratio(level: int) -> float:
 def test_default_config_values_match_auditory_overhaul() -> None:
     cfg = AuditoryCapacityConfig()
 
-    assert cfg.tube_half_width == pytest.approx(0.82)
-    assert cfg.tube_half_height == pytest.approx(0.60)
-    assert cfg.gate_spawn_rate == pytest.approx(0.24)
-    assert cfg.gate_interval_s == pytest.approx(4.2)
+    assert cfg.tube_half_width == pytest.approx(0.72)
+    assert cfg.tube_half_height == pytest.approx(0.52)
+    assert cfg.disturbance_gain == pytest.approx(0.52)
+    assert cfg.tunnel_curvature_intensity == pytest.approx(0.88)
+    assert cfg.tunnel_twist_intensity == pytest.approx(0.68)
+    assert cfg.gate_spawn_rate == pytest.approx(0.26)
+    assert cfg.gate_interval_s == pytest.approx(3.85)
+
+
+def test_auditory_capacity_gate_and_command_colors_are_red_blue_yellow_only() -> None:
+    assert AuditoryCapacityScenarioGenerator.COLORS == ("RED", "BLUE", "YELLOW")
+    engine = build_auditory_capacity_test(clock=_FakeClock(), seed=17, difficulty=0.5)
+    assert engine._canonical_color("GREEN") is None
+    assert engine._canonical_color("BLUE") == "BLUE"
+
+    gen = AuditoryCapacityScenarioGenerator(seed=17)
+    observed: set[str] = set()
+    for _ in range(80):
+        observed.add(gen.next_gate(difficulty=0.65).color)
+        directive = gen.next_gate_directive()
+        if directive.match_kind == "COLOR":
+            observed.add(directive.match_value)
+
+    assert observed
+    assert observed <= {"RED", "BLUE", "YELLOW"}
 
 
 def test_engine_and_render_motion_share_gate_anchors() -> None:
@@ -77,7 +101,7 @@ def test_default_gate_interval_comes_from_spawn_rate() -> None:
     clock = _FakeClock()
     engine = build_auditory_capacity_test(clock=clock, seed=17, difficulty=0.5)
 
-    assert engine._gate_interval_s() == pytest.approx(1.0 / 0.24)
+    assert engine._gate_interval_s() == pytest.approx(1.0 / 0.26)
 
 
 def test_default_profile_stays_bounded_low_and_overloads_high() -> None:
@@ -114,8 +138,8 @@ def test_default_profile_stays_bounded_low_and_overloads_high() -> None:
     assert len(high_digits) == 10
     assert len(low_engine._assigned_callsigns) == 3
     assert len(high_engine._assigned_callsigns) == 4
-    assert low_engine._effective_gate_interval_s() == pytest.approx(4.2, abs=0.05)
-    assert high_engine._effective_gate_interval_s() == pytest.approx(1.6, abs=0.05)
+    assert low_engine._effective_gate_interval_s() == pytest.approx(3.85, abs=0.05)
+    assert high_engine._effective_gate_interval_s() == pytest.approx(1.5, abs=0.05)
     assert high_engine._effective_gate_interval_s() < low_engine._effective_gate_interval_s()
 
 
@@ -169,6 +193,58 @@ def test_live_tunnel_run_start_is_seeded_repeatable_and_varies_between_runs() ->
     assert other != pytest.approx(first)
 
 
+def test_seeded_procedural_tunnel_path_and_frame_are_repeatable() -> None:
+    distance = 31.25
+
+    center = tube_center_at_distance(
+        distance,
+        session_seed=17,
+        curvature_intensity=0.88,
+    )
+    repeated_center = tube_center_at_distance(
+        distance,
+        session_seed=17,
+        curvature_intensity=0.88,
+    )
+    other_seed_center = tube_center_at_distance(
+        distance,
+        session_seed=99,
+        curvature_intensity=0.88,
+    )
+    straight_center = tube_center_at_distance(
+        distance,
+        session_seed=17,
+        curvature_intensity=0.0,
+    )
+
+    assert repeated_center == pytest.approx(center)
+    assert other_seed_center != pytest.approx(center)
+    assert straight_center == pytest.approx((0.0, 0.0))
+
+    frame = tube_frame(
+        distance,
+        session_seed=17,
+        curvature_intensity=0.88,
+        twist_intensity=0.68,
+    )
+    repeated_frame = tube_frame(
+        distance,
+        session_seed=17,
+        curvature_intensity=0.88,
+        twist_intensity=0.68,
+    )
+    other_seed_frame = tube_frame(
+        distance,
+        session_seed=99,
+        curvature_intensity=0.88,
+        twist_intensity=0.68,
+    )
+
+    for actual, expected in zip(repeated_frame, frame, strict=True):
+        assert actual == pytest.approx(expected)
+    assert other_seed_frame[0] != pytest.approx(frame[0])
+
+
 def test_seeded_travel_changes_visible_tunnel_curve_relative_to_moving_ball() -> None:
     start_travel = run_travel_distance(session_seed=17, phase_elapsed_s=0.0)
     later_travel = run_travel_distance(session_seed=17, phase_elapsed_s=42.0)
@@ -178,8 +254,16 @@ def test_seeded_travel_changes_visible_tunnel_curve_relative_to_moving_ball() ->
         ring_distance = float(travel_distance) + (
             float(AUDITORY_TUNNEL_GEOMETRY_END_OFFSET_DISTANCE) * 0.54
         )
-        ring_x, ring_z = tube_center_at_distance(ring_distance)
-        ball_x, ball_z = tube_center_at_distance(ball_distance)
+        ring_x, ring_z = tube_center_at_distance(
+            ring_distance,
+            session_seed=17,
+            curvature_intensity=0.88,
+        )
+        ball_x, ball_z = tube_center_at_distance(
+            ball_distance,
+            session_seed=17,
+            curvature_intensity=0.88,
+        )
         return (ring_x - ball_x, ring_z - ball_z)
 
     assert relative_curve(later_travel) != pytest.approx(relative_curve(start_travel))
@@ -291,29 +375,28 @@ def test_triangle_gate_profile_is_equilateral() -> None:
     assert max(sides) - min(sides) <= 0.01
 
 
-def test_taller_wider_more_circular_default_tunnel_is_more_forgiving_than_previous_shape() -> None:
+def test_tighter_default_tunnel_projects_edge_contact_back_inside() -> None:
     point_x = 0.78
     point_y = 0.18
+    cfg = AuditoryCapacityConfig()
 
-    old_ratio = tube_contact_ratio(x=point_x, y=point_y, tube_half_width=0.74, tube_half_height=0.44)
-    new_ratio = tube_contact_ratio(
+    ratio = tube_contact_ratio(
         x=point_x,
         y=point_y,
-        tube_half_width=AuditoryCapacityConfig().tube_half_width,
-        tube_half_height=AuditoryCapacityConfig().tube_half_height,
+        tube_half_width=cfg.tube_half_width,
+        tube_half_height=cfg.tube_half_height,
     )
     px, py, raw_ratio = project_inside_tube(
         x=point_x,
         y=point_y,
-        tube_half_width=AuditoryCapacityConfig().tube_half_width,
-        tube_half_height=AuditoryCapacityConfig().tube_half_height,
+        tube_half_width=cfg.tube_half_width,
+        tube_half_height=cfg.tube_half_height,
     )
 
-    assert old_ratio > 1.0
-    assert new_ratio < 1.0
-    assert raw_ratio == pytest.approx(new_ratio)
-    assert px == pytest.approx(point_x)
-    assert py == pytest.approx(point_y)
+    assert ratio > 1.0
+    assert raw_ratio == pytest.approx(ratio)
+    assert abs(px) < abs(point_x)
+    assert py == pytest.approx(point_y / ratio, abs=0.002)
 
 
 def test_converted_runtime_audio_assets_exist_and_load_cleanly() -> None:
@@ -346,3 +429,44 @@ def test_converted_runtime_audio_assets_exist_and_load_cleanly() -> None:
             assert wav_file.getnchannels() == 1
             assert wav_file.getsampwidth() == 2
             assert wav_file.getnframes() > 0
+
+
+def test_godot_authoritative_result_updates_auditory_metrics() -> None:
+    clock = _FakeClock()
+    engine = build_auditory_capacity_test(clock=clock, seed=17, difficulty=0.55)
+    engine.start_practice()
+    engine._phase = Phase.SCORED
+
+    engine.apply_godot_authoritative_message(
+        {
+            "command": "auditory_complete",
+            "result": {
+                "phase": "results",
+                "summary": {
+                    "attempted": 5,
+                    "correct": 4,
+                    "total_score": 4.25,
+                    "max_score": 5.0,
+                },
+                "metrics": {
+                    "gate_hits": 2,
+                    "gate_misses": 1,
+                    "forbidden_gate_hits": 1,
+                    "collisions": 3,
+                    "correct_command_executions": 2,
+                    "missed_valid_commands": 1,
+                    "digit_recall_attempts": 1,
+                    "digit_recall_accuracy": 0.75,
+                },
+            },
+        }
+    )
+
+    summary = engine.scored_summary()
+    metrics = engine.result_metrics()
+    assert engine.snapshot().phase is Phase.RESULTS
+    assert summary.attempted == 5
+    assert summary.correct == 4
+    assert summary.total_score == pytest.approx(4.25)
+    assert metrics["auditory.gate_hits"] == "2"
+    assert metrics["auditory.boundary_violations"] == "3"

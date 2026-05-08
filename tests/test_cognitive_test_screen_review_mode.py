@@ -200,6 +200,33 @@ def test_review_mode_pauses_after_typed_submit_until_second_enter(tmp_path) -> N
         pygame.quit()
 
 
+def test_review_mode_ignores_keypad_enter_as_second_submit(tmp_path) -> None:
+    screen, _base_clock = _build_screen(tmp_path=tmp_path, review_mode=True, payload=None)
+    try:
+        screen._input = "17"
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "mod": 0, "unicode": ""})
+        )
+        assert screen._review_state is not None
+
+        screen.handle_event(
+            pygame.event.Event(
+                pygame.KEYDOWN,
+                {"key": pygame.K_KP_ENTER, "mod": 0, "unicode": ""},
+            )
+        )
+        assert screen._review_state is not None
+        assert screen._review_clock is not None
+        assert screen._review_clock.is_paused() is True
+
+        screen.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "mod": 0, "unicode": ""})
+        )
+        assert screen._review_state is None
+    finally:
+        pygame.quit()
+
+
 def test_review_mode_tracks_correct_and_selected_multiple_choice_codes(tmp_path) -> None:
     payload = _FakePayload(
         options=(

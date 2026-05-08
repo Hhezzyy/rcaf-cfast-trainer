@@ -1,6 +1,11 @@
 extends Node3D
 
+const AuditoryRuntime = preload("res://scripts/auditory_runtime.gd")
+const GodotOwnedRuntime = preload("res://scripts/godot_owned_runtime.gd")
+const RapidTrackingRuntime = preload("res://scripts/rapid_tracking_runtime.gd")
+const SpatialIntegrationRuntime = preload("res://scripts/spatial_integration_runtime.gd")
 const LISTEN_HOST := "127.0.0.1"
+const CONTROL_SCHEMA_VERSION := 1
 const FLOOR_COLOR := Color(0.18, 0.26, 0.22, 1.0)
 const FOG_COLOR := Color(0.46, 0.52, 0.56, 1.0)
 const LINE_COLOR := Color(0.70, 0.78, 0.82, 1.0)
@@ -15,31 +20,53 @@ const GROUND_COLOR := Color(0.42, 0.50, 0.26, 1.0)
 const CARD_COLOR := Color(0.74, 0.76, 0.78, 1.0)
 const PANEL_BLUE := Color(0.02, 0.05, 0.42, 1.0)
 const CANOPY_COLOR := Color(0.54, 0.86, 0.95, 1.0)
+const AUDITORY_TRIANGLE_POINTS := [
+	Vector2(0.0, 1.22),
+	Vector2(-1.056, -0.61),
+	Vector2(1.056, -0.61),
+]
 
 var udp := PacketPeerUDP.new()
+var control_udp := PacketPeerUDP.new()
 var listen_port := 0
+var control_host := LISTEN_HOST
+var control_port := 0
 var session_id := ""
 var initial_kind := "idle"
 var dynamic_root: Node3D
 var camera: Camera3D
 var overlay_label: Label
+var menu_layer: CanvasLayer
+var menu_panel: PanelContainer
+var menu_vbox: VBoxContainer
+var menu_state := {}
 var material_cache := {}
 var last_kind := ""
+var last_requested_window_mode := ""
+var last_reported_window_mode := ""
+var auditory_runtime: Node3D = null
+var godot_owned_runtime: Node3D = null
 
 
 func _ready() -> void:
 	_parse_user_args()
 	_build_world()
 	_bind_udp()
+	_connect_control_udp()
 	_present_idle()
 
 
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
 	while udp.get_available_packet_count() > 0:
 		var text := udp.get_packet().get_string_from_utf8()
 		var parsed = JSON.parse_string(text)
 		if typeof(parsed) == TYPE_DICTIONARY:
 			_handle_message(parsed)
+	if auditory_runtime != null:
+		auditory_runtime.update_runtime(delta, camera)
+	if godot_owned_runtime != null:
+		godot_owned_runtime.update_runtime(delta, camera)
+	_report_window_mode_if_changed()
 
 
 func _parse_user_args() -> void:
@@ -48,6 +75,10 @@ func _parse_user_args() -> void:
 		var token := str(args[i])
 		if token == "--listen-port" and i + 1 < args.size():
 			listen_port = int(args[i + 1])
+		elif token == "--control-host" and i + 1 < args.size():
+			control_host = str(args[i + 1])
+		elif token == "--control-port" and i + 1 < args.size():
+			control_port = int(args[i + 1])
 		elif token == "--session-id" and i + 1 < args.size():
 			session_id = str(args[i + 1])
 		elif token == "--initial-kind" and i + 1 < args.size():
@@ -63,6 +94,13 @@ func _bind_udp() -> void:
 		overlay_label.text = "CFAST Godot companion UDP bind failed: " + str(err)
 	else:
 		overlay_label.text = "CFAST Godot companion ready"
+
+
+func _connect_control_udp() -> void:
+	last_reported_window_mode = _current_window_mode_token()
+	if control_port <= 0:
+		return
+	control_udp.connect_to_host(control_host, control_port)
 
 
 func _build_world() -> void:
@@ -109,21 +147,42 @@ func _build_world() -> void:
 	overlay_label.add_theme_color_override("font_color", Color(0.92, 0.96, 0.98, 1.0))
 	canvas.add_child(overlay_label)
 
+	menu_layer = CanvasLayer.new()
+	menu_layer.layer = 8
+	add_child(menu_layer)
+	menu_panel = PanelContainer.new()
+	menu_panel.visible = false
+	menu_panel.position = Vector2(292, 72)
+	menu_panel.custom_minimum_size = Vector2(376, 392)
+	menu_layer.add_child(menu_panel)
+	menu_vbox = VBoxContainer.new()
+	menu_vbox.custom_minimum_size = Vector2(360, 376)
+	menu_vbox.add_theme_constant_override("separation", 8)
+	menu_panel.add_child(menu_vbox)
+
 
 func _handle_message(message: Dictionary) -> void:
 	if str(message.get("command", "")) == "quit":
 		get_tree().quit()
 		return
 	_apply_window_mode(str(message.get("window_mode", "")))
+	menu_state = _as_dict(message.get("menu", {}))
+	_rebuild_menu_overlay()
 	var kind := str(message.get("kind", "idle"))
 	var payload = message.get("payload", {})
 	var title := str(message.get("title", "CFAST Godot Companion"))
 	var phase := str(message.get("phase", ""))
 	overlay_label.text = title + "  |  " + phase + "  |  Godot companion"
-	_clear_dynamic()
+	var start_spec := _as_dict(_as_dict(payload).get("godot_start", {}))
+	if start_spec.size() > 0 and str(start_spec.get("authority", "")) == "godot":
+		_present_godot_owned(kind, start_spec, phase)
+		last_kind = kind
+		return
+	if kind != "auditory_capacity":
+		_clear_dynamic()
 	match kind:
 		"auditory_capacity":
-			_present_auditory(_as_dict(payload))
+			_present_auditory(_as_dict(payload), phase)
 		"rapid_tracking":
 			_present_rapid_tracking(_as_dict(payload))
 		"spatial_integration":
@@ -141,12 +200,209 @@ func _handle_message(message: Dictionary) -> void:
 
 func _apply_window_mode(mode_value: String) -> void:
 	var token := mode_value.strip_edges().to_lower()
+	if token == "" or token == last_requested_window_mode:
+		return
+	last_requested_window_mode = token
 	if token == "fullscreen" or token == "borderless":
 		DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_FULLSCREEN)
 	elif token == "maximized":
 		DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_MAXIMIZED)
 	elif token == "windowed":
 		DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_WINDOWED)
+	last_reported_window_mode = _current_window_mode_token()
+
+
+func _current_window_mode_token() -> String:
+	var mode := DisplayServer.window_get_mode()
+	if mode == DisplayServer.WINDOW_MODE_FULLSCREEN or mode == DisplayServer.WINDOW_MODE_EXCLUSIVE_FULLSCREEN:
+		return "fullscreen"
+	if mode == DisplayServer.WINDOW_MODE_MAXIMIZED:
+		return "maximized"
+	return "windowed"
+
+
+func _report_window_mode_if_changed() -> void:
+	var token := _current_window_mode_token()
+	if token == last_reported_window_mode:
+		return
+	last_reported_window_mode = token
+	last_requested_window_mode = token
+	_send_control("set_window_mode", {"window_mode": token})
+
+
+func _send_control(command: String, extra: Dictionary = {}) -> void:
+	if control_port <= 0:
+		return
+	var message := {
+		"schema": CONTROL_SCHEMA_VERSION,
+		"session_id": session_id,
+		"command": command,
+	}
+	for key in extra.keys():
+		message[key] = extra[key]
+	var text := JSON.stringify(message)
+	control_udp.put_packet(text.to_utf8_buffer())
+
+
+func _toggle_window_mode_from_godot() -> void:
+	var next_mode := "windowed" if _current_window_mode_token() == "fullscreen" else "fullscreen"
+	_apply_window_mode(next_mode)
+	_send_control("set_window_mode", {"window_mode": next_mode})
+
+
+func _menu_active() -> bool:
+	return bool(menu_state.get("active", false))
+
+
+func _rebuild_menu_overlay() -> void:
+	if menu_vbox == null:
+		return
+	for child in menu_vbox.get_children():
+		child.queue_free()
+	if not _menu_active():
+		menu_panel.visible = false
+		return
+	menu_panel.visible = true
+	var title := Label.new()
+	title.text = str(menu_state.get("title", "Paused"))
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.add_theme_font_size_override("font_size", 28)
+	menu_vbox.add_child(title)
+
+	var subtitle := Label.new()
+	subtitle.text = str(menu_state.get("subtitle", ""))
+	subtitle.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	subtitle.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	subtitle.add_theme_font_size_override("font_size", 14)
+	menu_vbox.add_child(subtitle)
+
+	var mode := str(menu_state.get("mode", "menu"))
+	var rows = menu_state.get("rows", [])
+	var selected := int(menu_state.get("selected", 0))
+	if typeof(rows) == TYPE_ARRAY:
+		for i in range(rows.size()):
+			var row := _as_dict(rows[i])
+			if mode == "settings":
+				_add_settings_row(row, i == selected)
+			else:
+				_add_action_row(row, i == selected)
+
+	var quick_row := HBoxContainer.new()
+	quick_row.add_theme_constant_override("separation", 8)
+	menu_vbox.add_child(quick_row)
+	var back_button := Button.new()
+	back_button.text = "Back to Tests"
+	back_button.pressed.connect(Callable(self, "_on_back_to_tests_pressed"))
+	quick_row.add_child(back_button)
+	var window_button := Button.new()
+	window_button.text = "Windowed" if _current_window_mode_token() == "fullscreen" else "Fullscreen"
+	window_button.pressed.connect(Callable(self, "_on_window_mode_pressed"))
+	quick_row.add_child(window_button)
+
+
+func _add_action_row(row: Dictionary, selected: bool) -> void:
+	var action := str(row.get("key", ""))
+	var label := str(row.get("label", action))
+	var button := Button.new()
+	button.text = ("> " if selected else "  ") + label
+	button.alignment = HORIZONTAL_ALIGNMENT_LEFT
+	button.pressed.connect(Callable(self, "_on_action_pressed").bind(action))
+	menu_vbox.add_child(button)
+
+
+func _add_settings_row(row: Dictionary, selected: bool) -> void:
+	var key := str(row.get("key", ""))
+	var label := str(row.get("label", key))
+	var value := str(row.get("value", ""))
+	var adjustable := bool(row.get("adjustable", false))
+	var line := HBoxContainer.new()
+	line.add_theme_constant_override("separation", 6)
+	menu_vbox.add_child(line)
+	if adjustable:
+		var dec := Button.new()
+		dec.text = "<"
+		dec.custom_minimum_size = Vector2(36, 0)
+		dec.pressed.connect(Callable(self, "_on_adjust_setting_pressed").bind(key, -1))
+		line.add_child(dec)
+	var button := Button.new()
+	button.text = ("> " if selected else "  ") + label + ("  " + value if value != "" else "")
+	button.alignment = HORIZONTAL_ALIGNMENT_LEFT
+	button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	button.pressed.connect(Callable(self, "_on_setting_pressed").bind(key))
+	line.add_child(button)
+	if adjustable:
+		var inc := Button.new()
+		inc.text = ">"
+		inc.custom_minimum_size = Vector2(36, 0)
+		inc.pressed.connect(Callable(self, "_on_adjust_setting_pressed").bind(key, 1))
+		line.add_child(inc)
+
+
+func _on_action_pressed(action: String) -> void:
+	_send_control("activate_action", {"action": action})
+
+
+func _on_setting_pressed(key: String) -> void:
+	_send_control("activate_setting", {"key": key})
+
+
+func _on_adjust_setting_pressed(key: String, direction: int) -> void:
+	_send_control("adjust_setting", {"key": key, "direction": direction})
+
+
+func _on_back_to_tests_pressed() -> void:
+	_send_control("back_to_tests")
+
+
+func _on_window_mode_pressed() -> void:
+	_toggle_window_mode_from_godot()
+
+
+func _unhandled_input(event: InputEvent) -> void:
+	if not (event is InputEventKey):
+		return
+	var key_event := event as InputEventKey
+	if not key_event.pressed or key_event.echo:
+		return
+	var key := key_event.keycode
+	if key == KEY_F11 or ((key == KEY_ENTER or key == KEY_KP_PERIOD) and (key_event.alt_pressed or key_event.meta_pressed)):
+		_toggle_window_mode_from_godot()
+		get_viewport().set_input_as_handled()
+		return
+	if key == KEY_ESCAPE:
+		_send_control("menu_back" if _menu_active() else "pause_toggle")
+		get_viewport().set_input_as_handled()
+		return
+	if key == KEY_B and _menu_active():
+		_send_control("back_to_tests")
+		get_viewport().set_input_as_handled()
+		return
+	if key == KEY_KP_ENTER:
+		get_viewport().set_input_as_handled()
+		return
+	if not _menu_active() and auditory_runtime != null:
+		if auditory_runtime.handle_key(key_event):
+			get_viewport().set_input_as_handled()
+			return
+	if not _menu_active() and godot_owned_runtime != null:
+		if godot_owned_runtime.handle_key(key_event):
+			get_viewport().set_input_as_handled()
+			return
+	if not _menu_active():
+		return
+	if key == KEY_UP or key == KEY_W:
+		_send_control("menu_up")
+	elif key == KEY_DOWN or key == KEY_S:
+		_send_control("menu_down")
+	elif key == KEY_LEFT or key == KEY_A:
+		_send_control("menu_left")
+	elif key == KEY_RIGHT or key == KEY_D:
+		_send_control("menu_right")
+	elif key == KEY_ENTER or key == KEY_KP_PERIOD or key == KEY_SPACE:
+		_send_control("menu_select")
+	else:
+		return
+	get_viewport().set_input_as_handled()
 
 
 func _as_dict(value) -> Dictionary:
@@ -155,9 +411,30 @@ func _as_dict(value) -> Dictionary:
 	return {}
 
 
+func _stop_auditory_runtime() -> void:
+	if auditory_runtime == null:
+		return
+	auditory_runtime.queue_free()
+	auditory_runtime = null
+
+
+func _stop_godot_owned_runtime() -> void:
+	if godot_owned_runtime == null:
+		return
+	godot_owned_runtime.queue_free()
+	godot_owned_runtime = null
+
+
+func _stop_all_runtimes() -> void:
+	_stop_auditory_runtime()
+	_stop_godot_owned_runtime()
+
+
 func _clear_dynamic() -> void:
 	for child in dynamic_root.get_children():
 		child.queue_free()
+	auditory_runtime = null
+	godot_owned_runtime = null
 
 
 func _present_idle() -> void:
@@ -169,44 +446,94 @@ func _present_idle() -> void:
 		_make_box("GridLineZ", Vector3(0.0, 0.035, -float(z) * 1.2), Vector3(9.0, 0.018, 0.018), LINE_COLOR)
 
 
-func _present_auditory(payload: Dictionary) -> void:
-	_set_camera(Vector3(0.0, 1.7, 7.4), Vector3(0.0, 0.9, -5.8))
-	_make_floor(8.0, 18.0)
-	_make_box("TunnelBackWall", Vector3(0.0, 1.0, -10.8), Vector3(3.1, 1.05, 0.035), Color(0.06, 0.11, 0.20, 1.0))
-	_make_box("TubeLeft", Vector3(-3.0, 1.0, -4.8), Vector3(0.08, 1.0, 8.5), Color(0.18, 0.32, 0.39, 1.0))
-	_make_box("TubeRight", Vector3(3.0, 1.0, -4.8), Vector3(0.08, 1.0, 8.5), Color(0.18, 0.32, 0.39, 1.0))
-	for i in range(8):
-		var z := -float(i) * 1.35 - 0.8
-		_make_box("TubeRibTop", Vector3(0.0, 2.03, z), Vector3(3.05, 0.04, 0.04), Color(0.36, 0.52, 0.58, 1.0))
-		_make_box("TubeRibFloor", Vector3(0.0, 0.04, z), Vector3(3.05, 0.025, 0.035), Color(0.27, 0.42, 0.46, 1.0))
-		_make_box("TubeRibLeft", Vector3(-2.96, 1.0, z), Vector3(0.03, 1.0, 0.035), Color(0.30, 0.48, 0.54, 1.0))
-		_make_box("TubeRibRight", Vector3(2.96, 1.0, z), Vector3(0.03, 1.0, 0.035), Color(0.30, 0.48, 0.54, 1.0))
-	for i in range(12):
-		var z_swirl := -0.9 - float(i) * 0.82
-		var half := 2.4 - float(i % 4) * 0.15
-		var tint := Color(0.08 + float(i % 3) * 0.02, 0.17, 0.31 + float(i % 4) * 0.03, 0.65)
-		_make_box("VortexH", Vector3(0.0, 1.0, z_swirl), Vector3(half, 0.012, 0.012), tint, Vector3(0.0, 0.0, float(i) * 16.0))
-		_make_box("VortexV", Vector3(0.0, 1.0, z_swirl), Vector3(0.012, half * 0.38, 0.012), tint, Vector3(0.0, 0.0, float(i) * 16.0))
-	_make_box("CrosshairH", Vector3(0.0, 1.0, -1.0), Vector3(2.85, 0.01, 0.012), Color(0.86, 0.14, 0.18, 1.0))
-	_make_box("CrosshairV", Vector3(0.0, 1.0, -1.0), Vector3(0.012, 0.96, 0.012), Color(0.86, 0.14, 0.18, 1.0))
+func _present_auditory(payload: Dictionary, phase: String = "") -> void:
+	var runtime_spec := _as_dict(payload.get("godot_runtime", {}))
+	if runtime_spec.size() > 0 and str(runtime_spec.get("authority", "")) == "godot":
+		if auditory_runtime == null:
+			_clear_dynamic()
+			auditory_runtime = AuditoryRuntime.new()
+			auditory_runtime.name = "AuditoryCapacityRuntime"
+			dynamic_root.add_child(auditory_runtime)
+		runtime_spec["phase"] = str(runtime_spec.get("phase", phase))
+		auditory_runtime.start(runtime_spec, Callable(self, "_send_control"))
+		return
+	_stop_auditory_runtime()
+	_clear_dynamic()
+	var tunnel := _as_dict(payload.get("tunnel", {}))
+	var camera_payload := _as_dict(tunnel.get("camera", {}))
+	if camera_payload.size() > 0:
+		_set_camera(
+			_vec3(camera_payload.get("position", {}), Vector3(0.0, 2.0, 5.8)),
+			_vec3(camera_payload.get("target", {}), Vector3(0.0, 1.1, -6.0))
+		)
+	else:
+		_set_camera(Vector3(0.0, 1.7, 7.4), Vector3(0.0, 0.9, -5.8))
+	_make_floor(10.0, 24.0)
+	_draw_auditory_tunnel(tunnel)
 
 	var ball := _as_dict(payload.get("ball", {}))
-	var ball_x := _float(ball.get("x", 0.0)) * 2.5
-	var ball_y := 1.0 + (_float(ball.get("y", 0.0)) * 1.2)
-	var ball_z := -1.15 - (_float(ball.get("forward_norm", 0.0)) * 3.0)
-	_make_sphere("Ball", Vector3(ball_x, ball_y, ball_z), 0.35, _color_by_name(str(ball.get("color", "white"))))
+	var ball_pose := _as_dict(ball.get("pose", {}))
+	_draw_auditory_crosshair(ball_pose)
+	var fallback_ball := Vector3(_float(ball.get("x", 0.0)) * 2.5, 1.0 + (_float(ball.get("y", 0.0)) * 1.2), -1.15)
+	var ball_pos := _vec3(ball.get("position", {}), fallback_ball)
+	var ball_color := _color_by_name(str(ball.get("color", "white")))
+	if _float(ball.get("contact_ratio", 0.0)) >= 1.0:
+		ball_color = RED_COLOR.lightened(0.18)
+	_make_sphere("Ball", ball_pos, _float(ball.get("visual_radius", 0.32)), ball_color)
 
 	var gates = payload.get("gates", [])
 	if typeof(gates) == TYPE_ARRAY:
 		for gate in gates:
 			var gate_dict := _as_dict(gate)
-			var gx := _float(gate_dict.get("x_norm", 0.0)) * 1.35
-			var gy := 1.0 + (_float(gate_dict.get("y_norm", 0.0)) * 1.0)
-			var gz := -3.0 - (_float(gate_dict.get("world_distance", 5.0)) * 0.18)
-			var color := _color_by_name(str(gate_dict.get("color", "blue")))
-			if _float(gate_dict.get("flash_strength", 0.0)) > 0.05:
-				color = _color_by_name(str(gate_dict.get("flash_color", "white")))
-			_make_gate(Vector3(gx, gy, gz), color, str(gate_dict.get("shape", "circle")))
+			_make_auditory_gate(gate_dict)
+
+
+func _present_godot_owned(kind: String, spec: Dictionary, phase: String = "") -> void:
+	if kind == "auditory_capacity":
+		_stop_godot_owned_runtime()
+		if auditory_runtime == null:
+			_clear_dynamic()
+			auditory_runtime = AuditoryRuntime.new()
+			auditory_runtime.name = "AuditoryCapacityRuntime"
+			dynamic_root.add_child(auditory_runtime)
+		spec["phase"] = str(spec.get("phase", phase))
+		auditory_runtime.start(spec, Callable(self, "_send_control"))
+		return
+	_stop_auditory_runtime()
+	if kind == "rapid_tracking":
+		if godot_owned_runtime != null and godot_owned_runtime.name != "RapidTrackingRuntime":
+			_stop_godot_owned_runtime()
+		if godot_owned_runtime == null:
+			_clear_dynamic()
+			godot_owned_runtime = RapidTrackingRuntime.new()
+			godot_owned_runtime.name = "RapidTrackingRuntime"
+			dynamic_root.add_child(godot_owned_runtime)
+		spec["kind"] = kind
+		spec["phase"] = str(spec.get("phase", phase))
+		godot_owned_runtime.start(spec, Callable(self, "_send_control"))
+		return
+	if kind == "spatial_integration":
+		if godot_owned_runtime != null and godot_owned_runtime.name != "SpatialIntegrationRuntime":
+			_stop_godot_owned_runtime()
+		if godot_owned_runtime == null:
+			_clear_dynamic()
+			godot_owned_runtime = SpatialIntegrationRuntime.new()
+			godot_owned_runtime.name = "SpatialIntegrationRuntime"
+			dynamic_root.add_child(godot_owned_runtime)
+		spec["kind"] = kind
+		spec["phase"] = str(spec.get("phase", phase))
+		godot_owned_runtime.start(spec, Callable(self, "_send_control"))
+		return
+	if godot_owned_runtime != null and godot_owned_runtime.name in ["RapidTrackingRuntime", "SpatialIntegrationRuntime"]:
+		_stop_godot_owned_runtime()
+	if godot_owned_runtime == null:
+		_clear_dynamic()
+		godot_owned_runtime = GodotOwnedRuntime.new()
+		godot_owned_runtime.name = "GodotOwnedRuntime"
+		dynamic_root.add_child(godot_owned_runtime)
+	spec["kind"] = kind
+	spec["phase"] = str(spec.get("phase", phase))
+	godot_owned_runtime.start(spec, Callable(self, "_send_control"))
 
 
 func _present_rapid_tracking(payload: Dictionary) -> void:
@@ -523,13 +850,101 @@ func _draw_waypoints(points, color: Color) -> void:
 		have_previous = true
 
 
-func _make_gate(pos: Vector3, color: Color, shape: String) -> void:
-	_make_box("GateTop", pos + Vector3(0.0, 0.58, 0.0), Vector3(0.82, 0.05, 0.05), color)
-	_make_box("GateBottom", pos + Vector3(0.0, -0.58, 0.0), Vector3(0.82, 0.05, 0.05), color)
-	_make_box("GateLeft", pos + Vector3(-0.82, 0.0, 0.0), Vector3(0.05, 0.58, 0.05), color)
-	_make_box("GateRight", pos + Vector3(0.82, 0.0, 0.0), Vector3(0.05, 0.58, 0.05), color)
-	if shape.to_lower() == "triangle":
-		_make_box("GateMarker", pos + Vector3(0.0, 0.0, 0.02), Vector3(0.18, 0.18, 0.05), AMBER_COLOR)
+func _draw_auditory_tunnel(tunnel: Dictionary) -> void:
+	var samples = tunnel.get("samples", [])
+	if typeof(samples) != TYPE_ARRAY or samples.size() < 2:
+		_make_box("TunnelBackWall", Vector3(0.0, 1.0, -10.8), Vector3(3.1, 1.05, 0.035), Color(0.06, 0.11, 0.20, 1.0))
+		_make_box("TubeLeft", Vector3(-3.0, 1.0, -4.8), Vector3(0.08, 1.0, 8.5), Color(0.18, 0.32, 0.39, 1.0))
+		_make_box("TubeRight", Vector3(3.0, 1.0, -4.8), Vector3(0.08, 1.0, 8.5), Color(0.18, 0.32, 0.39, 1.0))
+		return
+	var rx: float = maxf(0.25, _float(tunnel.get("inner_rx", 0.94)))
+	var ry: float = maxf(0.22, _float(tunnel.get("inner_rz", 0.68)))
+	var rail_angles := [0.0, PI * 0.5, PI, PI * 1.5]
+	for i in range(samples.size() - 1):
+		var a := _as_dict(samples[i])
+		var b := _as_dict(samples[i + 1])
+		for angle in rail_angles:
+			var p0 := _auditory_ring_point(a, rx, ry, float(angle))
+			var p1 := _auditory_ring_point(b, rx, ry, float(angle))
+			_make_segment(p0, p1, Color(0.15, 0.33, 0.58, 0.72), 0.022)
+	for i in range(samples.size()):
+		if i % 2 != 0 and i != samples.size() - 1:
+			continue
+		var sample := _as_dict(samples[i])
+		var depth: float = clampf(_float(sample.get("depth_norm", 0.0)), -0.2, 1.0)
+		var tint := Color(0.27 + (0.14 * (1.0 - depth)), 0.52, 0.69 + (0.12 * (1.0 - depth)), 0.78)
+		_draw_auditory_ring(sample, rx, ry, tint, 0.028)
+
+
+func _draw_auditory_ring(sample: Dictionary, rx: float, ry: float, color: Color, width: float) -> void:
+	var segments := 18
+	var previous := _auditory_ring_point(sample, rx, ry, 0.0)
+	for idx in range(1, segments + 1):
+		var angle := (float(idx) / float(segments)) * TAU
+		var current := _auditory_ring_point(sample, rx, ry, angle)
+		_make_segment(previous, current, color, width)
+		previous = current
+
+
+func _auditory_ring_point(sample: Dictionary, rx: float, ry: float, angle: float) -> Vector3:
+	var center := _vec3(sample.get("pos", {}), Vector3.ZERO)
+	var right := _vec3(sample.get("right", {}), Vector3.RIGHT).normalized()
+	var up := _vec3(sample.get("up", {}), Vector3.UP).normalized()
+	return center + (right * cos(angle) * rx) + (up * sin(angle) * ry)
+
+
+func _draw_auditory_crosshair(pose: Dictionary) -> void:
+	if pose.size() <= 0:
+		return
+	var center := _vec3(pose.get("pos", {}), Vector3(0.0, 1.1, 0.0))
+	var right := _vec3(pose.get("right", {}), Vector3.RIGHT).normalized()
+	var up := _vec3(pose.get("up", {}), Vector3.UP).normalized()
+	_make_segment(center - (right * 0.95), center + (right * 0.95), Color(0.95, 0.16, 0.18, 0.82), 0.014)
+	_make_segment(center - (up * 0.62), center + (up * 0.62), Color(0.95, 0.16, 0.18, 0.82), 0.014)
+
+
+func _make_auditory_gate(gate: Dictionary) -> void:
+	var pose := _as_dict(gate.get("pose", {}))
+	var pos := _vec3(gate.get("position", {}), Vector3(_float(gate.get("x_norm", 0.0)) * 1.35, 1.0 + (_float(gate.get("y_norm", 0.0)) * 1.0), -3.0))
+	var right := _vec3(pose.get("right", {}), Vector3.RIGHT).normalized()
+	var up := _vec3(pose.get("up", {}), Vector3.UP).normalized()
+	var color := _color_by_name(str(gate.get("color", "blue")))
+	if _float(gate.get("flash_strength", 0.0)) > 0.05:
+		color = _color_by_name(str(gate.get("flash_color", "white")))
+	var radius: float = maxf(0.18, _float(gate.get("aperture_radius", 0.42)))
+	var shape := str(gate.get("shape", "circle")).to_lower()
+	if shape == "circle":
+		_draw_auditory_circle_gate(pos, right, up, radius, color)
+	elif shape == "triangle":
+		var points := []
+		for p in AUDITORY_TRIANGLE_POINTS:
+			points.append(pos + (right * p.x * radius * 0.94) + (up * p.y * radius * 0.94))
+		_draw_auditory_poly_gate(points, color, 0.045)
+	else:
+		var points := [
+			pos - (right * radius) - (up * radius),
+			pos + (right * radius) - (up * radius),
+			pos + (right * radius) + (up * radius),
+			pos - (right * radius) + (up * radius),
+		]
+		_draw_auditory_poly_gate(points, color, 0.045)
+
+
+func _draw_auditory_circle_gate(pos: Vector3, right: Vector3, up: Vector3, radius: float, color: Color) -> void:
+	var segments := 24
+	var previous := pos + (right * radius)
+	for idx in range(1, segments + 1):
+		var angle := (float(idx) / float(segments)) * TAU
+		var current := pos + (right * cos(angle) * radius) + (up * sin(angle) * radius)
+		_make_segment(previous, current, color, 0.045)
+		previous = current
+
+
+func _draw_auditory_poly_gate(points: Array, color: Color, width: float) -> void:
+	if points.size() < 2:
+		return
+	for idx in range(points.size()):
+		_make_segment(points[idx], points[(idx + 1) % points.size()], color, width)
 
 
 func _make_aircraft(name_value: String, pos: Vector3, color: Color, hpr: Vector3 = Vector3.ZERO, size: float = 1.0) -> Node3D:
@@ -588,13 +1003,15 @@ func _make_sphere(name_value: String, pos: Vector3, radius: float, color: Color)
 
 
 func _material(color: Color) -> StandardMaterial3D:
-	var key := color.to_html(false)
+	var key := color.to_html(true)
 	if material_cache.has(key):
 		return material_cache[key]
 	var mat := StandardMaterial3D.new()
 	mat.albedo_color = color
 	mat.roughness = 1.0
 	mat.metallic = 0.0
+	if color.a < 0.999:
+		mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	material_cache[key] = mat
 	return mat
 
@@ -606,6 +1023,17 @@ func _set_camera(position_value: Vector3, target: Vector3) -> void:
 
 func _grid_to_world(point: Dictionary, cols: int, rows: int) -> Vector3:
 	return Vector3(float(point.get("x", 0)) - (float(cols) - 1.0) * 0.5, 0.0, -(float(point.get("y", 0)) - (float(rows) - 1.0) * 0.5))
+
+
+func _vec3(value, fallback: Vector3 = Vector3.ZERO) -> Vector3:
+	if typeof(value) != TYPE_DICTIONARY:
+		return fallback
+	var item := _as_dict(value)
+	return Vector3(
+		_float(item.get("x", fallback.x)),
+		_float(item.get("y", fallback.y)),
+		_float(item.get("z", fallback.z))
+	)
 
 
 func _world_position(point: Dictionary, scale_x: float, scale_y: float, scale_z: float) -> Vector3:

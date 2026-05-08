@@ -20,6 +20,7 @@ from .colours_letters_numbers import (
     build_colours_letters_numbers_test,
 )
 from .digit_recognition import build_digit_recognition_test
+from .godot_owned import build_godot_owned_test, spatial_integration_godot_config
 from .guide_skill_catalog import OFFICIAL_GUIDE_TESTS
 from .instrument_comprehension import (
     InstrumentComprehensionConfig,
@@ -1085,14 +1086,16 @@ def _build_benchmark_probe_engine(
             ),
         )
     if probe_code == "rapid_tracking":
-        return build_rapid_tracking_test(
+        return build_godot_owned_test(
             clock=clock,
             seed=seed,
             difficulty=difficulty,
-            config=RapidTrackingConfig(
-                practice_duration_s=0.0,
-                scored_duration_s=duration_s,
-            ),
+            kind="rapid_tracking",
+            test_code=probe_code,
+            title="Rapid Tracking",
+            duration_s=duration_s,
+            mode="benchmark",
+            config={"benchmark": True},
         )
     if probe_code == "airborne_numerical":
         return build_airborne_numerical_test(
@@ -1113,28 +1116,32 @@ def _build_benchmark_probe_engine(
             ),
         )
     if probe_code == "auditory_capacity":
-        return build_auditory_capacity_test(
+        return build_godot_owned_test(
             clock=clock,
             seed=seed,
             difficulty=difficulty,
-            config=AuditoryCapacityConfig(
-                seed=seed,
-                practice_duration_s=0.0,
-                scored_duration_s=duration_s,
-                practice_enabled=False,
-            ),
+            kind="auditory_capacity",
+            test_code=probe_code,
+            title="Auditory Capacity",
+            duration_s=duration_s,
+            mode="benchmark",
+            config={"benchmark": True},
         )
     if probe_code == "spatial_integration":
-        half = duration_s / 2.0
-        return build_spatial_integration_test(
+        return build_godot_owned_test(
             clock=clock,
             seed=seed,
             difficulty=difficulty,
-            config=SpatialIntegrationConfig(
-                practice_scenes_per_part=0,
-                static_scored_duration_s=half,
-                aircraft_scored_duration_s=half,
-                skip_practice_for_testing=True,
+            kind="spatial_integration",
+            test_code=probe_code,
+            title="Spatial Integration",
+            duration_s=duration_s,
+            mode="benchmark",
+            config=spatial_integration_godot_config(
+                test_code=probe_code,
+                mode="benchmark",
+                duration_s=duration_s,
+                extra={"benchmark": True},
             ),
         )
     if probe_code == "table_reading":
@@ -1158,14 +1165,16 @@ def _build_benchmark_probe_engine(
             ),
         )
     if probe_code == "trace_test_1":
-        return build_trace_test_1_test(
+        return build_godot_owned_test(
             clock=clock,
             seed=seed,
             difficulty=difficulty,
-            config=TraceTest1Config(
-                scored_duration_s=duration_s,
-                practice_questions=0,
-            ),
+            kind="trace_test_1",
+            test_code=probe_code,
+            title="Trace Test 1",
+            duration_s=duration_s,
+            mode="benchmark",
+            config={"benchmark": True},
         )
     if probe_code == "system_logic":
         return build_system_logic_test(
@@ -1190,14 +1199,16 @@ def _build_benchmark_probe_engine(
             ),
         )
     if probe_code == "trace_test_2":
-        return build_trace_test_2_test(
+        return build_godot_owned_test(
             clock=clock,
             seed=seed,
             difficulty=difficulty,
-            config=TraceTest2Config(
-                scored_duration_s=duration_s,
-                practice_questions=0,
-            ),
+            kind="trace_test_2",
+            test_code=probe_code,
+            title="Trace Test 2",
+            duration_s=duration_s,
+            mode="benchmark",
+            config={"benchmark": True},
         )
     raise KeyError(f"unsupported benchmark probe: {probe_code}")
 

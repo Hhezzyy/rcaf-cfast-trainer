@@ -121,14 +121,15 @@ _PART_ORDER = (
     InstrumentComprehensionTrialKind.INSTRUMENTS_TO_DESCRIPTION,
 )
 
+_CANONICAL_AIRCRAFT_VIEW_PRESET = InstrumentAircraftViewPreset.FRONT_LEFT
 _PART1_VIEW_PRESETS: tuple[InstrumentAircraftViewPreset, ...] = (
-    InstrumentAircraftViewPreset.FRONT_LEFT,
-    InstrumentAircraftViewPreset.FRONT_RIGHT,
-    InstrumentAircraftViewPreset.PROFILE_LEFT,
-    InstrumentAircraftViewPreset.PROFILE_RIGHT,
-    InstrumentAircraftViewPreset.TOP_DOWN,
+    _CANONICAL_AIRCRAFT_VIEW_PRESET,
+    _CANONICAL_AIRCRAFT_VIEW_PRESET,
+    _CANONICAL_AIRCRAFT_VIEW_PRESET,
+    _CANONICAL_AIRCRAFT_VIEW_PRESET,
+    _CANONICAL_AIRCRAFT_VIEW_PRESET,
 )
-_PART2_PROMPT_VIEW_PRESET = InstrumentAircraftViewPreset.FRONT_LEFT
+_PART2_PROMPT_VIEW_PRESET = _CANONICAL_AIRCRAFT_VIEW_PRESET
 
 
 def instrument_aircraft_view_preset_for_code(code: int) -> InstrumentAircraftViewPreset:

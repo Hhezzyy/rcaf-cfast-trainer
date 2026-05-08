@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -13,13 +14,13 @@ from .auditory_capacity_motion import (
     auditory_gate_x_norm_from_world_distance,
     auditory_travel_speed_from_gate_speed,
     auditory_tunnel_wall_bound,
-    auditory_wall_contact_ratio,
     auditory_wall_collision_active,
+    auditory_wall_contact_ratio,
 )
 from .auditory_capacity_view import (
+    AUDITORY_BALL_ANCHOR_DISTANCE,
     BALL_FORWARD_IDLE_NORM,
     GATE_DEPTH_SLOTS_NORM,
-    AUDITORY_BALL_ANCHOR_DISTANCE,
 )
 from .clock import Clock
 from .cognitive_core import AttemptSummary, Phase, SeededRng, TestSnapshot, clamp01
@@ -49,14 +50,15 @@ class AuditoryCapacityConfig:
     tick_hz: float = 120.0
 
     control_gain: float = 1.24
-    disturbance_gain: float = 0.42
-    tube_half_width: float = 0.82
-    tube_half_height: float = 0.60
-    tunnel_curvature_intensity: float = 0.56
+    disturbance_gain: float = 0.52
+    tube_half_width: float = 0.72
+    tube_half_height: float = 0.52
+    tunnel_curvature_intensity: float = 0.88
+    tunnel_twist_intensity: float = 0.68
 
-    gate_speed_norm_per_s: float = 0.30
-    gate_spawn_rate: float = 0.24
-    gate_interval_s: float = 4.2
+    gate_speed_norm_per_s: float = 0.33
+    gate_spawn_rate: float = 0.26
+    gate_interval_s: float = 3.85
 
     command_rate: float = 0.26
     distractor_rate: float = 0.34
@@ -122,7 +124,7 @@ class AuditoryCapacityDifficultyProfile:
             digit_sequence_min_len=int(digit_min),
             digit_sequence_max_len=int(digit_max),
             callsign_count=4 if level >= 8 else 3,
-            gate_interval_s=4.2 - (2.6 * overload_ramp),
+            gate_interval_s=3.85 - (2.35 * overload_ramp),
             background_noise_peak=0.26 + (0.22 * overload_ramp),
             background_distortion_peak=0.015 + (0.045 * overload_ramp),
             instructor_noise_level=0.06 + (0.42 * overload_ramp),
@@ -294,6 +296,9 @@ class AuditoryCapacityPayload:
     next_beep_in_s: float | None
     next_color_in_s: float | None
     next_sequence_in_s: float | None
+    tunnel_curvature_intensity: float = 0.0
+    tunnel_twist_intensity: float = 0.0
+    difficulty: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -414,7 +419,7 @@ class AuditoryCapacityScenarioGenerator:
         "SABER",
         "NOVA",
     )
-    COLORS: tuple[str, ...] = ("RED", "GREEN", "BLUE", "YELLOW")
+    COLORS: tuple[str, ...] = ("RED", "BLUE", "YELLOW")
     SHAPES: tuple[str, ...] = ("CIRCLE", "TRIANGLE", "SQUARE")
     SPEAKERS: tuple[str, ...] = ("lead", "wing", "ops", "aux")
     _GATE_LANES: tuple[float, ...] = (-0.54, -0.36, -0.18, 0.0, 0.18, 0.36, 0.54)
@@ -763,7 +768,7 @@ def project_inside_tube(
 class AuditoryCapacityEngine:
     _MAX_UPDATE_DT_S = 0.50
     _CIRCLE_GATE_CONTROL_SCALE = 0.78
-    _BALL_VISUAL_SUCCESS_COLOR = "GREEN"
+    _BALL_VISUAL_SUCCESS_COLOR = "WHITE"
     _BALL_VISUAL_ERROR_COLOR = "RED"
     _BALL_VISUAL_IDLE_COLOR = "WHITE"
     _GATE_VISUAL_PASS_COLOR = "WHITE"
@@ -828,6 +833,10 @@ class AuditoryCapacityEngine:
             raise ValueError("drift_relax_start_ratio must be in [0.0, 0.95]")
         if not (0.0 < cfg.min_drift_scale <= 1.0):
             raise ValueError("min_drift_scale must be in (0.0, 1.0]")
+        if cfg.tunnel_curvature_intensity < 0.0:
+            raise ValueError("tunnel_curvature_intensity must be >= 0")
+        if cfg.tunnel_twist_intensity < 0.0:
+            raise ValueError("tunnel_twist_intensity must be >= 0")
 
         self._clock = clock
         self._seed = int(seed)
@@ -1126,7 +1135,7 @@ class AuditoryCapacityEngine:
             phase=self._phase,
             prompt=self.current_prompt(),
             input_hint=(
-                "Q/W/E/R change colour  keypad 0-9 sets number  "
+                "Q/E/R change colour  keypad 0-9 sets number  "
                 "digits+Enter submits recall  Space or the configured trigger binding answers the beep  "
                 "WASD/arrows or HOTAS fly the ball"
             ),
@@ -1146,7 +1155,7 @@ class AuditoryCapacityEngine:
                     "Track the ball through the tunnel while following call-sign filtered instructions.",
                     f"- Your call signs for this run: {callsign_roster}",
                     "- Follow instructions addressed to any of your assigned call signs",
-                    "- Q/W/E/R changes colour and keypad 0-9 changes the ball number",
+                    "- Q/E/R changes colour and keypad 0-9 changes the ball number",
                     (
                         f"- When you hear a {self._instruction_digit_range_label()} sequence, "
                         "remember it and type it with Enter"
@@ -1271,6 +1280,126 @@ class AuditoryCapacityEngine:
             "auditory.digit_recall_attempts": str(int(self._digit_recall_attempts)),
             "auditory.digit_recall_accuracy": f"{self._digit_recall_accuracy():.6f}",
         }
+
+    def apply_godot_authoritative_message(self, message: Mapping[str, object]) -> None:
+        command = str(message.get("command", "")).strip().lower()
+        if command in {"complete", "progress", "error"}:
+            command = f"godot_{command}"
+        if command == "godot_complete":
+            command = "auditory_complete"
+        elif command == "godot_progress":
+            command = "auditory_progress"
+        elif command == "godot_error":
+            command = "auditory_error"
+        if command == "auditory_complete":
+            raw_result = message.get("result", message)
+            result = raw_result if isinstance(raw_result, Mapping) else message
+            self.apply_godot_authoritative_result(result)
+        elif command == "auditory_progress":
+            raw_state = message.get("progress", message.get("state", {}))
+            if isinstance(raw_state, Mapping):
+                self._apply_godot_progress_state(raw_state)
+        elif command == "auditory_error":
+            overrides = self._result_metrics_overrides()
+            overrides["auditory.godot_error"] = str(
+                message.get("detail", message.get("reason", "unknown"))
+            )
+
+    def apply_godot_authoritative_result(self, result: Mapping[str, object]) -> None:
+        metrics_raw = result.get("metrics", result)
+        metrics = metrics_raw if isinstance(metrics_raw, Mapping) else {}
+        summary_raw = result.get("summary", {})
+        summary = summary_raw if isinstance(summary_raw, Mapping) else {}
+
+        self._gate_hits = self._metric_int(metrics, "gate_hits", self._gate_hits)
+        self._gate_misses = self._metric_int(metrics, "gate_misses", self._gate_misses)
+        self._forbidden_gate_hits = self._metric_int(
+            metrics, "forbidden_gate_hits", self._forbidden_gate_hits
+        )
+        self._collisions = self._metric_int(metrics, "collisions", self._collisions)
+        self._false_alarms = self._metric_int(metrics, "false_alarms", self._false_alarms)
+        self._correct_command_executions = self._metric_int(
+            metrics, "correct_command_executions", self._correct_command_executions
+        )
+        self._false_responses_to_distractors = self._metric_int(
+            metrics,
+            "false_responses_to_distractors",
+            self._false_responses_to_distractors,
+        )
+        self._missed_valid_commands = self._metric_int(
+            metrics, "missed_valid_commands", self._missed_valid_commands
+        )
+        self._digit_recall_attempts = self._metric_int(
+            metrics, "digit_recall_attempts", self._digit_recall_attempts
+        )
+        self._digit_recall_score_total = self._metric_float(
+            metrics,
+            "digit_recall_score_total",
+            self._metric_float(metrics, "digit_recall_accuracy", self._digit_recall_accuracy())
+            * max(1, self._digit_recall_attempts),
+        )
+
+        attempted = self._metric_int(summary, "attempted", self._scored_attempted)
+        correct = self._metric_int(summary, "correct", self._scored_correct)
+        total_score = self._metric_float(summary, "total_score", self._scored_total_score)
+        max_score = self._metric_float(summary, "max_score", self._scored_max_score)
+        self._scored_attempted = max(0, attempted)
+        self._scored_correct = max(0, correct)
+        self._scored_total_score = max(0.0, total_score)
+        self._scored_max_score = max(0.0, max_score)
+
+        overrides = self._result_metrics_overrides()
+        overrides["renderer_backend"] = "godot_4"
+        overrides["auditory.authority"] = "godot"
+        for key, value in metrics.items():
+            overrides[f"auditory.godot.{key}"] = str(value)
+
+        phase_token = str(result.get("phase", self._phase.value)).strip().lower()
+        now = self._clock.now()
+        if phase_token in {"practice", "practice_done"} and self._phase is Phase.PRACTICE:
+            self._phase = Phase.PRACTICE_DONE
+            self._phase_started_at_s = now
+        elif phase_token in {"scored", "results"} or self._phase is Phase.SCORED:
+            self._phase = Phase.RESULTS
+            self._phase_started_at_s = now
+        self._last_update_at_s = now
+        self._accumulator_s = 0.0
+
+    def _apply_godot_progress_state(self, state: Mapping[str, object]) -> None:
+        if "phase_elapsed_s" in state:
+            try:
+                self._sim_elapsed_s = max(0.0, float(state["phase_elapsed_s"]))
+            except Exception:
+                pass
+        metrics = state.get("metrics", {})
+        if isinstance(metrics, Mapping):
+            self._gate_hits = self._metric_int(metrics, "gate_hits", self._gate_hits)
+            self._gate_misses = self._metric_int(metrics, "gate_misses", self._gate_misses)
+            self._collisions = self._metric_int(metrics, "collisions", self._collisions)
+
+    def _result_metrics_overrides(self) -> dict[str, str]:
+        overrides = getattr(self, "_result_metrics_overrides", None)
+        if not isinstance(overrides, dict):
+            overrides = {}
+            self._result_metrics_overrides = overrides
+        return overrides
+
+    @staticmethod
+    def _metric_int(values: Mapping[str, object], key: str, default: int) -> int:
+        try:
+            return int(values.get(key, default))
+        except Exception:
+            return int(default)
+
+    @staticmethod
+    def _metric_float(values: Mapping[str, object], key: str, default: float) -> float:
+        try:
+            value = float(values.get(key, default))
+        except Exception:
+            return float(default)
+        if not math.isfinite(value):
+            return float(default)
+        return value
 
     @classmethod
     def _normalize_segments(
@@ -1415,6 +1544,8 @@ class AuditoryCapacityEngine:
                 tunnel_inner_rz=float(_AUDITORY_TUNNEL_INNER_RZ),
                 wall_half_length=float(_AUDITORY_WALL_BOUND_HALF_LENGTH),
                 roll_deg_per_distance=float(_AUDITORY_BALL_ROLL_DEG_PER_DISTANCE),
+                tunnel_curvature_intensity=float(self._cfg.tunnel_curvature_intensity),
+                tunnel_twist_intensity=float(self._cfg.tunnel_twist_intensity),
             )
         )
 
@@ -2086,7 +2217,7 @@ class AuditoryCapacityEngine:
         lines = [
             f"Your call signs are {callsigns}. Respond only to those call signs.",
             (
-                "Use Q W E R for colour, keypad numbers for the ball, and type "
+                "Use Q E R for colour, keypad numbers for the ball, and type "
                 f"{self._instruction_digit_range_label()} sequences with Enter."
             ),
             "Press trigger or Space on the beep. Gate instructions apply to the next matching gate.",
@@ -2775,6 +2906,9 @@ class AuditoryCapacityEngine:
             next_beep_in_s=next_beep_in_s,
             next_color_in_s=self._time_until(self._next_state_command_at_s),
             next_sequence_in_s=self._time_until(self._next_digit_sequence_at_s),
+            tunnel_curvature_intensity=float(self._cfg.tunnel_curvature_intensity),
+            tunnel_twist_intensity=float(self._cfg.tunnel_twist_intensity),
+            difficulty=float(self._difficulty),
         )
 
     def _gate_interval_s(self) -> float:
@@ -2784,7 +2918,11 @@ class AuditoryCapacityEngine:
 
     def _curve_gate_bias(self) -> float:
         strength = max(0.0, float(self._cfg.tunnel_curvature_intensity))
-        return 0.10 * strength * math.sin((self._sim_elapsed_s * 0.48) + 0.70)
+        twist = max(0.0, float(self._cfg.tunnel_twist_intensity))
+        return (
+            (0.13 * strength * math.sin((self._sim_elapsed_s * 0.48) + 0.70))
+            + (0.06 * twist * math.sin((self._sim_elapsed_s * 0.31) + 1.80))
+        )
 
     def _distractor_envelope(self) -> float:
         if self._phase_duration_s <= 0.0:
@@ -2808,8 +2946,6 @@ class AuditoryCapacityEngine:
         token = str(raw).strip().upper()
         if token in ("R", "RED"):
             return "RED"
-        if token in ("W", "G", "GREEN"):
-            return "GREEN"
         if token in ("Q", "B", "BLUE"):
             return "BLUE"
         if token in ("E", "Y", "YELLOW"):

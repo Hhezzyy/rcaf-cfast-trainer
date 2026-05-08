@@ -1,5 +1,6 @@
 ; Engine configuration file.
-; CFAST keeps timing, scoring, input, persistence, and menus in Python.
+; CFAST keeps menus, launch configuration, and persistence in Python.
+; Current 3D test runtime timing, input, and scoring live in Godot.
 
 config_version=5
 
@@ -23,4 +24,3 @@ anti_aliasing/quality/msaa_2d=0
 anti_aliasing/quality/msaa_3d=0
 scaling_3d/scale=0.67
 textures/default_filters/use_nearest_mipmap_filter=true
-

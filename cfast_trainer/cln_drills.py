@@ -20,6 +20,7 @@ from .colours_letters_numbers import (
     cln_lane_key_map,
     cln_lane_key_pairs,
     cln_memory_choice_keys,
+    ensure_memory_challenge_has_target,
 )
 from .numerical_operations import (
     NumericalOperationsGenerator,
@@ -509,7 +510,9 @@ class ClnDrillEngine:
             self._secondary_math_presented_at_s = None
 
     def _start_memory_cycle(self, now: float) -> None:
-        self._memory_current = self._challenge_generator.next_memory_challenge(difficulty=self._difficulty)
+        self._memory_current = ensure_memory_challenge_has_target(
+            self._challenge_generator.next_memory_challenge(difficulty=self._difficulty)
+        )
         self._memory_cycle_started_at_s = now
         self._math_answers_since_memory_cycle = 0
         self._memory_recall_delay_s_current = self._rng.uniform(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from functools import lru_cache
 
 from .cognitive_core import clamp01
 
@@ -29,6 +30,8 @@ TUBE_PATH_POINTS: tuple[tuple[float, float, float], ...] = (
     (194.0, 0.00, 0.00),
 )
 TUBE_PATH_SPAN = float(TUBE_PATH_POINTS[-1][0])
+DEFAULT_TUBE_CURVATURE_INTENSITY = 1.0
+_PROCEDURAL_PATH_POINT_COUNT = max(12, len(TUBE_PATH_POINTS) - 1)
 
 GATE_DEPTH_SLOTS_NORM: tuple[float, ...] = (0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.88, 0.93)
 BALL_FORWARD_START_NORM = 0.14
@@ -105,23 +108,91 @@ def vec_normalize(v: Point3) -> Point3:
     return (float(v[0]) / n, float(v[1]) / n, float(v[2]) / n)
 
 
-def tube_center_at_distance(distance: float, *, span: float = TUBE_PATH_SPAN) -> tuple[float, float]:
+@lru_cache(maxsize=256)
+def _procedural_tube_path_points(
+    session_seed: int,
+    curvature_key: int,
+    span_key: int,
+) -> tuple[tuple[float, float, float], ...]:
+    path_span = max(0.001, float(span_key) / 1000.0)
+    curvature = max(0.0, min(2.0, float(curvature_key) / 1000.0))
+    if curvature <= 1e-6:
+        return tuple(
+            (path_span * (idx / float(_PROCEDURAL_PATH_POINT_COUNT)), 0.0, 0.0)
+            for idx in range(_PROCEDURAL_PATH_POINT_COUNT + 1)
+        )
+
+    seed = int(session_seed)
+    phase_x1 = _seed_unit_float(seed ^ 0x51F1A33D) * math.tau
+    phase_x2 = _seed_unit_float(seed ^ 0x6D2B79F5) * math.tau
+    phase_x3 = _seed_unit_float(seed ^ 0xA9B43C17) * math.tau
+    phase_z1 = _seed_unit_float(seed ^ 0xC2E5D47B) * math.tau
+    phase_z2 = _seed_unit_float(seed ^ 0x8F1171E3) * math.tau
+    phase_z3 = _seed_unit_float(seed ^ 0x3B9AC9D1) * math.tau
+    amp_x = (2.85 + (_seed_unit_float(seed ^ 0x92185AB3) * 1.25)) * curvature
+    amp_z = (1.12 + (_seed_unit_float(seed ^ 0x4D36F125) * 0.90)) * curvature
+
+    points: list[tuple[float, float, float]] = []
+    for idx in range(_PROCEDURAL_PATH_POINT_COUNT):
+        u = idx / float(_PROCEDURAL_PATH_POINT_COUNT)
+        theta = u * math.tau
+        x = amp_x * (
+            (math.sin(theta + phase_x1) * 0.68)
+            + (math.sin((2.0 * theta) + phase_x2) * 0.23)
+            + (math.sin((3.0 * theta) + phase_x3) * 0.09)
+        )
+        z = amp_z * (
+            (math.cos(theta + phase_z1) * 0.70)
+            + (math.sin((2.0 * theta) + phase_z2) * 0.20)
+            + (math.cos((3.0 * theta) + phase_z3) * 0.10)
+        )
+        points.append((path_span * u, float(x), float(z)))
+    first = points[0]
+    points.append((path_span, float(first[1]), float(first[2])))
+    return tuple(points)
+
+
+def _tube_path_points(
+    *,
+    span: float,
+    session_seed: int | None,
+    curvature_intensity: float,
+) -> tuple[tuple[float, float, float], ...]:
+    if session_seed is None:
+        return TUBE_PATH_POINTS
+    span_key = int(round(max(0.001, float(span)) * 1000.0))
+    curvature_key = int(round(max(0.0, float(curvature_intensity)) * 1000.0))
+    return _procedural_tube_path_points(int(session_seed), curvature_key, span_key)
+
+
+def tube_center_at_distance(
+    distance: float,
+    *,
+    span: float = TUBE_PATH_SPAN,
+    session_seed: int | None = None,
+    curvature_intensity: float = DEFAULT_TUBE_CURVATURE_INTENSITY,
+) -> tuple[float, float]:
     path_span = max(0.001, float(span))
     d = float(distance) % path_span
-    unique_count = max(1, len(TUBE_PATH_POINTS) - 1)
-    segment_idx = len(TUBE_PATH_POINTS) - 2
-    for idx in range(len(TUBE_PATH_POINTS) - 1):
-        d1, _x1, _z1 = TUBE_PATH_POINTS[idx]
-        d2, _x2, _z2 = TUBE_PATH_POINTS[idx + 1]
+    path_points = _tube_path_points(
+        span=path_span,
+        session_seed=session_seed,
+        curvature_intensity=curvature_intensity,
+    )
+    unique_count = max(1, len(path_points) - 1)
+    segment_idx = len(path_points) - 2
+    for idx in range(len(path_points) - 1):
+        d1, _x1, _z1 = path_points[idx]
+        d2, _x2, _z2 = path_points[idx + 1]
         if d <= d2:
             segment_idx = idx
             break
-    d1, x1, z1 = TUBE_PATH_POINTS[segment_idx]
-    d2, x2, z2 = TUBE_PATH_POINTS[segment_idx + 1]
-    p0 = TUBE_PATH_POINTS[(segment_idx - 1) % unique_count]
+    d1, x1, z1 = path_points[segment_idx]
+    d2, x2, z2 = path_points[segment_idx + 1]
+    p0 = path_points[(segment_idx - 1) % unique_count]
     p1 = (d1, x1, z1)
     p2 = (d2, x2, z2)
-    p3 = TUBE_PATH_POINTS[(segment_idx + 2) % unique_count]
+    p3 = path_points[(segment_idx + 2) % unique_count]
     t = 0.0 if d2 <= d1 else (d - d1) / (d2 - d1)
     return (
         catmull_rom(p0[1], p1[1], p2[1], p3[1], t),
@@ -133,12 +204,30 @@ def tube_frame(
     distance: float,
     *,
     span: float = TUBE_PATH_SPAN,
+    twist_intensity: float = 0.0,
+    session_seed: int | None = None,
+    curvature_intensity: float = DEFAULT_TUBE_CURVATURE_INTENSITY,
 ) -> tuple[Point3, Point3, Point3, Point3]:
     d = float(distance)
     eps = 0.12
-    cx, cz = tube_center_at_distance(d, span=span)
-    prev_x, prev_z = tube_center_at_distance(d - eps, span=span)
-    next_x, next_z = tube_center_at_distance(d + eps, span=span)
+    cx, cz = tube_center_at_distance(
+        d,
+        span=span,
+        session_seed=session_seed,
+        curvature_intensity=curvature_intensity,
+    )
+    prev_x, prev_z = tube_center_at_distance(
+        d - eps,
+        span=span,
+        session_seed=session_seed,
+        curvature_intensity=curvature_intensity,
+    )
+    next_x, next_z = tube_center_at_distance(
+        d + eps,
+        span=span,
+        session_seed=session_seed,
+        curvature_intensity=curvature_intensity,
+    )
     tangent = vec_normalize((next_x - prev_x, 2.0 * eps, next_z - prev_z))
     world_up = (0.0, 0.0, 1.0)
     right = vec_cross(tangent, world_up)
@@ -146,7 +235,41 @@ def tube_frame(
         right = (1.0, 0.0, 0.0)
     right = vec_normalize(right)
     up = vec_normalize(vec_cross(right, tangent))
+    twist = tube_twist_angle(
+        d,
+        intensity=twist_intensity,
+        span=span,
+        session_seed=session_seed,
+    )
+    if abs(twist) > 1e-6:
+        c = math.cos(twist)
+        s = math.sin(twist)
+        base_right = right
+        base_up = up
+        right = vec_normalize(vec_add(vec_scale(base_right, c), vec_scale(base_up, s)))
+        up = vec_normalize(vec_add(vec_scale(base_up, c), vec_scale(base_right, -s)))
     return ((cx, d, cz), tangent, right, up)
+
+
+def tube_twist_angle(
+    distance: float,
+    *,
+    intensity: float = 0.0,
+    span: float = TUBE_PATH_SPAN,
+    session_seed: int | None = None,
+) -> float:
+    strength = max(0.0, float(intensity))
+    if strength <= 1e-6:
+        return 0.0
+    d = float(distance) % max(0.001, float(span))
+    seed = 0 if session_seed is None else int(session_seed)
+    phase_slow = 0.0 if session_seed is None else _seed_unit_float(seed ^ 0x14E5B9A7) * math.tau
+    phase_fast = 0.0 if session_seed is None else _seed_unit_float(seed ^ 0x7AB3C245) * math.tau
+    phase_turn = 0.0 if session_seed is None else _seed_unit_float(seed ^ 0xDB76C831) * math.tau
+    slow = math.sin((d * 0.071) + 2.1 + phase_slow) * 0.34
+    fast = math.sin((d * 0.145) + 0.7 + phase_fast) * 0.58
+    turn = math.sin((d * 0.035) + 1.35 + phase_turn) * 0.22
+    return strength * (slow + fast + turn)
 
 
 def forward_norm_to_distance(forward_norm: float) -> float:
@@ -262,7 +385,13 @@ def gate_depth_ratio_from_distance(
     return clamp01((float(distance) - near) / span)
 
 
-def fixed_camera_pose_at_distance(ball_distance: float) -> tuple[Point3, Point3]:
+def fixed_camera_pose_at_distance(
+    ball_distance: float,
+    *,
+    session_seed: int | None = None,
+    curvature_intensity: float = DEFAULT_TUBE_CURVATURE_INTENSITY,
+    twist_intensity: float = 0.0,
+) -> tuple[Point3, Point3]:
     cam_distance = max(
         TUNNEL_CAMERA_DISTANCE,
         float(ball_distance) - TUNNEL_CAMERA_FOLLOW_BACK_DISTANCE,
@@ -271,8 +400,18 @@ def fixed_camera_pose_at_distance(ball_distance: float) -> tuple[Point3, Point3]
         cam_distance + 4.0,
         float(ball_distance) + TUNNEL_CAMERA_LOOK_AHEAD_DISTANCE,
     )
-    cam_center, _cam_tangent, _cam_right, cam_up = tube_frame(cam_distance)
-    look_center, tangent, _look_right, look_up = tube_frame(look_distance)
+    cam_center, _cam_tangent, _cam_right, cam_up = tube_frame(
+        cam_distance,
+        session_seed=session_seed,
+        curvature_intensity=curvature_intensity,
+        twist_intensity=twist_intensity,
+    )
+    look_center, tangent, _look_right, look_up = tube_frame(
+        look_distance,
+        session_seed=session_seed,
+        curvature_intensity=curvature_intensity,
+        twist_intensity=twist_intensity,
+    )
     cam_pos = vec_add(cam_center, vec_scale(cam_up, TUNNEL_CAMERA_UP_OFFSET))
     look_target = vec_add(
         look_center,
@@ -287,5 +426,13 @@ def fixed_camera_pose_at_distance(ball_distance: float) -> tuple[Point3, Point3]
 def fixed_camera_pose(
     *,
     forward_norm: float = BALL_FORWARD_IDLE_NORM,
+    session_seed: int | None = None,
+    curvature_intensity: float = DEFAULT_TUBE_CURVATURE_INTENSITY,
+    twist_intensity: float = 0.0,
 ) -> tuple[Point3, Point3]:
-    return fixed_camera_pose_at_distance(forward_norm_to_distance(forward_norm))
+    return fixed_camera_pose_at_distance(
+        forward_norm_to_distance(forward_norm),
+        session_seed=session_seed,
+        curvature_intensity=curvature_intensity,
+        twist_intensity=twist_intensity,
+    )

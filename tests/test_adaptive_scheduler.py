@@ -1887,7 +1887,7 @@ def test_adaptive_session_bootstrap_enter_routes_to_retry_factory(tmp_path) -> N
         pygame.quit()
 
 
-def test_adaptive_session_bootstrap_keypad_enter_routes_to_retry_factory(tmp_path) -> None:
+def test_adaptive_session_bootstrap_keypad_period_routes_to_retry_factory(tmp_path) -> None:
     pygame.init()
     try:
         surface = pygame.display.set_mode((960, 540))
@@ -1907,8 +1907,8 @@ def test_adaptive_session_bootstrap_keypad_enter_routes_to_retry_factory(tmp_pat
         )
         app.push(screen)
 
-        screen.handle_event(
-            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_KP_ENTER, "unicode": ""})
+        app.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_KP_PERIOD, "unicode": "."})
         )
 
         assert isinstance(app._screens[-1], BenchmarkScreen)
@@ -2013,7 +2013,7 @@ def test_adaptive_live_block_suppresses_block_overlay(monkeypatch) -> None:
         pygame.quit()
 
 
-def test_adaptive_keypad_enter_continues_after_block_results() -> None:
+def test_adaptive_keypad_period_continues_after_block_results() -> None:
     pygame.init()
     try:
         surface = pygame.display.set_mode((960, 540))
@@ -2029,13 +2029,39 @@ def test_adaptive_keypad_enter_continues_after_block_results() -> None:
         session.debug_skip_current_block()
         assert session.stage is AdaptiveStage.BLOCK_RESULTS
 
-        screen.handle_event(
-            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_KP_ENTER, "unicode": ""})
+        app.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_KP_PERIOD, "unicode": "."})
         )
 
         assert session.stage is AdaptiveStage.BLOCK
         assert session.snapshot().block_index == 2
         assert getattr(session.current_engine(), "phase", None) is Phase.INSTRUCTIONS
+    finally:
+        pygame.quit()
+
+
+def test_adaptive_keypad_enter_does_not_continue_after_block_results() -> None:
+    pygame.init()
+    try:
+        surface = pygame.display.set_mode((960, 540))
+        font = pygame.font.Font(None, 36)
+        app = App(surface=surface, font=font, app_version="test")
+        app.push(MenuScreen(app, "Main Menu", [MenuItem("Quit", app.quit)], is_root=True))
+        clock = _FakeClock()
+        session = AdaptiveSession(clock=clock, seed=555, plan=_small_adaptive_plan(clock))
+        screen = AdaptiveSessionScreen(app, session=session, test_code="adaptive_session")
+        app.push(screen)
+        _start_adaptive_block(screen, surface)
+
+        session.debug_skip_current_block()
+        assert session.stage is AdaptiveStage.BLOCK_RESULTS
+
+        app.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_KP_ENTER, "unicode": ""})
+        )
+
+        assert session.stage is AdaptiveStage.BLOCK_RESULTS
+        assert session.snapshot().block_index == 1
     finally:
         pygame.quit()
 

@@ -800,7 +800,7 @@ def test_benchmark_pause_menu_skip_current_segment_advances_to_next_probe() -> N
         pygame.quit()
 
 
-def test_benchmark_keypad_enter_starts_intro_and_continues_probe_results() -> None:
+def test_benchmark_keypad_period_starts_intro_and_continues_probe_results() -> None:
     pygame.init()
     try:
         surface = pygame.display.set_mode((960, 540))
@@ -812,8 +812,8 @@ def test_benchmark_keypad_enter_starts_intro_and_continues_probe_results() -> No
         screen = BenchmarkScreen(app, session=session)
         app.push(screen)
 
-        screen.handle_event(
-            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_KP_ENTER, "unicode": ""})
+        app.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_KP_PERIOD, "unicode": "."})
         )
 
         assert session.stage is BenchmarkStage.PROBE
@@ -824,8 +824,8 @@ def test_benchmark_keypad_enter_starts_intro_and_continues_probe_results() -> No
         screen.render(surface)
         assert session.stage is BenchmarkStage.PROBE_RESULTS
 
-        screen.handle_event(
-            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_KP_ENTER, "unicode": ""})
+        app.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_KP_PERIOD, "unicode": "."})
         )
 
         assert session.stage is BenchmarkStage.PROBE

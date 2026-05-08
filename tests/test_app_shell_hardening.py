@@ -158,7 +158,7 @@ def test_app_escape_opens_shell_pause_and_resume_updates_run_state() -> None:
         pygame.quit()
 
 
-def test_keypad_period_acts_as_keypad_enter_for_runtime_submit() -> None:
+def test_keypad_period_acts_as_enter_for_runtime_submit() -> None:
     app, _screen, engine = _build_intro_app_and_screen()
     try:
         app.handle_event(
@@ -172,7 +172,7 @@ def test_keypad_period_acts_as_keypad_enter_for_runtime_submit() -> None:
         pygame.quit()
 
 
-def test_keypad_delete_scancode_acts_as_keypad_enter_but_regular_delete_does_not() -> None:
+def test_keypad_delete_scancode_acts_as_enter_but_regular_delete_does_not() -> None:
     app, _screen, engine = _build_intro_app_and_screen()
     try:
         app.handle_event(
@@ -195,6 +195,58 @@ def test_keypad_delete_scancode_acts_as_keypad_enter_but_regular_delete_does_not
             )
         )
         assert engine.snapshot().phase is Phase.PRACTICE
+    finally:
+        pygame.quit()
+
+
+def test_keypad_enter_is_suppressed_for_runtime_submit() -> None:
+    app, _screen, engine = _build_intro_app_and_screen()
+    try:
+        app.handle_event(
+            pygame.event.Event(
+                pygame.KEYDOWN,
+                {"key": pygame.K_KP_ENTER, "mod": 0, "unicode": ""},
+            )
+        )
+        assert engine.snapshot().phase is Phase.INSTRUCTIONS
+
+        app.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN, "mod": 0, "unicode": ""})
+        )
+        assert engine.snapshot().phase is Phase.PRACTICE
+    finally:
+        pygame.quit()
+
+
+def test_keypad_enter_does_not_activate_menu_selection_but_keypad_period_does() -> None:
+    pygame.init()
+    surface = pygame.display.set_mode((960, 540))
+    font = pygame.font.Font(None, 36)
+    app = App(surface=surface, font=font, window_mode="windowed")
+    activations: list[str] = []
+    root = MenuScreen(
+        app,
+        "Main Menu",
+        [MenuItem("Start", lambda: activations.append("start"))],
+        is_root=True,
+    )
+    app.push(root)
+    try:
+        root.handle_event(
+            pygame.event.Event(
+                pygame.KEYDOWN,
+                {"key": pygame.K_KP_ENTER, "mod": 0, "unicode": ""},
+            )
+        )
+        assert activations == []
+
+        app.handle_event(
+            pygame.event.Event(
+                pygame.KEYDOWN,
+                {"key": pygame.K_KP_PERIOD, "mod": 0, "unicode": "."},
+            )
+        )
+        assert activations == ["start"]
     finally:
         pygame.quit()
 

@@ -89,7 +89,7 @@ def test_headless_scripted_run_covers_next_gate_directive_digit_group_and_beep()
             at_s=0.10,
             call_sign="RAVEN",
             command_type=AuditoryCapacityCommandType.CHANGE_COLOUR,
-            payload="GREEN",
+            payload="BLUE",
             expires_at_s=0.95,
         ),
         _event(
@@ -206,7 +206,7 @@ def test_headless_scripted_run_covers_next_gate_directive_digit_group_and_beep()
     assert summary.correct >= 5
 
     final_payload = engine._build_payload()
-    assert final_payload.ball_color == "GREEN"
+    assert final_payload.ball_color == "BLUE"
     assert final_payload.ball_number == 4
     assert final_payload.digit_recall_attempts == 1
     assert final_payload.digit_recall_accuracy == pytest.approx(1.0)

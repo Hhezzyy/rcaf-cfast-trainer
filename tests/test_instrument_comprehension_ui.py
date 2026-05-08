@@ -160,7 +160,7 @@ def _build_reverse_payload() -> InstrumentComprehensionPayload:
         kind=InstrumentComprehensionTrialKind.AIRCRAFT_TO_INSTRUMENTS,
         prompt_state=options[2].state,
         prompt_description="",
-        prompt_view_preset=InstrumentAircraftViewPreset.TOP_DOWN,
+        prompt_view_preset=InstrumentAircraftViewPreset.FRONT_LEFT,
         options=options,
         option_render_mode=InstrumentOptionRenderMode.INSTRUMENT_PANEL,
         option_errors=(40, 24, 0, 18, 36),

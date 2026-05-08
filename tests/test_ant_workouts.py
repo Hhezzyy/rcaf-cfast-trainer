@@ -483,7 +483,7 @@ def test_workout_pause_freezes_block_timer() -> None:
         pygame.quit()
 
 
-def test_workout_keypad_enter_advances_from_block_results() -> None:
+def test_workout_keypad_period_advances_from_block_results() -> None:
     clock = FakeClock()
     session = AntWorkoutSession(
         clock=clock,
@@ -491,7 +491,7 @@ def test_workout_keypad_enter_advances_from_block_results() -> None:
         plan=_build_small_workout_plan(),
         starting_level=5,
     )
-    _app, screen = _build_app_and_workout_screen(clock=clock, session=session)
+    app, screen = _build_app_and_workout_screen(clock=clock, session=session)
     try:
         session.activate()
         session.activate()
@@ -503,12 +503,42 @@ def test_workout_keypad_enter_advances_from_block_results() -> None:
         _finish_current_block_with_one_correct_answer(session, clock)
         assert session.stage is AntWorkoutStage.BLOCK_RESULTS
 
-        screen.handle_event(
-            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_KP_ENTER, "unicode": ""})
+        app.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_KP_PERIOD, "unicode": "."})
         )
 
         assert session.stage is AntWorkoutStage.BLOCK_SETUP
         assert session.snapshot().block_index == 2
+    finally:
+        pygame.quit()
+
+
+def test_workout_keypad_enter_does_not_advance_from_block_results() -> None:
+    clock = FakeClock()
+    session = AntWorkoutSession(
+        clock=clock,
+        seed=123,
+        plan=_build_small_workout_plan(),
+        starting_level=5,
+    )
+    app, screen = _build_app_and_workout_screen(clock=clock, session=session)
+    try:
+        session.activate()
+        session.activate()
+        session.activate()
+        session.activate()
+        session.activate()
+        assert session.stage is AntWorkoutStage.BLOCK
+
+        _finish_current_block_with_one_correct_answer(session, clock)
+        assert session.stage is AntWorkoutStage.BLOCK_RESULTS
+
+        app.handle_event(
+            pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_KP_ENTER, "unicode": ""})
+        )
+
+        assert session.stage is AntWorkoutStage.BLOCK_RESULTS
+        assert session.snapshot().block_index == 1
     finally:
         pygame.quit()
 

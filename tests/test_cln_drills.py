@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import cast
 
 from cfast_trainer.cln_drills import (
+    ClnDrillConfig,
     _LiveDiamond,
     build_cln_colour_lane_drill,
     build_cln_full_pressure_drill,
@@ -111,6 +112,48 @@ def test_sequence_math_recall_switches_to_choice_mode_at_higher_difficulty() -> 
     opened = cast(ColoursLettersNumbersTrainingPayload, engine.snapshot().payload)
     assert opened.memory_input_active is False
     assert opened.options_active is True
+
+
+def test_delayed_choice_drills_keep_target_in_visible_options_across_cycles() -> None:
+    builders = (
+        ("sequence_match", build_cln_sequence_match_drill, 0.6),
+        ("sequence_math_recall", build_cln_sequence_math_recall_drill, 0.9),
+        ("overdrive_six_choice", build_cln_overdrive_six_choice_memory_drill, 0.7),
+    )
+
+    for label, builder, difficulty in builders:
+        clock = FakeClock()
+        engine = builder(
+            clock=clock,
+            seed=700 + len(label),
+            difficulty=difficulty,
+            config=ClnDrillConfig(practice_rounds=0, scored_duration_s=240.0),
+        )
+        engine.start_scored()
+
+        for _ in range(12):
+            initial = cast(ColoursLettersNumbersTrainingPayload, engine.snapshot().payload)
+            assert initial.target_sequence is not None, label
+            target = initial.target_sequence
+
+            clock.advance(engine._sequence_show_s() + engine._memory_recall_delay_s_current + 0.05)
+            engine.update()
+            opened = cast(ColoursLettersNumbersTrainingPayload, engine.snapshot().payload)
+            if not opened.options_active:
+                assert opened.math_active is True, label
+                assert engine.submit_answer(str(_solve_math(opened.math_prompt))) is True
+                opened = cast(ColoursLettersNumbersTrainingPayload, engine.snapshot().payload)
+
+            assert opened.options_active is True, label
+            assert target in {option.label for option in opened.options}, label
+
+            target_code = next(option.code for option in opened.options if option.label == target)
+            assert engine.submit_answer(f"MEM:{target_code}") is True
+
+            after_submit = cast(ColoursLettersNumbersTrainingPayload, engine.snapshot().payload)
+            if after_submit.memory_answered:
+                clock.advance(engine._recall_window() + 0.05)
+                engine.update()
 
 
 def test_colour_lane_drill_is_colour_only() -> None:

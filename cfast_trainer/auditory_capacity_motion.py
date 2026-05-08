@@ -11,6 +11,7 @@ from .auditory_capacity_view import (
     lerp,
     run_start_distance,
     tube_frame,
+    tube_twist_angle,
     vec_add,
     vec_dot,
     vec_scale,
@@ -44,6 +45,8 @@ class AuditoryTunnelFollowerConfig:
     tunnel_inner_rz: float = 1.64
     wall_half_length: float = 4.0
     roll_deg_per_distance: float = 9.0
+    tunnel_curvature_intensity: float = 1.0
+    tunnel_twist_intensity: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,6 +59,7 @@ class AuditoryTunnelFollowerSnapshot:
     right: Point3
     up: Point3
     ball_roll_deg: float
+    twist_angle_rad: float = 0.0
     collision_penalties: int = 0
     collision_active: bool = False
     ball_contact_ratio: float = 0.0
@@ -104,10 +108,22 @@ class AuditoryTunnelFollower:
 
     def snapshot(self) -> AuditoryTunnelFollowerSnapshot:
         ball_distance = float(self._travel_distance)
-        center, tangent, right, up = tube_frame(ball_distance)
+        curvature_intensity = float(self._config.tunnel_curvature_intensity)
+        twist_intensity = float(self._config.tunnel_twist_intensity)
+        center, tangent, right, up = tube_frame(
+            ball_distance,
+            session_seed=int(self._config.session_seed),
+            curvature_intensity=curvature_intensity,
+            twist_intensity=twist_intensity,
+        )
         roll = auditory_ball_roll_deg(
             ball_distance=ball_distance,
             roll_deg_per_distance=float(self._config.roll_deg_per_distance),
+        )
+        twist = tube_twist_angle(
+            ball_distance,
+            intensity=twist_intensity,
+            session_seed=int(self._config.session_seed),
         )
         return AuditoryTunnelFollowerSnapshot(
             session_seed=int(self._config.session_seed),
@@ -118,6 +134,7 @@ class AuditoryTunnelFollower:
             right=right,
             up=up,
             ball_roll_deg=float(roll),
+            twist_angle_rad=float(twist),
             collision_penalties=int(self._collision_penalties),
             collision_active=bool(self._collision_active),
             ball_contact_ratio=float(self._ball_contact_ratio),

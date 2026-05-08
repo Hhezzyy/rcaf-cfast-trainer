@@ -1,12 +1,13 @@
 """Local UDP bridge for the optional Godot companion renderer.
 
-The pygame runtime remains authoritative for timing, scoring, input, and
-results.  Godot only receives whitelisted visual snapshots for the tests that
-currently need 3D presentation.
+Current 3D tests run as Godot-authoritative live scenes: Python sends a
+deterministic start spec and receives sanitized lifecycle/result packets back.
+Legacy snapshot serializers remain for non-normal-use compatibility tests.
 """
 
 from __future__ import annotations
 
+import errno
 import json
 import math
 import os
@@ -21,8 +22,30 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from .auditory_capacity import AuditoryCapacityGate, AuditoryCapacityPayload
+from .auditory_capacity import (
+    _AUDITORY_BALL_BOUND_RADIUS,
+    _AUDITORY_TUNNEL_INNER_RX,
+    _AUDITORY_TUNNEL_INNER_RZ,
+    AUDITORY_GATE_PLAYER_X_NORM,
+    AUDITORY_GATE_RETIRE_X_NORM,
+    AUDITORY_GATE_SPAWN_X_NORM,
+    AuditoryCapacityConfig,
+    AuditoryCapacityGate,
+    AuditoryCapacityPayload,
+)
+from .auditory_capacity_motion import auditory_gate_world_distance_from_x_norm
+from .auditory_capacity_view import (
+    AUDITORY_GATE_BEHIND_DISTANCE_OFFSET,
+    AUDITORY_GATE_FAR_DISTANCE_OFFSET,
+    AUDITORY_TUNNEL_GEOMETRY_END_OFFSET_DISTANCE,
+    Point3,
+    tube_frame,
+    tube_twist_angle,
+    vec_add,
+    vec_scale,
+)
 from .cognitive_core import TestSnapshot
+from .godot_owned import GodotOwnedPayload
 from .rapid_tracking.entities import RapidTrackingPayload
 from .spatial_integration import SpatialIntegrationPayload, SpatialIntegrationPoint
 from .trace_test_1 import TraceTest1Payload, TraceTest1SceneFrame
@@ -31,11 +54,16 @@ from .trace_test_2 import TraceTest2AircraftTrack, TraceTest2Payload, trace_test
 GODOT_BACKEND_NAME = "godot_4"
 GODOT_DEFAULT_BIN = "/Applications/Godot.app/Contents/MacOS/Godot"
 GODOT_PROJECT_PATH = Path(__file__).resolve().parent.parent / "godot" / "cfast_3d"
+AUDITORY_CAPACITY_AUDIO_ASSET_PATH = (
+    Path(__file__).resolve().parent.parent / "assets" / "audio" / "auditory_capacity"
+)
 GODOT_HOST = "127.0.0.1"
 GODOT_WINDOW_RESOLUTION = "960x540"
 GODOT_MAX_FPS = "60"
 GODOT_SCHEMA_VERSION = 1
 GODOT_WINDOW_MODE_ENV = "CFAST_GODOT_WINDOW_MODE"
+AUDITORY_GODOT_WORLD_SCALE = 0.42
+AUDITORY_GODOT_Y_OFFSET = 1.15
 
 KIND_AUDITORY_CAPACITY = "auditory_capacity"
 KIND_RAPID_TRACKING = "rapid_tracking"
@@ -49,6 +77,39 @@ GODOT_TARGET_KINDS = {
     KIND_SPATIAL_INTEGRATION,
     KIND_TRACE_TEST_1,
     KIND_TRACE_TEST_2,
+}
+
+GODOT_CONTROL_COMMANDS = {
+    "activate_action",
+    "activate_setting",
+    "adjust_setting",
+    "auditory_complete",
+    "auditory_error",
+    "auditory_event",
+    "auditory_progress",
+    "auditory_ready",
+    "back_to_tests",
+    "complete",
+    "error",
+    "event",
+    "godot_complete",
+    "godot_error",
+    "godot_event",
+    "godot_progress",
+    "godot_ready",
+    "progress",
+    "ready",
+    "main_menu",
+    "menu_back",
+    "menu_down",
+    "menu_left",
+    "menu_right",
+    "menu_select",
+    "menu_up",
+    "pause_toggle",
+    "resume",
+    "set_window_mode",
+    "settings_back",
 }
 
 GODOT_PERFORMANCE_DEFAULTS: dict[str, object] = {
@@ -132,8 +193,154 @@ def _spatial_point(point: SpatialIntegrationPoint | object) -> dict[str, int]:
     }
 
 
-def _gate_payload(gate: AuditoryCapacityGate) -> dict[str, object]:
+def _auditory_point_to_godot(point: Point3, *, origin: Point3) -> dict[str, float]:
     return {
+        "x": _finite_float((float(point[0]) - float(origin[0])) * AUDITORY_GODOT_WORLD_SCALE),
+        "y": _finite_float(
+            AUDITORY_GODOT_Y_OFFSET
+            + ((float(point[2]) - float(origin[2])) * AUDITORY_GODOT_WORLD_SCALE)
+        ),
+        "z": _finite_float(-(float(point[1]) - float(origin[1])) * AUDITORY_GODOT_WORLD_SCALE),
+    }
+
+
+def _auditory_vector_to_godot(vector: Point3) -> dict[str, float]:
+    return {
+        "x": _finite_float(vector[0]),
+        "y": _finite_float(vector[2]),
+        "z": _finite_float(-float(vector[1])),
+    }
+
+
+def _auditory_frame_payload(
+    *,
+    distance: float,
+    origin: Point3,
+    travel_distance: float,
+    session_seed: int,
+    curvature_intensity: float,
+    twist_intensity: float,
+) -> dict[str, object]:
+    center, tangent, right, up = tube_frame(
+        float(distance),
+        session_seed=int(session_seed),
+        curvature_intensity=float(curvature_intensity),
+        twist_intensity=float(twist_intensity),
+    )
+    far_span = max(1e-6, float(AUDITORY_GATE_FAR_DISTANCE_OFFSET))
+    depth_norm = (float(distance) - float(travel_distance)) / far_span
+    return {
+        "distance": _finite_float(distance),
+        "offset_distance": _finite_float(float(distance) - float(travel_distance)),
+        "depth_norm": _finite_float(max(-0.35, min(1.15, depth_norm))),
+        "pos": _auditory_point_to_godot(center, origin=origin),
+        "tangent": _auditory_vector_to_godot(tangent),
+        "right": _auditory_vector_to_godot(right),
+        "up": _auditory_vector_to_godot(up),
+        "twist_angle_rad": _finite_float(
+            tube_twist_angle(
+                float(distance),
+                intensity=float(twist_intensity),
+                session_seed=int(session_seed),
+            )
+        ),
+    }
+
+
+def _auditory_position_in_frame(
+    *,
+    distance: float,
+    local_right: float,
+    local_up: float,
+    origin: Point3,
+    session_seed: int,
+    curvature_intensity: float,
+    twist_intensity: float,
+) -> dict[str, float]:
+    center, _tangent, right, up = tube_frame(
+        float(distance),
+        session_seed=int(session_seed),
+        curvature_intensity=float(curvature_intensity),
+        twist_intensity=float(twist_intensity),
+    )
+    point = vec_add(center, vec_add(vec_scale(right, float(local_right)), vec_scale(up, float(local_up))))
+    return _auditory_point_to_godot(point, origin=origin)
+
+
+def _serialize_auditory_tunnel(payload: AuditoryCapacityPayload) -> dict[str, object]:
+    travel_distance = _finite_float(payload.presentation_travel_distance)
+    session_seed = int(payload.session_seed)
+    curvature_intensity = _finite_float(getattr(payload, "tunnel_curvature_intensity", 1.0))
+    twist_intensity = _finite_float(getattr(payload, "tunnel_twist_intensity", 0.0))
+    origin, _origin_tangent, _origin_right, _origin_up = tube_frame(
+        travel_distance,
+        session_seed=session_seed,
+        curvature_intensity=curvature_intensity,
+        twist_intensity=twist_intensity,
+    )
+    far_offset = max(
+        float(AUDITORY_GATE_FAR_DISTANCE_OFFSET),
+        float(AUDITORY_TUNNEL_GEOMETRY_END_OFFSET_DISTANCE),
+    )
+    sample_count = 24
+    offsets = [-5.0, -2.5] + [
+        (float(idx) / float(sample_count - 1)) * far_offset for idx in range(sample_count)
+    ]
+    samples = [
+        _auditory_frame_payload(
+            distance=travel_distance + offset,
+            origin=origin,
+            travel_distance=travel_distance,
+            session_seed=session_seed,
+            curvature_intensity=curvature_intensity,
+            twist_intensity=twist_intensity,
+        )
+        for offset in offsets
+    ]
+
+    camera_distance = travel_distance - 9.0
+    look_distance = travel_distance + min(18.0, far_offset * 0.55)
+    camera_center, camera_tangent, _camera_right, camera_up = tube_frame(
+        camera_distance,
+        session_seed=session_seed,
+        curvature_intensity=curvature_intensity,
+        twist_intensity=twist_intensity,
+    )
+    camera_point = vec_add(camera_center, vec_add(vec_scale(camera_up, 1.25), vec_scale(camera_tangent, -1.2)))
+    look_center, look_tangent, _look_right, look_up = tube_frame(
+        look_distance,
+        session_seed=session_seed,
+        curvature_intensity=curvature_intensity,
+        twist_intensity=twist_intensity,
+    )
+    look_point = vec_add(look_center, vec_add(vec_scale(look_tangent, 0.9), vec_scale(look_up, 0.18)))
+
+    return {
+        "origin_distance": _finite_float(travel_distance),
+        "scale": _finite_float(AUDITORY_GODOT_WORLD_SCALE),
+        "y_offset": _finite_float(AUDITORY_GODOT_Y_OFFSET),
+        "inner_rx": _finite_float(_AUDITORY_TUNNEL_INNER_RX * AUDITORY_GODOT_WORLD_SCALE),
+        "inner_rz": _finite_float(_AUDITORY_TUNNEL_INNER_RZ * AUDITORY_GODOT_WORLD_SCALE),
+        "twist_intensity": _finite_float(twist_intensity),
+        "curvature_intensity": _finite_float(curvature_intensity),
+        "samples": samples,
+        "camera": {
+            "position": _auditory_point_to_godot(camera_point, origin=origin),
+            "target": _auditory_point_to_godot(look_point, origin=origin),
+        },
+    }
+
+
+def _gate_payload(
+    gate: AuditoryCapacityGate,
+    *,
+    payload: AuditoryCapacityPayload | None = None,
+    origin: Point3 | None = None,
+    session_seed: int = 0,
+    curvature_intensity: float = 1.0,
+    twist_intensity: float = 0.0,
+) -> dict[str, object]:
+    data: dict[str, object] = {
         "gate_id": int(gate.gate_id),
         "x_norm": _finite_float(gate.x_norm),
         "y_norm": _finite_float(gate.y_norm),
@@ -145,15 +352,228 @@ def _gate_payload(gate: AuditoryCapacityGate) -> dict[str, object]:
         "flash_color": gate.flash_color,
         "flash_strength": _finite_float(gate.flash_strength),
     }
+    if payload is None or origin is None:
+        return data
+
+    travel_distance = _finite_float(payload.presentation_travel_distance)
+    gate_distance = (
+        _finite_float(gate.world_distance)
+        if gate.world_distance is not None
+        else auditory_gate_world_distance_from_x_norm(
+            float(gate.x_norm),
+            travel_distance=travel_distance,
+            spawn_x_norm=float(AUDITORY_GATE_SPAWN_X_NORM),
+            player_x_norm=float(AUDITORY_GATE_PLAYER_X_NORM),
+            retire_x_norm=float(AUDITORY_GATE_RETIRE_X_NORM),
+        )
+    )
+    half_height = max(1e-6, _finite_float(payload.tube_half_height))
+    local_up = (_finite_float(gate.y_norm) / half_height) * float(_AUDITORY_TUNNEL_INNER_RZ)
+    aperture_radius = max(
+        0.22,
+        (_finite_float(gate.aperture_norm) / half_height)
+        * float(_AUDITORY_TUNNEL_INNER_RZ)
+        * float(AUDITORY_GODOT_WORLD_SCALE)
+        * 1.18,
+    )
+    data["pose"] = _auditory_frame_payload(
+        distance=gate_distance,
+        origin=origin,
+        travel_distance=travel_distance,
+        session_seed=int(session_seed),
+        curvature_intensity=float(curvature_intensity),
+        twist_intensity=twist_intensity,
+    )
+    data["position"] = _auditory_position_in_frame(
+        distance=gate_distance,
+        local_right=0.0,
+        local_up=local_up,
+        origin=origin,
+        session_seed=int(session_seed),
+        curvature_intensity=float(curvature_intensity),
+        twist_intensity=twist_intensity,
+    )
+    data["aperture_radius"] = _finite_float(aperture_radius)
+    data["visible_depth_norm"] = _finite_float(
+        max(
+            -0.35,
+            min(
+                1.15,
+                (gate_distance - (travel_distance + float(AUDITORY_GATE_BEHIND_DISTANCE_OFFSET)))
+                / max(
+                    1e-6,
+                    float(AUDITORY_GATE_FAR_DISTANCE_OFFSET)
+                    - float(AUDITORY_GATE_BEHIND_DISTANCE_OFFSET),
+                ),
+            ),
+        )
+    )
+    return data
 
 
-def _serialize_auditory_capacity(payload: AuditoryCapacityPayload | None) -> dict[str, object]:
+def _serialize_auditory_godot_runtime(
+    payload: AuditoryCapacityPayload,
+    *,
+    phase: object | None = None,
+    time_remaining_s: object | None = None,
+) -> dict[str, object]:
+    cfg = AuditoryCapacityConfig()
+    difficulty = _finite_float(getattr(payload, "difficulty", 0.0))
+    phase_token = str(_enum_value(phase) or "").strip().lower()
+    duration_s: float | None = None
+    if time_remaining_s is not None:
+        remaining = _finite_float(time_remaining_s, default=-1.0)
+        if remaining >= 0.0:
+            duration_s = _finite_float(payload.phase_elapsed_s) + remaining
+    if duration_s is None or duration_s <= 0.0:
+        duration_s = _finite_float(payload.segment_time_remaining_s) + _finite_float(
+            payload.phase_elapsed_s
+        )
+    active_channels = [str(channel) for channel in payload.active_channels]
+    return {
+        "command": "auditory_start",
+        "authority": "godot",
+        "run_key": f"{int(payload.session_seed)}:{phase_token or 'unknown'}",
+        "session_seed": int(payload.session_seed),
+        "difficulty": difficulty,
+        "phase": phase_token,
+        "phase_elapsed_s": _finite_float(payload.phase_elapsed_s),
+        "duration_s": _finite_float(duration_s),
+        "time_remaining_s": (
+            None if time_remaining_s is None else _finite_float(time_remaining_s)
+        ),
+        "asset_root": str(AUDITORY_CAPACITY_AUDIO_ASSET_PATH),
+        "assigned_callsigns": [str(value) for value in payload.assigned_callsigns],
+        "active_channels": active_channels,
+        "segment": {
+            "label": str(payload.segment_label),
+            "index": int(payload.segment_index),
+            "total": int(payload.segment_total),
+            "time_remaining_s": _finite_float(payload.segment_time_remaining_s),
+        },
+        "config": {
+            "tick_hz": _finite_float(cfg.tick_hz),
+            "control_gain": _finite_float(cfg.control_gain),
+            "disturbance_gain": _finite_float(cfg.disturbance_gain),
+            "tube_half_width": _finite_float(payload.tube_half_width),
+            "tube_half_height": _finite_float(payload.tube_half_height),
+            "tunnel_curvature_intensity": _finite_float(payload.tunnel_curvature_intensity),
+            "tunnel_twist_intensity": _finite_float(payload.tunnel_twist_intensity),
+            "gate_speed_norm_per_s": _finite_float(cfg.gate_speed_norm_per_s),
+            "gate_spawn_rate": _finite_float(cfg.gate_spawn_rate),
+            "gate_interval_s": _finite_float(cfg.gate_interval_s),
+            "command_rate": _finite_float(cfg.command_rate),
+            "distractor_rate": _finite_float(cfg.distractor_rate),
+            "callsign_count": max(1, len(payload.assigned_callsigns)),
+            "digit_sequence_min_len": max(1, int(payload.recall_target_length or 4)),
+            "digit_sequence_max_len": max(1, int(cfg.digit_sequence_max_len)),
+            "response_window_seconds": _finite_float(cfg.response_window_seconds),
+            "sequence_display_s": _finite_float(cfg.sequence_display_s),
+            "sequence_response_s": _finite_float(cfg.sequence_response_s),
+            "beep_interval_s": _finite_float(cfg.beep_interval_s),
+            "inner_rx": _finite_float(_AUDITORY_TUNNEL_INNER_RX),
+            "inner_rz": _finite_float(_AUDITORY_TUNNEL_INNER_RZ),
+            "ball_radius": _finite_float(_AUDITORY_BALL_BOUND_RADIUS),
+        },
+        "audio": {
+            "tts_required": True,
+            "background_noise_level": _finite_float(payload.background_noise_level),
+            "background_distortion_level": _finite_float(payload.background_distortion_level),
+            "instructor_noise_level": _finite_float(payload.instructor_noise_level),
+            "instructor_distortion_level": _finite_float(payload.instructor_distortion_level),
+            "instructor_rate_wpm": int(payload.instructor_rate_wpm),
+            "ambient_layer_target": int(payload.ambient_layer_target),
+            "background_noise_source": payload.background_noise_source,
+        },
+        "constants": {
+            "gate_spawn_x_norm": _finite_float(AUDITORY_GATE_SPAWN_X_NORM),
+            "gate_player_x_norm": _finite_float(AUDITORY_GATE_PLAYER_X_NORM),
+            "gate_retire_x_norm": _finite_float(AUDITORY_GATE_RETIRE_X_NORM),
+            "colors": ["RED", "BLUE", "YELLOW"],
+            "shapes": ["CIRCLE", "TRIANGLE", "SQUARE"],
+        },
+        "metrics": {
+            "gate_hits": int(payload.gate_hits),
+            "gate_misses": int(payload.gate_misses),
+            "forbidden_gate_hits": int(payload.forbidden_gate_hits),
+            "collisions": int(payload.collisions),
+            "correct_command_executions": int(payload.correct_command_executions),
+            "missed_valid_commands": int(payload.missed_valid_commands),
+            "false_responses_to_distractors": int(payload.false_responses_to_distractors),
+            "digit_recall_attempts": int(payload.digit_recall_attempts),
+            "digit_recall_accuracy": _finite_float(payload.digit_recall_accuracy),
+            "points": _finite_float(payload.points),
+        },
+    }
+
+
+def _serialize_godot_owned(payload: GodotOwnedPayload) -> dict[str, object]:
+    spec = payload.spec
+    data = _json_safe(spec)
+    if not isinstance(data, dict):
+        data = {}
+    data["command"] = "godot_start"
+    data["authority"] = "godot"
+    data["kind"] = str(spec.kind)
+    data["test_code"] = str(spec.test_code)
+    data["title"] = str(spec.title)
+    data["session_seed"] = int(spec.seed)
+    data["seed"] = int(spec.seed)
+    data["difficulty"] = _finite_float(spec.difficulty)
+    data["duration_s"] = _finite_float(spec.duration_s)
+    data["mode"] = str(spec.mode)
+    if str(spec.kind) == KIND_AUDITORY_CAPACITY:
+        assets = dict(data.get("assets", {}) if isinstance(data.get("assets"), Mapping) else {})
+        assets.setdefault("audio_root", str(AUDITORY_CAPACITY_AUDIO_ASSET_PATH))
+        data["assets"] = assets
+        data.setdefault("asset_root", str(AUDITORY_CAPACITY_AUDIO_ASSET_PATH))
+        audio = dict(data.get("audio", {}) if isinstance(data.get("audio"), Mapping) else {})
+        audio.setdefault("tts_required", True)
+        data["audio"] = audio
+    return {
+        "godot_start": data,
+        "progress": _json_safe(payload.progress),
+        "error": None if payload.error is None else _json_safe(payload.error),
+    }
+
+
+def _serialize_auditory_capacity(
+    payload: AuditoryCapacityPayload | None,
+    *,
+    phase: object | None = None,
+    time_remaining_s: object | None = None,
+) -> dict[str, object]:
     if payload is None:
         return {}
+    travel_distance = _finite_float(payload.presentation_travel_distance)
+    session_seed = int(payload.session_seed)
+    curvature_intensity = _finite_float(getattr(payload, "tunnel_curvature_intensity", 1.0))
+    twist_intensity = _finite_float(getattr(payload, "tunnel_twist_intensity", 0.0))
+    origin, _origin_tangent, _origin_right, _origin_up = tube_frame(
+        travel_distance,
+        session_seed=session_seed,
+        curvature_intensity=curvature_intensity,
+        twist_intensity=twist_intensity,
+    )
+    half_width = max(1e-6, _finite_float(payload.tube_half_width))
+    half_height = max(1e-6, _finite_float(payload.tube_half_height))
+    ball_local_right = (
+        (_finite_float(payload.ball_x) / half_width)
+        * max(0.05, float(_AUDITORY_TUNNEL_INNER_RX) - float(_AUDITORY_BALL_BOUND_RADIUS))
+    )
+    ball_local_up = (
+        (_finite_float(payload.ball_y) / half_height)
+        * max(0.05, float(_AUDITORY_TUNNEL_INNER_RZ) - float(_AUDITORY_BALL_BOUND_RADIUS))
+    )
     return {
         "session_seed": int(payload.session_seed),
+        "godot_runtime": _serialize_auditory_godot_runtime(
+            payload,
+            phase=phase,
+            time_remaining_s=time_remaining_s,
+        ),
         "phase_elapsed_s": _finite_float(payload.phase_elapsed_s),
-        "presentation_travel_distance": _finite_float(payload.presentation_travel_distance),
+        "presentation_travel_distance": travel_distance,
         "segment_label": str(payload.segment_label),
         "segment_index": int(payload.segment_index),
         "segment_total": int(payload.segment_total),
@@ -165,6 +585,24 @@ def _serialize_auditory_capacity(payload: AuditoryCapacityPayload | None) -> dic
             "color": str(payload.ball_visual_color or payload.ball_color),
             "color_strength": _finite_float(payload.ball_visual_strength),
             "number": int(payload.ball_number),
+            "position": _auditory_position_in_frame(
+                distance=travel_distance,
+                local_right=ball_local_right,
+                local_up=ball_local_up,
+                origin=origin,
+                session_seed=session_seed,
+                curvature_intensity=curvature_intensity,
+                twist_intensity=twist_intensity,
+            ),
+            "pose": _auditory_frame_payload(
+                distance=travel_distance,
+                origin=origin,
+                travel_distance=travel_distance,
+                session_seed=session_seed,
+                curvature_intensity=curvature_intensity,
+                twist_intensity=twist_intensity,
+            ),
+            "visual_radius": _finite_float(max(0.24, float(_AUDITORY_BALL_BOUND_RADIUS) * 2.4)),
         },
         "control": {
             "x": _finite_float(payload.control_x),
@@ -175,7 +613,10 @@ def _serialize_auditory_capacity(payload: AuditoryCapacityPayload | None) -> dic
         "tube": {
             "half_width": _finite_float(payload.tube_half_width),
             "half_height": _finite_float(payload.tube_half_height),
+            "inner_rx": _finite_float(_AUDITORY_TUNNEL_INNER_RX),
+            "inner_rz": _finite_float(_AUDITORY_TUNNEL_INNER_RZ),
         },
+        "tunnel": _serialize_auditory_tunnel(payload),
         "instruction": {
             "text": payload.instruction_text,
             "uid": payload.instruction_uid,
@@ -185,7 +626,17 @@ def _serialize_auditory_capacity(payload: AuditoryCapacityPayload | None) -> dic
             "forbidden_gate_color": payload.forbidden_gate_color,
             "forbidden_gate_shape": payload.forbidden_gate_shape,
         },
-        "gates": [_gate_payload(gate) for gate in payload.gates[:12]],
+        "gates": [
+            _gate_payload(
+                gate,
+                payload=payload,
+                origin=origin,
+                session_seed=session_seed,
+                curvature_intensity=curvature_intensity,
+                twist_intensity=twist_intensity,
+            )
+            for gate in payload.gates[:12]
+        ],
         "metrics": {
             "gate_hits": int(payload.gate_hits),
             "gate_misses": int(payload.gate_misses),
@@ -378,6 +829,8 @@ def _serialize_trace_test_2(payload: TraceTest2Payload | None) -> dict[str, obje
 
 def godot_kind_for_snapshot(snap: TestSnapshot) -> str | None:
     payload = snap.payload
+    if isinstance(payload, GodotOwnedPayload):
+        return str(payload.spec.kind)
     if isinstance(payload, AuditoryCapacityPayload):
         return KIND_AUDITORY_CAPACITY
     if isinstance(payload, RapidTrackingPayload):
@@ -408,9 +861,14 @@ def serialize_godot_state(snap: TestSnapshot, payload: object | None = None) -> 
     if kind is None:
         return None
     resolved_payload = snap.payload if payload is None else payload
-    if kind == KIND_AUDITORY_CAPACITY:
+    if isinstance(resolved_payload, GodotOwnedPayload):
+        kind = str(resolved_payload.spec.kind)
+        visual_payload = _serialize_godot_owned(resolved_payload)
+    elif kind == KIND_AUDITORY_CAPACITY:
         visual_payload = _serialize_auditory_capacity(
-            resolved_payload if isinstance(resolved_payload, AuditoryCapacityPayload) else None
+            resolved_payload if isinstance(resolved_payload, AuditoryCapacityPayload) else None,
+            phase=snap.phase,
+            time_remaining_s=snap.time_remaining_s,
         )
     elif kind == KIND_RAPID_TRACKING:
         visual_payload = _serialize_rapid_tracking(
@@ -461,7 +919,7 @@ class GodotBridgeManager:
         host: str = GODOT_HOST,
         port: int | None = None,
         env: Mapping[str, str] | None = None,
-        window_mode: str = "windowed",
+        window_mode: str = "fullscreen",
         popen_factory: Callable[..., object] = subprocess.Popen,
         socket_factory: Callable[..., Any] = socket.socket,
         time_fn: Callable[[], float] = time.monotonic,
@@ -481,6 +939,8 @@ class GodotBridgeManager:
         self._time_fn = time_fn
         self._process: object | None = None
         self._socket: Any | None = None
+        self._control_socket: Any | None = None
+        self._control_port: int | None = None
         self._session_id = uuid.uuid4().hex
         self._active_kind: str | None = None
         self._last_error: str | None = None
@@ -488,6 +948,7 @@ class GodotBridgeManager:
         self._restart_attempted_for_kind: set[str] = set()
         self._last_send_at = 0.0
         self._min_send_interval_s = 1.0 / 60.0
+        self._menu_state: Mapping[str, object] = {"active": False}
 
     def _env_flag_enabled(self, name: str) -> bool:
         return str(self._env.get(name, "")).strip().lower() in {"1", "true", "on", "yes"}
@@ -496,11 +957,26 @@ class GodotBridgeManager:
     def window_mode(self) -> str:
         return self._window_mode
 
+    @property
+    def session_id(self) -> str:
+        return self._session_id
+
+    @property
+    def control_port(self) -> int | None:
+        return self._control_port
+
     def set_window_mode(self, window_mode: str) -> None:
         if self._env.get(GODOT_WINDOW_MODE_ENV):
             self._window_mode = _normalize_godot_window_mode(self._env.get(GODOT_WINDOW_MODE_ENV))
             return
         self._window_mode = _normalize_godot_window_mode(window_mode)
+
+    def set_menu_state(self, menu_state: Mapping[str, object] | None) -> None:
+        if menu_state is None:
+            self._menu_state = {"active": False}
+            return
+        safe = _json_safe(dict(menu_state))
+        self._menu_state = safe if isinstance(safe, Mapping) else {"active": False}
 
     @property
     def active_kind(self) -> str | None:
@@ -528,8 +1004,11 @@ class GodotBridgeManager:
             return False
         kind = str(state["kind"])
         state["window_mode"] = self._window_mode
+        state["session_id"] = self._session_id
+        state["menu"] = self._menu_state
         if self._disabled:
             self._active_kind = None
+            self._last_error = "Godot companion disabled"
             return False
         if not self._ensure_started(kind):
             self._active_kind = None
@@ -553,7 +1032,9 @@ class GodotBridgeManager:
                     "active": False,
                     "renderer_backend": GODOT_BACKEND_NAME,
                     "window_mode": self._window_mode,
+                    "session_id": self._session_id,
                     "performance": dict(GODOT_PERFORMANCE_DEFAULTS),
+                    "menu": {"active": False},
                 }
             )
         self._active_kind = None
@@ -565,6 +1046,7 @@ class GodotBridgeManager:
         self._active_kind = None
         self._process = None
         self._close_socket()
+        self._close_control_socket()
         if process is None:
             return
         terminate = getattr(process, "terminate", None)
@@ -594,10 +1076,12 @@ class GodotBridgeManager:
                 self._last_error = "Godot companion exited"
                 self._process = None
                 self._close_socket()
+                self._close_control_socket()
                 return False
             self._restart_attempted_for_kind.add(kind)
             self._process = None
             self._close_socket()
+            self._close_control_socket()
         return self._start_process(kind)
 
     def _start_process(self, kind: str) -> bool:
@@ -612,6 +1096,8 @@ class GodotBridgeManager:
             return False
         port = self._port if self._port is not None else self._allocate_udp_port()
         self._port = int(port)
+        if not self._ensure_control_socket():
+            return False
         command = [
             godot_bin,
             "--path",
@@ -622,6 +1108,10 @@ class GodotBridgeManager:
             "--",
             "--listen-port",
             str(self._port),
+            "--control-host",
+            self._host,
+            "--control-port",
+            str(self._control_port),
             "--session-id",
             self._session_id,
             "--initial-kind",
@@ -637,6 +1127,7 @@ class GodotBridgeManager:
         except Exception as exc:
             self._process = None
             self._close_socket()
+            self._close_control_socket()
             self._used_fallback = True
             self._last_error = f"Godot launch failed: {exc}"
             return False
@@ -672,6 +1163,95 @@ class GodotBridgeManager:
         finally:
             sock.close()
 
+    def _ensure_control_socket(self) -> bool:
+        if self._control_socket is not None and self._control_port is not None:
+            return True
+        try:
+            sock = self._socket_factory(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.bind((self._host, 0))
+            setblocking = getattr(sock, "setblocking", None)
+            if callable(setblocking):
+                setblocking(False)
+            self._control_port = int(sock.getsockname()[1])
+            self._control_socket = sock
+            return True
+        except Exception as exc:
+            self._control_socket = None
+            self._control_port = None
+            self._used_fallback = True
+            self._last_error = f"Godot control socket failed: {exc}"
+            return False
+
+    def poll_control_commands(self, *, max_commands: int = 24) -> list[dict[str, object]]:
+        sock = self._control_socket
+        if sock is None:
+            return []
+        commands: list[dict[str, object]] = []
+        for _ in range(max(1, int(max_commands))):
+            try:
+                payload, _addr = sock.recvfrom(65536)
+            except BlockingIOError:
+                break
+            except TimeoutError:
+                break
+            except OSError as exc:
+                if getattr(exc, "errno", None) in {errno.EAGAIN, errno.EWOULDBLOCK}:
+                    break
+                self._last_error = f"Godot control receive failed: {exc}"
+                break
+            parsed = self._parse_control_payload(payload)
+            if parsed is not None:
+                commands.append(parsed)
+        return commands
+
+    def _parse_control_payload(self, payload: bytes | bytearray | str) -> dict[str, object] | None:
+        try:
+            text = payload.decode("utf-8") if isinstance(payload, (bytes, bytearray)) else str(payload)
+            message = json.loads(text)
+        except Exception:
+            return None
+        if not isinstance(message, dict):
+            return None
+        try:
+            schema = int(message.get("schema", 0))
+        except Exception:
+            schema = 0
+        if schema != GODOT_SCHEMA_VERSION:
+            return None
+        if str(message.get("session_id", "")) != self._session_id:
+            return None
+        command = str(message.get("command", "")).strip().lower()
+        if command not in GODOT_CONTROL_COMMANDS:
+            return None
+        parsed: dict[str, object] = {"command": command}
+        for key in (
+            "action",
+            "key",
+            "mode",
+            "window_mode",
+            "direction",
+            "run_key",
+            "phase",
+            "event",
+            "metrics",
+            "summary",
+            "result",
+            "state",
+            "reason",
+            "detail",
+            "events",
+            "kind",
+            "progress",
+            "test_code",
+        ):
+            if key in message:
+                parsed[key] = _json_safe(message[key])
+        if command == "set_window_mode":
+            requested = message.get("window_mode", message.get("mode", ""))
+            self.set_window_mode(str(requested))
+            parsed["window_mode"] = self._window_mode
+        return parsed
+
     def _send(self, message: Mapping[str, object]) -> bool:
         if self._socket is None or self._port is None:
             return False
@@ -701,6 +1281,17 @@ class GodotBridgeManager:
     def _close_socket(self) -> None:
         sock = self._socket
         self._socket = None
+        close = getattr(sock, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                pass
+
+    def _close_control_socket(self) -> None:
+        sock = self._control_socket
+        self._control_socket = None
+        self._control_port = None
         close = getattr(sock, "close", None)
         if callable(close):
             try:

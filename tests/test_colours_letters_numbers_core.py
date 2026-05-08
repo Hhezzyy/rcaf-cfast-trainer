@@ -80,6 +80,61 @@ def test_default_memory_sequences_get_longer_at_higher_difficulty() -> None:
     assert (sum(high_lengths) / len(high_lengths)) > (sum(low_lengths) / len(low_lengths))
 
 
+def test_memory_generator_options_always_include_target_sequence() -> None:
+    generator = ColoursLettersNumbersGenerator(SeededRng(202405))
+
+    for index in range(80):
+        difficulty = (index % 11) / 10.0
+        challenge = generator.next_memory_challenge(difficulty=difficulty)
+        labels = {option.label for option in challenge.options}
+
+        assert challenge.target_sequence in labels
+        assert any(
+            option.code == challenge.expected_option_code
+            and option.label == challenge.target_sequence
+            for option in challenge.options
+        )
+
+
+def test_core_memory_options_include_visible_target_across_many_cycles() -> None:
+    clock = FakeClock()
+    cfg = ColoursLettersNumbersConfig(
+        scored_duration_s=120.0,
+        practice_rounds=0,
+        round_duration_s=0.05,
+        sequence_show_s=0.05,
+        memory_recall_delay_s=0.05,
+        memory_recall_delay_max_s=0.05,
+        diamond_spawn_interval_s=99.0,
+        diamond_spawn_interval_max_s=99.0,
+        diamond_speed_norm_per_s=0.2,
+        diamond_speed_max_norm_per_s=0.2,
+        max_live_diamonds=2,
+    )
+    engine = build_colours_letters_numbers_test(clock=clock, seed=991, difficulty=0.7, config=cfg)
+    engine.start_practice()
+    engine.start_scored()
+
+    for _ in range(24):
+        visible = engine.snapshot().payload
+        assert visible is not None
+        assert visible.target_sequence is not None
+        target = visible.target_sequence
+
+        clock.advance(cfg.sequence_show_s + cfg.memory_recall_delay_s + 0.01)
+        engine.update()
+        options = engine.snapshot().payload
+        assert options is not None
+        assert options.options_active is True
+        assert target in {option.label for option in options.options}
+
+        target_code = next(option.code for option in options.options if option.label == target)
+        assert engine.submit_answer(f"MEM:{target_code}") is True
+
+        clock.advance(cfg.round_duration_s + 0.01)
+        engine.update()
+
+
 def test_higher_difficulty_increases_live_diamond_pressure() -> None:
     cfg = ColoursLettersNumbersConfig(
         scored_duration_s=6.0,
