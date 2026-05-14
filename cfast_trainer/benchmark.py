@@ -20,7 +20,13 @@ from .colours_letters_numbers import (
     build_colours_letters_numbers_test,
 )
 from .digit_recognition import build_digit_recognition_test
-from .godot_owned import build_godot_owned_test, spatial_integration_godot_config
+from .godot_owned import (
+    auditory_capacity_godot_config,
+    build_godot_owned_test,
+    rapid_tracking_godot_config,
+    spatial_integration_godot_config,
+    trace_test_godot_config,
+)
 from .guide_skill_catalog import OFFICIAL_GUIDE_TESTS
 from .instrument_comprehension import (
     InstrumentComprehensionConfig,
@@ -1095,7 +1101,13 @@ def _build_benchmark_probe_engine(
             title="Rapid Tracking",
             duration_s=duration_s,
             mode="benchmark",
-            config={"benchmark": True},
+            config=rapid_tracking_godot_config(
+                test_code=probe_code,
+                mode="benchmark",
+                difficulty=difficulty,
+                duration_s=duration_s,
+                extra={"benchmark": True},
+            ),
         )
     if probe_code == "airborne_numerical":
         return build_airborne_numerical_test(
@@ -1125,7 +1137,13 @@ def _build_benchmark_probe_engine(
             title="Auditory Capacity",
             duration_s=duration_s,
             mode="benchmark",
-            config={"benchmark": True},
+            config=auditory_capacity_godot_config(
+                test_code=probe_code,
+                mode="benchmark",
+                difficulty=difficulty,
+                duration_s=duration_s,
+                extra={"benchmark": True},
+            ),
         )
     if probe_code == "spatial_integration":
         return build_godot_owned_test(
@@ -1174,7 +1192,13 @@ def _build_benchmark_probe_engine(
             title="Trace Test 1",
             duration_s=duration_s,
             mode="benchmark",
-            config={"benchmark": True},
+            config=trace_test_godot_config(
+                test_code=probe_code,
+                mode="benchmark",
+                difficulty=difficulty,
+                duration_s=duration_s,
+                extra={"benchmark": True},
+            ),
         )
     if probe_code == "system_logic":
         return build_system_logic_test(
@@ -1208,7 +1232,13 @@ def _build_benchmark_probe_engine(
             title="Trace Test 2",
             duration_s=duration_s,
             mode="benchmark",
-            config={"benchmark": True},
+            config=trace_test_godot_config(
+                test_code=probe_code,
+                mode="benchmark",
+                difficulty=difficulty,
+                duration_s=duration_s,
+                extra={"benchmark": True},
+            ),
         )
     raise KeyError(f"unsupported benchmark probe: {probe_code}")
 

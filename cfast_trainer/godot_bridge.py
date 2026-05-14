@@ -95,6 +95,8 @@ GODOT_CONTROL_COMMANDS = {
     "godot_complete",
     "godot_error",
     "godot_event",
+    "godot_phase_advance",
+    "godot_phase_complete",
     "godot_progress",
     "godot_ready",
     "progress",
@@ -521,13 +523,20 @@ def _serialize_godot_owned(payload: GodotOwnedPayload) -> dict[str, object]:
     data["seed"] = int(spec.seed)
     data["difficulty"] = _finite_float(spec.difficulty)
     data["duration_s"] = _finite_float(spec.duration_s)
+    if str(spec.phase) == "practice" and spec.practice_duration_s > 0.0:
+        data["duration_s"] = _finite_float(spec.practice_duration_s)
     data["mode"] = str(spec.mode)
     if str(spec.kind) == KIND_AUDITORY_CAPACITY:
         assets = dict(data.get("assets", {}) if isinstance(data.get("assets"), Mapping) else {})
         assets.setdefault("audio_root", str(AUDITORY_CAPACITY_AUDIO_ASSET_PATH))
         data["assets"] = assets
         data.setdefault("asset_root", str(AUDITORY_CAPACITY_AUDIO_ASSET_PATH))
-        audio = dict(data.get("audio", {}) if isinstance(data.get("audio"), Mapping) else {})
+        config = data.get("config", {})
+        config_audio: dict[str, object] = {}
+        if isinstance(config, Mapping) and isinstance(config.get("audio"), Mapping):
+            config_audio = dict(config.get("audio", {}))
+        audio = dict(config_audio)
+        audio.update(dict(data.get("audio", {}) if isinstance(data.get("audio"), Mapping) else {}))
         audio.setdefault("tts_required", True)
         data["audio"] = audio
     return {

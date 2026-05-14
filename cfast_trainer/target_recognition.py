@@ -480,7 +480,7 @@ class TargetRecognitionGenerator:
         cycle_count: int,
     ) -> tuple[TargetRecognitionSystemCycle, ...]:
         rows = max(6, int(row_count))
-        n_cycles = max(2, int(cycle_count))
+        _ = cycle_count
         n_cols = 3
 
         total_cells = rows * n_cols
@@ -506,7 +506,7 @@ class TargetRecognitionGenerator:
                 remaining_indices[swap_idx],
                 remaining_indices[idx],
             )
-        target_indices = [first_target_index, *remaining_indices[: max(0, n_cycles - 1)]]
+        target_indices = [first_target_index, *remaining_indices]
 
         stable_columns = tuple(
             tuple(board_codes[(col_idx * rows) + row_idx] for row_idx in range(rows))

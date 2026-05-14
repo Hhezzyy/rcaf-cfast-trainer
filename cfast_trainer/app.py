@@ -232,9 +232,12 @@ from .godot_bridge import GODOT_BACKEND_NAME, GodotBridgeManager, godot_kind_for
 from .godot_owned import (
     GODOT_OWNED_KINDS,
     GodotOwnedPayload,
+    auditory_capacity_godot_config,
     build_godot_owned_test,
     godot_kind_for_test_code,
+    rapid_tracking_godot_config,
     spatial_integration_godot_config,
+    trace_test_godot_config,
 )
 from .instrument_comprehension import (
     InstrumentAircraftViewPreset,
@@ -3841,6 +3844,8 @@ class App:
             "godot_event",
             "godot_complete",
             "godot_error",
+            "godot_phase_advance",
+            "godot_phase_complete",
             "ready",
             "progress",
             "event",
@@ -4433,12 +4438,54 @@ class App:
         noise_level: float | None,
         distortion_level: float | None,
         noise_source: str | None,
+        ambient_volume: float | None | object = _SETTINGS_UNSET,
+        primary_voice_volume: float | None | object = _SETTINGS_UNSET,
+        decoy_voice_volume: float | None | object = _SETTINGS_UNSET,
+        filler_voice_volume: float | None | object = _SETTINGS_UNSET,
+        beep_volume: float | None | object = _SETTINGS_UNSET,
     ) -> None:
         if self._runtime_defaults_store is None:
             return
         self._runtime_defaults_store.set_auditory_noise_level(noise_level)
         self._runtime_defaults_store.set_auditory_distortion_level(distortion_level)
         self._runtime_defaults_store.set_auditory_noise_source(noise_source)
+        if ambient_volume is not _SETTINGS_UNSET:
+            self._runtime_defaults_store.set_auditory_ambient_volume(cast(float | None, ambient_volume))
+        if primary_voice_volume is not _SETTINGS_UNSET:
+            self._runtime_defaults_store.set_auditory_primary_voice_volume(
+                cast(float | None, primary_voice_volume)
+            )
+        if decoy_voice_volume is not _SETTINGS_UNSET:
+            self._runtime_defaults_store.set_auditory_decoy_voice_volume(
+                cast(float | None, decoy_voice_volume)
+            )
+        if filler_voice_volume is not _SETTINGS_UNSET:
+            self._runtime_defaults_store.set_auditory_filler_voice_volume(
+                cast(float | None, filler_voice_volume)
+            )
+        if beep_volume is not _SETTINGS_UNSET:
+            self._runtime_defaults_store.set_auditory_beep_volume(cast(float | None, beep_volume))
+
+    def auditory_godot_audio_overrides(self) -> dict[str, object]:
+        if self._runtime_defaults_store is None:
+            return {}
+        overrides: dict[str, object] = {}
+        ambient = self._runtime_defaults_store.resolved_auditory_ambient_volume()
+        primary = self._runtime_defaults_store.resolved_auditory_primary_voice_volume()
+        decoy = self._runtime_defaults_store.resolved_auditory_decoy_voice_volume()
+        filler = self._runtime_defaults_store.resolved_auditory_filler_voice_volume()
+        beep = self._runtime_defaults_store.resolved_auditory_beep_volume()
+        if ambient is not None:
+            overrides["ambient_volume_db"] = _auditory_ambient_volume_db(ambient)
+        if primary is not None:
+            overrides["primary_voice_volume"] = _auditory_tts_volume(primary)
+        if decoy is not None:
+            overrides["distractor_voice_volume"] = _auditory_tts_volume(decoy)
+        if filler is not None:
+            overrides["filler_voice_volume"] = _auditory_tts_volume(filler)
+        if beep is not None:
+            overrides["beep_volume_db"] = _auditory_beep_volume_db(beep)
+        return overrides
 
     def _build_persistence_summary_lines(self, *, test_code: str) -> list[str]:
         if self._results_store is None:
@@ -7363,6 +7410,22 @@ def _clamp(value: float, lo: float, hi: float) -> float:
     if value >= hi:
         return hi
     return float(value)
+
+
+def _auditory_volume_ratio(value: object) -> float:
+    return _clamp(_as_float(value, 0.0), 0.0, 1.0)
+
+
+def _auditory_ambient_volume_db(value: object) -> float:
+    return -34.0 + (_auditory_volume_ratio(value) * 30.0)
+
+
+def _auditory_beep_volume_db(value: object) -> float:
+    return -24.0 + (_auditory_volume_ratio(value) * 24.0)
+
+
+def _auditory_tts_volume(value: object) -> float:
+    return _auditory_volume_ratio(value) * 100.0
 
 
 def _iter_connected_joysticks() -> list[pygame.joystick.Joystick]:
@@ -10521,6 +10584,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         self._tr_scene_active_targets: list[str] = []
         self._tr_scene_live_counts_by_label: dict[str, int] = {}
         self._tr_scene_target_alpha_by_label: dict[str, float] = {}
+        self._tr_scene_retired_labels: set[str] = set()
         self._tr_scene_target_cap = 5
         self._tr_scene_spawn_accum_s = 0.0
         self._tr_scene_next_spawn_after_s = 0.0
@@ -11637,12 +11701,11 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 active_panels = self._target_recognition_active_panels(tr_payload)
 
                 if "scene" in active_panels:
-                    for hit_rect, glyph_id in reversed(self._tr_scene_symbol_hitboxes):
-                        if not hit_rect.collidepoint(pos):
-                            continue
+                    scene_glyph_id = self._target_recognition_scene_pick_hit_glyph(pos)
+                    if scene_glyph_id is not None:
                         scene_success = self._target_recognition_handle_scene_press(
                             tr_payload,
-                            glyph_id=glyph_id,
+                            glyph_id=scene_glyph_id,
                         )
                         if "scene" in expected:
                             if scene_success:
@@ -12804,6 +12867,31 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                             self._get_auditory_noise_source_override()
                         ),
                     ),
+                    (
+                        "auditory_ambient_volume",
+                        "Ambient Volume",
+                        f"{self._get_auditory_track_volume_step('ambient')} / 10",
+                    ),
+                    (
+                        "auditory_primary_voice_volume",
+                        "Command Voice Volume",
+                        f"{self._get_auditory_track_volume_step('primary')} / 10",
+                    ),
+                    (
+                        "auditory_decoy_voice_volume",
+                        "Decoy Voice Volume",
+                        f"{self._get_auditory_track_volume_step('decoy')} / 10",
+                    ),
+                    (
+                        "auditory_filler_voice_volume",
+                        "Filler Voice Volume",
+                        f"{self._get_auditory_track_volume_step('filler')} / 10",
+                    ),
+                    (
+                        "auditory_beep_volume",
+                        "Beep Volume",
+                        f"{self._get_auditory_track_volume_step('beep')} / 10",
+                    ),
                 ]
             )
         if self._is_rapid_tracking_snapshot(self._engine.snapshot()):
@@ -12867,6 +12955,18 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             next_index = (current_index + direction) % len(options)
             self._apply_auditory_pause_settings(noise_source=options[next_index])
             return
+        track_key_by_row = {
+            "auditory_ambient_volume": "ambient",
+            "auditory_primary_voice_volume": "primary",
+            "auditory_decoy_voice_volume": "decoy",
+            "auditory_filler_voice_volume": "filler",
+            "auditory_beep_volume": "beep",
+        }
+        if key in track_key_by_row:
+            track_key = track_key_by_row[key]
+            step = self._get_auditory_track_volume_step(track_key)
+            self._apply_auditory_track_volume(track_key, step + direction)
+            return
         if key == "rapid_tracking_settings":
             return
         if key == "joystick_bindings":
@@ -12880,7 +12980,18 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
     def _shared_pause_settings_adjustable_keys(self) -> frozenset[str]:
         keys = {"difficulty", "review_mode"}
         if self._supports_auditory_pause_settings():
-            keys.update({"auditory_noise", "auditory_distortion", "auditory_source"})
+            keys.update(
+                {
+                    "auditory_noise",
+                    "auditory_distortion",
+                    "auditory_source",
+                    "auditory_ambient_volume",
+                    "auditory_primary_voice_volume",
+                    "auditory_decoy_voice_volume",
+                    "auditory_filler_voice_volume",
+                    "auditory_beep_volume",
+                }
+            )
         return frozenset(keys)
 
     def _shared_pause_settings_title(self) -> str:
@@ -13061,6 +13172,50 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             stripped = override.strip()
             return stripped or None
         return None
+
+    def _get_auditory_track_volume_step(self, track: str) -> int:
+        defaults = {
+            "ambient": 7,
+            "primary": 6,
+            "decoy": 8,
+            "filler": 4,
+            "beep": 8,
+        }
+        ratio: float | None = None
+        store = getattr(self._app, "_runtime_defaults_store", None)
+        if store is not None:
+            if track == "ambient":
+                ratio = store.resolved_auditory_ambient_volume()
+            elif track == "primary":
+                ratio = store.resolved_auditory_primary_voice_volume()
+            elif track == "decoy":
+                ratio = store.resolved_auditory_decoy_voice_volume()
+            elif track == "filler":
+                ratio = store.resolved_auditory_filler_voice_volume()
+            elif track == "beep":
+                ratio = store.resolved_auditory_beep_volume()
+        if ratio is None:
+            return defaults.get(track, 5)
+        return max(0, min(10, int(round(float(ratio) * 10.0))))
+
+    def _apply_auditory_track_volume(self, track: str, step: int) -> None:
+        ratio = self._step_to_ratio(step)
+        kwargs: dict[str, object] = {
+            "noise_level": getattr(self._engine, "_noise_level_override", None),
+            "distortion_level": getattr(self._engine, "_distortion_level_override", None),
+            "noise_source": getattr(self._engine, "_noise_source_override", None),
+        }
+        if track == "ambient":
+            kwargs["ambient_volume"] = ratio
+        elif track == "primary":
+            kwargs["primary_voice_volume"] = ratio
+        elif track == "decoy":
+            kwargs["decoy_voice_volume"] = ratio
+        elif track == "filler":
+            kwargs["filler_voice_volume"] = ratio
+        elif track == "beep":
+            kwargs["beep_volume"] = ratio
+        self._app.save_auditory_runtime_defaults(**kwargs)
 
     def _apply_auditory_pause_settings(
         self,
@@ -19224,13 +19379,12 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 heading=glyph.heading,
             )
 
-            hit_scale = 1.9
-            if str(glyph.live_target_label).strip():
-                hit_scale = 2.7
-            hit_r = max(8, int(size * hit_scale))
+            live = bool(self._target_recognition_scene_glyph_live_label(glyph))
+            hit_r = self._target_recognition_scene_hit_radius(glyph.entity, size, live=live)
             hit = pygame.Rect(rect.x + cx - hit_r, rect.y + cy - hit_r, hit_r * 2, hit_r * 2)
             self._tr_scene_symbol_hitboxes.append((hit, glyph_id))
 
+        self._draw_target_recognition_scene_clouds(scene, seed=seed)
         surface.blit(scene, rect.topleft)
         pygame.draw.rect(surface, (78, 98, 138), rect, 1)
 
@@ -19250,12 +19404,12 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             pygame.draw.circle(base, (tone - 8, tone, tone - 11, alpha), (cx, cy), radius)
 
         line_palette = (
-            (78, 90, 86, 62),
-            (92, 86, 74, 58),
-            (72, 84, 92, 54),
-            (96, 104, 90, 48),
+            (78, 90, 86, 84),
+            (92, 86, 74, 78),
+            (72, 84, 92, 74),
+            (96, 104, 90, 70),
         )
-        for _ in range(120):
+        for _ in range(170):
             col = line_palette[int(rng.uniform(0, len(line_palette)))]
             x1 = int(rng.uniform(0, width))
             y1 = int(rng.uniform(0, height))
@@ -19265,30 +19419,37 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             pygame.draw.line(base, col, (x1, y1), (x2, y2), w)
 
         shape_palette = (
-            (88, 98, 92, 48),
-            (94, 90, 78, 44),
-            (82, 90, 102, 46),
-            (100, 108, 94, 42),
+            (88, 98, 92, 76),
+            (94, 90, 78, 72),
+            (82, 90, 102, 74),
+            (100, 108, 94, 70),
+            (84, 112, 98, 68),
         )
-        for _ in range(84):
+        base_kinds = (
+            "circle",
+            "square",
+            "triangle",
+            "hexagon",
+            "octagon",
+            "bar",
+            "chevron",
+        )
+        for _ in range(125):
             col = shape_palette[int(rng.uniform(0, len(shape_palette)))]
-            kind = int(rng.uniform(0, 4))
+            kind = str(rng.choice(base_kinds))
             cx = int(rng.uniform(4, width - 4))
             cy = int(rng.uniform(4, height - 4))
             s = int(rng.uniform(6, 20))
-            if kind == 0:
-                pygame.draw.circle(base, col, (cx, cy), s, 1)
-            elif kind == 1:
-                pygame.draw.rect(base, col, pygame.Rect(cx - s, cy - s, s * 2, s * 2), 1)
-            elif kind == 2:
-                pts = ((cx, cy - s), (cx + s, cy + s), (cx - s, cy + s))
-                pygame.draw.polygon(base, col, pts, 1)
-            else:
-                pts = []
-                for idx in range(6):
-                    ang = (-math.pi / 2.0) + (idx * (math.tau / 6.0))
-                    pts.append((int(cx + math.cos(ang) * s), int(cy + math.sin(ang) * s)))
-                pygame.draw.polygon(base, col, pts, 1)
+            self._draw_target_recognition_clutter_shape(
+                base,
+                kind=kind,
+                cx=cx,
+                cy=cy,
+                size=s,
+                color=col,
+                rotation=float(rng.uniform(0.0, math.tau)),
+                line_w=1,
+            )
         return base
 
     @staticmethod
@@ -19466,28 +19627,29 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         seed: int,
     ) -> list[_TargetRecognitionAmbientShape]:
         rng = random.Random(seed ^ 0x51A9D317)
-        palette = (
-            (122, 108, 92),
-            (90, 104, 128),
-            (126, 116, 84),
-            (92, 120, 108),
-            (114, 92, 92),
-        )
-        kinds = ("arrow", "bar", "chevron", "diamond")
+        target_palette = self._target_recognition_scene_target_colour_palette()
+        unused_palette = self._target_recognition_scene_unused_colour_palette()
+        non_legend_kinds = self._target_recognition_scene_non_legend_clutter_kinds()
+        legend_kinds = self._target_recognition_scene_legend_clutter_kinds()
         shapes: list[_TargetRecognitionAmbientShape] = []
-        for _ in range(18):
-            color = palette[int(rng.uniform(0, len(palette)))]
-            min_alpha = float(rng.uniform(18.0, 36.0))
-            max_alpha = float(rng.uniform(42.0, 84.0))
-            velocity = float(rng.uniform(18.0, 40.0))
+        for _ in range(42):
+            if rng.random() < 0.56:
+                color = target_palette[int(rng.uniform(0, len(target_palette)))]
+                kind = str(rng.choice(non_legend_kinds))
+            else:
+                color = unused_palette[int(rng.uniform(0, len(unused_palette)))]
+                kind = str(rng.choice(legend_kinds + non_legend_kinds))
+            min_alpha = float(rng.uniform(46.0, 78.0))
+            max_alpha = float(rng.uniform(96.0, 158.0))
+            velocity = float(rng.uniform(16.0, 44.0))
             if rng.random() < 0.5:
                 velocity = -velocity
             shapes.append(
                 _TargetRecognitionAmbientShape(
-                    kind=str(rng.choice(kinds)),
+                    kind=kind,
                     nx=float(rng.uniform(0.06, 0.94)),
                     ny=float(rng.uniform(0.08, 0.94)),
-                    scale=float(rng.uniform(0.022, 0.052)),
+                    scale=float(rng.uniform(0.018, 0.060)),
                     rotation=float(rng.uniform(0.0, math.tau)),
                     color=color,
                     alpha=float(rng.uniform(min_alpha, max_alpha)),
@@ -19506,35 +19668,200 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             cx = int(shape.nx * float(w))
             cy = int(shape.ny * float(h))
             size = max(7, int(min(w, h) * shape.scale))
-            if shape.kind == "bar":
-                rect = pygame.Rect(cx - size, cy - max(2, size // 5), size * 2, max(4, size // 2))
-                pygame.draw.rect(scene, color, rect, 1)
-                continue
-            if shape.kind == "diamond":
-                pts = ((cx, cy - size), (cx + size, cy), (cx, cy + size), (cx - size, cy))
-                pygame.draw.polygon(scene, color, pts, 1)
-                continue
-            if shape.kind == "chevron":
-                pts = (
-                    (cx - size, cy - size),
-                    (cx, cy),
-                    (cx - size, cy + size),
-                    (cx + size, cy + max(2, size // 3)),
-                    (cx + size - max(2, size // 3), cy),
-                    (cx + size, cy - max(2, size // 3)),
-                )
-                pygame.draw.polygon(scene, color, pts, 1)
-                continue
-            pts = (
-                (cx - size, cy + max(2, size // 3)),
-                (cx + max(2, size // 2), cy + max(2, size // 3)),
-                (cx + max(2, size // 2), cy + size),
-                (cx + size, cy),
-                (cx + max(2, size // 2), cy - size),
-                (cx + max(2, size // 2), cy - max(2, size // 3)),
-                (cx - size, cy - max(2, size // 3)),
+            self._draw_target_recognition_clutter_shape(
+                scene,
+                kind=shape.kind,
+                cx=cx,
+                cy=cy,
+                size=size,
+                color=color,
+                rotation=shape.rotation,
+                line_w=1,
             )
-            pygame.draw.polygon(scene, color, pts, 1)
+
+    def _draw_target_recognition_scene_clouds(
+        self,
+        scene: pygame.Surface,
+        *,
+        seed: int,
+    ) -> None:
+        w, h = scene.get_size()
+        if w <= 0 or h <= 0:
+            return
+        rng = random.Random(seed ^ 0xA71C10D5)
+        elapsed_s = float(self._tr_scene_anim_frame) / 60.0
+        period_s = 136.0
+        active_s = 70.0
+        cloud_surface = pygame.Surface((w, h), pygame.SRCALPHA)
+        drew_cloud = False
+        for _ in range(2):
+            cycle = (elapsed_s + rng.uniform(0.0, period_s)) % period_s
+            if cycle > active_s:
+                continue
+            progress = cycle / active_s
+            fade = 0.82 + (math.sin(progress * math.pi) * 0.18)
+            alpha = int(round(rng.uniform(210.0, 232.0) * fade))
+            if alpha <= 2:
+                continue
+            cloud_w = int(w * rng.uniform(0.74, 1.12))
+            cloud_h = int(h * rng.uniform(0.86, 1.30))
+            cx = int(-cloud_w + progress * float(w + (cloud_w * 2)))
+            cy = int(h * rng.uniform(0.22, 0.78))
+            lump_count = 8 + int(rng.uniform(0, 5))
+            for idx in range(lump_count):
+                dx = int(((idx / max(1, lump_count - 1)) - 0.5) * cloud_w)
+                dx += int(rng.uniform(-cloud_w * 0.08, cloud_w * 0.08))
+                dy = int(rng.uniform(-cloud_h * 0.18, cloud_h * 0.18))
+                rw = int(cloud_w * rng.uniform(0.24, 0.42))
+                rh = int(cloud_h * rng.uniform(0.48, 0.86))
+                color = (178, 194, 198, alpha)
+                pygame.draw.ellipse(
+                    cloud_surface,
+                    color,
+                    pygame.Rect(cx + dx - rw // 2, cy + dy - rh // 2, rw, rh),
+                )
+            drew_cloud = True
+        if drew_cloud:
+            scene.blit(cloud_surface, (0, 0))
+
+    @staticmethod
+    def _target_recognition_scene_target_colour_palette() -> tuple[tuple[int, int, int], ...]:
+        return ((224, 88, 90), (96, 176, 232), (214, 206, 88))
+
+    @staticmethod
+    def _target_recognition_scene_unused_colour_palette() -> tuple[tuple[int, int, int], ...]:
+        return (
+            (94, 190, 118),
+            (174, 112, 212),
+            (94, 208, 210),
+            (186, 146, 92),
+            (156, 166, 178),
+        )
+
+    @staticmethod
+    def _target_recognition_scene_non_legend_clutter_kinds() -> tuple[str, ...]:
+        return ("arrow", "bar", "chevron", "hexagon", "octagon", "cross", "bracket", "slash")
+
+    @staticmethod
+    def _target_recognition_scene_legend_clutter_kinds() -> tuple[str, ...]:
+        return ("circle", "square", "triangle", "diamond")
+
+    @classmethod
+    def _target_recognition_scene_clutter_pair_is_safe(
+        cls,
+        kind: str,
+        color: tuple[int, int, int],
+    ) -> bool:
+        kind_key = str(kind)
+        target_colours = set(cls._target_recognition_scene_target_colour_palette())
+        if tuple(color[:3]) in target_colours:
+            return kind_key in cls._target_recognition_scene_non_legend_clutter_kinds()
+        if kind_key in cls._target_recognition_scene_legend_clutter_kinds():
+            return tuple(color[:3]) not in target_colours
+        return True
+
+    @classmethod
+    def _draw_target_recognition_clutter_shape(
+        cls,
+        surface: pygame.Surface,
+        *,
+        kind: str,
+        cx: int,
+        cy: int,
+        size: int,
+        color: tuple[int, int, int, int],
+        rotation: float = 0.0,
+        line_w: int = 1,
+    ) -> None:
+        s = max(3, int(size))
+        width = max(1, int(line_w))
+        kind_key = str(kind)
+        rgb = tuple(int(v) for v in tuple(color)[:3])
+        if not cls._target_recognition_scene_clutter_pair_is_safe(kind_key, rgb):
+            return
+
+        def polygon_points(
+            count: int,
+            radius: float,
+            offset: float = -math.pi / 2.0,
+        ) -> list[tuple[int, int]]:
+            return [
+                (
+                    int(cx + math.cos(rotation + offset + (idx * math.tau / count)) * radius),
+                    int(cy + math.sin(rotation + offset + (idx * math.tau / count)) * radius),
+                )
+                for idx in range(count)
+            ]
+
+        if kind_key == "circle":
+            pygame.draw.circle(surface, color, (cx, cy), s, width)
+            return
+        if kind_key == "square":
+            half = s
+            pts = (
+                (cx - half, cy - half),
+                (cx + half, cy - half),
+                (cx + half, cy + half),
+                (cx - half, cy + half),
+            )
+            pygame.draw.polygon(surface, color, pts, width)
+            return
+        if kind_key == "triangle":
+            pygame.draw.polygon(surface, color, polygon_points(3, float(s)), width)
+            return
+        if kind_key == "diamond":
+            pts = ((cx, cy - s), (cx + s, cy), (cx, cy + s), (cx - s, cy))
+            pygame.draw.polygon(surface, color, pts, width)
+            return
+        if kind_key == "hexagon":
+            pygame.draw.polygon(surface, color, polygon_points(6, float(s)), width)
+            return
+        if kind_key == "octagon":
+            pygame.draw.polygon(surface, color, polygon_points(8, float(s)), width)
+            return
+        if kind_key == "bar":
+            rect = pygame.Rect(cx - s, cy - max(2, s // 5), s * 2, max(4, s // 2))
+            pygame.draw.rect(surface, color, rect, width)
+            return
+        if kind_key == "chevron":
+            pts = (
+                (cx - s, cy - s),
+                (cx, cy),
+                (cx - s, cy + s),
+                (cx + s, cy + max(2, s // 3)),
+                (cx + s - max(2, s // 3), cy),
+                (cx + s, cy - max(2, s // 3)),
+            )
+            pygame.draw.polygon(surface, color, pts, width)
+            return
+        if kind_key == "cross":
+            pygame.draw.line(surface, color, (cx - s, cy), (cx + s, cy), width)
+            pygame.draw.line(surface, color, (cx, cy - s), (cx, cy + s), width)
+            return
+        if kind_key == "bracket":
+            gap = max(3, s // 2)
+            pygame.draw.line(surface, color, (cx - s, cy - s), (cx - gap, cy - s), width)
+            pygame.draw.line(surface, color, (cx - s, cy - s), (cx - s, cy + s), width)
+            pygame.draw.line(surface, color, (cx - s, cy + s), (cx - gap, cy + s), width)
+            pygame.draw.line(surface, color, (cx + gap, cy - s), (cx + s, cy - s), width)
+            pygame.draw.line(surface, color, (cx + s, cy - s), (cx + s, cy + s), width)
+            pygame.draw.line(surface, color, (cx + gap, cy + s), (cx + s, cy + s), width)
+            return
+        if kind_key == "slash":
+            pygame.draw.line(surface, color, (cx - s, cy + s), (cx + s, cy - s), width)
+            pygame.draw.line(surface, color, (cx - s // 2, cy + s), (cx + s, cy - s // 2), width)
+            return
+
+        pts = (
+            (cx - s, cy + max(2, s // 3)),
+            (cx + max(2, s // 2), cy + max(2, s // 3)),
+            (cx + max(2, s // 2), cy + s),
+            (cx + s, cy),
+            (cx + max(2, s // 2), cy - s),
+            (cx + max(2, s // 2), cy - max(2, s // 3)),
+            (cx - s, cy - max(2, s // 3)),
+        )
+        pygame.draw.polygon(surface, color, pts, width)
 
     def _target_recognition_reset_scene_subtask(self) -> None:
         self._target_recognition_reset_runtime_timer()
@@ -19549,6 +19876,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         self._tr_scene_active_targets = []
         self._tr_scene_live_counts_by_label = {}
         self._tr_scene_target_alpha_by_label = {}
+        self._tr_scene_retired_labels = set()
         self._tr_scene_target_cap = 5
         self._tr_scene_spawn_accum_s = 0.0
         self._tr_scene_next_spawn_after_s = 0.0
@@ -19584,6 +19912,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             self._tr_scene_active_targets = []
             self._tr_scene_live_counts_by_label = {}
             self._tr_scene_target_alpha_by_label = {}
+            self._tr_scene_retired_labels = set()
             self._tr_scene_spawn_accum_s = 0.0
             self._tr_scene_next_spawn_after_s = 0.0
             self._tr_scene_spawn_timer_armed = False
@@ -19749,9 +20078,15 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         for _ in range(queue_len):
             label = str(self._tr_scene_target_queue.pop(0))
             self._tr_scene_target_queue.append(label)
+            if label in self._tr_scene_retired_labels:
+                continue
             if allow_new_unique or label in self._tr_scene_live_counts_by_label:
                 return label
-        return str(self._tr_scene_target_queue[0]) if self._tr_scene_target_queue else None
+        for label in self._tr_scene_target_queue:
+            text = str(label)
+            if text not in self._tr_scene_retired_labels:
+                return text
+        return None
 
     def _target_recognition_scene_arm_spawn_timer(self, payload: TargetRecognitionPayload) -> None:
         if self._tr_scene_spawn_timer_armed:
@@ -19801,6 +20136,8 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             self._tr_selected_panels.discard("scene")
             return False
 
+        self._tr_scene_retired_labels.add(live_label)
+        self._tr_scene_target_alpha_by_label.pop(live_label, None)
         self._tr_scene_points += 1
         self._tr_scene_hits += 1
         if self._tr_scene_active_targets:
@@ -19808,6 +20145,78 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             return False
         self._tr_selected_panels.add("scene")
         return True
+
+    def _target_recognition_scene_pick_hit_glyph(self, pos: object) -> int | None:
+        point = (int(pos[0]), int(pos[1])) if isinstance(pos, (tuple, list)) and len(pos) >= 2 else pos
+        candidates: list[tuple[int, int, int]] = []
+        for hit_rect, glyph_id in self._tr_scene_symbol_hitboxes:
+            if not hit_rect.collidepoint(point):
+                continue
+            glyph = self._tr_scene_glyphs.get(int(glyph_id))
+            if glyph is None:
+                continue
+            priority = 0 if self._target_recognition_scene_glyph_live_label(glyph) else 1
+            candidates.append((priority, hit_rect.w * hit_rect.h, int(glyph_id)))
+        if candidates:
+            candidates.sort()
+            return int(candidates[0][2])
+        return self._target_recognition_scene_nearest_live_glyph(point)
+
+    def _target_recognition_scene_nearest_live_glyph(self, pos: object) -> int | None:
+        if self._tr_scene_panel_hitbox is None:
+            return None
+        px, py = (int(pos[0]), int(pos[1])) if isinstance(pos, (tuple, list)) and len(pos) >= 2 else (0, 0)
+        panel = self._tr_scene_panel_hitbox
+        best_id: int | None = None
+        best_dist_sq = float("inf")
+        for glyph_id in self._tr_scene_glyph_order:
+            glyph = self._tr_scene_glyphs.get(int(glyph_id))
+            if glyph is None or glyph.kind != "entity" or glyph.entity is None:
+                continue
+            if not self._target_recognition_scene_glyph_live_label(glyph):
+                continue
+            cx = panel.x + int(glyph.nx * float(panel.w))
+            cy = panel.y + int(glyph.ny * float(panel.h))
+            size = max(5, int(min(panel.w, panel.h) * glyph.scale))
+            radius = self._target_recognition_scene_hit_radius(glyph.entity, size, live=True) + 8
+            dist_sq = float((px - cx) * (px - cx) + (py - cy) * (py - cy))
+            if dist_sq <= float(radius * radius) and dist_sq < best_dist_sq:
+                best_dist_sq = dist_sq
+                best_id = int(glyph_id)
+        return best_id
+
+    def _target_recognition_scene_glyph_live_label(
+        self,
+        glyph: _TargetRecognitionSceneGlyph,
+    ) -> str:
+        live_label = str(glyph.live_target_label).strip()
+        if live_label:
+            return live_label
+        if glyph.kind != "entity" or glyph.entity is None:
+            return ""
+        for label in tuple(self._tr_scene_active_targets):
+            if self._target_recognition_scene_label_matches(glyph.entity, label):
+                return str(label)
+        return ""
+
+    @staticmethod
+    def _target_recognition_scene_hit_radius(
+        entity: TargetRecognitionSceneEntity,
+        size: int,
+        *,
+        live: bool,
+    ) -> int:
+        s = max(5, int(size))
+        radius = s + 7
+        if entity.damaged:
+            radius = max(radius, int(round(s * 1.45)) + 5)
+        if entity.high_priority:
+            radius = max(radius, int(round(s * 2.05)) + 8)
+        if entity.shape in {"beacon", "unknown"}:
+            radius = max(radius, int(round(s * 1.35)) + 5)
+        if live:
+            radius += 6
+        return max(10, radius)
 
     def _target_recognition_scene_reseed_glyph(
         self,
@@ -19905,6 +20314,8 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             return
 
         label_key = str(label)
+        if label_key in self._tr_scene_retired_labels:
+            return
         label_was_active = label_key in self._tr_scene_active_targets
         if label_key not in self._tr_scene_active_targets:
             self._tr_scene_active_targets.append(label_key)
@@ -20520,13 +20931,6 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             if row_count <= 0:
                 return
 
-        system_feedback_hold = (
-            self._tr_system_feedback_state == "ok"
-            and bool(self._tr_system_pending_target_code)
-            and now_ms < int(self._tr_system_feedback_until_ms)
-        )
-        if system_feedback_hold:
-            return
         if self._tr_system_pending_target_code:
             if self._tr_system_pending_cycle_index is not None:
                 self._tr_system_cycle_index = int(self._tr_system_pending_cycle_index)
@@ -20582,7 +20986,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
     ) -> str:
         if not payload.system_cycles:
             return str(payload.system_target)
-        idx = max(0, min(len(payload.system_cycles) - 1, int(cycle_index)))
+        idx = int(cycle_index) % len(payload.system_cycles)
         return str(payload.system_cycles[idx].target)
 
     def _target_recognition_pick_initial_system_target(
@@ -20604,12 +21008,6 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
     ) -> bool:
         self._target_recognition_sync_system_stream(payload)
         now_ms = self._runtime_now_ms()
-        if (
-            self._tr_system_feedback_state == "ok"
-            and bool(self._tr_system_pending_target_code)
-            and now_ms < int(self._tr_system_feedback_until_ms)
-        ):
-            return str(clicked_code) == str(self._tr_system_feedback_code)
         self._tr_system_feedback_code = str(clicked_code)
         if str(clicked_code) != str(self._tr_system_target_code):
             self._tr_system_feedback_state = "miss"
@@ -20619,14 +21017,17 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         self._tr_system_hits += 1
         if payload.system_cycles:
             next_cycle_index = (self._tr_system_cycle_index + 1) % len(payload.system_cycles)
-            self._tr_system_pending_cycle_index = next_cycle_index
-            self._tr_system_pending_target_code = self._target_recognition_system_cycle_target(
+            self._tr_system_cycle_index = next_cycle_index
+            self._tr_system_target_code = self._target_recognition_system_cycle_target(
                 payload,
                 cycle_index=next_cycle_index,
             )
+            self._tr_system_pending_cycle_index = None
+            self._tr_system_pending_target_code = ""
         else:
             self._tr_system_pending_cycle_index = None
-            self._tr_system_pending_target_code = self._target_recognition_pick_next_system_target()
+            self._tr_system_target_code = self._target_recognition_pick_next_system_target()
+            self._tr_system_pending_target_code = ""
         self._tr_system_feedback_state = "ok"
         self._tr_system_feedback_until_ms = now_ms + 420
         return True
@@ -27082,10 +27483,35 @@ def run(
         if godot_kind in GODOT_OWNED_KINDS:
             title = str(workout_code).replace("_", " ").title()
             godot_config: dict[str, object] = {"workout": True}
-            if godot_kind == "spatial_integration":
+            if godot_kind == "auditory_capacity":
+                godot_config = auditory_capacity_godot_config(
+                    test_code=workout_code,
+                    mode="workout",
+                    difficulty=app.effective_difficulty_ratio(workout_code),
+                    duration_s=90.0 * 60.0,
+                    review_mode_enabled=app.review_mode_enabled(),
+                    extra={**app.auditory_godot_audio_overrides(), "workout": True},
+                )
+            elif godot_kind == "rapid_tracking":
+                godot_config = rapid_tracking_godot_config(
+                    test_code=workout_code,
+                    mode="workout",
+                    difficulty=app.effective_difficulty_ratio(workout_code),
+                    duration_s=90.0 * 60.0,
+                    extra={"workout": True},
+                )
+            elif godot_kind == "spatial_integration":
                 godot_config = spatial_integration_godot_config(
                     test_code=workout_code,
                     mode="workout",
+                    duration_s=90.0 * 60.0,
+                    extra={"workout": True},
+                )
+            elif godot_kind in {"trace_test_1", "trace_test_2"}:
+                godot_config = trace_test_godot_config(
+                    test_code=workout_code,
+                    mode="workout",
+                    difficulty=app.effective_difficulty_ratio(workout_code),
                     duration_s=90.0 * 60.0,
                     extra={"workout": True},
                 )
@@ -28269,6 +28695,11 @@ def run(
                 kind="rapid_tracking",
                 test_code="rapid_tracking",
                 title="Rapid Tracking",
+                config=rapid_tracking_godot_config(
+                    test_code="rapid_tracking",
+                    mode="standard",
+                    difficulty=difficulty,
+                ),
             ),
         )
 
@@ -28292,7 +28723,13 @@ def run(
                 title=title,
                 duration_s=scored_duration_s,
                 mode=str(resolved_mode),
-                config={"drill": True},
+                config=rapid_tracking_godot_config(
+                    test_code=test_code,
+                    mode=str(resolved_mode),
+                    difficulty=difficulty,
+                    duration_s=scored_duration_s,
+                    extra={"drill": True},
+                ),
             ),
         )
 
@@ -28550,6 +28987,11 @@ def run(
                 kind="trace_test_1",
                 test_code="trace_test_1",
                 title="Trace Test 1",
+                config=trace_test_godot_config(
+                    test_code="trace_test_1",
+                    mode="standard",
+                    difficulty=difficulty,
+                ),
             ),
         )
 
@@ -28564,6 +29006,11 @@ def run(
                 kind="trace_test_2",
                 test_code="trace_test_2",
                 title="Trace Test 2",
+                config=trace_test_godot_config(
+                    test_code="trace_test_2",
+                    mode="standard",
+                    difficulty=difficulty,
+                ),
             ),
         )
 
@@ -28587,7 +29034,13 @@ def run(
                 title=title,
                 duration_s=scored_duration_s,
                 mode=str(resolved_mode),
-                config={"drill": True},
+                config=trace_test_godot_config(
+                    test_code=test_code,
+                    mode=str(resolved_mode),
+                    difficulty=difficulty,
+                    duration_s=scored_duration_s,
+                    extra={"drill": True},
+                ),
             ),
         )
 
@@ -28675,7 +29128,14 @@ def run(
                 title=title,
                 duration_s=scored_duration_s,
                 mode=str(resolved_mode),
-                config={"drill": True},
+                config=auditory_capacity_godot_config(
+                    test_code=test_code,
+                    mode=str(resolved_mode),
+                    difficulty=difficulty,
+                    duration_s=scored_duration_s,
+                    review_mode_enabled=app.review_mode_enabled(),
+                    extra={**app.auditory_godot_audio_overrides(), "drill": True},
+                ),
             ),
         )
 
@@ -28754,6 +29214,13 @@ def run(
                 kind="auditory_capacity",
                 test_code="auditory_capacity",
                 title="Auditory Capacity",
+                config=auditory_capacity_godot_config(
+                    test_code="auditory_capacity",
+                    mode="standard",
+                    difficulty=difficulty,
+                    review_mode_enabled=app.review_mode_enabled(),
+                    extra=app.auditory_godot_audio_overrides(),
+                ),
             ),
         )
 

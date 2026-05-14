@@ -20,6 +20,13 @@ const GROUND_COLOR := Color(0.42, 0.50, 0.26, 1.0)
 const CARD_COLOR := Color(0.74, 0.76, 0.78, 1.0)
 const PANEL_BLUE := Color(0.02, 0.05, 0.42, 1.0)
 const CANOPY_COLOR := Color(0.54, 0.86, 0.95, 1.0)
+const TRACE_TEST_1_CAMERA_POSITION := Vector3(0.75, 2.35, 4.45)
+const TRACE_TEST_1_CAMERA_TARGET := Vector3(0.0, 1.2, -6.1)
+const TRACE_TEST_2_CAMERA_POSITION := Vector3(1.05, 2.55, 4.85)
+const TRACE_TEST_2_CAMERA_TARGET := Vector3(0.0, 1.25, -7.55)
+const TRACE_TEST_1_SCENE_OFFSET := Vector3(0.0, 0.72, -6.0)
+const TRACE_TEST_2_SCENE_OFFSET := Vector3(0.0, 0.72, -7.65)
+const TRACE_GUIDE_FRAME_SCALE := 2.0
 const AUDITORY_TRIANGLE_POINTS := [
 	Vector2(0.0, 1.22),
 	Vector2(-1.056, -0.61),
@@ -39,6 +46,11 @@ var overlay_label: Label
 var menu_layer: CanvasLayer
 var menu_panel: PanelContainer
 var menu_vbox: VBoxContainer
+var phase_layer: CanvasLayer
+var phase_panel: PanelContainer
+var phase_vbox: VBoxContainer
+var phase_screen_active := false
+var phase_screen_spec := {}
 var menu_state := {}
 var material_cache := {}
 var last_kind := ""
@@ -46,6 +58,7 @@ var last_requested_window_mode := ""
 var last_reported_window_mode := ""
 var auditory_runtime: Node3D = null
 var godot_owned_runtime: Node3D = null
+var runtime_pause_active := false
 
 
 func _ready() -> void:
@@ -62,10 +75,13 @@ func _process(delta: float) -> void:
 		var parsed = JSON.parse_string(text)
 		if typeof(parsed) == TYPE_DICTIONARY:
 			_handle_message(parsed)
-	if auditory_runtime != null:
-		auditory_runtime.update_runtime(delta, camera)
-	if godot_owned_runtime != null:
-		godot_owned_runtime.update_runtime(delta, camera)
+	var runtime_paused := _menu_active()
+	_sync_runtime_pause_state(runtime_paused)
+	if not runtime_paused:
+		if auditory_runtime != null:
+			auditory_runtime.update_runtime(delta, camera)
+		if godot_owned_runtime != null:
+			godot_owned_runtime.update_runtime(delta, camera)
 	_report_window_mode_if_changed()
 
 
@@ -160,6 +176,19 @@ func _build_world() -> void:
 	menu_vbox.add_theme_constant_override("separation", 8)
 	menu_panel.add_child(menu_vbox)
 
+	phase_layer = CanvasLayer.new()
+	phase_layer.layer = 6
+	add_child(phase_layer)
+	phase_panel = PanelContainer.new()
+	phase_panel.visible = false
+	phase_panel.position = Vector2(132, 64)
+	phase_panel.custom_minimum_size = Vector2(696, 412)
+	phase_layer.add_child(phase_panel)
+	phase_vbox = VBoxContainer.new()
+	phase_vbox.custom_minimum_size = Vector2(672, 388)
+	phase_vbox.add_theme_constant_override("separation", 14)
+	phase_panel.add_child(phase_vbox)
+
 
 func _handle_message(message: Dictionary) -> void:
 	if str(message.get("command", "")) == "quit":
@@ -175,9 +204,12 @@ func _handle_message(message: Dictionary) -> void:
 	overlay_label.text = title + "  |  " + phase + "  |  Godot companion"
 	var start_spec := _as_dict(_as_dict(payload).get("godot_start", {}))
 	if start_spec.size() > 0 and str(start_spec.get("authority", "")) == "godot":
+		start_spec["progress"] = _as_dict(_as_dict(payload).get("progress", {}))
+		start_spec["error"] = _as_dict(_as_dict(payload).get("error", {}))
 		_present_godot_owned(kind, start_spec, phase)
 		last_kind = kind
 		return
+	_hide_godot_owned_phase_screen()
 	if kind != "auditory_capacity":
 		_clear_dynamic()
 	match kind:
@@ -252,6 +284,14 @@ func _toggle_window_mode_from_godot() -> void:
 
 func _menu_active() -> bool:
 	return bool(menu_state.get("active", false))
+
+
+func _sync_runtime_pause_state(active: bool) -> void:
+	runtime_pause_active = bool(active)
+	if auditory_runtime != null and auditory_runtime.has_method("set_paused"):
+		auditory_runtime.call("set_paused", runtime_pause_active)
+	if godot_owned_runtime != null and godot_owned_runtime.has_method("set_paused"):
+		godot_owned_runtime.call("set_paused", runtime_pause_active)
 
 
 func _rebuild_menu_overlay() -> void:
@@ -380,6 +420,16 @@ func _unhandled_input(event: InputEvent) -> void:
 	if key == KEY_KP_ENTER:
 		get_viewport().set_input_as_handled()
 		return
+	if phase_screen_active and not _menu_active():
+		if key == KEY_ENTER or key == KEY_KP_PERIOD or key == KEY_SPACE:
+			_send_control("godot_phase_advance", {
+				"run_key": str(phase_screen_spec.get("run_key", "")),
+				"phase": str(phase_screen_spec.get("phase", "")),
+				"kind": str(phase_screen_spec.get("kind", "")),
+				"test_code": str(phase_screen_spec.get("test_code", "")),
+			})
+			get_viewport().set_input_as_handled()
+			return
 	if not _menu_active() and auditory_runtime != null:
 		if auditory_runtime.handle_key(key_event):
 			get_viewport().set_input_as_handled()
@@ -414,6 +464,8 @@ func _as_dict(value) -> Dictionary:
 func _stop_auditory_runtime() -> void:
 	if auditory_runtime == null:
 		return
+	if auditory_runtime.has_method("set_paused"):
+		auditory_runtime.call("set_paused", false)
 	auditory_runtime.queue_free()
 	auditory_runtime = null
 
@@ -421,6 +473,8 @@ func _stop_auditory_runtime() -> void:
 func _stop_godot_owned_runtime() -> void:
 	if godot_owned_runtime == null:
 		return
+	if godot_owned_runtime.has_method("set_paused"):
+		godot_owned_runtime.call("set_paused", false)
 	godot_owned_runtime.queue_free()
 	godot_owned_runtime = null
 
@@ -431,6 +485,7 @@ func _stop_all_runtimes() -> void:
 
 
 func _clear_dynamic() -> void:
+	_sync_runtime_pause_state(false)
 	for child in dynamic_root.get_children():
 		child.queue_free()
 	auditory_runtime = null
@@ -489,6 +544,14 @@ func _present_auditory(payload: Dictionary, phase: String = "") -> void:
 
 
 func _present_godot_owned(kind: String, spec: Dictionary, phase: String = "") -> void:
+	spec["phase"] = str(spec.get("phase", phase)).to_lower()
+	if _godot_owned_phase_screen_needed(str(spec.get("phase", ""))):
+		_stop_auditory_runtime()
+		_stop_godot_owned_runtime()
+		_clear_dynamic()
+		_show_godot_owned_phase_screen(kind, spec)
+		return
+	_hide_godot_owned_phase_screen()
 	if kind == "auditory_capacity":
 		_stop_godot_owned_runtime()
 		if auditory_runtime == null:
@@ -496,7 +559,6 @@ func _present_godot_owned(kind: String, spec: Dictionary, phase: String = "") ->
 			auditory_runtime = AuditoryRuntime.new()
 			auditory_runtime.name = "AuditoryCapacityRuntime"
 			dynamic_root.add_child(auditory_runtime)
-		spec["phase"] = str(spec.get("phase", phase))
 		auditory_runtime.start(spec, Callable(self, "_send_control"))
 		return
 	_stop_auditory_runtime()
@@ -509,7 +571,6 @@ func _present_godot_owned(kind: String, spec: Dictionary, phase: String = "") ->
 			godot_owned_runtime.name = "RapidTrackingRuntime"
 			dynamic_root.add_child(godot_owned_runtime)
 		spec["kind"] = kind
-		spec["phase"] = str(spec.get("phase", phase))
 		godot_owned_runtime.start(spec, Callable(self, "_send_control"))
 		return
 	if kind == "spatial_integration":
@@ -521,7 +582,6 @@ func _present_godot_owned(kind: String, spec: Dictionary, phase: String = "") ->
 			godot_owned_runtime.name = "SpatialIntegrationRuntime"
 			dynamic_root.add_child(godot_owned_runtime)
 		spec["kind"] = kind
-		spec["phase"] = str(spec.get("phase", phase))
 		godot_owned_runtime.start(spec, Callable(self, "_send_control"))
 		return
 	if godot_owned_runtime != null and godot_owned_runtime.name in ["RapidTrackingRuntime", "SpatialIntegrationRuntime"]:
@@ -532,8 +592,61 @@ func _present_godot_owned(kind: String, spec: Dictionary, phase: String = "") ->
 		godot_owned_runtime.name = "GodotOwnedRuntime"
 		dynamic_root.add_child(godot_owned_runtime)
 	spec["kind"] = kind
-	spec["phase"] = str(spec.get("phase", phase))
 	godot_owned_runtime.start(spec, Callable(self, "_send_control"))
+
+
+func _godot_owned_phase_screen_needed(phase_value: String) -> bool:
+	var token := str(phase_value).to_lower()
+	return token == "instructions" or token == "practice_done" or token == "results"
+
+
+func _hide_godot_owned_phase_screen() -> void:
+	phase_screen_active = false
+	phase_screen_spec = {}
+	if phase_panel != null:
+		phase_panel.visible = false
+
+
+func _show_godot_owned_phase_screen(kind: String, spec: Dictionary) -> void:
+	phase_screen_active = true
+	phase_screen_spec = spec.duplicate(true)
+	if phase_panel == null or phase_vbox == null:
+		return
+	for child in phase_vbox.get_children():
+		child.queue_free()
+	var phase_token := str(spec.get("phase", "instructions")).to_lower()
+	var phase_screens := _as_dict(spec.get("phase_screens", {}))
+	var screen := _as_dict(phase_screens.get(phase_token, {}))
+	var title := str(screen.get("title", spec.get("title", kind.capitalize())))
+	var heading := str(screen.get("heading", phase_token.replace("_", " ").capitalize()))
+	var body := str(screen.get("body", "Prepare for the Godot-owned test."))
+	var controls := str(screen.get("controls", "Use the Godot window controls."))
+	var footer := str(screen.get("footer", "Press Enter, Space, or numpad Del to continue."))
+	if phase_token == "results":
+		var progress := _as_dict(_as_dict(spec.get("progress", {})))
+		if progress.size() > 0:
+			body = "Results received. Attempted " + str(progress.get("attempted", 0)) + ", correct " + str(progress.get("correct", 0)) + "."
+	var title_label := Label.new()
+	title_label.text = title
+	title_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title_label.add_theme_font_size_override("font_size", 30)
+	title_label.add_theme_color_override("font_color", Color(0.94, 0.97, 1.0, 1.0))
+	phase_vbox.add_child(title_label)
+	var heading_label := Label.new()
+	heading_label.text = heading
+	heading_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	heading_label.add_theme_font_size_override("font_size", 24)
+	heading_label.add_theme_color_override("font_color", Color(0.72, 0.84, 1.0, 1.0))
+	phase_vbox.add_child(heading_label)
+	for text in [body, controls, footer]:
+		var label := Label.new()
+		label.text = str(text)
+		label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		label.add_theme_font_size_override("font_size", 19)
+		label.add_theme_color_override("font_color", Color(0.88, 0.93, 0.98, 1.0))
+		phase_vbox.add_child(label)
+	phase_panel.visible = true
 
 
 func _present_rapid_tracking(payload: Dictionary) -> void:
@@ -580,9 +693,8 @@ func _present_spatial_integration(payload: Dictionary) -> void:
 
 
 func _present_trace_test_1(payload: Dictionary) -> void:
-	_set_camera(Vector3(0.0, 5.0, 15.0), Vector3(0.0, 2.0, -10.0))
-	_make_sky_stage()
-	_draw_lattice()
+	_set_trace_guide_camera(1)
+	_make_trace_guide_stage()
 	_make_command_cue_panel(str(payload.get("active_command", "")))
 	var frames = payload.get("frames", [])
 	if typeof(frames) == TYPE_ARRAY:
@@ -596,22 +708,18 @@ func _present_trace_test_1(payload: Dictionary) -> void:
 				_float(frame_dict.get("travel_heading_deg", 0.0)),
 				-_float(attitude.get("roll_deg", 0.0))
 			)
-			_make_aircraft(role, pos + Vector3(0.0, 0.7, -6.0), RED_COLOR if role == "red" else BLUE_COLOR, hpr, 0.92)
+			_make_aircraft(role, pos + TRACE_TEST_1_SCENE_OFFSET, RED_COLOR if role == "red" else BLUE_COLOR, hpr, 0.92)
 
 
 func _present_trace_test_2(payload: Dictionary) -> void:
-	_set_camera(Vector3(0.0, 5.2, 14.0), Vector3(0.0, 1.6, -8.0))
-	_make_sky_stage()
-	_draw_lattice()
+	_set_trace_guide_camera(2)
+	_make_trace_guide_stage()
 	var aircraft = payload.get("aircraft", [])
-	var show_trails := str(payload.get("trial_stage", "")).to_lower().find("observe") >= 0
 	if typeof(aircraft) == TYPE_ARRAY:
 		for track in aircraft:
 			var track_dict := _as_dict(track)
 			var color := _rgb_color(track_dict.get("color_rgb", []), _color_by_name(str(track_dict.get("color_name", "blue"))))
-			var current := _world_position(_as_dict(track_dict.get("current_position", {})), 0.07, 0.07, 0.07) + Vector3(0.0, 0.7, -8.0)
-			if show_trails:
-				_draw_waypoints(track_dict.get("waypoints", []), color)
+			var current := _world_position(_as_dict(track_dict.get("current_position", {})), 0.07, 0.07, 0.07) + TRACE_TEST_2_SCENE_OFFSET
 			var hpr := _track_hpr(track_dict)
 			_make_aircraft("Trace2Aircraft", current, color, hpr, 0.86)
 
@@ -649,6 +757,11 @@ func _make_sky_stage() -> void:
 	_make_box("SkyBackdrop", Vector3(0.0, 2.8, -15.5), Vector3(12.0, 5.8, 0.05), SKY_COLOR)
 	_make_box("HazeLayer", Vector3(0.0, 0.62, -15.45), Vector3(12.0, 0.62, 0.055), Color(0.59, 0.52, 0.48, 1.0))
 	_make_floor(20.0, 26.0)
+
+
+func _make_trace_guide_stage() -> void:
+	_make_box("TraceGuidePanel", Vector3(0.0, 2.35, -15.62), Vector3(12.8, 6.35, 0.06) * TRACE_GUIDE_FRAME_SCALE, PANEL_BLUE)
+	_make_sky_stage()
 
 
 func _make_low_hills(seed_value: int) -> void:
@@ -829,27 +942,6 @@ func _draw_route(points, cols: int, rows: int) -> void:
 		have_previous = true
 
 
-func _draw_lattice() -> void:
-	for x in range(-4, 5):
-		_make_box("LatticeX", Vector3(float(x), 0.04, -8.0), Vector3(0.012, 0.012, 7.0), Color(0.34, 0.43, 0.49, 1.0))
-	for z in range(0, 15):
-		_make_box("LatticeZ", Vector3(0.0, 0.05, -float(z)), Vector3(4.0, 0.012, 0.012), Color(0.34, 0.43, 0.49, 1.0))
-
-
-func _draw_waypoints(points, color: Color) -> void:
-	if typeof(points) != TYPE_ARRAY:
-		return
-	var previous := Vector3.ZERO
-	var have_previous := false
-	for point in points:
-		var current := _world_position(_as_dict(point), 0.07, 0.07, 0.07) + Vector3(0.0, 0.45, -8.0)
-		_make_sphere("Trace2Waypoint", current, 0.09, color)
-		if have_previous:
-			_make_segment(previous, current, color, 0.035)
-		previous = current
-		have_previous = true
-
-
 func _draw_auditory_tunnel(tunnel: Dictionary) -> void:
 	var samples = tunnel.get("samples", [])
 	if typeof(samples) != TYPE_ARRAY or samples.size() < 2:
@@ -1019,6 +1111,13 @@ func _material(color: Color) -> StandardMaterial3D:
 func _set_camera(position_value: Vector3, target: Vector3) -> void:
 	camera.position = position_value
 	camera.look_at(target, Vector3.UP)
+
+
+func _set_trace_guide_camera(trace_number: int) -> void:
+	if trace_number == 2:
+		_set_camera(TRACE_TEST_2_CAMERA_POSITION, TRACE_TEST_2_CAMERA_TARGET)
+		return
+	_set_camera(TRACE_TEST_1_CAMERA_POSITION, TRACE_TEST_1_CAMERA_TARGET)
 
 
 func _grid_to_world(point: Dictionary, cols: int, rows: int) -> Vector3:

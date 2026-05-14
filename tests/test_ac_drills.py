@@ -19,6 +19,7 @@ from cfast_trainer.ac_drills import (
 from cfast_trainer.ant_drills import AntDrillMode
 from cfast_trainer.auditory_capacity import AuditoryCapacityPayload
 from cfast_trainer.cognitive_core import Phase
+from cfast_trainer.godot_owned import auditory_capacity_godot_config
 
 
 @dataclass
@@ -165,6 +166,42 @@ def test_ac_focused_drills_emit_expected_active_channels(builder, expected_chann
     payload = snap.payload
     assert isinstance(payload, AuditoryCapacityPayload)
     assert payload.active_channels == expected_channels
+
+
+@pytest.mark.parametrize(
+    ("test_code", "expected_channels", "expected_label"),
+    (
+        ("ac_gate_anchor", ("gates",), "Gate Flight"),
+        ("ac_state_command_prime", ("gates", "state_commands"), "State Commands"),
+        ("ac_gate_directive_run", ("gates", "gate_directives", "distractors"), "Gate Directives"),
+        ("ac_digit_sequence_prime", ("gates", "digit_recall"), "Digit Recall"),
+        ("ac_trigger_cue_anchor", ("gates", "trigger"), "Trigger Cues"),
+        (
+            "ac_callsign_filter_run",
+            ("gates", "state_commands", "gate_directives", "distractors"),
+            "Callsign Filter",
+        ),
+        ("ac_pressure_run", AC_CHANNEL_ORDER, "Pressure Run"),
+    ),
+)
+def test_ac_godot_drill_configs_emit_expected_active_channels(
+    test_code, expected_channels, expected_label
+) -> None:
+    config = auditory_capacity_godot_config(
+        test_code=test_code,
+        mode="build",
+        difficulty=0.5,
+        duration_s=30.0,
+        extra={"drill": True},
+    )
+
+    assert tuple(config["active_channels"]) == expected_channels
+    assert config["segments"][0]["label"] == expected_label
+    assert tuple(config["segments"][0]["active_channels"]) == expected_channels
+    assert "effective" in config["segments"][0]
+    assert "review_mode_enabled" in config
+    assert config["ambient_volume_db"] == pytest.approx(-14.0)
+    assert config["secondary_voice_min_difficulty"] == pytest.approx(0.67)
 
 
 def test_ac_mixed_tempo_repeats_fixed_six_segment_cycle() -> None:

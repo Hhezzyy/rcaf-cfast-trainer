@@ -521,6 +521,28 @@ def test_target_recognition_map_background_uses_muted_shapes_and_hexagons(monkey
         pygame.quit()
 
 
+def test_target_recognition_scene_ambient_clutter_uses_safe_colour_shape_pairs() -> None:
+    payload = _build_payload(active_panels=("scene",))
+    _app, screen = _build_screen(_FakeTREngine(payload, title="Target Recognition: Scene Anchor"))
+    try:
+        screen._target_recognition_sync_scene_stream(payload)
+
+        shapes = tuple(screen._tr_scene_ambient_shapes)
+        target_colours = set(screen._target_recognition_scene_target_colour_palette())
+        legend_kinds = set(screen._target_recognition_scene_legend_clutter_kinds())
+
+        assert len(shapes) >= 36
+        assert any(shape.color in target_colours for shape in shapes)
+        assert any(shape.kind in legend_kinds for shape in shapes)
+        assert all(
+            screen._target_recognition_scene_clutter_pair_is_safe(shape.kind, shape.color)
+            for shape in shapes
+        )
+        assert min(shape.max_alpha for shape in shapes) >= 90.0
+    finally:
+        pygame.quit()
+
+
 def test_target_recognition_scene_guidance_lists_guide_target_types_without_fillers() -> None:
     _app, screen = _build_screen(
         _FakeTREngine(_build_payload(active_panels=("scene",)), title="Target Recognition: Scene Anchor")
@@ -808,6 +830,79 @@ def test_target_recognition_scene_wrong_click_keeps_non_target_shape_visible() -
         pygame.quit()
 
 
+def test_target_recognition_scene_click_fallback_selects_visible_target_near_edges() -> None:
+    payload = _build_payload(active_panels=("scene",))
+    engine = _FakeTREngine(payload, title="Target Recognition: Scene Anchor")
+    _app, screen = _build_screen(engine)
+    try:
+        surface = pygame.display.get_surface()
+        assert surface is not None
+        screen.render(surface)
+
+        panel = screen._tr_scene_panel_hitbox
+        assert panel is not None
+        live_glyph = next(
+            glyph
+            for glyph in screen._tr_scene_glyphs.values()
+            if screen._target_recognition_scene_glyph_live_label(glyph) == "Friendly Truck"
+        )
+        click = (
+            panel.x + int(live_glyph.nx * float(panel.w)) + 9,
+            panel.y + int(live_glyph.ny * float(panel.h)) + 3,
+        )
+        screen._tr_scene_symbol_hitboxes = []
+
+        screen.handle_event(
+            pygame.event.Event(
+                pygame.MOUSEBUTTONDOWN,
+                {"button": 1, "pos": click},
+            )
+        )
+
+        assert engine.submit_calls == ["1"]
+        assert screen._tr_scene_active_targets == []
+        assert screen._tr_scene_live_counts_by_label == {}
+    finally:
+        pygame.quit()
+
+
+def test_target_recognition_scene_overlap_click_prioritizes_live_target() -> None:
+    payload = _build_payload(active_panels=("scene",))
+    engine = _FakeTREngine(payload, title="Target Recognition: Scene Anchor")
+    _app, screen = _build_screen(engine)
+    try:
+        surface = pygame.display.get_surface()
+        assert surface is not None
+        screen.render(surface)
+
+        live_id = next(
+            glyph.glyph_id
+            for glyph in screen._tr_scene_glyphs.values()
+            if screen._target_recognition_scene_glyph_live_label(glyph) == "Friendly Truck"
+        )
+        wrong_id = next(
+            glyph.glyph_id
+            for glyph in screen._tr_scene_glyphs.values()
+            if glyph.glyph_id != live_id
+            and screen._target_recognition_scene_glyph_live_label(glyph) == ""
+        )
+        overlap = pygame.Rect(240, 220, 44, 44)
+        screen._tr_scene_symbol_hitboxes = [(overlap, wrong_id), (overlap, live_id)]
+
+        screen.handle_event(
+            pygame.event.Event(
+                pygame.MOUSEBUTTONDOWN,
+                {"button": 1, "pos": overlap.center},
+            )
+        )
+
+        assert engine.submit_calls == ["1"]
+        assert screen._tr_scene_active_targets == []
+        assert screen._tr_scene_live_counts_by_label == {}
+    finally:
+        pygame.quit()
+
+
 def test_target_recognition_system_hitbox_uses_full_row_band_and_registers_click() -> None:
     clock = _FakeClock()
     stable_columns = (
@@ -873,17 +968,9 @@ def test_target_recognition_system_hitbox_uses_full_row_band_and_registers_click
 
         assert engine.submit_calls == ["1"]
         assert screen._tr_system_feedback_state == "ok"
-        assert screen._tr_system_target_code == "A1B2"
-        assert board_signature() == initial_board
-
-        clock.advance(0.5)
-        screen.render(surface)
-
-        assert screen._tr_system_cycle_index == 1
         assert screen._tr_system_target_code == "Z9Y8"
+        assert screen._tr_system_cycle_index == 1
         assert board_signature() == initial_board
-        assert int(screen._tr_system_row_offset) == initial_offset
-        assert float(screen._tr_system_row_frac) > initial_frac
 
         next_hit = hit_for("Z9Y8")
         next_text_w, _next_text_h = screen._tiny_font.size("Z9Y8")
@@ -899,6 +986,16 @@ def test_target_recognition_system_hitbox_uses_full_row_band_and_registers_click
         assert engine.submit_calls == ["1", "1"]
         assert screen._tr_system_feedback_state == "ok"
         assert screen._tr_system_feedback_code == "Z9Y8"
+        assert screen._tr_system_target_code == "G7H8"
+        assert screen._tr_system_cycle_index == 2
+        assert board_signature() == initial_board
+
+        clock.advance(0.5)
+        screen.render(surface)
+
+        assert screen._tr_system_target_code == "G7H8"
+        assert int(screen._tr_system_row_offset) == initial_offset
+        assert float(screen._tr_system_row_frac) > initial_frac
     finally:
         pygame.quit()
 
@@ -1363,27 +1460,61 @@ def test_target_recognition_scene_ambient_animates_over_time_without_fog_state()
         pygame.quit()
 
 
-def test_target_recognition_scene_draw_has_no_fog_or_cloud_overlay(monkeypatch) -> None:
+def test_target_recognition_scene_draws_visual_only_cloud_above_targets(monkeypatch) -> None:
     payload = _build_payload(active_panels=("scene",))
     _app, screen = _build_screen(_FakeTREngine(payload, title="Target Recognition: Scene Anchor"))
     try:
         surface = pygame.display.get_surface()
         assert surface is not None
-        assert not hasattr(screen, "_draw_target_recognition_clouds")
         calls: list[str] = []
+        original_clouds = screen._draw_target_recognition_scene_clouds
         original_symbol = screen._draw_target_recognition_symbol
+
+        def wrapped_clouds(*args, **kwargs):
+            calls.append("cloud")
+            assert screen._tr_scene_symbol_hitboxes
+            return original_clouds(*args, **kwargs)
 
         def wrapped_symbol(*args, **kwargs):
             calls.append("symbol")
             return original_symbol(*args, **kwargs)
 
+        monkeypatch.setattr(screen, "_draw_target_recognition_scene_clouds", wrapped_clouds)
         monkeypatch.setattr(screen, "_draw_target_recognition_symbol", wrapped_symbol)
 
         screen._target_recognition_sync_scene_stream(payload)
         screen._draw_target_recognition_scene(surface, pygame.Rect(0, 0, 320, 220), payload)
 
         assert screen._tr_scene_symbol_hitboxes
+        assert "cloud" in calls
         assert "symbol" in calls
+        assert calls[-1] == "cloud"
+        assert calls.index("symbol") < calls.index("cloud")
+    finally:
+        pygame.quit()
+
+
+def test_target_recognition_scene_cloud_overlay_is_deterministic_and_translucent() -> None:
+    payload = _build_payload(active_panels=("scene",))
+    _app, screen = _build_screen(_FakeTREngine(payload, title="Target Recognition: Scene Anchor"))
+    try:
+        seed = screen._target_recognition_scene_seed(payload)
+        screen._tr_scene_anim_frame = 0.0
+        first = pygame.Surface((320, 220), pygame.SRCALPHA)
+        second = pygame.Surface((320, 220), pygame.SRCALPHA)
+        screen._draw_target_recognition_scene_clouds(first, seed=seed)
+        screen._draw_target_recognition_scene_clouds(second, seed=seed)
+
+        surface_bytes = getattr(pygame.image, "tobytes", pygame.image.tostring)
+        first_bytes = surface_bytes(first, "RGBA")
+        assert first_bytes == surface_bytes(second, "RGBA")
+        first_alpha_max = max(first_bytes[3::4], default=0)
+        assert 190 <= first_alpha_max <= 240
+
+        screen._tr_scene_anim_frame = 480.0
+        later = pygame.Surface((320, 220), pygame.SRCALPHA)
+        screen._draw_target_recognition_scene_clouds(later, seed=seed)
+        assert first_bytes != surface_bytes(later, "RGBA")
     finally:
         pygame.quit()
 

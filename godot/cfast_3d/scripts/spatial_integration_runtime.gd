@@ -51,6 +51,7 @@ const ALL_KINDS := ["landmark_grid", "scene_reconstruction", "aircraft_route_sel
 
 var control_sender: Callable
 var active := false
+var paused := false
 var run_key := ""
 var completed_run_key := ""
 var kind := "spatial_integration"
@@ -151,7 +152,7 @@ func start(spec: Dictionary, sender: Callable) -> void:
 
 
 func update_runtime(delta: float, camera: Camera3D) -> void:
-	if not active:
+	if not active or paused:
 		return
 	var dt := minf(maxf(delta, 0.0), 0.05)
 	elapsed_s += dt
@@ -169,7 +170,7 @@ func update_runtime(delta: float, camera: Camera3D) -> void:
 
 
 func handle_key(event: InputEventKey) -> bool:
-	if not active or event.echo or not event.pressed:
+	if not active or paused or event.echo or not event.pressed:
 		return false
 	var key := event.keycode
 	if key == KEY_KP_ENTER:
@@ -201,6 +202,10 @@ func handle_key(event: InputEventKey) -> bool:
 		_refresh_entry_label()
 		return true
 	return false
+
+
+func set_paused(value: bool) -> void:
+	paused = bool(value)
 
 
 func spatial_integration_runtime_marker() -> bool:
@@ -404,6 +409,9 @@ func _complete() -> void:
 		"metrics": metrics,
 		"events": event_log.slice(max(0, event_log.size() - 360), event_log.size()),
 	}
+	if phase == "practice":
+		_send("godot_phase_complete", {"run_key": run_key, "phase": "practice", "kind": kind, "test_code": test_code, "result": result})
+		return
 	_send("godot_complete", {"run_key": run_key, "phase": "results", "kind": kind, "test_code": test_code, "result": result})
 
 
@@ -913,6 +921,7 @@ func _option_card_label(option: Dictionary) -> String:
 func _update_camera(camera: Camera3D, dt: float) -> void:
 	if camera == null:
 		return
+	camera.projection = Camera3D.PROJECTION_PERSPECTIVE
 	var target := Vector3(0.0, 0.0, 0.0)
 	var pos := Vector3(0.0, 13.8, 0.02)
 	if stage == "study":
@@ -989,6 +998,7 @@ func _clear_runtime() -> void:
 	for child in get_children():
 		child.queue_free()
 	active = false
+	paused = false
 	scene_root = null
 	terrain_root = null
 	object_root = null

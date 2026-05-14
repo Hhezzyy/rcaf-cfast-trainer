@@ -139,13 +139,19 @@ def test_system_panel_generates_stable_board_with_varying_target_positions() -> 
     payload = p.payload
     assert isinstance(payload, TargetRecognitionPayload)
     assert payload.system_cycles
-    assert 8 <= len(payload.system_cycles) <= 12
 
     first_board = payload.system_cycles[0].columns
+    board_codes = {
+        code
+        for col in first_board
+        for code in col
+    }
     positions: list[tuple[int, int]] = []
+    targets: list[str] = []
     for cycle in payload.system_cycles:
         assert len(cycle.columns) == 3
         assert cycle.columns == first_board
+        targets.append(cycle.target)
         hits = [
             (col_idx, row_idx)
             for col_idx, col in enumerate(cycle.columns)
@@ -155,9 +161,24 @@ def test_system_panel_generates_stable_board_with_varying_target_positions() -> 
         assert len(hits) == 1
         positions.append(hits[0])
 
+    assert len(payload.system_cycles) == len(board_codes)
+    assert set(targets) == board_codes
+    assert len(targets) == len(set(targets))
+    assert payload.system_cycles[0].target == payload.system_target
     assert len(set(positions)) == len(positions)
     assert len(set(positions)) > 1
     assert any(pos != (1, 0) for pos in positions)
+
+
+def test_system_panel_target_sequence_differs_by_seed() -> None:
+    first = TargetRecognitionGenerator(seed=2026).next_problem(difficulty=0.6).payload
+    second = TargetRecognitionGenerator(seed=2027).next_problem(difficulty=0.6).payload
+    assert isinstance(first, TargetRecognitionPayload)
+    assert isinstance(second, TargetRecognitionPayload)
+
+    assert tuple(cycle.target for cycle in first.system_cycles) != tuple(
+        cycle.target for cycle in second.system_cycles
+    )
 
 
 def test_scoring_exact_and_estimation_behavior() -> None:

@@ -93,7 +93,13 @@ def test_tr_drill_scene_spawn_pressure_is_deterministic_and_mode_scaled() -> Non
     assert stress_payload.scene_spawn_interval_range_s[0] < build_payload.scene_spawn_interval_range_s[0]
     assert stress_payload.scene_spawn_interval_range_s[1] < build_payload.scene_spawn_interval_range_s[1]
     assert stress_payload.scene_spawn_burst_chance > build_payload.scene_spawn_burst_chance
-    assert 8 <= len(stress_payload.system_cycles) <= 12
+    stress_board_codes = {
+        code
+        for col in stress_payload.system_cycles[0].columns
+        for code in col
+    }
+    assert len(stress_payload.system_cycles) == len(stress_board_codes)
+    assert {cycle.target for cycle in stress_payload.system_cycles} == stress_board_codes
 
     repeat_engine = build_tr_pressure_run_drill(
         clock=FakeClock(),

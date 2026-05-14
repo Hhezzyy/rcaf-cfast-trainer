@@ -28,10 +28,12 @@ from cfast_trainer.benchmark import (
     BenchmarkProbePlan,
     BenchmarkSession,
     BenchmarkStage,
+    _build_benchmark_probe_engine,
     build_benchmark_plan,
 )
 from cfast_trainer.cognitive_core import Phase
 from cfast_trainer.cognitive_core import TestSnapshot as SnapshotModel
+from cfast_trainer.godot_owned import GodotOwnedPayload
 from cfast_trainer.persistence import ResultsStore
 from cfast_trainer.results import attempt_result_from_engine
 from cfast_trainer.sensory_motor_apparatus import (
@@ -470,6 +472,84 @@ def test_build_benchmark_plan_is_randomized_and_totals_1665_seconds() -> None:
         45,
     )
     assert plan.scored_duration_s == pytest.approx(1665.0)
+
+
+def test_auditory_benchmark_probe_uses_full_godot_config() -> None:
+    engine = _build_benchmark_probe_engine(
+        clock=_FakeClock(),
+        probe_code="auditory_capacity",
+        seed=2026,
+        duration_s=60.0,
+    )
+    engine.start_practice()
+    engine.start_scored()
+    payload = engine.snapshot().payload
+
+    assert isinstance(payload, GodotOwnedPayload)
+    config = payload.spec.config
+    assert config["benchmark"] is True
+    assert config["difficulty_scaled"] is True
+    assert config["segments"][0]["label"] == "Full Mixed"
+    assert config["segments"][0]["duration_s"] == pytest.approx(60.0)
+    assert config["beep_frequency_hz"] == pytest.approx(1120.0)
+    assert config["review_mode_enabled"] is False
+    assert config["ambient_volume_db"] == pytest.approx(-14.0)
+    assert config["filler_narrator_interval_s"] == pytest.approx(13.0)
+
+
+def test_rapid_tracking_benchmark_probe_uses_expanded_godot_world_config() -> None:
+    engine = _build_benchmark_probe_engine(
+        clock=_FakeClock(),
+        probe_code="rapid_tracking",
+        seed=2026,
+        duration_s=60.0,
+    )
+    engine.start_practice()
+    engine.start_scored()
+    payload = engine.snapshot().payload
+
+    assert isinstance(payload, GodotOwnedPayload)
+    config = payload.spec.config
+    assert config["benchmark"] is True
+    assert config["difficulty_scaled"] is True
+    assert config["active_target_mix"] == "ground_heavy"
+    assert config["rapid_world"]["scene_style"] == "low_poly_large"
+    assert config["rapid_world"]["vehicle_count"] >= 6
+    assert config["rapid_world"]["pedestrian_count"] >= 4
+    assert config["rapid_world"]["tunnel_count"] >= 1
+
+
+def test_trace_benchmark_probe_uses_godot_trace_tuning_and_practice() -> None:
+    engine = _build_benchmark_probe_engine(
+        clock=_FakeClock(),
+        probe_code="trace_test_1",
+        seed=2026,
+        duration_s=45.0,
+    )
+    payload = engine.snapshot().payload
+
+    assert isinstance(payload, GodotOwnedPayload)
+    assert payload.spec.practice_enabled is True
+    assert payload.spec.practice_duration_s == pytest.approx(12.0)
+    config = payload.spec.config
+    assert config["benchmark"] is True
+    assert config["trace_grid_half_x"] == 7
+    assert config["trace_grid_half_z"] == 7
+    assert config["trace_grid_max_y"] == 5
+    assert config["trace_move_duration_s"] > 1.2
+    assert config["trace_pause_duration_s"] > 0.8
+    assert config["trace_camera_style"] == "fixed_square_orthographic"
+    assert config["trace_panel_visual_scale"] == pytest.approx(2.0)
+    assert config["trace1_response_window_s"] > 1.0
+    assert config["trace2_observe_s"] > 2.0
+    assert config["trace2_clip_min_s"] >= 3.2
+    assert config["trace2_clip_max_s"] > config["trace2_clip_min_s"]
+    assert config["trace2_question_window_s"] > 2.0
+    assert config["trace2_offscreen_margin_cells"] > 2.0
+    assert config["trace2_close_camera_scale"] < 0.70
+    assert config["trace2_aircraft_scale"] > 1.35
+    assert config["trace2_question_overlay_enabled"] is True
+    assert config["trace2_new_clip_after_answer"] is True
 
 
 def test_benchmark_session_advances_probe_by_probe_and_accumulates_results() -> None:

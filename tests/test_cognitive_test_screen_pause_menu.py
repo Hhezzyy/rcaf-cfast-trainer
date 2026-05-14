@@ -1189,6 +1189,21 @@ def test_pause_settings_changes_auditory_mix_controls(
         source_index = next(
             idx for idx, (key, _label, _value) in enumerate(rows) if key == "auditory_source"
         )
+        ambient_index = next(
+            idx for idx, (key, _label, _value) in enumerate(rows) if key == "auditory_ambient_volume"
+        )
+        primary_voice_index = next(
+            idx for idx, (key, _label, _value) in enumerate(rows) if key == "auditory_primary_voice_volume"
+        )
+        decoy_voice_index = next(
+            idx for idx, (key, _label, _value) in enumerate(rows) if key == "auditory_decoy_voice_volume"
+        )
+        filler_voice_index = next(
+            idx for idx, (key, _label, _value) in enumerate(rows) if key == "auditory_filler_voice_volume"
+        )
+        beep_index = next(
+            idx for idx, (key, _label, _value) in enumerate(rows) if key == "auditory_beep_volume"
+        )
 
         while screen._pause_settings_selected != noise_index:
             screen.handle_event(
@@ -1219,6 +1234,28 @@ def test_pause_settings_changes_auditory_mix_controls(
         )
         assert engine._noise_source_override is not None
         assert runtime_defaults_store.stored_auditory_noise_source() == engine._noise_source_override
+
+        for target_index, stored_getter in (
+            (ambient_index, runtime_defaults_store.stored_auditory_ambient_volume),
+            (primary_voice_index, runtime_defaults_store.stored_auditory_primary_voice_volume),
+            (decoy_voice_index, runtime_defaults_store.stored_auditory_decoy_voice_volume),
+            (filler_voice_index, runtime_defaults_store.stored_auditory_filler_voice_volume),
+            (beep_index, runtime_defaults_store.stored_auditory_beep_volume),
+        ):
+            while screen._pause_settings_selected != target_index:
+                screen.handle_event(
+                    pygame.event.Event(
+                        pygame.KEYDOWN,
+                        {"key": pygame.K_DOWN, "mod": 0, "unicode": ""},
+                    )
+                )
+            before = screen._pause_settings_rows()[target_index][2]
+            screen.handle_event(
+                pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RIGHT, "mod": 0, "unicode": ""})
+            )
+            after = screen._pause_settings_rows()[target_index][2]
+            assert after != before
+            assert stored_getter() is not None
     finally:
         pygame.quit()
 

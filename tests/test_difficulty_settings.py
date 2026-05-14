@@ -412,17 +412,32 @@ def test_runtime_defaults_store_persists_display_and_auditory_values(tmp_path) -
     assert store.stored_auditory_noise_level() is None
     assert store.stored_auditory_distortion_level() is None
     assert store.stored_auditory_noise_source() is None
+    assert store.stored_auditory_ambient_volume() is None
+    assert store.stored_auditory_primary_voice_volume() is None
+    assert store.stored_auditory_decoy_voice_volume() is None
+    assert store.stored_auditory_filler_voice_volume() is None
+    assert store.stored_auditory_beep_volume() is None
 
     store.set_window_mode("borderless")
     store.set_auditory_noise_level(0.3)
     store.set_auditory_distortion_level(0.6)
     store.set_auditory_noise_source("pink")
+    store.set_auditory_ambient_volume(0.7)
+    store.set_auditory_primary_voice_volume(0.6)
+    store.set_auditory_decoy_voice_volume(0.8)
+    store.set_auditory_filler_voice_volume(0.4)
+    store.set_auditory_beep_volume(0.9)
 
     reloaded = RuntimeDefaultsStore(path)
     assert reloaded.stored_window_mode() == "borderless"
     assert reloaded.stored_auditory_noise_level() == pytest.approx(0.3)
     assert reloaded.stored_auditory_distortion_level() == pytest.approx(0.6)
     assert reloaded.stored_auditory_noise_source() == "pink"
+    assert reloaded.stored_auditory_ambient_volume() == pytest.approx(0.7)
+    assert reloaded.stored_auditory_primary_voice_volume() == pytest.approx(0.6)
+    assert reloaded.stored_auditory_decoy_voice_volume() == pytest.approx(0.8)
+    assert reloaded.stored_auditory_filler_voice_volume() == pytest.approx(0.4)
+    assert reloaded.stored_auditory_beep_volume() == pytest.approx(0.9)
 
 
 def test_runtime_defaults_store_honors_env_overrides_and_default_path(
@@ -440,12 +455,22 @@ def test_runtime_defaults_store_honors_env_overrides_and_default_path(
     monkeypatch.setenv("CFAST_AUDITORY_NOISE_LEVEL", "0.8")
     monkeypatch.setenv("CFAST_AUDITORY_DISTORTION_LEVEL", "0.9")
     monkeypatch.setenv("CFAST_AUDITORY_NOISE_SOURCE", "white")
+    monkeypatch.setenv("CFAST_AUDITORY_AMBIENT_VOLUME", "0.75")
+    monkeypatch.setenv("CFAST_AUDITORY_PRIMARY_VOICE_VOLUME", "0.65")
+    monkeypatch.setenv("CFAST_AUDITORY_DECOY_VOICE_VOLUME", "0.85")
+    monkeypatch.setenv("CFAST_AUDITORY_FILLER_VOICE_VOLUME", "0.45")
+    monkeypatch.setenv("CFAST_AUDITORY_BEEP_VOLUME", "0.95")
 
     reloaded = RuntimeDefaultsStore(RuntimeDefaultsStore.default_path())
     assert RuntimeDefaultsStore.default_path() == path
     assert reloaded.resolved_auditory_noise_level() == pytest.approx(0.8)
     assert reloaded.resolved_auditory_distortion_level() == pytest.approx(0.9)
     assert reloaded.resolved_auditory_noise_source() == "white"
+    assert reloaded.resolved_auditory_ambient_volume() == pytest.approx(0.75)
+    assert reloaded.resolved_auditory_primary_voice_volume() == pytest.approx(0.65)
+    assert reloaded.resolved_auditory_decoy_voice_volume() == pytest.approx(0.85)
+    assert reloaded.resolved_auditory_filler_voice_volume() == pytest.approx(0.45)
+    assert reloaded.resolved_auditory_beep_volume() == pytest.approx(0.95)
 
 
 def test_app_applies_and_saves_runtime_defaults(tmp_path) -> None:
@@ -474,6 +499,11 @@ def test_app_applies_and_saves_runtime_defaults(tmp_path) -> None:
         runtime_defaults.set_auditory_noise_level(0.4)
         runtime_defaults.set_auditory_distortion_level(0.1)
         runtime_defaults.set_auditory_noise_source("pink")
+        runtime_defaults.set_auditory_ambient_volume(0.7)
+        runtime_defaults.set_auditory_primary_voice_volume(0.6)
+        runtime_defaults.set_auditory_decoy_voice_volume(0.8)
+        runtime_defaults.set_auditory_filler_voice_volume(0.4)
+        runtime_defaults.set_auditory_beep_volume(0.9)
 
         app = App(surface=surface, font=font, runtime_defaults_store=runtime_defaults)
         engine = _AudioEngine()
@@ -482,17 +512,34 @@ def test_app_applies_and_saves_runtime_defaults(tmp_path) -> None:
         assert engine.noise_level == pytest.approx(0.4)
         assert engine.distortion_level == pytest.approx(0.1)
         assert engine.noise_source == "pink"
+        assert app.auditory_godot_audio_overrides() == {
+            "ambient_volume_db": pytest.approx(-13.0),
+            "primary_voice_volume": pytest.approx(60.0),
+            "distractor_voice_volume": pytest.approx(80.0),
+            "filler_voice_volume": pytest.approx(40.0),
+            "beep_volume_db": pytest.approx(-2.4),
+        }
 
         app.save_auditory_runtime_defaults(
             noise_level=0.6,
             distortion_level=0.3,
             noise_source="brown",
+            ambient_volume=0.5,
+            primary_voice_volume=0.55,
+            decoy_voice_volume=0.65,
+            filler_voice_volume=0.35,
+            beep_volume=0.75,
         )
 
         reloaded = RuntimeDefaultsStore(tmp_path / "runtime-defaults.json")
         assert reloaded.stored_auditory_noise_level() == pytest.approx(0.6)
         assert reloaded.stored_auditory_distortion_level() == pytest.approx(0.3)
         assert reloaded.stored_auditory_noise_source() == "brown"
+        assert reloaded.stored_auditory_ambient_volume() == pytest.approx(0.5)
+        assert reloaded.stored_auditory_primary_voice_volume() == pytest.approx(0.55)
+        assert reloaded.stored_auditory_decoy_voice_volume() == pytest.approx(0.65)
+        assert reloaded.stored_auditory_filler_voice_volume() == pytest.approx(0.35)
+        assert reloaded.stored_auditory_beep_volume() == pytest.approx(0.75)
     finally:
         pygame.quit()
 

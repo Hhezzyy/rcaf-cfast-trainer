@@ -9,6 +9,11 @@ RUNTIME_DEFAULTS_STORE_ENV = "CFAST_RUNTIME_DEFAULTS_PATH"
 AUDITORY_NOISE_LEVEL_ENV = "CFAST_AUDITORY_NOISE_LEVEL"
 AUDITORY_DISTORTION_LEVEL_ENV = "CFAST_AUDITORY_DISTORTION_LEVEL"
 AUDITORY_NOISE_SOURCE_ENV = "CFAST_AUDITORY_NOISE_SOURCE"
+AUDITORY_AMBIENT_VOLUME_ENV = "CFAST_AUDITORY_AMBIENT_VOLUME"
+AUDITORY_PRIMARY_VOICE_VOLUME_ENV = "CFAST_AUDITORY_PRIMARY_VOICE_VOLUME"
+AUDITORY_DECOY_VOICE_VOLUME_ENV = "CFAST_AUDITORY_DECOY_VOICE_VOLUME"
+AUDITORY_FILLER_VOICE_VOLUME_ENV = "CFAST_AUDITORY_FILLER_VOICE_VOLUME"
+AUDITORY_BEEP_VOLUME_ENV = "CFAST_AUDITORY_BEEP_VOLUME"
 
 
 def _clamp_ratio(value: object) -> float | None:
@@ -42,6 +47,11 @@ class RuntimeDefaultsState:
     auditory_noise_level: float | None = None
     auditory_distortion_level: float | None = None
     auditory_noise_source: str | None = None
+    auditory_ambient_volume: float | None = None
+    auditory_primary_voice_volume: float | None = None
+    auditory_decoy_voice_volume: float | None = None
+    auditory_filler_voice_volume: float | None = None
+    auditory_beep_volume: float | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -49,6 +59,11 @@ class RuntimeDefaultsState:
             "auditory_noise_level": self.auditory_noise_level,
             "auditory_distortion_level": self.auditory_distortion_level,
             "auditory_noise_source": self.auditory_noise_source,
+            "auditory_ambient_volume": self.auditory_ambient_volume,
+            "auditory_primary_voice_volume": self.auditory_primary_voice_volume,
+            "auditory_decoy_voice_volume": self.auditory_decoy_voice_volume,
+            "auditory_filler_voice_volume": self.auditory_filler_voice_volume,
+            "auditory_beep_volume": self.auditory_beep_volume,
         }
 
 
@@ -87,6 +102,17 @@ class RuntimeDefaultsStore:
         else:
             token = str(source).strip()
             self._state.auditory_noise_source = token or None
+        self._state.auditory_ambient_volume = _clamp_ratio(payload.get("auditory_ambient_volume"))
+        self._state.auditory_primary_voice_volume = _clamp_ratio(
+            payload.get("auditory_primary_voice_volume")
+        )
+        self._state.auditory_decoy_voice_volume = _clamp_ratio(
+            payload.get("auditory_decoy_voice_volume")
+        )
+        self._state.auditory_filler_voice_volume = _clamp_ratio(
+            payload.get("auditory_filler_voice_volume")
+        )
+        self._state.auditory_beep_volume = _clamp_ratio(payload.get("auditory_beep_volume"))
 
     def save(self) -> None:
         payload = {
@@ -148,3 +174,68 @@ class RuntimeDefaultsStore:
             token = str(env_value).strip()
             return token or None
         return self._state.auditory_noise_source
+
+    def stored_auditory_ambient_volume(self) -> float | None:
+        return self._state.auditory_ambient_volume
+
+    def set_auditory_ambient_volume(self, value: float | None) -> None:
+        self._state.auditory_ambient_volume = _clamp_ratio(value)
+        self.save()
+
+    def resolved_auditory_ambient_volume(self) -> float | None:
+        env_value = os.environ.get(AUDITORY_AMBIENT_VOLUME_ENV)
+        if env_value is not None:
+            return _clamp_ratio(env_value)
+        return self._state.auditory_ambient_volume
+
+    def stored_auditory_primary_voice_volume(self) -> float | None:
+        return self._state.auditory_primary_voice_volume
+
+    def set_auditory_primary_voice_volume(self, value: float | None) -> None:
+        self._state.auditory_primary_voice_volume = _clamp_ratio(value)
+        self.save()
+
+    def resolved_auditory_primary_voice_volume(self) -> float | None:
+        env_value = os.environ.get(AUDITORY_PRIMARY_VOICE_VOLUME_ENV)
+        if env_value is not None:
+            return _clamp_ratio(env_value)
+        return self._state.auditory_primary_voice_volume
+
+    def stored_auditory_decoy_voice_volume(self) -> float | None:
+        return self._state.auditory_decoy_voice_volume
+
+    def set_auditory_decoy_voice_volume(self, value: float | None) -> None:
+        self._state.auditory_decoy_voice_volume = _clamp_ratio(value)
+        self.save()
+
+    def resolved_auditory_decoy_voice_volume(self) -> float | None:
+        env_value = os.environ.get(AUDITORY_DECOY_VOICE_VOLUME_ENV)
+        if env_value is not None:
+            return _clamp_ratio(env_value)
+        return self._state.auditory_decoy_voice_volume
+
+    def stored_auditory_filler_voice_volume(self) -> float | None:
+        return self._state.auditory_filler_voice_volume
+
+    def set_auditory_filler_voice_volume(self, value: float | None) -> None:
+        self._state.auditory_filler_voice_volume = _clamp_ratio(value)
+        self.save()
+
+    def resolved_auditory_filler_voice_volume(self) -> float | None:
+        env_value = os.environ.get(AUDITORY_FILLER_VOICE_VOLUME_ENV)
+        if env_value is not None:
+            return _clamp_ratio(env_value)
+        return self._state.auditory_filler_voice_volume
+
+    def stored_auditory_beep_volume(self) -> float | None:
+        return self._state.auditory_beep_volume
+
+    def set_auditory_beep_volume(self, value: float | None) -> None:
+        self._state.auditory_beep_volume = _clamp_ratio(value)
+        self.save()
+
+    def resolved_auditory_beep_volume(self) -> float | None:
+        env_value = os.environ.get(AUDITORY_BEEP_VOLUME_ENV)
+        if env_value is not None:
+            return _clamp_ratio(env_value)
+        return self._state.auditory_beep_volume
