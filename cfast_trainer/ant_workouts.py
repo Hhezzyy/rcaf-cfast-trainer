@@ -84,18 +84,6 @@ from .sa_drills import (
     build_sa_pressure_run_drill,
     build_sa_status_recall_prime_drill,
 )
-from .rt_drills import (
-    RtDrillConfig,
-    build_rt_air_speed_run_drill,
-    build_rt_building_handoff_prime_drill,
-    build_rt_capture_timing_prime_drill,
-    build_rt_ground_tempo_run_drill,
-    build_rt_lock_anchor_drill,
-    build_rt_mixed_tempo_drill,
-    build_rt_obscured_target_prediction_drill,
-    build_rt_pressure_run_drill,
-    build_rt_terrain_recovery_run_drill,
-)
 from .dtb_drills import (
     DualTaskBridgeDrillConfig,
     build_dtb_tracking_command_filter_drill,
@@ -277,6 +265,7 @@ from .ant_drills import (
 from .clock import Clock
 from .canonical_drill_registry import resolved_canonical_drill_code
 from .cognitive_core import Phase, Problem, QuestionEvent, SeededRng
+from .godot_owned import build_godot_owned_test, rapid_tracking_godot_config
 from .results import AttemptResult, attempt_result_from_engine
 from .training_modes import maybe_build_fatigue_probe_drill, split_half_note_fragment
 from .visual_search import VisualSearchTaskKind
@@ -292,6 +281,15 @@ def _difficulty_to_level(test_code: str | None, difficulty: float) -> int:
 
 def _random_seed() -> int:
     return random.SystemRandom().randint(1, (2**31) - 1)
+
+
+def _rapid_tracking_workout_block_title(block: "AntWorkoutBlockPlan") -> str:
+    label = str(block.label).strip() or str(block.drill_code).strip()
+    if label.startswith("Rapid Tracking"):
+        return label
+    if label == str(block.drill_code).strip():
+        label = str(block.drill_code).removeprefix("rt_").replace("_", " ").title()
+    return f"Rapid Tracking: {label}"
 
 
 def build_workout_block_engine(
@@ -1052,7 +1050,7 @@ class AntWorkoutSession:
         current_attempted = attempted_total + max(0, int(engine_summary.attempted))
         current_correct = correct_total + max(0, int(engine_summary.correct))
         current_timeouts = sum(result.timeouts for result in self._block_results) + max(
-            0, int(engine_summary.timeouts)
+            0, int(getattr(engine_summary, "timeouts", 0))
         )
         current_fixation_rate = 0.0 if current_attempted == 0 else current_timeouts / current_attempted
         return AntWorkoutSnapshot(
@@ -2572,77 +2570,23 @@ class AntWorkoutSession:
                 mode=block.mode,
                 config=SaDrillConfig(scored_duration_s=block.duration_s),
             )
-        elif block.drill_code == "rt_lock_anchor":
-            engine = build_rt_lock_anchor_drill(
+        elif block.drill_code.startswith("rt_"):
+            engine = build_godot_owned_test(
                 clock=self._clock,
                 seed=block_seed,
                 difficulty=difficulty,
-                mode=block.mode,
-                config=RtDrillConfig(scored_duration_s=block.duration_s),
-            )
-        elif block.drill_code == "rt_building_handoff_prime":
-            engine = build_rt_building_handoff_prime_drill(
-                clock=self._clock,
-                seed=block_seed,
-                difficulty=difficulty,
-                mode=block.mode,
-                config=RtDrillConfig(scored_duration_s=block.duration_s),
-            )
-        elif block.drill_code == "rt_terrain_recovery_run":
-            engine = build_rt_terrain_recovery_run_drill(
-                clock=self._clock,
-                seed=block_seed,
-                difficulty=difficulty,
-                mode=block.mode,
-                config=RtDrillConfig(scored_duration_s=block.duration_s),
-            )
-        elif block.drill_code == "rt_capture_timing_prime":
-            engine = build_rt_capture_timing_prime_drill(
-                clock=self._clock,
-                seed=block_seed,
-                difficulty=difficulty,
-                mode=block.mode,
-                config=RtDrillConfig(scored_duration_s=block.duration_s),
-            )
-        elif block.drill_code == "rt_ground_tempo_run":
-            engine = build_rt_ground_tempo_run_drill(
-                clock=self._clock,
-                seed=block_seed,
-                difficulty=difficulty,
-                mode=block.mode,
-                config=RtDrillConfig(scored_duration_s=block.duration_s),
-            )
-        elif block.drill_code == "rt_air_speed_run":
-            engine = build_rt_air_speed_run_drill(
-                clock=self._clock,
-                seed=block_seed,
-                difficulty=difficulty,
-                mode=block.mode,
-                config=RtDrillConfig(scored_duration_s=block.duration_s),
-            )
-        elif block.drill_code == "rt_mixed_tempo":
-            engine = build_rt_mixed_tempo_drill(
-                clock=self._clock,
-                seed=block_seed,
-                difficulty=difficulty,
-                mode=block.mode,
-                config=RtDrillConfig(scored_duration_s=block.duration_s),
-            )
-        elif block.drill_code == "rt_pressure_run":
-            engine = build_rt_pressure_run_drill(
-                clock=self._clock,
-                seed=block_seed,
-                difficulty=difficulty,
-                mode=block.mode,
-                config=RtDrillConfig(scored_duration_s=block.duration_s),
-            )
-        elif block.drill_code == "rt_obscured_target_prediction":
-            engine = build_rt_obscured_target_prediction_drill(
-                clock=self._clock,
-                seed=block_seed,
-                difficulty=difficulty,
-                mode=block.mode,
-                config=RtDrillConfig(scored_duration_s=block.duration_s),
+                kind="rapid_tracking",
+                test_code=block.drill_code,
+                title=_rapid_tracking_workout_block_title(block),
+                duration_s=block.duration_s,
+                mode=block.mode.value,
+                config=rapid_tracking_godot_config(
+                    test_code=block.drill_code,
+                    mode=block.mode.value,
+                    difficulty=difficulty,
+                    duration_s=block.duration_s,
+                    extra={"drill": True, "workout": True},
+                ),
             )
         elif block.drill_code == "dtb_tracking_recall":
             engine = build_dtb_tracking_recall_drill(
@@ -3241,11 +3185,17 @@ class AntWorkoutSession:
                 total_score=summary.total_score,
                 max_score=summary.max_score,
                 score_ratio=summary.score_ratio,
-                timeouts=summary.timeouts,
-                fixation_rate=summary.fixation_rate,
-                difficulty_level_start=summary.difficulty_level_start,
-                difficulty_level_end=summary.difficulty_level_end,
-                difficulty_change_count=summary.difficulty_change_count,
+                timeouts=int(getattr(summary, "timeouts", 0)),
+                fixation_rate=float(getattr(summary, "fixation_rate", 0.0)),
+                difficulty_level_start=int(
+                    getattr(summary, "difficulty_level_start", self._current_block_level)
+                    or self._current_block_level
+                ),
+                difficulty_level_end=int(
+                    getattr(summary, "difficulty_level_end", self._current_block_level)
+                    or self._current_block_level
+                ),
+                difficulty_change_count=int(getattr(summary, "difficulty_change_count", 0) or 0),
             )
         )
         self._latest_block_result = self._block_results[-1]

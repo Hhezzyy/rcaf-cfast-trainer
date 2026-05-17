@@ -650,6 +650,16 @@ def test_serializes_rapid_tracking_godot_owned_start_spec_for_dedicated_runtime(
     assert start["config"]["rapid_world"]["pedestrian_count"] >= 6
     assert start["config"]["rapid_world"]["tunnel_count"] >= 1
     assert start["config"]["rapid_world"]["ground_target_weight"] > 0.5
+    assert start["config"]["rapid_world"]["chunked_generation"] is True
+    assert start["config"]["rapid_world"]["world_size_m"] == 300.0
+    assert start["config"]["rapid_world"]["chunk_grid_cols"] == 50
+    assert start["config"]["rapid_world"]["chunk_grid_rows"] == 50
+    assert start["config"]["rapid_world"]["chunk_cell_size_m"] == 6.0
+    assert start["config"]["rapid_world"]["chunk_pack"] == "rural_mixed_v1"
+    assert start["config"]["rapid_world"]["asset_spawn_policy"] == "socketed"
+    assert start["config"]["rapid_world"]["road_topology"] == "organic_looped"
+    assert start["config"]["rapid_world"]["road_buffer_cells"] == 1
+    assert start["config"]["rapid_world"]["terrain_pipeline"] == "terrain_first_v3"
     assert "target" not in owned_payload
     assert "camera" not in owned_payload
 
@@ -666,13 +676,39 @@ def test_rapid_tracking_godot_config_scales_world_with_difficulty() -> None:
         difficulty=1.0,
     )
 
-    assert high["rapid_world"]["world_size_m"] > low["rapid_world"]["world_size_m"]
+    assert high["rapid_world"]["world_size_m"] == low["rapid_world"]["world_size_m"] == 300.0
+    assert low["rapid_world"]["chunk_grid_cols"] == 50
+    assert low["rapid_world"]["chunk_grid_rows"] == 50
+    assert low["rapid_world"]["chunk_cell_size_m"] == 6.0
+    assert low["rapid_world"]["terrain_pipeline"] == "terrain_first_v3"
     assert high["rapid_world"]["town_count"] > low["rapid_world"]["town_count"]
     assert high["rapid_world"]["vehicle_count"] > low["rapid_world"]["vehicle_count"]
     assert high["rapid_world"]["pedestrian_count"] > low["rapid_world"]["pedestrian_count"]
     assert high["rapid_world"]["forest_patch_count"] > low["rapid_world"]["forest_patch_count"]
     assert high["rapid_world"]["occlusion_density"] > low["rapid_world"]["occlusion_density"]
     assert high["handoff_interval_s"] < low["handoff_interval_s"]
+
+
+def test_spatial_integration_godot_config_defaults_to_large_scene_questions() -> None:
+    config = spatial_integration_godot_config(
+        test_code="spatial_integration",
+        mode="standard",
+    )
+
+    assert config["grid_cols"] == 24
+    assert config["grid_rows"] == 24
+    assert config["chunk_grid_cols"] == 24
+    assert config["chunk_grid_rows"] == 24
+    assert config["terrain_pipeline"] == "si_large_scene_v2"
+    assert "scene_presence" in config["allowed_question_kinds"]
+    assert "viewpoint_match" in config["allowed_question_kinds"]
+
+    aircraft = spatial_integration_godot_config(
+        test_code="si_moving_aircraft_multiview_integration",
+        mode="drill",
+    )
+    assert "scene_presence" not in aircraft["allowed_question_kinds"]
+    assert "viewpoint_match" not in aircraft["allowed_question_kinds"]
 
 
 def test_serializes_spatial_integration_godot_owned_start_spec_for_dedicated_runtime() -> None:
@@ -721,6 +757,14 @@ def test_serializes_spatial_integration_godot_owned_start_spec_for_dedicated_run
     assert start["config"]["static_study_s"] == 12.0
     assert start["config"]["aircraft_study_s"] == 15.0
     assert start["config"]["question_time_limit_s"] == 8.0
+    assert start["config"]["chunked_generation"] is True
+    assert start["config"]["grid_cols"] == 24
+    assert start["config"]["grid_rows"] == 24
+    assert start["config"]["chunk_grid_cols"] == 24
+    assert start["config"]["chunk_grid_rows"] == 24
+    assert start["config"]["chunk_pack"] == "rural_mixed_v1"
+    assert start["config"]["asset_spawn_policy"] == "socketed"
+    assert start["config"]["terrain_pipeline"] == "si_large_scene_v2"
     assert start["config"]["question_limit"] == 5
     assert "scene" not in owned_payload
     assert "questions" not in owned_payload
@@ -747,6 +791,16 @@ def test_godot_project_routes_rapid_tracking_to_dedicated_runtime() -> None:
     assert "person" in runtime_source
     assert "road_graph_hash" in runtime_source
     assert "route_hash" in runtime_source
+    assert 'preload("res://scripts/chunk_map_generator.gd")' in runtime_source
+    assert "ChunkMapGenerator.generate" in runtime_source
+    assert "asset_spawn_policy" in runtime_source
+    assert "spawn_socket" in runtime_source
+    assert "tank" in runtime_source
+    assert "chunk_map_hash" in runtime_source
+    assert "road_component_count" in runtime_source
+    assert "road_dead_end_count" in runtime_source
+    assert "road_buffer_violation_count" in runtime_source
+    assert "water_feature_count" in runtime_source
     assert "aim_angles" in runtime_source
     assert "wrapf(aim_angles.x" in runtime_source
     assert "deg_to_rad(-86.0)" in runtime_source
@@ -777,6 +831,12 @@ def test_godot_project_routes_spatial_integration_to_dedicated_runtime() -> None
     assert "aircraft_location_grid" in runtime_source
     assert "scene_hash" in runtime_source
     assert "route_hash" in runtime_source
+    assert 'preload("res://scripts/chunk_map_generator.gd")' in runtime_source
+    assert "ChunkMapGenerator.generate" in runtime_source
+    assert "_draw_chunked_grid_terrain" in runtime_source
+    assert "_chunk_aircraft_route" in runtime_source
+    assert "_chunk_landmarks" in runtime_source
+    assert "chunk_map_hash" in runtime_source
     assert "question_order_hash" in runtime_source
     assert "option_order_hash" in runtime_source
     assert "KEY_KP_PERIOD" in runtime_source

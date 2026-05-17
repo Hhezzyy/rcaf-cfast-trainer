@@ -233,6 +233,26 @@ def _install_recording_fonts(*fonts: object) -> list[str]:
     return captured
 
 
+def _slip_ball_center_x(screen: CognitiveTestScreen, slip: int) -> float:
+    surface = pygame.Surface((140, 140), pygame.SRCALPHA)
+    rect = pygame.Rect(0, 0, 140, 140)
+    screen._draw_slip_indicator(surface, rect, bank_deg=0, slip=slip)
+    dial_rect, cx, cy, _, face_r = screen._dial_geometry(rect)
+    tube_w = min(dial_rect.w - 8, max(14, int(round(face_r * 1.40))))
+    tube_h = max(7, int(round(face_r * 0.46)))
+    track = pygame.Rect(0, 0, tube_w, tube_h)
+    track.centerx = cx
+    track.centery = cy + int(round(face_r * 0.62))
+    xs: list[int] = []
+    for y in range(track.y + 1, track.bottom - 1):
+        for x in range(track.x + 1, track.right - 1):
+            r, g, b, a = surface.get_at((x, y))
+            if a > 0 and r >= 235 and g >= 240 and b >= 245:
+                xs.append(x)
+    assert xs
+    return sum(xs) / len(xs)
+
+
 def test_instrument_screen_renders_after_display_bootstrap_sync() -> None:
     app, screen = _build_screen(_build_payload())
     try:
@@ -253,6 +273,18 @@ def test_instrument_screen_renders_after_display_bootstrap_sync() -> None:
         assert app.surface.get_size() == (1440, 900)
         assert screen._instrument_part1_layout is not None
         assert app.current_run_state().display_mode == "FULLSCREEN"
+    finally:
+        pygame.quit()
+
+
+def test_slip_indicator_ball_direction_is_horizontally_flipped() -> None:
+    _app, screen = _build_screen(_build_payload())
+    try:
+        left_x = _slip_ball_center_x(screen, 1)
+        center_x = _slip_ball_center_x(screen, 0)
+        right_x = _slip_ball_center_x(screen, -1)
+
+        assert left_x < center_x < right_x
     finally:
         pygame.quit()
 

@@ -1325,6 +1325,17 @@ def test_target_recognition_scene_spawn_timer_tracks_duplicate_live_counts_until
         ]
         assert len(live_alphas) == 2
         assert len(set(live_alphas)) > 1
+        render_alphas = [
+            screen._target_recognition_scene_glyph_render_alpha(
+                screen._tr_scene_glyphs[glyph_id],
+                live=True,
+                label_fade=1.0,
+            )
+            for _hit_rect, glyph_id in screen._tr_scene_symbol_hitboxes
+            if screen._tr_scene_glyphs[glyph_id].live_target_label == "Friendly Truck"
+        ]
+        assert len(render_alphas) == 2
+        assert len(set(render_alphas)) > 1
         interval = float(screen._tr_scene_next_spawn_after_s)
         assert 10.0 <= interval <= 40.0
 
@@ -1346,6 +1357,15 @@ def test_target_recognition_scene_spawn_timer_tracks_duplicate_live_counts_until
             if screen._tr_scene_glyphs[glyph_id].live_target_label == "Friendly Truck"
         ]
         assert len(live_hits) == 3
+        spawned_render_alphas = [
+            screen._target_recognition_scene_glyph_render_alpha(
+                screen._tr_scene_glyphs[glyph_id],
+                live=True,
+                label_fade=1.0,
+            )
+            for _hit_rect, glyph_id in live_hits
+        ]
+        assert len(set(spawned_render_alphas)) > 1
 
         first_hit, _first_id = live_hits[0]
         second_hit, _second_id = live_hits[1]

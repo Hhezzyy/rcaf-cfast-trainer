@@ -17,6 +17,8 @@ from cfast_trainer.ant_workouts import (
     build_ant_workout_plan,
     build_workout_block_engine,
 )
+from cfast_trainer.cognitive_core import Phase
+from cfast_trainer.godot_owned import GodotOwnedPayload
 from cfast_trainer.persistence import ResultsStore
 from cfast_trainer.results import attempt_result_from_engine
 
@@ -340,6 +342,73 @@ def test_build_workout_block_engine_routes_replacement_aliases_through_canonical
     assert getattr(legacy_engine, "_difficulty_code") == legacy_code
     assert legacy_result.test_code == legacy_code
     assert getattr(legacy_engine, "_resolved_difficulty_context").code_scope_key == canonical_code
+
+
+@pytest.mark.parametrize(
+    "drill_code",
+    (
+        "ac_gate_anchor",
+        "si_static_multiview_integration",
+        "si_moving_aircraft_multiview_integration",
+        "trace_orientation_decode",
+        "trace_movement_recall",
+    ),
+)
+def test_canonical_3d_workout_drills_emit_native_payloads(drill_code: str) -> None:
+    clock = FakeClock()
+    block = AntWorkoutBlockPlan(
+        block_id=f"canonical_{drill_code}",
+        label=drill_code,
+        description="Canonical native drill block.",
+        focus_skills=("Primitive",),
+        drill_code=drill_code,
+        mode=AntDrillMode.BUILD,
+        duration_min=0.25,
+    )
+    engine = build_workout_block_engine(
+        clock=clock,
+        block_seed=9876,
+        difficulty_level=5,
+        block=block,
+    )
+
+    payload = engine.snapshot().payload
+    if payload is None:
+        engine.start_practice()
+        if engine.phase is Phase.PRACTICE_DONE:
+            engine.start_scored()
+        payload = engine.snapshot().payload
+
+    assert payload is not None
+    assert not isinstance(payload, GodotOwnedPayload)
+
+
+def test_rapid_tracking_workout_drills_emit_godot_owned_payloads() -> None:
+    clock = FakeClock()
+    block = AntWorkoutBlockPlan(
+        block_id="rt_block",
+        label="Obscured Target Prediction",
+        description="Rapid Tracking Godot workout block.",
+        focus_skills=("Primitive",),
+        drill_code="rt_obscured_target_prediction",
+        mode=AntDrillMode.BUILD,
+        duration_min=0.25,
+    )
+    engine = build_workout_block_engine(
+        clock=clock,
+        block_seed=9876,
+        difficulty_level=5,
+        block=block,
+    )
+
+    payload = engine.snapshot().payload
+
+    assert isinstance(payload, GodotOwnedPayload)
+    assert payload.spec.kind == "rapid_tracking"
+    assert payload.spec.test_code == "rt_obscured_target_prediction"
+    assert payload.spec.mode == AntDrillMode.BUILD.value
+    assert payload.spec.config["workout"] is True
+    assert payload.spec.config["drill"] is True
 
 
 def test_workout_dev_skip_hotkeys_advance_shell_skip_block_and_finish(

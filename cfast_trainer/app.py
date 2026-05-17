@@ -305,6 +305,7 @@ from .rt_drills import (
     build_rt_ground_tempo_run_drill,
     build_rt_lock_anchor_drill,
     build_rt_mixed_tempo_drill,
+    build_rt_obscured_target_prediction_drill,
     build_rt_pressure_run_drill,
     build_rt_rudder_horizontal_prime_drill,
     build_rt_terrain_recovery_run_drill,
@@ -332,6 +333,7 @@ from .sma_drills import (
 from .sma_workouts import build_sma_workout_plan, sma_workout_menu_entries
 from .si_drills import (
     build_si_aircraft_grid_run_drill,
+    build_si_aircraft_multiview_integration_drill,
     build_si_continuation_prime_drill,
     build_si_landmark_anchor_drill,
     build_si_mixed_tempo_drill,
@@ -19367,10 +19369,18 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             cx = int(glyph.nx * float(rect.w))
             cy = int(glyph.ny * float(rect.h))
             size = max(5, int(min(rect.w, rect.h) * glyph.scale))
-            alpha = max(20, min(255, int(round(glyph.alpha))))
+            live_label = self._target_recognition_scene_glyph_live_label(glyph)
+            alpha = self._target_recognition_scene_glyph_render_alpha(
+                glyph,
+                live=bool(live_label),
+                label_fade=float(self._tr_scene_target_alpha_by_label.get(live_label, 1.0))
+                if live_label
+                else 1.0,
+            )
             rc, gc, bc = self._target_recognition_affiliation_color(glyph.entity.affiliation)
+            glyph_layer = pygame.Surface(scene.get_size(), pygame.SRCALPHA)
             self._draw_target_recognition_symbol(
-                scene,
+                glyph_layer,
                 entity=glyph.entity,
                 cx=cx,
                 cy=cy,
@@ -19378,9 +19388,13 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 color=(rc, gc, bc, alpha),
                 heading=glyph.heading,
             )
+            scene.blit(glyph_layer, (0, 0))
 
-            live = bool(self._target_recognition_scene_glyph_live_label(glyph))
-            hit_r = self._target_recognition_scene_hit_radius(glyph.entity, size, live=live)
+            hit_r = self._target_recognition_scene_hit_radius(
+                glyph.entity,
+                size,
+                live=bool(live_label),
+            )
             hit = pygame.Rect(rect.x + cx - hit_r, rect.y + cy - hit_r, hit_r * 2, hit_r * 2)
             self._tr_scene_symbol_hitboxes.append((hit, glyph_id))
 
@@ -19590,6 +19604,21 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         if key == "friendly":
             return (96, 176, 232)
         return (214, 206, 88)
+
+    def _target_recognition_scene_glyph_render_alpha(
+        self,
+        glyph: _TargetRecognitionSceneGlyph,
+        *,
+        live: bool,
+        label_fade: float,
+    ) -> int:
+        base = max(20.0, min(255.0, float(glyph.alpha)))
+        if not live:
+            return int(round(base))
+        fade = max(0.0, min(1.0, float(label_fade)))
+        per_glyph_variation = 0.74 + (((int(glyph.glyph_id) * 37) % 31) / 100.0)
+        display_alpha = base * (0.58 + (0.42 * fade)) * per_glyph_variation
+        return max(26, min(225, int(round(display_alpha))))
 
     @staticmethod
     def _target_recognition_entity_from_code(code: str) -> TargetRecognitionSceneEntity:
@@ -20335,7 +20364,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 )
                 preferred.max_alpha = target_max_alpha
                 if fade_in and current_count <= 0:
-                    preferred.alpha = 0.0
+                    preferred.alpha = max(38.0, target_alpha * 0.62)
                 else:
                     preferred.alpha = target_alpha
         if fade_in:
@@ -20346,10 +20375,6 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         if current_count > 0 and not fade_in:
             self._tr_scene_target_alpha_by_label.setdefault(label_key, 1.0)
         self._target_recognition_scene_recompute_live_counts()
-        if fade_in and not label_was_active:
-            for glyph in self._tr_scene_glyphs.values():
-                if glyph.live_target_label == label_key:
-                    glyph.alpha = 0.0
         self._tr_selected_panels.discard("scene")
         if arm_spawn_timer:
             self._target_recognition_scene_arm_spawn_timer(payload)
@@ -24400,7 +24425,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
 
         ball_r = max(2, min(4, tube_h // 2 - 1))
         max_offset = max(1, track.w // 2 - ball_r - 2)
-        offset = int(max(-1, min(1, int(slip))) * max_offset)
+        offset = int(-max(-1, min(1, int(slip))) * max_offset)
         ball_center = (track.centerx + offset, track.centery)
         pygame.draw.circle(surface, (244, 248, 255), ball_center, ball_r)
         pygame.draw.circle(surface, (120, 132, 156), ball_center, 1)
@@ -27479,8 +27504,9 @@ def run(
         return "Building Airborne Numerical workout"
 
     def open_workout(workout_code: str) -> None:
-        godot_kind = godot_kind_for_test_code(workout_code)
-        if godot_kind in GODOT_OWNED_KINDS:
+        token = str(workout_code).strip().lower()
+        godot_kind = godot_kind_for_test_code(token)
+        if godot_kind in GODOT_OWNED_KINDS and token != "rapid_tracking_workout":
             title = str(workout_code).replace("_", " ").title()
             godot_config: dict[str, object] = {"workout": True}
             if godot_kind == "auditory_capacity":
@@ -28722,10 +28748,10 @@ def run(
                 test_code=test_code,
                 title=title,
                 duration_s=scored_duration_s,
-                mode=str(resolved_mode),
+                mode=resolved_mode.value,
                 config=rapid_tracking_godot_config(
                     test_code=test_code,
-                    mode=str(resolved_mode),
+                    mode=resolved_mode.value,
                     difficulty=difficulty,
                     duration_s=scored_duration_s,
                     extra={"drill": True},
@@ -28754,6 +28780,14 @@ def run(
             test_code="rt_terrain_recovery_run",
             title="Rapid Tracking: Terrain Recovery Run",
             builder=build_rt_terrain_recovery_run_drill,
+            mode=mode,
+        )
+
+    def open_rt_obscured_target_prediction(mode: AntDrillMode) -> None:
+        _open_rt_drill(
+            test_code="rt_obscured_target_prediction",
+            title="Rapid Tracking: Obscured Target Prediction",
+            builder=build_rt_obscured_target_prediction_drill,
             mode=mode,
         )
 
@@ -28936,6 +28970,14 @@ def run(
             mode=mode,
         )
 
+    def open_si_static_multiview_integration(mode: AntDrillMode) -> None:
+        _open_si_drill(
+            test_code="si_static_multiview_integration",
+            title="Spatial Integration: Static Multiview Integration",
+            builder=build_si_static_mixed_run_drill,
+            mode=mode,
+        )
+
     def open_si_route_anchor(mode: AntDrillMode) -> None:
         _open_si_drill(
             test_code="si_route_anchor",
@@ -28957,6 +28999,14 @@ def run(
             test_code="si_aircraft_grid_run",
             title="Spatial Integration: Aircraft Grid Run",
             builder=build_si_aircraft_grid_run_drill,
+            mode=mode,
+        )
+
+    def open_si_moving_aircraft_multiview_integration(mode: AntDrillMode) -> None:
+        _open_si_drill(
+            test_code="si_moving_aircraft_multiview_integration",
+            title="Spatial Integration: Moving-Aircraft Multiview Integration",
+            builder=build_si_aircraft_multiview_integration_drill,
             mode=mode,
         )
 
@@ -29068,6 +29118,14 @@ def run(
             mode=mode,
         )
 
+    def open_trace_orientation_decode(mode: AntDrillMode) -> None:
+        _open_trace_drill(
+            test_code="trace_orientation_decode",
+            title="Trace Test 1: Trace Orientation Decode",
+            builder=build_tt1_command_switch_run_drill,
+            mode=mode,
+        )
+
     def open_tt2_steady_anchor(mode: AntDrillMode) -> None:
         _open_trace_drill(
             test_code="tt2_steady_anchor",
@@ -29088,6 +29146,14 @@ def run(
         _open_trace_drill(
             test_code="tt2_position_recall_run",
             title="Trace Test 2: Position Recall Run",
+            builder=build_tt2_position_recall_run_drill,
+            mode=mode,
+        )
+
+    def open_trace_movement_recall(mode: AntDrillMode) -> None:
+        _open_trace_drill(
+            test_code="trace_movement_recall",
+            title="Trace Test 2: Trace Movement Recall",
             builder=build_tt2_position_recall_run_drill,
             mode=mode,
         )
@@ -29762,7 +29828,11 @@ def run(
             (
                 ("rt_lock_anchor", "Lock Anchor", open_rt_lock_anchor),
                 ("rt_building_handoff_prime", "Building Handoff Prime", open_rt_building_handoff_prime),
-                ("rt_terrain_recovery_run", "Terrain Recovery Run", open_rt_terrain_recovery_run),
+                (
+                    "rt_obscured_target_prediction",
+                    "Obscured Target Prediction",
+                    open_rt_obscured_target_prediction,
+                ),
                 ("rt_capture_timing_prime", "Capture Timing Prime", open_rt_capture_timing_prime),
                 ("rt_ground_tempo_run", "Ground Tempo Run", open_rt_ground_tempo_run),
                 ("rt_rudder_horizontal_prime", "Rudder Horizontal Prime", open_rt_rudder_horizontal_prime),
@@ -29793,10 +29863,18 @@ def run(
             (
                 ("si_landmark_anchor", "Landmark Anchor", open_si_landmark_anchor),
                 ("si_reconstruction_run", "Reconstruction Run", open_si_reconstruction_run),
-                ("si_static_mixed_run", "Static Mixed Run", open_si_static_mixed_run),
+                (
+                    "si_static_multiview_integration",
+                    "Static Multiview Integration",
+                    open_si_static_multiview_integration,
+                ),
                 ("si_route_anchor", "Route Anchor", open_si_route_anchor),
                 ("si_continuation_prime", "Continuation Prime", open_si_continuation_prime),
-                ("si_aircraft_grid_run", "Aircraft Grid Run", open_si_aircraft_grid_run),
+                (
+                    "si_moving_aircraft_multiview_integration",
+                    "Moving-Aircraft Multiview Integration",
+                    open_si_moving_aircraft_multiview_integration,
+                ),
                 ("si_mixed_tempo", "Mixed Tempo", open_si_mixed_tempo),
                 ("si_pressure_run", "Pressure Run", open_si_pressure_run),
             )
@@ -29810,10 +29888,10 @@ def run(
             (
                 ("tt1_lateral_anchor", "TT1 Lateral Anchor", open_tt1_lateral_anchor),
                 ("tt1_vertical_anchor", "TT1 Vertical Anchor", open_tt1_vertical_anchor),
-                ("tt1_command_switch_run", "TT1 Command Switch Run", open_tt1_command_switch_run),
+                ("trace_orientation_decode", "Trace Orientation Decode", open_trace_orientation_decode),
                 ("tt2_steady_anchor", "TT2 Steady Anchor", open_tt2_steady_anchor),
                 ("tt2_turn_trace_run", "TT2 Turn Trace Run", open_tt2_turn_trace_run),
-                ("tt2_position_recall_run", "TT2 Position Recall Run", open_tt2_position_recall_run),
+                ("trace_movement_recall", "Trace Movement Recall", open_trace_movement_recall),
                 ("trace_mixed_tempo", "Mixed Tempo", open_trace_mixed_tempo),
                 ("trace_pressure_run", "Pressure Run", open_trace_pressure_run),
             )

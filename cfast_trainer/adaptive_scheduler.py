@@ -12,6 +12,7 @@ from .adaptive_difficulty import (
     ResolvedDifficultyContext,
     build_resolved_difficulty_context,
     clamp_level,
+    difficulty_ratio_for_level,
 )
 from .ant_drills import AntDrillMode
 from .ant_workouts import AntWorkoutBlockPlan, build_workout_block_engine
@@ -22,6 +23,15 @@ from .canonical_drill_registry import (
 )
 from .clock import Clock
 from .cognitive_core import Phase, TestSnapshot
+from .godot_owned import (
+    GODOT_OWNED_KINDS,
+    auditory_capacity_godot_config,
+    build_godot_owned_test,
+    godot_kind_for_test_code,
+    rapid_tracking_godot_config,
+    spatial_integration_godot_config,
+    trace_test_godot_config,
+)
 from .guide_skill_catalog import guide_ranking_primitive_id_for_code, guide_subskill_ids_for_code
 from .persistence import AttemptHistoryEntry
 from .primitive_ranking import (
@@ -2939,22 +2949,76 @@ class AdaptiveSession:
         if block.builder is not None:
             engine = block.builder()
         else:
-            workout_block = AntWorkoutBlockPlan(
-                block_id=f"adaptive_{block.block_index + 1:02d}",
-                label=block.primitive_label,
-                description=f"{block.primitive_label} [{', '.join(block.reason_tags)}]",
-                focus_skills=(block.primitive_label,),
-                drill_code=block.drill_code,
-                mode=block.drill_mode,
-                duration_min=float(block.duration_s) / 60.0,
-            )
-            engine = build_workout_block_engine(
-                clock=self._clock,
-                block_seed=block.seed,
-                difficulty_level=block.difficulty_level,
-                block=workout_block,
-                block_index=0,
-            )
+            godot_kind = godot_kind_for_test_code(block.drill_code)
+            if godot_kind in GODOT_OWNED_KINDS:
+                difficulty = float(
+                    difficulty_ratio_for_level(
+                        block.drill_code,
+                        clamp_level(block.difficulty_level),
+                    )
+                )
+                mode = block.drill_mode.value
+                duration_s = float(block.duration_s)
+                extra = {"drill": True, "adaptive": True}
+                if godot_kind == "auditory_capacity":
+                    config = auditory_capacity_godot_config(
+                        test_code=block.drill_code,
+                        mode=mode,
+                        difficulty=difficulty,
+                        duration_s=duration_s,
+                        extra=extra,
+                    )
+                elif godot_kind == "rapid_tracking":
+                    config = rapid_tracking_godot_config(
+                        test_code=block.drill_code,
+                        mode=mode,
+                        difficulty=difficulty,
+                        duration_s=duration_s,
+                        extra=extra,
+                    )
+                elif godot_kind == "spatial_integration":
+                    config = spatial_integration_godot_config(
+                        test_code=block.drill_code,
+                        mode=mode,
+                        duration_s=duration_s,
+                        extra=extra,
+                    )
+                else:
+                    config = trace_test_godot_config(
+                        test_code=block.drill_code,
+                        mode=mode,
+                        difficulty=difficulty,
+                        duration_s=duration_s,
+                        extra=extra,
+                    )
+                engine = build_godot_owned_test(
+                    clock=self._clock,
+                    seed=block.seed,
+                    difficulty=difficulty,
+                    kind=godot_kind,
+                    test_code=block.drill_code,
+                    title=block.primitive_label,
+                    duration_s=duration_s,
+                    mode=mode,
+                    config=config,
+                )
+            else:
+                workout_block = AntWorkoutBlockPlan(
+                    block_id=f"adaptive_{block.block_index + 1:02d}",
+                    label=block.primitive_label,
+                    description=f"{block.primitive_label} [{', '.join(block.reason_tags)}]",
+                    focus_skills=(block.primitive_label,),
+                    drill_code=block.drill_code,
+                    mode=block.drill_mode,
+                    duration_min=float(block.duration_s) / 60.0,
+                )
+                engine = build_workout_block_engine(
+                    clock=self._clock,
+                    block_seed=block.seed,
+                    difficulty_level=block.difficulty_level,
+                    block=workout_block,
+                    block_index=0,
+                )
         self._reset_block_engine_to_intro(engine)
         setattr(engine, "_difficulty_code", str(block.drill_code))
         setattr(engine, "_resolved_difficulty_context", self._block_difficulty_context(block))

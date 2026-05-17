@@ -1,5 +1,6 @@
 extends Node3D
 
+const ChunkMapGenerator = preload("res://scripts/chunk_map_generator.gd")
 const WHITE_COLOR := Color(0.92, 0.96, 0.98, 1.0)
 const TEXT_MUTED := Color(0.70, 0.76, 0.82, 1.0)
 const GREEN_COLOR := Color(0.22, 0.78, 0.34, 1.0)
@@ -45,9 +46,9 @@ const ROUTE_TEMPLATES := [
 	[Vector3(1, 1, 5), Vector3(2, 2, 4), Vector3(3, 3, 2), Vector3(5, 4, 2), Vector3(6, 3, 4), Vector3(5, 2, 6)],
 	[Vector3(2, 1, 6), Vector3(3, 2, 5), Vector3(4, 3, 3), Vector3(5, 3, 2), Vector3(6, 2, 3), Vector3(6, 1, 5)],
 ]
-const STATIC_KINDS := ["landmark_grid", "scene_reconstruction"]
+const STATIC_KINDS := ["landmark_grid", "scene_reconstruction", "scene_presence", "viewpoint_match"]
 const AIRCRAFT_KINDS := ["aircraft_route_selection", "aircraft_continuation_selection", "aircraft_location_grid"]
-const ALL_KINDS := ["landmark_grid", "scene_reconstruction", "aircraft_route_selection", "aircraft_continuation_selection", "aircraft_location_grid"]
+const ALL_KINDS := ["landmark_grid", "scene_reconstruction", "scene_presence", "viewpoint_match", "aircraft_route_selection", "aircraft_continuation_selection", "aircraft_location_grid"]
 
 var control_sender: Callable
 var active := false
@@ -95,6 +96,15 @@ var scene_hash := 0
 var route_hash := 0
 var question_order_hash := 0
 var option_order_hash := 0
+var chunk_map := {}
+var chunked_generation := true
+var grid_cols := GRID_COLS
+var grid_rows := GRID_ROWS
+var chunk_grid_cols := 8
+var chunk_grid_rows := 8
+var chunk_pack := "rural_mixed_v1"
+var asset_spawn_policy := "socketed"
+var terrain_pipeline := "si_large_scene_v2"
 
 var scene_root: Node3D
 var terrain_root: Node3D
@@ -130,6 +140,14 @@ func start(spec: Dictionary, sender: Callable) -> void:
 	aircraft_study_s = maxf(1.0, _float(cfg.get("aircraft_study_s", 15.0)))
 	question_time_limit_s = maxf(1.0, _float(cfg.get("question_time_limit_s", 8.0)))
 	practice_scenes_per_part = max(0, int(cfg.get("practice_scenes_per_part", 0)))
+	chunked_generation = bool(cfg.get("chunked_generation", true))
+	grid_cols = clampi(int(cfg.get("grid_cols", 24)), 2, 24)
+	grid_rows = clampi(int(cfg.get("grid_rows", 24)), 2, 24)
+	chunk_grid_cols = clampi(int(cfg.get("chunk_grid_cols", grid_cols)), 2, 24)
+	chunk_grid_rows = clampi(int(cfg.get("chunk_grid_rows", grid_rows)), 2, 24)
+	chunk_pack = str(cfg.get("chunk_pack", "rural_mixed_v1"))
+	asset_spawn_policy = str(cfg.get("asset_spawn_policy", "socketed")).to_lower()
+	terrain_pipeline = str(cfg.get("terrain_pipeline", "si_large_scene_v2"))
 	elapsed_s = 0.0
 	part_started_at_s = 0.0
 	progress_accum = 0.0
@@ -192,7 +210,7 @@ func handle_key(event: InputEventKey) -> bool:
 				selected_option_code = digit
 				_submit_option(digit)
 				return true
-		elif digit >= 1 and digit <= 8 and typed_cell_token.length() < 3:
+		elif digit >= 0 and digit <= 9 and typed_cell_token.length() < 3:
 			typed_cell_token += str(digit)
 			_refresh_entry_label()
 			return true
@@ -395,6 +413,16 @@ func _complete() -> void:
 		"route_hash": route_hash,
 		"question_order_hash": question_order_hash,
 		"option_order_hash": option_order_hash,
+		"chunked_generation": chunked_generation,
+		"chunk_pack": chunk_pack,
+		"asset_spawn_policy": asset_spawn_policy,
+		"terrain_pipeline": terrain_pipeline,
+		"chunk_map_hash": int(current_scene.get("chunk_hash", 0)),
+		"chunk_rule_violations": int(current_scene.get("chunk_rule_violations", 0)),
+		"hill_cell_count": int(current_scene.get("hill_cell_count", 0)),
+		"hill_cluster_count": int(current_scene.get("hill_cluster_count", 0)),
+		"visible_option_count": _visible_option_count(),
+		"question_kind": str(current_question.get("kind", "")),
 		"static_attempted": static_attempted,
 		"static_correct": static_correct,
 		"aircraft_attempted": aircraft_attempted,
@@ -417,20 +445,38 @@ func _complete() -> void:
 
 func _build_scene(part: String) -> Dictionary:
 	var scene_rng := _rng_for("scene:" + str(scene_counter) + ":" + part)
-	var hills := _sample_hills(scene_rng)
-	var landmarks := _sample_landmarks(scene_rng, STATIC_OBJECT_SPECS if part == "static" else AIRCRAFT_OBJECT_SPECS, 7 if part == "static" else 5)
+	var local_chunk_map := {}
+	if chunked_generation:
+		local_chunk_map = ChunkMapGenerator.generate({
+			"seed": session_seed + scene_counter * 97 + (17 if part == "aircraft" else 0),
+			"cols": chunk_grid_cols,
+			"rows": chunk_grid_rows,
+			"pack": chunk_pack,
+			"difficulty": difficulty,
+			"purpose": "spatial_integration",
+			"terrain_pipeline": terrain_pipeline,
+		})
+		chunk_map = local_chunk_map
+	var hills: Array = local_chunk_map.get("hill_clusters", []) if chunked_generation else _sample_hills(scene_rng)
+	var landmark_count: int = 10 if part == "static" else 7
+	var landmarks: Array = _chunk_landmarks(scene_rng, local_chunk_map, STATIC_OBJECT_SPECS if part == "static" else AIRCRAFT_OBJECT_SPECS, landmark_count) if chunked_generation else _sample_landmarks(scene_rng, STATIC_OBJECT_SPECS if part == "static" else AIRCRAFT_OBJECT_SPECS, landmark_count)
 	var route: Array = []
 	var route_index := 0
 	var aircraft_now := Vector3.ZERO
 	var aircraft_next := Vector3.ZERO
 	if part == "aircraft":
-		var template_index := int(scene_rng.randi_range(0, ROUTE_TEMPLATES.size() - 1))
-		for point in ROUTE_TEMPLATES[template_index]:
-			route.append(point)
+		if chunked_generation:
+			route = _chunk_aircraft_route(local_chunk_map)
+		if route.size() < 4:
+			var template_index := int(scene_rng.randi_range(0, ROUTE_TEMPLATES.size() - 1))
+			for point in ROUTE_TEMPLATES[template_index]:
+				route.append(point)
+			route_hash = _hash_mix(route_hash, template_index + scene_counter * 31)
+		else:
+			route_hash = _hash_mix(route_hash, int(local_chunk_map.get("chunk_hash", 0)))
 		route_index = int(scene_rng.randi_range(2, route.size() - 2))
 		aircraft_now = route[route_index]
 		aircraft_next = route[route_index + 1]
-		route_hash = _hash_mix(route_hash, template_index + scene_counter * 31)
 	var scene := {
 		"scene_id": scene_counter,
 		"part": part,
@@ -440,6 +486,11 @@ func _build_scene(part: String) -> Dictionary:
 		"route_current_index": route_index,
 		"aircraft_now": aircraft_now,
 		"aircraft_next": aircraft_next,
+		"chunk_map": local_chunk_map,
+		"chunk_hash": int(local_chunk_map.get("chunk_hash", 0)),
+		"chunk_rule_violations": int(local_chunk_map.get("rule_violations", 0)),
+		"hill_cell_count": int(local_chunk_map.get("hill_cell_count", 0)),
+		"hill_cluster_count": int(local_chunk_map.get("hill_cluster_count", 0)),
 	}
 	scene_hash = _hash_mix(scene_hash, _hash_scene(scene))
 	return scene
@@ -476,6 +527,30 @@ func _questions_for_scene(scene: Dictionary) -> Array:
 				"correct_code": correct_code,
 				"correct_answer_token": str(correct_code),
 				"options": options,
+			})
+		if _contains(allowed, "scene_presence"):
+			var presence_options := _scene_presence_options(rng, landmarks)
+			var presence_correct := _correct_code(presence_options)
+			questions.append({
+				"kind": "scene_presence",
+				"answer_mode": "option_pick",
+				"stem": "Which statement about the studied scene is true?",
+				"query_label": "PRESENCE",
+				"correct_code": presence_correct,
+				"correct_answer_token": str(presence_correct),
+				"options": presence_options,
+			})
+		if _contains(allowed, "viewpoint_match"):
+			var viewpoint_options := _viewpoint_match_options(rng, landmarks)
+			var viewpoint_correct := _correct_code(viewpoint_options)
+			questions.append({
+				"kind": "viewpoint_match",
+				"answer_mode": "option_pick",
+				"stem": "Which second-angle scene matches the studied landscape?",
+				"query_label": "VIEWPOINT",
+				"correct_code": viewpoint_correct,
+				"correct_answer_token": str(viewpoint_correct),
+				"options": viewpoint_options,
 			})
 	else:
 		var route: Array = scene.get("route", [])
@@ -556,7 +631,7 @@ func _sample_landmarks(rng: RandomNumberGenerator, specs: Array, count: int) -> 
 			if duplicate_ok:
 				candidate = points[int(rng.randi_range(0, points.size() - 1))]
 			else:
-				candidate = Vector2i(int(rng.randi_range(1, GRID_COLS - 2)), int(rng.randi_range(1, GRID_ROWS - 2)))
+				candidate = Vector2i(int(rng.randi_range(1, max(1, grid_cols - 2))), int(rng.randi_range(1, max(1, grid_rows - 2))))
 			var key := str(candidate.x) + ":" + str(candidate.y)
 			if int(occupancy.get(key, 0)) < 2:
 				occupancy[key] = int(occupancy.get(key, 0)) + 1
@@ -573,6 +648,98 @@ func _sample_landmarks(rng: RandomNumberGenerator, specs: Array, count: int) -> 
 				"y": candidate.y,
 			})
 	return landmarks
+
+
+func _chunk_landmarks(rng: RandomNumberGenerator, local_chunk_map: Dictionary, specs: Array, count: int) -> Array:
+	if local_chunk_map.is_empty():
+		return _sample_landmarks(rng, specs, count)
+	var sockets := _as_dict(local_chunk_map.get("asset_sockets", {}))
+	var candidates: Array = []
+	candidates.append_array(_landmark_candidates_from_sockets(sockets.get("building", []), "building"))
+	candidates.append_array(_landmark_candidates_from_sockets(sockets.get("pedestrian", []), "foot_soldiers"))
+	candidates.append_array(_landmark_candidates_from_sockets(sockets.get("forest", []), "forest"))
+	candidates.append_array(_landmark_candidates_from_sockets(sockets.get("truck", []), "truck"))
+	candidates.append_array(_landmark_candidates_from_sockets(sockets.get("static", []), "tower"))
+	if candidates.is_empty():
+		return _sample_landmarks(rng, specs, count)
+	var allowed_kinds := {}
+	for spec_value in specs:
+		var spec := _as_dict(spec_value)
+		allowed_kinds[str(spec.get("kind", ""))] = true
+	var pool := []
+	for candidate_value in candidates:
+		var candidate := _as_dict(candidate_value)
+		if bool(allowed_kinds.get(str(candidate.get("kind", "")), false)):
+			pool.append(candidate)
+	if pool.is_empty():
+		pool = candidates
+	var landmarks: Array = []
+	var used_labels := {}
+	while landmarks.size() < count and not pool.is_empty():
+		var idx := int(rng.randi_range(0, pool.size() - 1))
+		var candidate := _as_dict(pool[idx])
+		pool.remove_at(idx)
+		var label := _next_chunk_landmark_label(str(candidate.get("kind", "landmark")), used_labels)
+		candidate["label"] = label
+		landmarks.append(candidate)
+	if landmarks.size() < count:
+		var fallback := _sample_landmarks(rng, specs, count - landmarks.size())
+		for item in fallback:
+			landmarks.append(item)
+	return landmarks
+
+
+func _landmark_candidates_from_sockets(socket_values, landmark_kind: String) -> Array:
+	var out: Array = []
+	for value in socket_values:
+		var socket := _as_dict(value)
+		out.append({
+			"label": "OBJ",
+			"kind": landmark_kind,
+			"x": clampi(int(socket.get("x", 0)), 0, grid_cols - 1),
+			"y": clampi(int(socket.get("y", 0)), 0, grid_rows - 1),
+			"socket_kind": str(socket.get("kind", "")),
+			"tile_id": str(socket.get("tile_id", "")),
+		})
+	return out
+
+
+func _next_chunk_landmark_label(kind_name: String, used_labels: Dictionary) -> String:
+	var prefix := "OBJ"
+	if kind_name == "building":
+		prefix = "BLD"
+	elif kind_name == "foot_soldiers":
+		prefix = "SOL"
+	elif kind_name == "forest":
+		prefix = "WOOD"
+	elif kind_name == "truck":
+		prefix = "TRK"
+	elif kind_name == "tower":
+		prefix = "TWR"
+	var index := int(used_labels.get(prefix, 0)) + 1
+	used_labels[prefix] = index
+	return prefix + str(index)
+
+
+func _chunk_aircraft_route(local_chunk_map: Dictionary) -> Array:
+	var route: Array = []
+	for item in local_chunk_map.get("route_cells", []):
+		var cell := _as_dict(item)
+		route.append(Vector3(
+			clampi(int(cell.get("x", 0)), 0, grid_cols - 1),
+			clampi(int(cell.get("alt", 1)), 1, 4),
+			clampi(int(cell.get("y", 0)), 0, grid_rows - 1)
+		))
+	if route.size() >= 4:
+		return route
+	for item in local_chunk_map.get("road_nodes", []):
+		var node := _as_dict(item)
+		route.append(Vector3(
+			clampi(int(node.get("x", 0)), 0, grid_cols - 1),
+			1 + (route.size() % 4),
+			clampi(int(node.get("y", 0)), 0, grid_rows - 1)
+		))
+	return route
 
 
 func _pick_landmark_targets(rng: RandomNumberGenerator, landmarks: Array) -> Array:
@@ -606,8 +773,45 @@ func _static_reconstruction_options(rng: RandomNumberGenerator, landmarks: Array
 	return _ordered_options(rng, candidates)
 
 
+func _scene_presence_options(rng: RandomNumberGenerator, landmarks: Array) -> Array:
+	var present: Dictionary = _as_dict(landmarks[int(rng.randi_range(0, max(0, landmarks.size() - 1)))]) if not landmarks.is_empty() else {"label": "BLD1", "kind": "building"}
+	var absent_label := _absent_label_for(landmarks)
+	var wrong_a: Dictionary = _as_dict(landmarks[int(rng.randi_range(0, max(0, landmarks.size() - 1)))]) if not landmarks.is_empty() else present
+	var wrong_b: Dictionary = _as_dict(landmarks[min(landmarks.size() - 1, 1)]) if landmarks.size() > 1 else present
+	var candidates := [
+		{"answer_token": "correct", "presence_label": str(present.get("label", "")), "presence_kind": str(present.get("kind", "")), "presence_truth": "present", "statement": str(present.get("label", "")) + " was present."},
+		{"answer_token": "absent_claim", "presence_label": str(present.get("label", "")), "presence_kind": str(present.get("kind", "")), "presence_truth": "absent", "statement": str(present.get("label", "")) + " was absent."},
+		{"answer_token": "missing_present", "presence_label": absent_label, "presence_kind": "decoy", "presence_truth": "present", "statement": absent_label + " was present."},
+		{"answer_token": "wrong_location", "presence_label": str(wrong_a.get("label", "")), "presence_kind": str(wrong_b.get("kind", "")), "presence_truth": "wrong_kind", "statement": str(wrong_a.get("label", "")) + " matched a different object type."},
+	]
+	return _ordered_options(rng, candidates)
+
+
+func _viewpoint_match_options(rng: RandomNumberGenerator, landmarks: Array) -> Array:
+	var candidates := [
+		{"answer_token": "correct", "landmarks": landmarks, "view_angle": "second_angle"},
+		{"answer_token": "mirrored", "landmarks": _mirror_landmarks(landmarks), "view_angle": "second_angle"},
+		{"answer_token": "rotated", "landmarks": _rotate_landmarks(landmarks), "view_angle": "second_angle"},
+		{"answer_token": "swapped", "landmarks": _shift_landmarks(_swap_landmarks(landmarks)), "view_angle": "second_angle"},
+	]
+	return _ordered_options(rng, candidates)
+
+
+func _absent_label_for(landmarks: Array) -> String:
+	var used := {}
+	for landmark in landmarks:
+		var lm := _as_dict(landmark)
+		used[str(lm.get("label", ""))] = true
+	for prefix in ["BLD", "SOL", "TRK", "TWR", "TENT", "SHP", "WOOD"]:
+		for i in range(1, 5):
+			var label: String = prefix + str(i)
+			if not bool(used.get(label, false)):
+				return label
+	return "OBJ99"
+
+
 func _route_options(rng: RandomNumberGenerator, route: Array, aircraft_point: Vector3, variant: String) -> Array:
-	var shifted_aircraft := Vector3(clampi(int(aircraft_point.x) + 1, 0, GRID_COLS - 1), aircraft_point.y, clampi(int(aircraft_point.z) - 1, 0, GRID_ROWS - 1))
+	var shifted_aircraft := Vector3(clampi(int(aircraft_point.x) + 1, 0, grid_cols - 1), aircraft_point.y, clampi(int(aircraft_point.z) - 1, 0, grid_rows - 1))
 	var candidates := [
 		{"answer_token": "correct", "route": route, "aircraft": aircraft_point},
 		{"answer_token": "mirrored", "route": _mirror_route(route), "aircraft": _mirror_point(aircraft_point)},
@@ -646,7 +850,7 @@ func _mirror_landmarks(landmarks: Array) -> Array:
 	for landmark in landmarks:
 		var lm := _as_dict(landmark)
 		var copy := lm.duplicate(true)
-		copy["x"] = GRID_COLS - 1 - int(lm.get("x", 0))
+		copy["x"] = grid_cols - 1 - int(lm.get("x", 0))
 		out.append(copy)
 	return out
 
@@ -656,8 +860,8 @@ func _rotate_landmarks(landmarks: Array) -> Array:
 	for landmark in landmarks:
 		var lm := _as_dict(landmark)
 		var copy := lm.duplicate(true)
-		copy["x"] = GRID_COLS - 1 - int(lm.get("y", 0))
-		copy["y"] = int(lm.get("x", 0))
+		copy["x"] = clampi(grid_cols - 1 - int(lm.get("y", 0)), 0, grid_cols - 1)
+		copy["y"] = clampi(int(lm.get("x", 0)), 0, grid_rows - 1)
 		out.append(copy)
 	return out
 
@@ -675,6 +879,17 @@ func _swap_landmarks(landmarks: Array) -> Array:
 		b["y"] = ay
 		out[0] = a
 		out[1] = b
+	return out
+
+
+func _shift_landmarks(landmarks: Array) -> Array:
+	var out: Array = []
+	for landmark in landmarks:
+		var lm := _as_dict(landmark)
+		var copy := lm.duplicate(true)
+		copy["x"] = clampi(int(lm.get("x", 0)) + 1, 0, grid_cols - 1)
+		copy["y"] = clampi(int(lm.get("y", 0)) - 1, 0, grid_rows - 1)
+		out.append(copy)
 	return out
 
 
@@ -696,16 +911,16 @@ func _shift_route(route: Array) -> Array:
 	var out: Array = []
 	for point in route:
 		var p: Vector3 = point
-		out.append(Vector3(clampi(int(p.x) + 1, 0, GRID_COLS - 1), p.y, clampi(int(p.z) - 1, 0, GRID_ROWS - 1)))
+		out.append(Vector3(clampi(int(p.x) + 1, 0, grid_cols - 1), p.y, clampi(int(p.z) - 1, 0, grid_rows - 1)))
 	return out
 
 
 func _mirror_point(point: Vector3) -> Vector3:
-	return Vector3(GRID_COLS - 1 - int(point.x), point.y, point.z)
+	return Vector3(grid_cols - 1 - int(point.x), point.y, point.z)
 
 
 func _rotate_point(point: Vector3) -> Vector3:
-	return Vector3(GRID_COLS - 1 - int(point.z), point.y, int(point.x))
+	return Vector3(clampi(grid_cols - 1 - int(point.z), 0, grid_cols - 1), point.y, clampi(int(point.x), 0, grid_rows - 1))
 
 
 func _rebuild_world_scene(show_study_labels: bool) -> void:
@@ -713,8 +928,9 @@ func _rebuild_world_scene(show_study_labels: bool) -> void:
 	_clear_children(object_root)
 	_clear_children(route_root)
 	_draw_grid_terrain()
-	for hill in current_scene.get("hills", []):
-		_draw_hill(_as_dict(hill))
+	if not chunked_generation:
+		for hill in current_scene.get("hills", []):
+			_draw_hill(_as_dict(hill))
 	var landmarks: Array = current_scene.get("landmarks", [])
 	for landmark in landmarks:
 		_draw_landmark(_as_dict(landmark), show_study_labels)
@@ -724,13 +940,61 @@ func _rebuild_world_scene(show_study_labels: bool) -> void:
 
 
 func _draw_grid_terrain() -> void:
-	_make_box(terrain_root, "Ground", Vector3(0.0, -0.08, 0.0), Vector3(6.1, 0.08, 6.1), TERRAIN_COLOR)
-	for x in range(GRID_COLS + 1):
-		var wx := (float(x) - 4.0) * CELL_SIZE
-		_make_box(terrain_root, "GridX", Vector3(wx, 0.025, 0.0), Vector3(0.012, 0.012, 5.4), GRID_COLOR)
-	for y in range(GRID_ROWS + 1):
-		var wz := (float(y) - 4.0) * CELL_SIZE
-		_make_box(terrain_root, "GridY", Vector3(0.0, 0.03, wz), Vector3(5.4, 0.012, 0.012), GRID_COLOR)
+	_make_box(terrain_root, "Ground", Vector3(0.0, -0.08, 0.0), Vector3(_grid_world_width() * 1.04, 0.08, _grid_world_depth() * 1.04), TERRAIN_COLOR)
+	if chunked_generation and _as_dict(current_scene.get("chunk_map", {})).has("cells"):
+		_draw_chunked_grid_terrain(_as_dict(current_scene.get("chunk_map", {})))
+	for x in range(grid_cols + 1):
+		var wx := (float(x) - float(grid_cols) * 0.5) * CELL_SIZE
+		_make_box(terrain_root, "GridX", Vector3(wx, 0.025, 0.0), Vector3(0.012, 0.012, _grid_world_depth() * 1.01), GRID_COLOR)
+	for y in range(grid_rows + 1):
+		var wz := (float(y) - float(grid_rows) * 0.5) * CELL_SIZE
+		_make_box(terrain_root, "GridY", Vector3(0.0, 0.03, wz), Vector3(_grid_world_width() * 1.01, 0.012, 0.012), GRID_COLOR)
+
+
+func _draw_chunked_grid_terrain(local_chunk_map: Dictionary) -> void:
+	for item in local_chunk_map.get("cells", []):
+		var cell := _as_dict(item)
+		var x := int(cell.get("x", 0))
+		var y := int(cell.get("y", 0))
+		var terrain := str(cell.get("terrain", "grassland"))
+		var color := _chunk_terrain_color(terrain, int(cell.get("variant", 0)))
+		var center := _grid_to_world(x, y, 0)
+		_make_box(terrain_root, "ChunkTile", center + Vector3(0.0, -0.03, 0.0), Vector3(CELL_SIZE * 1.03, 0.035, CELL_SIZE * 1.03), color)
+		if bool(cell.get("river_n", false)) or bool(cell.get("river_s", false)):
+			_make_box(terrain_root, "ChunkRiver", center + Vector3(0.0, 0.005, 0.0), Vector3(CELL_SIZE * 0.32, 0.018, CELL_SIZE * 1.03), BLUE_COLOR.darkened(0.18))
+		if bool(cell.get("river_e", false)) or bool(cell.get("river_w", false)):
+			_make_box(terrain_root, "ChunkRiver", center + Vector3(0.0, 0.006, 0.0), Vector3(CELL_SIZE * 1.03, 0.018, CELL_SIZE * 0.32), BLUE_COLOR.darkened(0.18))
+		if bool(cell.get("road_n", false)) or bool(cell.get("road_s", false)):
+			_make_box(terrain_root, "ChunkRoad", center + Vector3(0.0, 0.035, 0.0), Vector3(CELL_SIZE * 0.28, 0.020, CELL_SIZE * 1.03), Color(0.23, 0.22, 0.20, 1.0))
+		if bool(cell.get("road_e", false)) or bool(cell.get("road_w", false)):
+			_make_box(terrain_root, "ChunkRoad", center + Vector3(0.0, 0.04, 0.0), Vector3(CELL_SIZE * 1.03, 0.020, CELL_SIZE * 0.28), Color(0.23, 0.22, 0.20, 1.0))
+		if bool(cell.get("is_bridge", false)):
+			_make_box(terrain_root, "ChunkBridge", center + Vector3(0.0, 0.075, 0.0), Vector3(CELL_SIZE * 1.03, 0.035, CELL_SIZE * 0.34), AMBER_COLOR.darkened(0.26))
+		if terrain == "hill":
+			var tier: int = max(1, int(cell.get("height_tier", 2)))
+			var height: float = 0.30 + float(tier) * 0.18
+			_make_box(terrain_root, "ChunkHill", center + Vector3(0.0, height * 0.5 + 0.01, 0.0), Vector3(CELL_SIZE * 0.98, height, CELL_SIZE * 0.98), HILL_COLOR.lightened(float(tier) * 0.025))
+
+
+func _chunk_terrain_color(terrain: String, variant: int) -> Color:
+	var jitter := float(variant % 5) * 0.035
+	if terrain == "city":
+		return Color(0.45 + jitter, 0.43 + jitter, 0.38 + jitter, 1.0)
+	if terrain == "city_edge":
+		return Color(0.40 + jitter, 0.46, 0.31, 1.0)
+	if terrain == "forest":
+		return TERRAIN_DARK.lerp(Color(0.10, 0.34, 0.14, 1.0), 0.68)
+	if terrain == "forest_edge":
+		return Color(0.18, 0.36 + jitter, 0.18, 1.0)
+	if terrain == "river":
+		return BLUE_COLOR.darkened(0.24)
+	if terrain == "bridge":
+		return Color(0.34, 0.31, 0.25, 1.0)
+	if terrain == "field":
+		return Color(0.34 + jitter, 0.42 + jitter, 0.20, 1.0)
+	if terrain == "hill":
+		return HILL_COLOR.darkened(0.10).lightened(jitter)
+	return TERRAIN_COLOR.lightened(jitter)
 
 
 func _draw_hill(hill: Dictionary) -> void:
@@ -846,17 +1110,20 @@ func _rebuild_answer_overlay() -> void:
 
 
 func _build_grid_buttons(parent: Control) -> void:
+	var scroll := ScrollContainer.new()
+	scroll.custom_minimum_size = Vector2(860, 98)
+	parent.add_child(scroll)
 	var grid := GridContainer.new()
-	grid.columns = GRID_COLS
-	grid.custom_minimum_size = Vector2(650, 0)
-	parent.add_child(grid)
+	grid.columns = grid_cols
+	grid.custom_minimum_size = Vector2(minf(900.0, float(grid_cols) * 38.0), 0.0)
+	scroll.add_child(grid)
 	var context_landmarks: Array = current_question.get("answer_map_landmarks", [])
 	var context_route: Array = current_question.get("answer_map_route_points", [])
-	for y in range(GRID_ROWS):
-		for x in range(GRID_COLS):
+	for y in range(grid_rows):
+		for x in range(grid_cols):
 			var token := _cell_token(x, y)
 			var button := Button.new()
-			button.custom_minimum_size = Vector2(72, 26)
+			button.custom_minimum_size = Vector2(36, 20)
 			button.text = token + _cell_context_suffix(x, y, context_landmarks, context_route)
 			button.pressed.connect(Callable(self, "_submit_grid_cell").bind(token))
 			grid.add_child(button)
@@ -911,6 +1178,10 @@ func _cell_context_suffix(x: int, y: int, landmarks: Array, route: Array) -> Str
 
 func _option_card_label(option: Dictionary) -> String:
 	var token := str(option.get("answer_token", "map"))
+	if option.has("statement"):
+		return str(option.get("statement", "Scene statement"))
+	if option.has("view_angle"):
+		return "Scene " + token + "\n" + _landmark_option_summary(option.get("landmarks", []))
 	if option.has("route"):
 		var aircraft: Vector3 = option.get("aircraft", Vector3.ZERO)
 		return "Route " + token + "\nAircraft " + _cell_token(int(aircraft.x), int(aircraft.z))
@@ -918,19 +1189,34 @@ func _option_card_label(option: Dictionary) -> String:
 	return "Map " + token + "\nObjects " + str(landmarks.size())
 
 
+func _landmark_option_summary(landmarks_value) -> String:
+	if typeof(landmarks_value) != TYPE_ARRAY:
+		return "No objects"
+	var landmarks: Array = landmarks_value
+	var labels: Array = []
+	for i in range(min(4, landmarks.size())):
+		var lm := _as_dict(landmarks[i])
+		labels.append(str(lm.get("label", "OBJ")) + " " + _cell_token(int(lm.get("x", 0)), int(lm.get("y", 0))))
+	return " / ".join(labels)
+
+
 func _update_camera(camera: Camera3D, dt: float) -> void:
 	if camera == null:
 		return
 	camera.projection = Camera3D.PROJECTION_PERSPECTIVE
+	camera.far = maxf(camera.far, maxf(_grid_world_width(), _grid_world_depth()) * 4.0)
 	var target := Vector3(0.0, 0.0, 0.0)
-	var pos := Vector3(0.0, 13.8, 0.02)
+	var span := maxf(_grid_world_width(), _grid_world_depth())
+	var pos := Vector3(0.0, span * 1.10, 0.02)
 	if stage == "study":
 		if study_view_index == 1:
-			pos = Vector3(9.8, 6.8, 8.8)
+			pos = Vector3(span * 0.84, span * 0.52, span * 0.78)
 		elif study_view_index == 2:
-			pos = Vector3(-8.6, 8.0, 9.6)
+			pos = Vector3(-span * 0.74, span * 0.60, span * 0.82)
 		else:
-			pos = Vector3(0.0, 14.5, 0.02)
+			pos = Vector3(0.0, span * 1.16, 0.02)
+	elif str(current_question.get("kind", "")) == "viewpoint_match":
+		pos = Vector3(span * 0.72, span * 0.50, -span * 0.82)
 	var blend := clampf(dt * 6.0, 0.08, 0.30)
 	camera.position = camera.position.lerp(pos, blend)
 	camera.look_at_from_position(camera.position, target, Vector3.UP)
@@ -962,8 +1248,19 @@ func _send_progress() -> void:
 			"route_hash": route_hash,
 			"question_order_hash": question_order_hash,
 			"option_order_hash": option_order_hash,
+			"chunk_map_hash": int(current_scene.get("chunk_hash", 0)),
+			"hill_cell_count": int(current_scene.get("hill_cell_count", 0)),
+			"hill_cluster_count": int(current_scene.get("hill_cluster_count", 0)),
+			"visible_option_count": _visible_option_count(),
+			"question_kind": str(current_question.get("kind", "")),
 		},
 	})
+
+
+func _visible_option_count() -> int:
+	if str(current_question.get("answer_mode", "")) != "option_pick":
+		return 0
+	return (current_question.get("options", []) as Array).size()
 
 
 func _build_nodes() -> void:
@@ -1008,6 +1305,7 @@ func _clear_runtime() -> void:
 	prompt_label = null
 	entry_label = null
 	answer_root = null
+	chunk_map.clear()
 
 
 func _make_box(parent: Node, name_value: String, pos: Vector3, scale_value: Vector3, color: Color) -> MeshInstance3D:
@@ -1058,8 +1356,16 @@ func _material(color: Color) -> StandardMaterial3D:
 	return mat
 
 
+func _grid_world_width() -> float:
+	return float(max(1, grid_cols)) * CELL_SIZE
+
+
+func _grid_world_depth() -> float:
+	return float(max(1, grid_rows)) * CELL_SIZE
+
+
 func _grid_to_world(x: int, y: int, alt: int) -> Vector3:
-	return Vector3((float(x) - 3.5) * CELL_SIZE, float(alt) * 0.58 + 0.05, (float(y) - 3.5) * CELL_SIZE)
+	return Vector3((float(x) - (float(grid_cols) - 1.0) * 0.5) * CELL_SIZE, float(alt) * 0.58 + 0.05, (float(y) - (float(grid_rows) - 1.0) * 0.5) * CELL_SIZE)
 
 
 func _cell_token(x: int, y: int) -> String:
@@ -1080,7 +1386,7 @@ func _normalize_cell_token(raw: String) -> String:
 		return ""
 	var row := letters.unicode_at(0) - 65
 	var col := int(digits) - 1
-	if row < 0 or row >= GRID_ROWS or col < 0 or col >= GRID_COLS:
+	if row < 0 or row >= grid_rows or col < 0 or col >= grid_cols:
 		return ""
 	return _cell_token(col, row)
 
@@ -1137,6 +1443,38 @@ func _letter_from_key(key: Key) -> String:
 			return "G"
 		KEY_H:
 			return "H"
+		KEY_I:
+			return "I"
+		KEY_J:
+			return "J"
+		KEY_K:
+			return "K"
+		KEY_L:
+			return "L"
+		KEY_M:
+			return "M"
+		KEY_N:
+			return "N"
+		KEY_O:
+			return "O"
+		KEY_P:
+			return "P"
+		KEY_Q:
+			return "Q"
+		KEY_R:
+			return "R"
+		KEY_S:
+			return "S"
+		KEY_T:
+			return "T"
+		KEY_U:
+			return "U"
+		KEY_V:
+			return "V"
+		KEY_W:
+			return "W"
+		KEY_X:
+			return "X"
 	return ""
 
 
@@ -1197,6 +1535,7 @@ func _string_salt(value: String) -> int:
 
 func _hash_scene(scene: Dictionary) -> int:
 	var value := int(scene.get("scene_id", 0)) * 17 + _string_salt(str(scene.get("part", "")))
+	value = _hash_mix(value, int(scene.get("chunk_hash", 0)))
 	for landmark in scene.get("landmarks", []):
 		var lm := _as_dict(landmark)
 		value = _hash_mix(value, _string_salt(str(lm.get("label", ""))) + int(lm.get("x", 0)) * 11 + int(lm.get("y", 0)) * 19)

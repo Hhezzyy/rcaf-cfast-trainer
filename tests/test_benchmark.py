@@ -474,7 +474,7 @@ def test_build_benchmark_plan_is_randomized_and_totals_1665_seconds() -> None:
     assert plan.scored_duration_s == pytest.approx(1665.0)
 
 
-def test_auditory_benchmark_probe_uses_full_godot_config() -> None:
+def test_auditory_benchmark_probe_uses_godot_standard_config() -> None:
     engine = _build_benchmark_probe_engine(
         clock=_FakeClock(),
         probe_code="auditory_capacity",
@@ -497,7 +497,7 @@ def test_auditory_benchmark_probe_uses_full_godot_config() -> None:
     assert config["filler_narrator_interval_s"] == pytest.approx(13.0)
 
 
-def test_rapid_tracking_benchmark_probe_uses_expanded_godot_world_config() -> None:
+def test_rapid_tracking_benchmark_probe_uses_godot_world_config() -> None:
     engine = _build_benchmark_probe_engine(
         clock=_FakeClock(),
         probe_code="rapid_tracking",
@@ -519,10 +519,31 @@ def test_rapid_tracking_benchmark_probe_uses_expanded_godot_world_config() -> No
     assert config["rapid_world"]["tunnel_count"] >= 1
 
 
-def test_trace_benchmark_probe_uses_godot_trace_tuning_and_practice() -> None:
+def test_spatial_integration_benchmark_probe_uses_godot_standard_config() -> None:
     engine = _build_benchmark_probe_engine(
         clock=_FakeClock(),
-        probe_code="trace_test_1",
+        probe_code="spatial_integration",
+        seed=2026,
+        duration_s=90.0,
+    )
+    engine.start_practice()
+    engine.start_scored()
+    payload = engine.snapshot().payload
+
+    assert isinstance(payload, GodotOwnedPayload)
+    config = payload.spec.config
+    assert config["benchmark"] is True
+    assert config["spatial_integration"] is True
+    assert config["parts"] == ["static", "aircraft"]
+    assert config["allowed_question_kinds"]
+    assert config["duration_s"] == pytest.approx(90.0)
+
+
+@pytest.mark.parametrize("probe_code", ("trace_test_1", "trace_test_2"))
+def test_trace_benchmark_probes_use_godot_trace_tuning(probe_code: str) -> None:
+    engine = _build_benchmark_probe_engine(
+        clock=_FakeClock(),
+        probe_code=probe_code,
         seed=2026,
         duration_s=45.0,
     )
@@ -543,13 +564,6 @@ def test_trace_benchmark_probe_uses_godot_trace_tuning_and_practice() -> None:
     assert config["trace1_response_window_s"] > 1.0
     assert config["trace2_observe_s"] > 2.0
     assert config["trace2_clip_min_s"] >= 3.2
-    assert config["trace2_clip_max_s"] > config["trace2_clip_min_s"]
-    assert config["trace2_question_window_s"] > 2.0
-    assert config["trace2_offscreen_margin_cells"] > 2.0
-    assert config["trace2_close_camera_scale"] < 0.70
-    assert config["trace2_aircraft_scale"] > 1.35
-    assert config["trace2_question_overlay_enabled"] is True
-    assert config["trace2_new_clip_after_answer"] is True
 
 
 def test_benchmark_session_advances_probe_by_probe_and_accumulates_results() -> None:

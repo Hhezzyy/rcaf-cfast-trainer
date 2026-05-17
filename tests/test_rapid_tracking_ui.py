@@ -26,6 +26,7 @@ from cfast_trainer.app import (
 )
 from cfast_trainer.cognitive_core import Phase
 from cfast_trainer.cognitive_core import TestSnapshot as SnapshotModel
+from cfast_trainer.godot_owned import GodotOwnedPayload
 from cfast_trainer.rapid_tracking import RapidTrackingPayload, build_rapid_tracking_test
 from cfast_trainer.rt_drills import (
     build_rt_ground_tempo_run_drill,
@@ -266,7 +267,9 @@ def test_rapid_tracking_workout_block_uses_real_runtime_screen() -> None:
         assert runtime._engine is not None
         snap = runtime._engine.snapshot()
         assert str(snap.title).startswith("Rapid Tracking")
-        assert isinstance(snap.payload, RapidTrackingPayload)
+        assert isinstance(snap.payload, GodotOwnedPayload)
+        assert snap.payload.spec.kind == "rapid_tracking"
+        assert snap.payload.spec.test_code == "rt_mixed_tempo"
     finally:
         pygame.quit()
 

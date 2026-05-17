@@ -29,6 +29,8 @@ _DIRECT_KIND_BY_CODE = {
     "spatial_integration": KIND_SPATIAL_INTEGRATION,
     "trace_test_1": KIND_TRACE_TEST_1,
     "trace_test_2": KIND_TRACE_TEST_2,
+    "trace_orientation_decode": KIND_TRACE_TEST_1,
+    "trace_movement_recall": KIND_TRACE_TEST_2,
     "auditory_capacity_workout": KIND_AUDITORY_CAPACITY,
     "rapid_tracking_workout": KIND_RAPID_TRACKING,
     "spatial_integration_workout": KIND_SPATIAL_INTEGRATION,
@@ -39,6 +41,8 @@ _DIRECT_KIND_BY_CODE = {
 _SI_STATIC_KINDS = (
     "landmark_grid",
     "scene_reconstruction",
+    "scene_presence",
+    "viewpoint_match",
 )
 _SI_AIRCRAFT_KINDS = (
     "aircraft_route_selection",
@@ -100,12 +104,12 @@ def rapid_tracking_godot_config(
     if "pressure" in token:
         air_target_enabled = True
 
-    world_size = 92.0 + ratio * 28.0
-    terrain_resolution = int(round(18.0 + ratio * 10.0))
+    world_size = 300.0
+    terrain_resolution = int(round(54.0 + ratio * 18.0))
     road_density = 0.78 + ratio * 0.42
     town_count = int(round(4.0 + ratio * 4.0))
-    vehicle_count = int(round((16.0 + ratio * 22.0) * density_scale * vehicle_bias))
-    pedestrian_count = int(round((10.0 + ratio * 18.0) * density_scale * pedestrian_bias))
+    vehicle_count = int(round((28.0 + ratio * 32.0) * density_scale * vehicle_bias))
+    pedestrian_count = int(round((18.0 + ratio * 26.0) * density_scale * pedestrian_bias))
 
     rapid_world: dict[str, object] = {
         "world_size_m": world_size,
@@ -120,13 +124,22 @@ def rapid_tracking_godot_config(
         "forest_patch_count": int(round(8.0 + ratio * 10.0)),
         "vehicle_count": max(6, vehicle_count),
         "pedestrian_count": max(4, pedestrian_count),
-        "parked_asset_count": int(round((20.0 + ratio * 30.0) * density_scale)),
+        "parked_asset_count": int(round((36.0 + ratio * 44.0) * density_scale)),
         "occlusion_density": 0.22 + ratio * 0.36,
-        "air_distractor_count": int(round(3.0 + ratio * 4.0)),
-        "ground_target_weight": 0.88 if not air_target_enabled else 0.64,
-        "air_targets_enabled": air_target_enabled,
+        "air_distractor_count": int(round(8.0 + ratio * 10.0)),
+        "ground_target_weight": 0.72 if not air_target_enabled else 0.58,
+        "air_targets_enabled": True,
         "difficulty_scaled": True,
         "scene_style": "low_poly_large",
+        "chunked_generation": True,
+        "chunk_grid_cols": 50,
+        "chunk_grid_rows": 50,
+        "chunk_cell_size_m": 6.0,
+        "chunk_pack": "rural_mixed_v1",
+        "asset_spawn_policy": "socketed",
+        "road_topology": "organic_looped",
+        "road_buffer_cells": 1,
+        "terrain_pipeline": "terrain_first_v3",
     }
 
     config: dict[str, object] = {
@@ -140,10 +153,10 @@ def rapid_tracking_godot_config(
         "capture_box_half_width": max(0.075, 0.165 - ratio * 0.035),
         "capture_box_half_height": max(0.065, 0.140 - ratio * 0.025),
         "capture_cooldown_s": max(0.14, 0.48 - ratio * 0.14),
-        "camera_orbit_rate_scale": 0.88 + ratio * 0.42,
-        "camera_turbulence_scale": 0.80 + ratio * 0.72,
+        "camera_orbit_rate_scale": 1.15 + ratio * 0.75,
+        "camera_turbulence_scale": 1.55 + ratio * 1.10,
         "target_speed_scale": 0.82 + ratio * 0.62,
-        "handoff_interval_s": max(7.0, 15.5 - ratio * 5.2),
+        "handoff_interval_s": max(3.2, 6.0 - ratio * 2.1),
         "obscuration_scale": 0.72 + ratio * 0.75,
         "rapid_world": rapid_world,
     }
@@ -794,9 +807,15 @@ def spatial_integration_godot_config(
         "aircraft_study_s": 15.0,
         "question_time_limit_s": 8.0,
         "practice_scenes_per_part": max(0, int(practice_scenes_per_part)),
-        "grid_cols": 8,
-        "grid_rows": 8,
+        "grid_cols": 24,
+        "grid_rows": 24,
         "alt_levels": 5,
+        "chunked_generation": True,
+        "chunk_grid_cols": 24,
+        "chunk_grid_rows": 24,
+        "chunk_pack": "rural_mixed_v1",
+        "asset_spawn_policy": "socketed",
+        "terrain_pipeline": "si_large_scene_v2",
         "mode": str(mode or "standard"),
     }
     if duration_s is not None:

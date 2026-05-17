@@ -126,10 +126,10 @@ def test_real_si_workout_matches_standard_90_minute_structure() -> None:
     assert tuple(block.drill_code for block in plan.blocks) == (
         "si_landmark_anchor",
         "si_reconstruction_run",
-        "si_static_mixed_run",
+        "si_static_multiview_integration",
         "si_route_anchor",
         "si_continuation_prime",
-        "si_aircraft_grid_run",
+        "si_moving_aircraft_multiview_integration",
         "si_mixed_tempo",
         "si_pressure_run",
     )

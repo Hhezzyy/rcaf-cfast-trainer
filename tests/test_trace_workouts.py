@@ -177,12 +177,12 @@ def test_real_trace_test_1_workout_matches_standard_90_minute_structure() -> Non
     assert tuple(block.drill_code for block in plan.blocks) == (
         "tt1_lateral_anchor",
         "tt1_vertical_anchor",
-        "tt1_command_switch_run",
+        "trace_orientation_decode",
         "tt1_lateral_anchor",
         "tt1_vertical_anchor",
-        "tt1_command_switch_run",
-        "tt1_command_switch_run",
-        "tt1_command_switch_run",
+        "trace_orientation_decode",
+        "trace_orientation_decode",
+        "trace_orientation_decode",
     )
 
 
@@ -193,10 +193,10 @@ def test_real_trace_test_2_workout_matches_standard_90_minute_structure() -> Non
     assert tuple(block.drill_code for block in plan.blocks) == (
         "tt2_steady_anchor",
         "tt2_turn_trace_run",
-        "tt2_position_recall_run",
+        "trace_movement_recall",
         "tt2_steady_anchor",
         "tt2_turn_trace_run",
-        "tt2_position_recall_run",
+        "trace_movement_recall",
         "tt2_turn_trace_run",
-        "tt2_position_recall_run",
+        "trace_movement_recall",
     )

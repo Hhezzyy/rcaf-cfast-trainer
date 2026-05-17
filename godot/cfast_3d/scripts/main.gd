@@ -128,7 +128,7 @@ func _build_world() -> void:
 	env.ambient_light_energy = 0.78
 	env.fog_enabled = true
 	env.fog_light_color = FOG_COLOR
-	env.fog_density = 0.045
+	env.fog_density = 0.010
 	var world := WorldEnvironment.new()
 	world.environment = env
 	add_child(world)
@@ -145,7 +145,7 @@ func _build_world() -> void:
 	camera.current = true
 	camera.fov = 58.0
 	camera.near = 0.05
-	camera.far = 90.0
+	camera.far = 520.0
 	add_child(camera)
 	_set_camera(Vector3(0.0, 3.0, 10.0), Vector3(0.0, 1.0, -3.0))
 

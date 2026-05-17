@@ -36,6 +36,7 @@ from cfast_trainer.benchmark import BenchmarkSession, build_benchmark_plan
 from cfast_trainer.clock import PausableClock
 from cfast_trainer.cognitive_core import Phase
 from cfast_trainer.cognitive_core import TestSnapshot as SnapshotModel
+from cfast_trainer.godot_owned import GodotOwnedPayload
 from cfast_trainer.persistence import AttemptHistoryEntry, ResultsStore
 from cfast_trainer.primitive_ranking import rank_primitives
 from cfast_trainer.results import AttemptResult, attempt_result_from_engine
@@ -1028,6 +1029,55 @@ def test_recent_block_profile_reads_live_block_history_entries() -> None:
     assert [(block.primitive_id, block.drill_code, block.target_area) for block in recent] == [
         ("mental_arithmetic_automaticity", "ma_percentage_snap", "quantitative_core")
     ]
+
+
+@pytest.mark.parametrize(
+    "drill_code",
+    (
+        "ac_gate_anchor",
+        "rt_obscured_target_prediction",
+        "si_static_multiview_integration",
+        "si_moving_aircraft_multiview_integration",
+        "trace_orientation_decode",
+        "trace_movement_recall",
+    ),
+)
+def test_adaptive_blocks_route_canonical_3d_drills_to_godot_owned_payloads(
+    drill_code: str,
+) -> None:
+    clock = _FakeClock()
+    block = AdaptiveSessionBlock(
+        block_index=0,
+        primitive_id="tracking_stability_low_load",
+        primitive_label="Tracking Stability",
+        drill_code=drill_code,
+        mode="block_component",
+        duration_s=15.0,
+        difficulty_level=5,
+        seed=2026,
+        reason_tags=("regression",),
+        priority=0.8,
+        drill_mode=AntDrillMode.BUILD,
+        form_factor="micro",
+        target_area="godot_owned_3d",
+    )
+    plan = AdaptiveSessionPlan(
+        code="adaptive_session",
+        title="Adaptive Native 3D Route",
+        version=1,
+        generated_at_utc=_iso(0),
+        description="Native 3D drill routing regression.",
+        notes=(),
+        ranked_primitives=(),
+        blocks=(block,),
+    )
+    session = AdaptiveSession(clock=clock, seed=2026, plan=plan)
+    engine = session._build_block_engine(block)
+    engine.start_scored()
+
+    payload = engine.snapshot().payload
+    assert payload is not None
+    assert isinstance(payload, GodotOwnedPayload)
 
 
 def test_drill_variety_avoids_recent_target_area_when_alternative_exists() -> None:

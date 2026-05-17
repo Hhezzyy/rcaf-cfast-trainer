@@ -46,11 +46,11 @@ def build_si_workout_plan(*, duration_scale: float = 1.0) -> AntWorkoutPlan:
             10 * scale,
         ),
         _block(
-            "static_mixed_run",
-            "Static Mixed Run",
+            "static_multiview_integration",
+            "Static Multiview Integration",
             "Keep the live static part intact with landmark-grid and reconstruction questions alternating under tempo pressure.",
             ("Static question switching", "Landscape integration"),
-            "si_static_mixed_run",
+            "si_static_multiview_integration",
             AntDrillMode.TEMPO,
             10 * scale,
         ),
@@ -73,11 +73,11 @@ def build_si_workout_plan(*, duration_scale: float = 1.0) -> AntWorkoutPlan:
             10 * scale,
         ),
         _block(
-            "aircraft_grid_run",
-            "Aircraft Grid Run",
-            "Keep the aircraft section live and answer only aircraft-location grid questions under tempo pressure.",
-            ("Aircraft grid placement", "Route-to-cell translation"),
-            "si_aircraft_grid_run",
+            "moving_aircraft_multiview_integration",
+            "Moving-Aircraft Multiview Integration",
+            "Keep the aircraft section live and integrate route, continuation, and aircraft-location questions under tempo pressure.",
+            ("Aircraft multiview integration", "Route-to-cell translation"),
+            "si_moving_aircraft_multiview_integration",
             AntDrillMode.TEMPO,
             10 * scale,
         ),
@@ -118,4 +118,3 @@ def build_si_workout_plan(*, duration_scale: float = 1.0) -> AntWorkoutPlan:
 
 def si_workout_menu_entries() -> tuple[tuple[str, str], ...]:
     return (("spatial_integration_workout", "Spatial Integration Workout (90m)"),)
-

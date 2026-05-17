@@ -1,5 +1,6 @@
 extends Node3D
 
+const ChunkMapGenerator = preload("res://scripts/chunk_map_generator.gd")
 const WHITE_COLOR := Color(0.92, 0.96, 0.98, 1.0)
 const GREEN_COLOR := Color(0.22, 0.82, 0.34, 1.0)
 const BLUE_COLOR := Color(0.12, 0.42, 0.95, 1.0)
@@ -19,7 +20,11 @@ const GARAGE_COLOR := Color(0.50, 0.47, 0.39, 1.0)
 const TREE_TRUNK := Color(0.28, 0.16, 0.08, 1.0)
 const TREE_TOP := Color(0.16, 0.37, 0.18, 1.0)
 const SHADOW_COLOR := Color(0.04, 0.05, 0.04, 0.45)
-const TARGET_KINDS := ["car", "truck", "person", "building", "helicopter", "jet"]
+const CHUNK_TILE_SCALE := 1.03
+const CHUNK_TILE_THICKNESS := 0.045
+const GROUND_VEHICLE_SCALE := 1.28
+const GROUND_PERSON_SCALE := 1.35
+const TARGET_KINDS := ["car", "truck", "tank", "person", "building", "helicopter", "jet"]
 
 var control_sender: Callable
 var active := false
@@ -97,6 +102,16 @@ var target_marker_v: ColorRect
 var material_cache := {}
 var rapid_world_config := {}
 var world_size_m := 96.0
+var chunked_generation := true
+var chunk_grid_cols := 8
+var chunk_grid_rows := 8
+var chunk_size_m := 12.0
+var chunk_pack := "rural_mixed_v1"
+var asset_spawn_policy := "socketed"
+var road_topology := "organic_looped"
+var road_buffer_cells := 1
+var terrain_pipeline := "terrain_first_v3"
+var chunk_map := {}
 var terrain_resolution := 22
 var hill_intensity := 1.35
 var mountain_intensity := 1.6
@@ -106,17 +121,17 @@ var lake_count := 2
 var river_count := 1
 var tunnel_count := 2
 var forest_patch_count := 10
-var vehicle_count := 22
-var pedestrian_count := 14
-var parked_asset_count := 28
+var vehicle_count := 36
+var pedestrian_count := 24
+var parked_asset_count := 48
 var occlusion_density := 0.34
-var air_distractor_count := 4
+var air_distractor_count := 10
 var ground_target_weight := 0.88
 var air_targets_enabled := false
 var target_speed_scale := 1.0
 var camera_orbit_rate_scale := 1.0
 var camera_turbulence_scale := 1.0
-var handoff_interval_s := 11.5
+var handoff_interval_s := 4.6
 var obscuration_scale := 1.0
 var moving_assets := []
 var target_schedule := []
@@ -156,9 +171,9 @@ func start(spec: Dictionary, sender: Callable) -> void:
 	capture_box_half_height = maxf(0.065, _float(cfg.get("capture_box_half_height", 0.135 - difficulty * 0.018)))
 	capture_cooldown_s = maxf(0.12, _float(cfg.get("capture_cooldown_s", 0.46 - difficulty * 0.12)))
 	target_speed_scale = maxf(0.25, _float(cfg.get("target_speed_scale", 0.82 + difficulty * 0.62)))
-	camera_orbit_rate_scale = maxf(0.25, _float(cfg.get("camera_orbit_rate_scale", 0.88 + difficulty * 0.42)))
-	camera_turbulence_scale = maxf(0.25, _float(cfg.get("camera_turbulence_scale", 0.80 + difficulty * 0.72)))
-	handoff_interval_s = maxf(5.5, _float(cfg.get("handoff_interval_s", 13.0 - difficulty * 4.0)))
+	camera_orbit_rate_scale = maxf(0.25, _float(cfg.get("camera_orbit_rate_scale", 1.15 + difficulty * 0.75)))
+	camera_turbulence_scale = maxf(0.25, _float(cfg.get("camera_turbulence_scale", 1.55 + difficulty * 1.10)))
+	handoff_interval_s = maxf(3.2, _float(cfg.get("handoff_interval_s", 5.8 - difficulty * 1.9)))
 	obscuration_scale = maxf(0.0, _float(cfg.get("obscuration_scale", 0.72 + difficulty * 0.75)))
 	elapsed_s = 0.0
 	tick_accum = 0.0
@@ -277,16 +292,16 @@ func _step(dt: float) -> void:
 func _input_vector() -> Vector2:
 	var out := Vector2.ZERO
 	if Input.is_key_pressed(KEY_A) or Input.is_key_pressed(KEY_LEFT):
-		out.x -= 1.0
-	if Input.is_key_pressed(KEY_D) or Input.is_key_pressed(KEY_RIGHT):
 		out.x += 1.0
+	if Input.is_key_pressed(KEY_D) or Input.is_key_pressed(KEY_RIGHT):
+		out.x -= 1.0
 	if Input.is_key_pressed(KEY_W) or Input.is_key_pressed(KEY_UP):
 		out.y += 1.0
 	if Input.is_key_pressed(KEY_S) or Input.is_key_pressed(KEY_DOWN):
 		out.y -= 1.0
 	var joy := _primary_joypad()
 	if joy >= 0:
-		out.x += Input.get_joy_axis(joy, JOY_AXIS_LEFT_X)
+		out.x -= Input.get_joy_axis(joy, JOY_AXIS_LEFT_X)
 		out.y -= Input.get_joy_axis(joy, JOY_AXIS_LEFT_Y)
 	if out.length() > 1.0:
 		out = out.normalized()
@@ -426,11 +441,16 @@ func _active_target_world_position() -> Vector3:
 		return base + Vector3(sin(local_t * speed + phase_offset) * radius * 0.55, 0.58, cos(local_t * speed * 0.7 + phase_offset) * radius * 0.42)
 	if token == "helicopter":
 		active_target_direction = Vector3(cos(local_t * speed + phase_offset), 0.0, -sin(local_t * speed + phase_offset)).normalized()
-		return base + Vector3(sin(local_t * speed + phase_offset) * radius, 6.0 + sin(local_t * 0.9 + phase_offset) * 1.1, cos(local_t * speed * 0.82 + phase_offset) * radius)
+		var heli_altitude := _float(item.get("altitude", 12.0))
+		var heli_bob := _float(item.get("altitude_bob", 4.5))
+		var heli_y := heli_altitude + sin(local_t * 0.9 + phase_offset) * heli_bob + sin(local_t * 2.1 + phase_offset * 0.4) * heli_bob * 0.35
+		return base + Vector3(sin(local_t * speed + phase_offset) * radius, heli_y, cos(local_t * speed * 0.82 + phase_offset) * radius)
 	if token == "jet":
 		var sweep := fmod(local_t * speed * 6.0 + phase_offset, 28.0) - 14.0
 		active_target_direction = Vector3(1.0, 0.0, cos(local_t * speed + phase_offset) * 0.3).normalized()
-		return base + Vector3(sweep, 9.0 + sin(local_t * 0.8) * 1.8, sin(local_t * speed + phase_offset) * radius * 0.5)
+		var jet_altitude := _float(item.get("altitude", 18.0))
+		var jet_bob := _float(item.get("altitude_bob", 5.8))
+		return base + Vector3(sweep, jet_altitude + sin(local_t * 0.8) * jet_bob + cos(local_t * 1.6 + phase_offset) * jet_bob * 0.28, sin(local_t * speed + phase_offset) * radius * 0.5)
 	active_target_direction = Vector3(cos(local_t * speed + phase_offset), 0.0, -sin(local_t * speed + phase_offset)).normalized()
 	return base + Vector3(sin(local_t * speed + phase_offset) * radius, 0.68, cos(local_t * speed * 0.72 + phase_offset) * radius * 0.65)
 
@@ -506,7 +526,8 @@ func _update_moving_asset(asset: Dictionary) -> void:
 	var altitude := _float(asset.get("altitude", 0.5))
 	var pos := center
 	if route == "air":
-		pos += Vector3(sin(elapsed_s * speed + phase_offset) * radius, altitude + sin(elapsed_s * speed * 0.7 + phase_offset) * 1.2, cos(elapsed_s * speed * 0.8 + phase_offset) * radius)
+		var bob := _float(asset.get("altitude_bob", 3.5))
+		pos += Vector3(sin(elapsed_s * speed + phase_offset) * radius, altitude + sin(elapsed_s * speed * 0.7 + phase_offset) * bob + cos(elapsed_s * speed * 1.35 + phase_offset * 0.7) * bob * 0.35, cos(elapsed_s * speed * 0.8 + phase_offset) * radius)
 	else:
 		pos += Vector3(sin(elapsed_s * speed + phase_offset) * radius, altitude, cos(elapsed_s * speed * 0.75 + phase_offset) * radius * 0.55)
 	var prev := root.position
@@ -520,27 +541,31 @@ func _update_camera(camera: Camera3D, dt: float) -> void:
 	if camera == null:
 		return
 	camera.projection = Camera3D.PROJECTION_PERSPECTIVE
+	camera.far = maxf(camera.far, world_size_m * 1.8)
 	var dir := -1.0 if _seed_unit("camera:direction") < 0.5 else 1.0
-	var radius := world_size_m * (0.34 + difficulty * 0.05) + _seed_unit("camera:radius") * 5.0
-	var rate := (0.090 + difficulty * 0.035) * camera_orbit_rate_scale * dir
 	var phase_offset := _seed_unit("camera:phase") * TAU
+	var radius_base := world_size_m * (0.30 + difficulty * 0.07) + _seed_unit("camera:radius") * 10.0
+	var radius := radius_base + sin(elapsed_s * 0.19 + phase_offset * 0.5) * world_size_m * 0.055
+	var rate := (0.105 + difficulty * 0.050) * camera_orbit_rate_scale * dir
 	var angle := phase_offset + elapsed_s * rate
 	var base_focus := Vector3(
-		sin(elapsed_s * 0.13 + phase_offset) * 2.6,
-		1.8 + sin(elapsed_s * 0.17 + phase_offset) * 0.5,
-		cos(elapsed_s * 0.11 + phase_offset) * 2.2
+		sin(elapsed_s * 0.13 + phase_offset) * 4.4,
+		2.2 + sin(elapsed_s * 0.21 + phase_offset) * 1.3,
+		cos(elapsed_s * 0.11 + phase_offset) * 3.8
 	)
-	var turbulence_strength := (0.42 + difficulty * 0.72) * camera_turbulence_scale
+	var turbulence_strength := (0.86 + difficulty * 1.20) * camera_turbulence_scale
 	var turbulence := Vector3(
-		sin(elapsed_s * 1.37 + phase_offset * 0.7) * turbulence_strength,
-		sin(elapsed_s * 1.91 + phase_offset * 1.3) * turbulence_strength * 0.34,
+		sin(elapsed_s * 1.37 + phase_offset * 0.7) * turbulence_strength * 1.35,
+		sin(elapsed_s * 1.91 + phase_offset * 1.3) * turbulence_strength * 0.95,
 		cos(elapsed_s * 1.53 + phase_offset * 0.5) * turbulence_strength
 	)
 	base_focus += turbulence
+	var altitude_wave := sin(elapsed_s * 0.16 + phase_offset) * 8.5 + sin(elapsed_s * 0.47 + phase_offset * 0.4) * 4.0
+	var rotor_bob := sin(elapsed_s * 2.35 + phase_offset) * turbulence_strength * 1.10
 	var desired := base_focus + Vector3(
-		cos(angle) * radius + sin(elapsed_s * 0.61 + phase_offset) * turbulence_strength * 1.8,
-		18.0 + difficulty * 6.0 + sin(elapsed_s * 0.21) * 1.2 + cos(elapsed_s * 0.79 + phase_offset) * turbulence_strength,
-		sin(angle) * radius + cos(elapsed_s * 0.57 + phase_offset) * turbulence_strength * 1.8
+		cos(angle) * radius + sin(elapsed_s * 0.61 + phase_offset) * turbulence_strength * 3.2,
+		25.0 + difficulty * 11.0 + altitude_wave + rotor_bob,
+		sin(angle) * radius + cos(elapsed_s * 0.57 + phase_offset) * turbulence_strength * 3.2
 	)
 	var forward := (base_focus - desired).normalized()
 	var yawed_forward := (Basis(Vector3.UP, aim_angles.x) * forward).normalized()
@@ -634,6 +659,21 @@ func _send_progress() -> void:
 			"target_schedule_hash": target_schedule_hash,
 			"road_graph_hash": road_graph_hash,
 			"route_hash": route_hash,
+			"chunk_map_hash": int(chunk_map.get("chunk_hash", 0)),
+			"road_component_count": int(chunk_map.get("road_component_count", 0)),
+			"road_dead_end_count": int(chunk_map.get("road_dead_end_count", 0)),
+			"road_buffer_violation_count": int(chunk_map.get("road_buffer_violation_count", 0)),
+			"city_road_adjacency_violations": int(chunk_map.get("city_road_adjacency_violations", 0)),
+			"water_feature_count": int(chunk_map.get("water_feature_count", 0)),
+			"lake_cell_count": int(chunk_map.get("lake_cell_count", 0)),
+			"river_cell_count": int(chunk_map.get("river_cell_count", 0)),
+			"bridge_cell_count": int(chunk_map.get("bridge_cell_count", 0)),
+			"mountain_cell_count": int(chunk_map.get("mountain_cell_count", 0)),
+			"hill_cell_count": int(chunk_map.get("hill_cell_count", 0)),
+			"edge_mountain_ring_width": int(chunk_map.get("edge_mountain_ring_width", 0)),
+			"terrain_blocked_road_crossings": int(chunk_map.get("terrain_blocked_road_crossings", 0)),
+			"building_cell_count": int(chunk_map.get("building_cell_count", 0)),
+			"visible_building_count": int(chunk_map.get("visible_building_count", 0)),
 		},
 	})
 
@@ -664,6 +704,27 @@ func _complete() -> void:
 		"godot_test_code": test_code,
 		"godot_mode": mode,
 		"scene_theme": "expanded_rural_house_clusters",
+		"chunked_generation": chunked_generation,
+		"chunk_pack": chunk_pack,
+		"asset_spawn_policy": asset_spawn_policy,
+		"road_topology": road_topology,
+		"terrain_pipeline": terrain_pipeline,
+		"chunk_map_hash": int(chunk_map.get("chunk_hash", 0)),
+		"chunk_rule_violations": int(chunk_map.get("rule_violations", 0)),
+		"road_component_count": int(chunk_map.get("road_component_count", 0)),
+		"road_dead_end_count": int(chunk_map.get("road_dead_end_count", 0)),
+		"road_buffer_violation_count": int(chunk_map.get("road_buffer_violation_count", 0)),
+		"city_road_adjacency_violations": int(chunk_map.get("city_road_adjacency_violations", 0)),
+		"water_feature_count": int(chunk_map.get("water_feature_count", 0)),
+		"lake_cell_count": int(chunk_map.get("lake_cell_count", 0)),
+		"river_cell_count": int(chunk_map.get("river_cell_count", 0)),
+		"bridge_cell_count": int(chunk_map.get("bridge_cell_count", 0)),
+		"mountain_cell_count": int(chunk_map.get("mountain_cell_count", 0)),
+		"hill_cell_count": int(chunk_map.get("hill_cell_count", 0)),
+		"edge_mountain_ring_width": int(chunk_map.get("edge_mountain_ring_width", 0)),
+		"terrain_blocked_road_crossings": int(chunk_map.get("terrain_blocked_road_crossings", 0)),
+		"building_cell_count": int(chunk_map.get("building_cell_count", 0)),
+		"visible_building_count": int(chunk_map.get("visible_building_count", 0)),
 		"scene_hash": scene_hash,
 		"target_schedule_hash": target_schedule_hash,
 		"road_graph_hash": road_graph_hash,
@@ -793,12 +854,13 @@ func _clear_runtime() -> void:
 	forest_patches.clear()
 	tunnel_segments.clear()
 	occluder_positions.clear()
+	chunk_map.clear()
 
 
 func _configure_world(cfg: Dictionary) -> void:
 	rapid_world_config = cfg.duplicate(true)
-	world_size_m = maxf(64.0, _float(cfg.get("world_size_m", 92.0 + difficulty * 28.0)))
-	terrain_resolution = clampi(int(round(_float(cfg.get("terrain_resolution", 18.0 + difficulty * 10.0)))), 12, 42)
+	world_size_m = maxf(64.0, _float(cfg.get("world_size_m", 300.0)))
+	terrain_resolution = clampi(int(round(_float(cfg.get("terrain_resolution", 54.0 + difficulty * 18.0)))), 12, 96)
 	hill_intensity = maxf(0.1, _float(cfg.get("hill_intensity", 1.05 + difficulty * 1.25)))
 	mountain_intensity = maxf(0.0, _float(cfg.get("mountain_intensity", 1.0 + difficulty * 1.8)))
 	town_count = clampi(int(round(_float(cfg.get("town_count", 4.0 + difficulty * 4.0)))), 2, 10)
@@ -807,25 +869,39 @@ func _configure_world(cfg: Dictionary) -> void:
 	river_count = clampi(int(round(_float(cfg.get("river_count", 1.0 + difficulty)))), 0, 3)
 	tunnel_count = clampi(int(round(_float(cfg.get("tunnel_count", 1.0 + difficulty * 3.0)))), 0, 6)
 	forest_patch_count = clampi(int(round(_float(cfg.get("forest_patch_count", 8.0 + difficulty * 10.0)))), 2, 26)
-	vehicle_count = clampi(int(round(_float(cfg.get("vehicle_count", 16.0 + difficulty * 22.0)))), 4, 64)
-	pedestrian_count = clampi(int(round(_float(cfg.get("pedestrian_count", 10.0 + difficulty * 18.0)))), 2, 48)
-	parked_asset_count = clampi(int(round(_float(cfg.get("parked_asset_count", 20.0 + difficulty * 30.0)))), 4, 80)
+	vehicle_count = clampi(int(round(_float(cfg.get("vehicle_count", 28.0 + difficulty * 32.0)))), 4, 96)
+	pedestrian_count = clampi(int(round(_float(cfg.get("pedestrian_count", 18.0 + difficulty * 26.0)))), 2, 72)
+	parked_asset_count = clampi(int(round(_float(cfg.get("parked_asset_count", 36.0 + difficulty * 44.0)))), 4, 120)
 	occlusion_density = clampf(_float(cfg.get("occlusion_density", 0.22 + difficulty * 0.36)), 0.0, 1.0)
-	air_distractor_count = clampi(int(round(_float(cfg.get("air_distractor_count", 3.0 + difficulty * 4.0)))), 0, 12)
-	ground_target_weight = clampf(_float(cfg.get("ground_target_weight", 0.88)), 0.0, 1.0)
+	air_distractor_count = clampi(int(round(_float(cfg.get("air_distractor_count", 8.0 + difficulty * 10.0)))), 2, 24)
+	ground_target_weight = clampf(_float(cfg.get("ground_target_weight", 0.72)), 0.0, 1.0)
 	air_targets_enabled = bool(cfg.get("air_targets_enabled", false))
+	chunked_generation = bool(cfg.get("chunked_generation", true))
+	chunk_grid_cols = clampi(int(cfg.get("chunk_grid_cols", 50)), 2, 160)
+	chunk_grid_rows = clampi(int(cfg.get("chunk_grid_rows", 50)), 2, 160)
+	chunk_size_m = maxf(1.0, _float(cfg.get("chunk_cell_size_m", world_size_m / float(max(1, chunk_grid_cols)))))
+	chunk_pack = str(cfg.get("chunk_pack", "rural_mixed_v1"))
+	asset_spawn_policy = str(cfg.get("asset_spawn_policy", "socketed")).to_lower()
+	road_topology = str(cfg.get("road_topology", "organic_looped"))
+	road_buffer_cells = max(1, int(cfg.get("road_buffer_cells", 1)))
+	terrain_pipeline = str(cfg.get("terrain_pipeline", "terrain_first_v3"))
 
 
 func _generate_scene() -> void:
+	if chunked_generation:
+		_generate_chunk_map()
 	_generate_town_centers()
 	_generate_water_features()
 	_generate_road_graph()
 	_build_terrain_mesh()
+	_draw_chunk_ground_tiles()
 	_draw_water_features()
 	_draw_road_graph()
-	var village_rng := _rng_for("towns")
-	for i in range(cluster_centers.size()):
-		_make_house_cluster(village_rng, cluster_centers[i] as Vector3, i)
+	if not chunked_generation or chunk_map.is_empty():
+		var village_rng := _rng_for("towns")
+		for i in range(cluster_centers.size()):
+			_make_house_cluster(village_rng, cluster_centers[i] as Vector3, i)
+	_make_chunk_city_buildings(_rng_for("chunk_city_buildings"))
 	_make_forest_patches()
 	_make_field_blocks()
 	_make_fences(_rng_for("fences"), 26 + int(round(difficulty * 18.0)))
@@ -837,7 +913,31 @@ func _generate_scene() -> void:
 	scene_hash = _hash_scene()
 
 
+func _generate_chunk_map() -> void:
+	chunk_map = ChunkMapGenerator.generate({
+		"seed": session_seed + _string_salt(test_code) + _string_salt(mode) * 3,
+		"cols": chunk_grid_cols,
+		"rows": chunk_grid_rows,
+		"cell_size_m": chunk_size_m,
+		"pack": chunk_pack,
+		"difficulty": difficulty,
+		"purpose": "rapid_tracking",
+		"road_topology": road_topology,
+		"road_buffer_cells": road_buffer_cells,
+		"terrain_pipeline": terrain_pipeline,
+	})
+
+
 func _generate_town_centers() -> void:
+	if chunked_generation and not chunk_map.is_empty():
+		cluster_centers.clear()
+		var city_cells: Array = chunk_map.get("city_centers", [])
+		for item in city_cells:
+			var cell := _as_dict(item)
+			var pos := _chunk_cell_center_world(int(cell.get("x", 0)), int(cell.get("y", 0)), 0.0)
+			cluster_centers.append(pos)
+		if not cluster_centers.is_empty():
+			return
 	var rng := _rng_for("towns")
 	cluster_centers.clear()
 	var half := world_size_m * 0.36
@@ -850,6 +950,44 @@ func _generate_town_centers() -> void:
 
 
 func _generate_water_features() -> void:
+	if chunked_generation and not chunk_map.is_empty():
+		water_features.clear()
+		var cells: Array = chunk_map.get("cells", [])
+		for item in cells:
+			var cell := _as_dict(item)
+			if bool(cell.get("is_lake", false)) or str(cell.get("terrain", "")) == "lake":
+				var lake_center := _chunk_cell_center_world(int(cell.get("x", 0)), int(cell.get("y", 0)), -0.04)
+				water_features.append({
+					"type": "lake",
+					"center": _vec3_dict(lake_center),
+					"radius": chunk_size_m * 0.46,
+					"width": 1.0,
+					"rotation": 0.0,
+				})
+			elif bool(cell.get("river_n", false)) or bool(cell.get("river_s", false)):
+				var center := _chunk_cell_center_world(int(cell.get("x", 0)), int(cell.get("y", 0)), -0.015)
+				var a := center + Vector3(0.0, 0.0, -chunk_size_m * 0.48)
+				var b := center + Vector3(0.0, 0.0, chunk_size_m * 0.48)
+				water_features.append({
+					"type": "river",
+					"a": _vec3_dict(a),
+					"b": _vec3_dict(b),
+					"radius": chunk_size_m * (0.23 if bool(cell.get("is_bridge", false)) else 0.30),
+					"rotation": 0.0,
+				})
+			elif bool(cell.get("river_e", false)) or bool(cell.get("river_w", false)):
+				var center_h := _chunk_cell_center_world(int(cell.get("x", 0)), int(cell.get("y", 0)), -0.015)
+				var ah := center_h + Vector3(-chunk_size_m * 0.48, 0.0, 0.0)
+				var bh := center_h + Vector3(chunk_size_m * 0.48, 0.0, 0.0)
+				water_features.append({
+					"type": "river",
+					"a": _vec3_dict(ah),
+					"b": _vec3_dict(bh),
+					"radius": chunk_size_m * 0.30,
+					"rotation": 0.0,
+				})
+		if not water_features.is_empty():
+			return
 	var rng := _rng_for("water")
 	water_features.clear()
 	var half := world_size_m * 0.42
@@ -879,6 +1017,19 @@ func _generate_road_graph() -> void:
 	road_nodes.clear()
 	road_edges.clear()
 	tunnel_segments.clear()
+	if chunked_generation and not chunk_map.is_empty():
+		var source_nodes: Array = chunk_map.get("road_nodes", [])
+		for item in source_nodes:
+			var node := _as_dict(item)
+			var pos := _chunk_cell_center_world(int(node.get("x", 0)), int(node.get("y", 0)), 0.0)
+			var node_type := "bridge" if bool(node.get("bridge", false)) else ("town_street" if str(node.get("cell_tile", "")).find("road") >= 0 else "road")
+			_add_road_node(pos, node_type)
+		for item in chunk_map.get("road_edges", []):
+			var edge := _as_dict(item)
+			var edge_type := str(edge.get("type", "road"))
+			_connect_road_nodes(int(edge.get("a", 0)), int(edge.get("b", 0)), false, edge_type)
+		if road_nodes.size() >= 2 and not road_edges.is_empty():
+			return
 	var rng := _rng_for("roads")
 	var hub := _add_road_node(Vector3(0.0, _terrain_height_at(0.0, 0.0), 0.0), "hub")
 	for i in range(cluster_centers.size()):
@@ -1017,7 +1168,100 @@ func _draw_water_features() -> void:
 			node.rotation.y = _float(data.get("rotation", 0.0))
 
 
+func _draw_chunk_ground_tiles() -> void:
+	if not chunked_generation or chunk_map.is_empty():
+		return
+	var cells: Array = chunk_map.get("cells", [])
+	for item in cells:
+		var cell := _as_dict(item)
+		var pos := _chunk_cell_center_world(int(cell.get("x", 0)), int(cell.get("y", 0)), _chunk_tile_y_offset(cell))
+		var tint := _chunk_tile_color(cell)
+		_make_box_child(static_root, _chunk_tile_node_name(cell), pos, Vector3(chunk_size_m * CHUNK_TILE_SCALE, CHUNK_TILE_THICKNESS, chunk_size_m * CHUNK_TILE_SCALE), tint)
+		_make_chunk_elevation_block(cell, pos, tint)
+
+
+func _chunk_cell_has_road(cell: Dictionary) -> bool:
+	return bool(cell.get("road_n", false)) or bool(cell.get("road_e", false)) or bool(cell.get("road_s", false)) or bool(cell.get("road_w", false))
+
+
+func _chunk_cell_has_river(cell: Dictionary) -> bool:
+	return bool(cell.get("river_n", false)) or bool(cell.get("river_e", false)) or bool(cell.get("river_s", false)) or bool(cell.get("river_w", false))
+
+
+func _chunk_tile_y_offset(cell: Dictionary) -> float:
+	if bool(cell.get("is_bridge", false)) or _chunk_cell_has_road(cell):
+		return 0.012
+	if bool(cell.get("is_lake", false)) or _chunk_cell_has_river(cell):
+		return -0.035
+	return -0.040
+
+
+func _chunk_tile_color(cell: Dictionary) -> Color:
+	var terrain := str(cell.get("terrain", "grassland"))
+	var tile_id := str(cell.get("tile_id", terrain))
+	if bool(cell.get("is_bridge", false)) or tile_id == "bridge_ew_over_ns":
+		return ROAD_COLOR.lerp(ROAD_MARKING_COLOR, 0.22)
+	if _chunk_cell_has_road(cell):
+		return ROAD_COLOR.lightened(0.10) if bool(cell.get("urban_road", false)) else ROAD_COLOR
+	if bool(cell.get("is_lake", false)) or terrain == "lake" or tile_id == "lake":
+		return Color(0.10, 0.30, 0.46, 1.0)
+	if _chunk_cell_has_river(cell) or tile_id.begins_with("river"):
+		return Color(0.09, 0.27, 0.41, 1.0)
+	if bool(cell.get("road_buffer", false)) or terrain == "road_buffer" or tile_id == "road_buffer":
+		return GREEN_COLOR.darkened(0.42).lerp(FIELD_LIGHT, 0.24)
+	if terrain == "field" or tile_id == "field":
+		return FIELD_LIGHT.lerp(FIELD_DARK, float(int(cell.get("variant", 0)) % 5) / 5.0)
+	if terrain == "hill":
+		return MOUNTAIN_COLOR.lerp(FIELD_GREEN, 0.32)
+	if terrain == "mountain":
+		return MOUNTAIN_COLOR.lightened(0.05)
+	if terrain == "city":
+		return HOUSE_WALL.darkened(0.18)
+	if terrain == "city_edge":
+		return FIELD_LIGHT.lerp(HOUSE_WALL, 0.34)
+	if terrain == "forest" or terrain == "forest_edge":
+		return FIELD_GREEN.lerp(TREE_TOP, 0.36)
+	return GREEN_COLOR.darkened(0.34).lerp(FIELD_GREEN, 0.45)
+
+
+func _chunk_tile_node_name(cell: Dictionary) -> String:
+	var terrain := str(cell.get("terrain", "grassland"))
+	var tile_id := str(cell.get("tile_id", terrain))
+	if bool(cell.get("is_bridge", false)) or tile_id == "bridge_ew_over_ns":
+		return "BridgeChunkTile"
+	if _chunk_cell_has_road(cell):
+		return "RoadChunkTile"
+	if bool(cell.get("is_lake", false)) or _chunk_cell_has_river(cell) or terrain == "lake" or tile_id.begins_with("river"):
+		return "WaterChunkTile"
+	if terrain == "city" or terrain == "city_edge":
+		return "CityBuildingTile"
+	if terrain == "hill" or terrain == "mountain":
+		return "RaisedTerrainBaseTile"
+	return "GroundChunkTile"
+
+
+func _make_chunk_elevation_block(cell: Dictionary, tile_pos: Vector3, tint: Color) -> void:
+	var terrain := str(cell.get("terrain", "grassland"))
+	if terrain != "hill" and terrain != "mountain":
+		return
+	var tier: int = max(1, int(cell.get("height_tier", 2)))
+	var is_mountain := terrain == "mountain"
+	var edge_mountain := bool(cell.get("edge_mountain", false))
+	var height := (5.60 + float(tier) * 1.95) if edge_mountain else ((3.80 + float(tier) * 1.45) if is_mountain else (2.20 + float(tier) * 1.05))
+	var footprint := chunk_size_m * (1.28 if edge_mountain else (1.16 if is_mountain else 1.08))
+	var center := Vector3(tile_pos.x, _terrain_height_at(tile_pos.x, tile_pos.z) + height * 0.5, tile_pos.z)
+	var color := tint.darkened(0.04) if is_mountain else tint.lightened(0.08)
+	_make_box_child(static_root, "MountainChunkBlock" if is_mountain else "HillChunkBlock", center, Vector3(footprint, height, footprint), color)
+	occluder_positions.append({"pos": _vec3_dict(center), "radius": footprint * (0.95 if edge_mountain else 0.82), "type": "terrain"})
+
+
 func _draw_road_graph() -> void:
+	if chunked_generation and not chunk_map.is_empty():
+		for edge_value in road_edges:
+			var edge := _as_dict(edge_value)
+			if bool(edge.get("tunnel", false)):
+				_make_tunnel_visual(_road_node_pos(int(edge.get("a", 0))), _road_node_pos(int(edge.get("b", 0))))
+		return
 	for edge_value in road_edges:
 		var edge := _as_dict(edge_value)
 		var a := _road_node_pos(int(edge.get("a", 0)))
@@ -1026,7 +1270,8 @@ func _draw_road_graph() -> void:
 		if tunnel:
 			_make_tunnel_visual(a, b)
 		else:
-			_make_road_like_box(static_root, "RoadGraphEdge", a, b, 0.70 if str(edge.get("type", "")) == "street" else 0.95, ROAD_COLOR, 0.02)
+			var road_half_width := 0.70 if str(edge.get("type", "")) == "street" else 0.95
+			_make_road_like_box(static_root, "RoadGraphEdge", a, b, road_half_width, ROAD_COLOR, 0.02)
 			if a.distance_to(b) > 8.0:
 				_make_road_like_box(static_root, "RoadCenterMark", a, b, 0.045, ROAD_MARKING_COLOR, 0.055)
 
@@ -1057,6 +1302,8 @@ func _make_road_like_box(parent: Node3D, name_value: String, a: Vector3, b: Vect
 
 func _make_field_blocks() -> void:
 	var rng := _rng_for("fields")
+	if chunked_generation and not chunk_map.is_empty():
+		return
 	var half := world_size_m * 0.43
 	var count := 26 + int(round(difficulty * 18.0))
 	for i in range(count):
@@ -1072,6 +1319,28 @@ func _make_field_blocks() -> void:
 func _make_forest_patches() -> void:
 	var rng := _rng_for("forests")
 	forest_patches.clear()
+	if chunked_generation and not chunk_map.is_empty():
+		var sockets: Array = _chunk_asset_sockets("forest")
+		var made := 0
+		for socket in sockets:
+			var data := _as_dict(socket)
+			var center := _chunk_socket_world(data, 0.0)
+			var radius := chunk_size_m * rng.randf_range(0.28, 0.44)
+			forest_patches.append({"center": _vec3_dict(center), "radius": radius})
+			var tree_count := int(round(7.0 + difficulty * 6.0 + float(int(data.get("x", 0)) + int(data.get("y", 0))) * 0.4))
+			for j in range(tree_count):
+				var angle := rng.randf_range(0.0, TAU)
+				var dist := sqrt(rng.randf()) * radius
+				var pos := center + Vector3(cos(angle) * dist, 0.0, sin(angle) * dist)
+				pos.y = _terrain_height_at(pos.x, pos.z)
+				_make_tree_at(pos, rng, "ForestChunkTree")
+			if rng.randf() < occlusion_density:
+				occluder_positions.append({"pos": _vec3_dict(center), "radius": radius * 0.76, "type": "forest"})
+			made += 1
+			if made >= forest_patch_count:
+				return
+		if made > 0:
+			return
 	var half := world_size_m * 0.44
 	for i in range(forest_patch_count):
 		var center := Vector3(rng.randf_range(-half, half), 0.0, rng.randf_range(-half, half))
@@ -1124,6 +1393,37 @@ func _make_house_cluster(rng: RandomNumberGenerator, center: Vector3, cluster_in
 			occluder_positions.append({"pos": _vec3_dict(pos), "radius": maxf(scale.x, scale.z) * 1.4, "type": "building"})
 
 
+func _make_chunk_city_buildings(rng: RandomNumberGenerator) -> void:
+	if not chunked_generation or chunk_map.is_empty():
+		return
+	var sockets := _chunk_asset_sockets("building")
+	var placed := 0
+	var max_buildings: int = min(sockets.size(), 180)
+	for socket_value in sockets:
+		if placed >= max_buildings:
+			return
+		var data := _as_dict(socket_value)
+		var pos := _chunk_socket_world(data, 0.0)
+		pos.y = _terrain_height_at(pos.x, pos.z)
+		house_positions.append(pos)
+		var root := Node3D.new()
+		root.name = "VisibleCityBuilding" + str(placed)
+		root.position = pos
+		root.rotation_degrees.y = float((int(data.get("x", 0)) * 37 + int(data.get("y", 0)) * 19) % 90) - 45.0
+		static_root.add_child(root)
+		var tier := 1 + int((int(data.get("x", 0)) + int(data.get("y", 0)) + placed) % 3)
+		var width := chunk_size_m * rng.randf_range(0.22, 0.34)
+		var depth := chunk_size_m * rng.randf_range(0.20, 0.32)
+		var height := 0.82 + float(tier) * 0.42 + difficulty * 0.45
+		var wall_color := HOUSE_WALL.lightened(0.12).lerp(Color(0.82, 0.76, 0.60, 1.0), rng.randf() * 0.45)
+		_make_box_child(root, "VisibleWalls", Vector3(0.0, height * 0.5, 0.0), Vector3(width, height, depth), wall_color)
+		_make_box_child(root, "VisibleRoof", Vector3(0.0, height + 0.13, 0.0), Vector3(width * 1.08, 0.20, depth * 1.08), HOUSE_ROOF.lightened(0.08))
+		_make_box_child(root, "FrontFace", Vector3(0.0, height * 0.42, -depth * 0.51), Vector3(width * 0.72, height * 0.34, 0.035), ROAD_MARKING_COLOR.lightened(0.18))
+		if rng.randf() < occlusion_density * 0.55:
+			occluder_positions.append({"pos": _vec3_dict(pos), "radius": maxf(width, depth) * 0.95, "type": "building"})
+		placed += 1
+
+
 func _make_road(a: Vector3, b: Vector3, half_width: float) -> void:
 	var center := (a + b) * 0.5
 	var length := Vector2(a.x - b.x, a.z - b.z).length()
@@ -1152,6 +1452,26 @@ func _make_fences(rng: RandomNumberGenerator, count: int) -> void:
 
 
 func _make_parked_vehicles(rng: RandomNumberGenerator, count: int) -> void:
+	if chunked_generation and asset_spawn_policy == "socketed":
+		var sockets := _chunk_asset_sockets("parked_vehicle")
+		sockets.append_array(_chunk_asset_sockets("vehicle"))
+		var placed := 0
+		for socket in sockets:
+			if placed >= count:
+				return
+			var data := _as_dict(socket)
+			var pos := _chunk_socket_world(data, 0.34)
+			var root := Node3D.new()
+			root.name = "ParkedVehicleSocket" + str(placed)
+			root.position = pos
+			root.rotation_degrees.y = rng.randf_range(0.0, 360.0)
+			static_root.add_child(root)
+			var asset := str(data.get("asset", "car"))
+			var size := 1.42 if asset == "truck" else (1.58 if asset == "tank" else 1.18)
+			_build_vehicle(root, Color(0.26, 0.33, 0.30, 1.0).lerp(AMBER_COLOR.darkened(0.35), rng.randf() * 0.3), size)
+			placed += 1
+		if placed > 0:
+			return
 	for i in range(count):
 		var pos := _random_road_position(rng, true)
 		pos.y = _terrain_height_at(pos.x, pos.z) + 0.34
@@ -1160,13 +1480,16 @@ func _make_parked_vehicles(rng: RandomNumberGenerator, count: int) -> void:
 		root.position = pos
 		root.rotation_degrees.y = rng.randf_range(0.0, 360.0)
 		static_root.add_child(root)
-		_build_vehicle(root, Color(0.26, 0.33, 0.30, 1.0).lerp(AMBER_COLOR.darkened(0.35), rng.randf() * 0.3), 0.82)
+		_build_vehicle(root, Color(0.26, 0.33, 0.30, 1.0).lerp(AMBER_COLOR.darkened(0.35), rng.randf() * 0.3), 1.18)
 
 
 func _make_landmarks(rng: RandomNumberGenerator) -> void:
 	var tower := Node3D.new()
 	tower.name = "WaterTower"
-	tower.position = Vector3(rng.randf_range(-world_size_m * 0.20, world_size_m * 0.20), 0.0, rng.randf_range(-world_size_m * 0.22, world_size_m * 0.22))
+	if chunked_generation and asset_spawn_policy == "socketed":
+		tower.position = _socketed_spawn_position("static", rng, Vector3(rng.randf_range(-world_size_m * 0.20, world_size_m * 0.20), 0.0, rng.randf_range(-world_size_m * 0.22, world_size_m * 0.22)), 0.0)
+	else:
+		tower.position = Vector3(rng.randf_range(-world_size_m * 0.20, world_size_m * 0.20), 0.0, rng.randf_range(-world_size_m * 0.22, world_size_m * 0.22))
 	tower.position.y = _terrain_height_at(tower.position.x, tower.position.z)
 	static_root.add_child(tower)
 	_make_box_child(tower, "Leg", Vector3(-0.25, 1.2, -0.25), Vector3(0.05, 1.2, 0.05), Color(0.38, 0.39, 0.36, 1.0))
@@ -1180,16 +1503,18 @@ func _make_moving_distractors() -> void:
 	var rng := _rng_for("moving_routes")
 	var ground_total := vehicle_count + pedestrian_count
 	for i in range(ground_total):
-		var kind_value := "person" if i >= vehicle_count else ("truck" if i % 4 == 0 else "car")
+		var kind_value := "person" if i >= vehicle_count else ("tank" if i % 11 == 0 else ("truck" if i % 4 == 0 else "car"))
 		var root := Node3D.new()
 		root.name = "PathGraphMover" + str(i)
 		moving_root.add_child(root)
 		if kind_value == "person":
-			_build_person(root, Color(0.30, 0.56, 0.28, 1.0), 0.82)
+			_build_person(root, Color(0.30, 0.56, 0.28, 1.0), GROUND_PERSON_SCALE)
+		elif kind_value == "tank":
+			_build_vehicle(root, Color(0.24, 0.29, 0.20, 1.0).lerp(RED_COLOR.darkened(0.45), rng.randf() * 0.22), GROUND_VEHICLE_SCALE * 1.22)
 		elif kind_value == "truck":
-			_build_vehicle(root, Color(0.22, 0.30, 0.28, 1.0).lerp(RED_COLOR.darkened(0.38), rng.randf() * 0.34), 0.88)
+			_build_vehicle(root, Color(0.22, 0.30, 0.28, 1.0).lerp(RED_COLOR.darkened(0.38), rng.randf() * 0.34), GROUND_VEHICLE_SCALE * 1.10)
 		else:
-			_build_vehicle(root, Color(0.19, 0.31, 0.42, 1.0).lerp(AMBER_COLOR.darkened(0.32), rng.randf() * 0.34), 0.72)
+			_build_vehicle(root, Color(0.19, 0.31, 0.42, 1.0).lerp(AMBER_COLOR.darkened(0.32), rng.randf() * 0.34), GROUND_VEHICLE_SCALE)
 		var route_nodes := _random_route_nodes(rng, kind_value)
 		moving_assets.append({
 			"node": root,
@@ -1213,11 +1538,12 @@ func _make_moving_distractors() -> void:
 		moving_assets.append({
 			"node": root,
 			"asset_kind": "helicopter" if i % 2 else "jet",
-			"center": _vec3_dict(Vector3(rng.randf_range(-world_size_m * 0.20, world_size_m * 0.20), 0.0, rng.randf_range(-world_size_m * 0.20, world_size_m * 0.20))),
-			"radius": rng.randf_range(12.0, 24.0),
-			"speed": rng.randf_range(0.18, 0.45 + difficulty * 0.32),
+			"center": _vec3_dict(Vector3(rng.randf_range(-world_size_m * 0.32, world_size_m * 0.32), 0.0, rng.randf_range(-world_size_m * 0.32, world_size_m * 0.32))),
+			"radius": rng.randf_range(20.0, 42.0),
+			"speed": rng.randf_range(0.24, 0.58 + difficulty * 0.38),
 			"phase": rng.randf() * TAU,
-			"altitude": rng.randf_range(6.5, 13.0),
+			"altitude": rng.randf_range(11.0, 28.0),
+			"altitude_bob": rng.randf_range(3.2, 7.8),
 			"route": "air",
 		})
 
@@ -1238,14 +1564,19 @@ func _generate_target_schedule() -> void:
 		}
 		if target_kind == "building":
 			item["base"] = _vec3_dict(_base_for_target(target_kind, rng))
+			item["spawn_socket"] = "building"
 		elif target_kind == "helicopter" or target_kind == "jet":
 			item["base"] = _vec3_dict(_base_for_target(target_kind, rng))
 			item["route"] = "air"
+			item["spawn_socket"] = "helicopter" if target_kind == "helicopter" else "plane"
 			item["speed"] = rng.randf_range(0.34, 0.72 + difficulty * 0.45) * target_speed_scale
+			item["altitude"] = rng.randf_range(10.0, 24.0) if target_kind == "helicopter" else rng.randf_range(16.0, 34.0)
+			item["altitude_bob"] = rng.randf_range(3.4, 8.0)
 		else:
 			var route_nodes := _random_route_nodes(rng, target_kind)
 			item["route"] = "path_graph"
 			item["pathfinding"] = "road_graph"
+			item["spawn_socket"] = "pedestrian" if target_kind == "person" else target_kind
 			item["route_nodes"] = route_nodes
 			item["route_total"] = _route_length(route_nodes)
 			item["route_distance"] = rng.randf_range(0.0, maxf(1.0, _route_length(route_nodes)))
@@ -1267,19 +1598,30 @@ func _target_kind_for_slot(index: int, rng: RandomNumberGenerator) -> String:
 		return "truck" if index % 2 == 0 else "person"
 	if token.find("terrain") >= 0:
 		return "person" if index % 3 != 0 else "truck"
-	if air_targets_enabled and rng.randf() > ground_target_weight:
+	if air_targets_enabled and (index % 4 == 3 or rng.randf() > ground_target_weight):
 		return "helicopter" if rng.randf() < 0.66 else "jet"
 	var roll := rng.randf()
 	if roll < 0.36:
 		return "car"
-	if roll < 0.68:
+	if roll < 0.64:
 		return "truck"
+	if roll < 0.72:
+		return "tank"
 	if roll < 0.90:
 		return "person"
 	return "building"
 
 
 func _base_for_target(target_kind: String, rng: RandomNumberGenerator) -> Vector3:
+	if chunked_generation and asset_spawn_policy == "socketed":
+		if target_kind == "building":
+			return _socketed_spawn_position("building", rng, Vector3.ZERO, 0.0)
+		if target_kind == "helicopter":
+			return _socketed_spawn_position("helicopter", rng, _socketed_spawn_position("air", rng, Vector3.ZERO, 0.0), 0.0)
+		if target_kind == "jet":
+			return _socketed_spawn_position("plane", rng, _socketed_spawn_position("air", rng, Vector3.ZERO, 0.0), 0.0)
+		if target_kind == "person" or target_kind == "soldier":
+			return _socketed_spawn_position("pedestrian", rng, Vector3.ZERO, 0.0)
 	if target_kind == "building" and not house_positions.is_empty():
 		return house_positions[int(rng.randi_range(0, house_positions.size() - 1))] as Vector3
 	if not cluster_centers.is_empty() and rng.randf() < 0.58:
@@ -1292,10 +1634,8 @@ func _base_for_target(target_kind: String, rng: RandomNumberGenerator) -> Vector
 func _build_target_model(target_kind: String) -> void:
 	var token := target_kind.to_lower()
 	if token == "soldier" or token == "person":
-		_make_sphere_child(target_root, "Head", Vector3(0.0, 0.74, 0.0), 0.16, GREEN_COLOR)
-		_make_box_child(target_root, "Body", Vector3(0.0, 0.42, 0.0), Vector3(0.18, 0.30, 0.12), GREEN_COLOR.darkened(0.1))
-		_make_box_child(target_root, "Legs", Vector3(0.0, 0.18, 0.0), Vector3(0.14, 0.16, 0.08), GREEN_COLOR.darkened(0.22))
-		_make_box_child(target_root, "Beacon", Vector3(0.0, 1.22, 0.0), Vector3(0.045, 0.52, 0.045), AMBER_COLOR)
+		_build_person(target_root, GREEN_COLOR, GROUND_PERSON_SCALE)
+		_make_box_child(target_root, "Beacon", Vector3(0.0, 1.62, 0.0), Vector3(0.055, 0.68, 0.055), AMBER_COLOR)
 	elif token == "building":
 		_make_box_child(target_root, "TargetBuilding", Vector3(0.0, 0.72, 0.0), Vector3(0.72, 0.72, 0.72), GREEN_COLOR.darkened(0.08))
 		_make_box_child(target_root, "Roof", Vector3(0.0, 1.54, 0.0), Vector3(0.82, 0.18, 0.82), AMBER_COLOR)
@@ -1307,11 +1647,14 @@ func _build_target_model(target_kind: String) -> void:
 		_build_aircraft(target_root, GREEN_COLOR, 1.08)
 		_make_box_child(target_root, "Beacon", Vector3(0.0, 0.78, 0.0), Vector3(0.055, 0.48, 0.055), AMBER_COLOR)
 	elif token == "car":
-		_build_vehicle(target_root, GREEN_COLOR.lightened(0.08), 0.86)
-		_make_box_child(target_root, "Beacon", Vector3(0.0, 0.80, 0.0), Vector3(0.055, 0.48, 0.055), AMBER_COLOR)
+		_build_vehicle(target_root, GREEN_COLOR.lightened(0.08), GROUND_VEHICLE_SCALE)
+		_make_box_child(target_root, "Beacon", Vector3(0.0, 1.02, 0.0), Vector3(0.06, 0.58, 0.06), AMBER_COLOR)
+	elif token == "tank":
+		_build_vehicle(target_root, GREEN_COLOR.darkened(0.12), GROUND_VEHICLE_SCALE * 1.22)
+		_make_box_child(target_root, "Beacon", Vector3(0.0, 1.16, 0.0), Vector3(0.06, 0.64, 0.06), AMBER_COLOR)
 	else:
-		_build_vehicle(target_root, GREEN_COLOR, 1.0)
-		_make_box_child(target_root, "Beacon", Vector3(0.0, 0.86, 0.0), Vector3(0.055, 0.52, 0.055), AMBER_COLOR)
+		_build_vehicle(target_root, GREEN_COLOR, GROUND_VEHICLE_SCALE * 1.10)
+		_make_box_child(target_root, "Beacon", Vector3(0.0, 1.08, 0.0), Vector3(0.06, 0.62, 0.06), AMBER_COLOR)
 
 
 func _build_person(parent: Node3D, color: Color, size: float) -> void:
@@ -1578,6 +1921,8 @@ func _ground_speed_for_kind(kind_value: String, rng: RandomNumberGenerator) -> f
 	var scale := target_speed_scale
 	if kind_value == "person":
 		return rng.randf_range(0.75, 1.15 + difficulty * 0.30) * scale
+	if kind_value == "tank":
+		return rng.randf_range(0.85, 1.45 + difficulty * 0.35) * scale
 	if kind_value == "truck":
 		return rng.randf_range(1.15, 1.95 + difficulty * 0.55) * scale
 	return rng.randf_range(1.35, 2.35 + difficulty * 0.70) * scale
@@ -1595,6 +1940,43 @@ func _random_road_position(rng: RandomNumberGenerator, offset_from_lane: bool) -
 	if offset_from_lane:
 		pos += right * rng.randf_range(-1.6, 1.6)
 	return pos
+
+
+func _chunk_cell_center_world(cell_x: int, cell_y: int, y_offset: float) -> Vector3:
+	var half := float(max(1, chunk_grid_cols)) * chunk_size_m * 0.5
+	var x := -half + (float(cell_x) + 0.5) * chunk_size_m
+	var z_half := float(max(1, chunk_grid_rows)) * chunk_size_m * 0.5
+	var z := -z_half + (float(cell_y) + 0.5) * chunk_size_m
+	return Vector3(x, _terrain_height_at(x, z) + y_offset, z)
+
+
+func _chunk_socket_world(socket: Dictionary, y_offset: float) -> Vector3:
+	var cell_x := int(socket.get("x", 0))
+	var cell_y := int(socket.get("y", 0))
+	var pos := _chunk_cell_center_world(cell_x, cell_y, y_offset)
+	pos.x += _float(socket.get("offset_x", 0.0)) * chunk_size_m
+	pos.z += _float(socket.get("offset_y", 0.0)) * chunk_size_m
+	pos.y = _terrain_height_at(pos.x, pos.z) + y_offset
+	return pos
+
+
+func _chunk_asset_sockets(socket_kind: String) -> Array:
+	if chunk_map.is_empty():
+		return []
+	var sockets := _as_dict(chunk_map.get("asset_sockets", {}))
+	return (sockets.get(socket_kind, []) as Array).duplicate(true)
+
+
+func _socketed_spawn_position(socket_kind: String, rng: RandomNumberGenerator, fallback: Vector3, y_offset: float) -> Vector3:
+	var sockets := _chunk_asset_sockets(socket_kind)
+	if sockets.is_empty() and socket_kind == "helicopter":
+		sockets = _chunk_asset_sockets("air")
+	if sockets.is_empty() and socket_kind == "plane":
+		sockets = _chunk_asset_sockets("air")
+	if sockets.is_empty():
+		return fallback
+	var data := _as_dict(sockets[int(rng.randi_range(0, sockets.size() - 1))])
+	return _chunk_socket_world(data, y_offset)
 
 
 func _near_any_cluster(pos: Vector3, radius: float) -> bool:
@@ -1678,6 +2060,7 @@ func _hash_scene() -> int:
 	value = _hash_mix(value, tunnel_segments.size())
 	value = _hash_mix(value, road_graph_hash)
 	value = _hash_mix(value, route_hash)
+	value = _hash_mix(value, int(chunk_map.get("chunk_hash", 0)))
 	for center in cluster_centers:
 		value = _hash_mix(value, int(round((center as Vector3).x * 17.0)) + int(round((center as Vector3).z * 23.0)))
 	return abs(value)

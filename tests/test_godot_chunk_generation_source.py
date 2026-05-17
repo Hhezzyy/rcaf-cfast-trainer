@@ -1,0 +1,220 @@
+from __future__ import annotations
+
+import os
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from cfast_trainer.godot_bridge import GODOT_DEFAULT_BIN, GODOT_PROJECT_PATH
+
+
+GODOT_SCRIPTS = Path(__file__).resolve().parents[1] / "godot" / "cfast_3d" / "scripts"
+GODOT_RT_CHUNK_PROBE = Path(__file__).resolve().parent / "godot_rapid_tracking_chunk_probe.gd"
+GODOT_SI_CHUNK_PROBE = Path(__file__).resolve().parent / "godot_spatial_integration_chunk_probe.gd"
+GODOT_SI_QUESTION_PROBE = Path(__file__).resolve().parent / "godot_spatial_integration_question_probe.gd"
+
+
+def test_shared_chunk_generator_defines_tile_catalog_rules_and_sockets() -> None:
+    source = (GODOT_SCRIPTS / "chunk_map_generator.gd").read_text(encoding="utf-8")
+
+    assert "func generate" in source
+    assert "TILE_CATALOG" in source
+    for tile in (
+        "grassland",
+        "field",
+        "forest",
+        "forest_edge",
+        "city",
+        "city_edge",
+        "river",
+        "road_ew",
+        "road_ns",
+        "road_corner",
+        "road_t",
+        "bridge_ew_over_ns",
+        "road_buffer",
+        "lake",
+        "hill",
+        "mountain",
+    ):
+        assert tile in source
+    assert "Bridge cells require road east/west and river north/south" in source
+    assert "_generate_rapid_tracking_v3" in source
+    assert "_rt_lay_priority_terrain" in source
+    assert "_rt_lay_edge_mountain_ring" in source
+    assert "_rt_lay_interior_hill_clusters" in source
+    assert 'cell["terrain"] = "mountain"' in source
+    assert 'clampi(width - edge_depth + int(rng.randi_range(2, 5)), 3, 10)' in source
+    assert "_generate_rapid_tracking_v2" in source
+    assert "_rt_lay_organic_looped_roads" in source
+    assert "_rt_reserve_road_buffers" in source
+    assert "_rt_lay_water_features" in source
+    assert "_rt_lay_natural_city_blocks" in source
+    assert "_rt_lay_secondary_terrain" in source
+    assert "_repair_invalid_cells" in source
+    assert "_validate_edges" in source
+    assert "_sync_edges" in source
+    for asset in (
+        '"vehicle"',
+        '"truck"',
+        '"tank"',
+        '"pedestrian"',
+        '"people"',
+        '"plane"',
+        '"helicopter"',
+        '"static"',
+    ):
+        assert asset in source
+    assert "chunk_hash" in source
+    assert "rule_violations" in source
+
+
+def test_rapid_tracking_uses_shared_chunk_map_for_routes_and_socketed_spawns() -> None:
+    source = (GODOT_SCRIPTS / "rapid_tracking_runtime.gd").read_text(encoding="utf-8")
+
+    assert 'preload("res://scripts/chunk_map_generator.gd")' in source
+    assert 'purpose": "rapid_tracking"' in source
+    assert "ChunkMapGenerator.generate" in source
+    assert "_generate_chunk_map" in source
+    assert "_chunk_cell_center_world" in source
+    assert "_chunk_asset_sockets" in source
+    assert "_socketed_spawn_position" in source
+    assert "asset_spawn_policy == \"socketed\"" in source
+    assert '"pathfinding": "road_graph"' in source
+    assert '"spawn_socket"' in source
+    assert '"tank"' in source
+    assert "chunk_map_hash" in source
+    assert "chunk_rule_violations" in source
+    assert "road_component_count" in source
+    assert "road_dead_end_count" in source
+    assert "road_buffer_violation_count" in source
+    assert "city_road_adjacency_violations" in source
+    assert "water_feature_count" in source
+    assert "mountain_cell_count" in source
+    assert "hill_cell_count" in source
+    assert "edge_mountain_ring_width" in source
+    assert "building_cell_count" in source
+    assert "_draw_chunk_ground_tiles" in source
+    assert "_draw_chunk_road_tiles" not in source
+    assert "CHUNK_TILE_SCALE := 1.03" in source
+    assert "chunk_size_m * CHUNK_TILE_SCALE" in source
+    assert "_make_chunk_elevation_block" in source
+    assert '"type": "terrain"' in source
+    assert "edge_mountain" in source
+    assert "altitude_bob" in source
+    assert "index % 4 == 3" in source
+    assert "handoff_interval_s = maxf(3.2" in source
+    assert "chunk_size_m * 0.42, 0.018" not in source
+    ground_body = source.split("func _draw_chunk_ground_tiles() -> void:", 1)[1].split(
+        "func _chunk_cell_has_road", 1
+    )[0]
+    assert "node.rotation" not in ground_body
+    road_graph_body = source.split("func _draw_road_graph() -> void:", 1)[1].split(
+        "func _make_tunnel_visual", 1
+    )[0]
+    chunked_road_branch = road_graph_body.split(
+        "if chunked_generation and not chunk_map.is_empty():", 1
+    )[1].split("return", 1)[0]
+    assert "RoadGraphEdge" not in chunked_road_branch
+
+
+def test_rapid_tracking_yaw_controls_are_horizontally_flipped() -> None:
+    source = (GODOT_SCRIPTS / "rapid_tracking_runtime.gd").read_text(encoding="utf-8")
+    body = source.split("func _input_vector() -> Vector2:", 1)[1].split(
+        "func _primary_joypad()", 1
+    )[0]
+
+    assert "KEY_A" in body and "KEY_LEFT" in body
+    assert "out.x += 1.0" in body
+    assert "KEY_D" in body and "KEY_RIGHT" in body
+    assert "out.x -= 1.0" in body
+    assert "out.x -= Input.get_joy_axis(joy, JOY_AXIS_LEFT_X)" in body
+
+
+def test_rapid_tracking_chunk_generator_invariants_via_godot() -> None:
+    godot_bin = Path(os.environ.get("CFAST_GODOT_BIN", GODOT_DEFAULT_BIN))
+    if not godot_bin.is_file():
+        pytest.skip("Godot binary is not installed")
+    completed = subprocess.run(
+        [
+            str(godot_bin),
+            "--headless",
+            "--path",
+            str(GODOT_PROJECT_PATH),
+            "--script",
+            str(GODOT_RT_CHUNK_PROBE),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=90,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+
+
+def test_spatial_integration_uses_shared_chunk_map_as_answer_grid() -> None:
+    source = (GODOT_SCRIPTS / "spatial_integration_runtime.gd").read_text(encoding="utf-8")
+
+    assert 'preload("res://scripts/chunk_map_generator.gd")' in source
+    assert 'purpose": "spatial_integration"' in source
+    assert '"terrain_pipeline": terrain_pipeline' in source
+    assert "si_large_scene_v2" in source
+    assert "ChunkMapGenerator.generate" in source
+    assert "_chunk_landmarks" in source
+    assert "_chunk_aircraft_route" in source
+    assert "_draw_chunked_grid_terrain" in source
+    assert "scene_presence" in source
+    assert "viewpoint_match" in source
+    assert "_scene_presence_options" in source
+    assert "_viewpoint_match_options" in source
+    assert "grid_cols" in source and "grid_rows" in source
+    assert "CELL_SIZE * 1.03" in source
+    assert "CELL_SIZE * 0.48" not in source
+    assert '"chunk_map": local_chunk_map' in source
+    assert "chunk_hash" in source
+    assert "chunk_rule_violations" in source
+    assert "hill_cell_count" in source
+    assert "hill_cluster_count" in source
+
+
+def test_spatial_integration_chunk_generator_invariants_via_godot() -> None:
+    godot_bin = Path(os.environ.get("CFAST_GODOT_BIN", GODOT_DEFAULT_BIN))
+    if not godot_bin.is_file():
+        pytest.skip("Godot binary is not installed")
+    completed = subprocess.run(
+        [
+            str(godot_bin),
+            "--headless",
+            "--path",
+            str(GODOT_PROJECT_PATH),
+            "--script",
+            str(GODOT_SI_CHUNK_PROBE),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=90,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+
+
+def test_spatial_integration_new_question_invariants_via_godot() -> None:
+    godot_bin = Path(os.environ.get("CFAST_GODOT_BIN", GODOT_DEFAULT_BIN))
+    if not godot_bin.is_file():
+        pytest.skip("Godot binary is not installed")
+    completed = subprocess.run(
+        [
+            str(godot_bin),
+            "--headless",
+            "--path",
+            str(GODOT_PROJECT_PATH),
+            "--script",
+            str(GODOT_SI_QUESTION_PROBE),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=90,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr

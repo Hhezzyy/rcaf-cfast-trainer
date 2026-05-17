@@ -173,7 +173,7 @@ TEST_DIFFICULTY_OPTIONS: tuple[tuple[str, str], ...] = (
     ("rapid_tracking", "Rapid Tracking"),
     ("rt_lock_anchor", "Rapid Tracking: Lock Anchor"),
     ("rt_building_handoff_prime", "Rapid Tracking: Building Handoff Prime"),
-    ("rt_terrain_recovery_run", "Rapid Tracking: Terrain Recovery Run"),
+    ("rt_obscured_target_prediction", "Rapid Tracking: Obscured Target Prediction"),
     ("rt_capture_timing_prime", "Rapid Tracking: Capture Timing Prime"),
     ("rt_ground_tempo_run", "Rapid Tracking: Ground Tempo Run"),
     ("rt_air_speed_run", "Rapid Tracking: Air Speed Run"),
@@ -187,10 +187,13 @@ TEST_DIFFICULTY_OPTIONS: tuple[tuple[str, str], ...] = (
     ("spatial_integration", "Spatial Integration"),
     ("si_landmark_anchor", "Spatial Integration: Landmark Anchor"),
     ("si_reconstruction_run", "Spatial Integration: Reconstruction Run"),
-    ("si_static_mixed_run", "Spatial Integration: Static Mixed Run"),
+    ("si_static_multiview_integration", "Spatial Integration: Static Multiview Integration"),
     ("si_route_anchor", "Spatial Integration: Route Anchor"),
     ("si_continuation_prime", "Spatial Integration: Continuation Prime"),
-    ("si_aircraft_grid_run", "Spatial Integration: Aircraft Grid Run"),
+    (
+        "si_moving_aircraft_multiview_integration",
+        "Spatial Integration: Moving-Aircraft Multiview Integration",
+    ),
     ("si_mixed_tempo", "Spatial Integration: Mixed Tempo"),
     ("si_pressure_run", "Spatial Integration: Pressure Run"),
     ("spatial_integration_workout", "Spatial Integration Workout"),
@@ -199,10 +202,10 @@ TEST_DIFFICULTY_OPTIONS: tuple[tuple[str, str], ...] = (
     ("vigilance", "Vigilance"),
     ("tt1_lateral_anchor", "Trace Test 1: Lateral Anchor"),
     ("tt1_vertical_anchor", "Trace Test 1: Vertical Anchor"),
-    ("tt1_command_switch_run", "Trace Test 1: Command Switch Run"),
+    ("trace_orientation_decode", "Trace Test 1: Trace Orientation Decode"),
     ("tt2_steady_anchor", "Trace Test 2: Steady Anchor"),
     ("tt2_turn_trace_run", "Trace Test 2: Turn Trace Run"),
-    ("tt2_position_recall_run", "Trace Test 2: Position Recall Run"),
+    ("trace_movement_recall", "Trace Test 2: Trace Movement Recall"),
     ("trace_mixed_tempo", "Trace Tests: Mixed Tempo"),
     ("trace_pressure_run", "Trace Tests: Pressure Run"),
     ("trace_test_1_workout", "Trace Test 1 Workout"),
@@ -2269,8 +2272,8 @@ TEST_GUIDE_BRIEFS: dict[str, TestGuideBriefing] = {
         controls="Use the normal Rapid Tracking pan and capture controls throughout the block.",
         app_flow="This drill reuses the live Rapid Tracking renderer and biases the script toward building holds and emergence handoffs.",
     ),
-    "rt_terrain_recovery_run": TestGuideBriefing(
-        label="Rapid Tracking: Terrain Recovery Run",
+    "rt_obscured_target_prediction": TestGuideBriefing(
+        label="Rapid Tracking: Obscured Target Prediction",
         assessment="Focused Rapid Tracking drill for prediction and reacquisition after terrain occlusion.",
         tasks=(
             "Carry the target through ridge losses without abandoning the expected line of motion.",
@@ -2279,7 +2282,7 @@ TEST_GUIDE_BRIEFS: dict[str, TestGuideBriefing] = {
         timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
         prep="Guide preparation: expect prediction, not pure visibility, to carry this block.",
         controls="Use the normal Rapid Tracking pan and capture controls throughout the block.",
-        app_flow="This drill reuses the live Rapid Tracking scene and narrows the script to terrain-heavy recovery segments.",
+        app_flow="This drill reuses the live Rapid Tracking scene and narrows the script to obscured-target prediction segments.",
     ),
     "rt_capture_timing_prime": TestGuideBriefing(
         label="Rapid Tracking: Capture Timing Prime",
@@ -2437,8 +2440,8 @@ TEST_GUIDE_BRIEFS: dict[str, TestGuideBriefing] = {
         controls="Click an option or press 1-4 then Enter.",
         app_flow="This drill keeps the normal Spatial Integration presentation but serves only static reconstruction questions after study.",
     ),
-    "si_static_mixed_run": TestGuideBriefing(
-        label="Spatial Integration: Static Mixed Run",
+    "si_static_multiview_integration": TestGuideBriefing(
+        label="Spatial Integration: Static Multiview Integration",
         assessment="Static-only Spatial Integration drill with the full landscape question mix.",
         tasks=(
             "Switch between landmark grid placement and whole-scene reconstruction without losing the scene picture.",
@@ -2473,17 +2476,17 @@ TEST_GUIDE_BRIEFS: dict[str, TestGuideBriefing] = {
         controls="Click an option or press 1-4 then Enter.",
         app_flow="This drill keeps the normal aircraft SI visuals and isolates the continuation question family after study.",
     ),
-    "si_aircraft_grid_run": TestGuideBriefing(
-        label="Spatial Integration: Aircraft Grid Run",
-        assessment="Focused Spatial Integration drill for placing the aircraft in the correct grid cell after study.",
+    "si_moving_aircraft_multiview_integration": TestGuideBriefing(
+        label="Spatial Integration: Moving-Aircraft Multiview Integration",
+        assessment="Focused Spatial Integration drill for integrating aircraft route, continuation, and grid questions after study.",
         tasks=(
-            "Use the route, terrain, and landmarks to pin the aircraft to one map cell.",
-            "Answer only aircraft-location grid questions after the three-view study sequence.",
+            "Use the route, terrain, and landmarks to pin the aircraft to one map cell or route answer.",
+            "Switch across aircraft-location, route, and continuation questions after the three-view study sequence.",
         ),
         timing="Guide time depends on mode: Build 3 minutes, Tempo 2.5 minutes, Stress 3 minutes.",
         prep="Guide preparation: keep one stable map frame in mind so the aircraft location can be read off quickly.",
-        controls="Click a grid cell or type a token like B4 then Enter.",
-        app_flow="This drill uses the aircraft SI section and filters the post-study questions down to aircraft grid placement only.",
+        controls="Use grid clicks or B4-style tokens for grid items, and 1-4 or option clicks for route items.",
+        app_flow="This drill uses the aircraft SI section and keeps the moving-aircraft multiview question mix after study.",
     ),
     "si_mixed_tempo": TestGuideBriefing(
         label="Spatial Integration: Mixed Tempo",
@@ -2569,8 +2572,8 @@ TEST_GUIDE_BRIEFS: dict[str, TestGuideBriefing] = {
         controls="Use Up for push and Down for pull. No on-screen answer legend is shown during the live stream.",
         app_flow="This drill keeps the live square TT1 viewport and seamless stream, but filters the prompts to push and pull only.",
     ),
-    "tt1_command_switch_run": TestGuideBriefing(
-        label="Trace Test 1: Command Switch Run",
+    "trace_orientation_decode": TestGuideBriefing(
+        label="Trace Test 1: Trace Orientation Decode",
         assessment="Timed Trace Test 1 drill for switching across all four TT1 commands in the continuous stream.",
         tasks=(
             "Read the maneuver quickly and answer with the matching arrow as soon as the command opens.",
@@ -2605,8 +2608,8 @@ TEST_GUIDE_BRIEFS: dict[str, TestGuideBriefing] = {
         controls="During the question stage use A/S/D/F for immediate submit, or use Up and Down to move the selector and Enter to submit.",
         app_flow="This drill preserves the TT2 minimal observe screen and separate question screen, but filters the question bank to left-turn and right-turn recall.",
     ),
-    "tt2_position_recall_run": TestGuideBriefing(
-        label="Trace Test 2: Position Recall Run",
+    "trace_movement_recall": TestGuideBriefing(
+        label="Trace Test 2: Trace Movement Recall",
         assessment="Timed Trace Test 2 drill for end-state leftmost and highest recall questions.",
         tasks=(
             "Watch the clip first, then answer which aircraft ended furthest left or highest.",

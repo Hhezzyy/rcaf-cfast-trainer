@@ -9,9 +9,9 @@ from cfast_trainer.ant_workouts import (
     AntWorkoutSession,
     AntWorkoutStage,
 )
+from cfast_trainer.godot_owned import GodotOwnedPayload
 from cfast_trainer.results import attempt_result_from_engine
 from cfast_trainer.rt_workouts import build_rt_workout_plan
-from cfast_trainer.rapid_tracking import RapidTrackingPayload
 
 
 @dataclass
@@ -54,22 +54,30 @@ def _build_small_rt_workout_plan() -> AntWorkoutPlan:
     )
 
 
-def _run_current_block(session: AntWorkoutSession, clock: FakeClock) -> None:
-    controls = ((0.20, -0.10), (0.0, 0.0), (-0.18, 0.14), (0.08, -0.06))
-    idx = 0
-    while session.stage is AntWorkoutStage.BLOCK:
-        engine = session.current_engine()
-        assert engine is not None
-        cx, cy = controls[idx % len(controls)]
-        idx += 1
-        if hasattr(engine, "set_control"):
-            engine.set_control(horizontal=cx, vertical=cy)
-        snap = engine.snapshot()
-        payload = snap.payload
-        if isinstance(payload, RapidTrackingPayload) and payload.target_in_capture_box:
-            session.submit_answer("CAPTURE")
-        clock.advance(0.5)
-        session.update()
+def _complete_current_godot_block(session: AntWorkoutSession, clock: FakeClock) -> None:
+    engine = session.current_engine()
+    assert engine is not None
+    payload = engine.snapshot().payload
+    assert isinstance(payload, GodotOwnedPayload)
+    engine.apply_godot_authoritative_message(
+        {
+            "command": "complete",
+            "summary": {
+                "attempted": 4,
+                "correct": 3,
+                "accuracy": 0.75,
+                "duration_s": 15.0,
+                "throughput_per_min": 16.0,
+                "total_score": 3.0,
+                "max_score": 4.0,
+                "score_ratio": 0.75,
+                "difficulty_level_start": 5,
+                "difficulty_level_end": 5,
+            },
+        }
+    )
+    clock.advance(0.5)
+    session.update()
 
 
 def _complete_small_rt_workout(clock: FakeClock) -> AntWorkoutSession:
@@ -83,12 +91,12 @@ def _complete_small_rt_workout(clock: FakeClock) -> AntWorkoutSession:
     session.activate()
     session.activate()
     session.activate()
-    _run_current_block(session, clock)
+    _complete_current_godot_block(session, clock)
     assert session.stage is AntWorkoutStage.BLOCK_RESULTS
     session.activate()
     assert session.stage is AntWorkoutStage.BLOCK_SETUP
     session.activate()
-    _run_current_block(session, clock)
+    _complete_current_godot_block(session, clock)
     assert session.stage is AntWorkoutStage.BLOCK_RESULTS
     session.activate()
     assert session.stage is AntWorkoutStage.RESULTS
@@ -119,7 +127,7 @@ def test_real_rt_workout_matches_standard_90_minute_structure() -> None:
     assert tuple(block.drill_code for block in plan.blocks) == (
         "rt_lock_anchor",
         "rt_building_handoff_prime",
-        "rt_terrain_recovery_run",
+        "rt_obscured_target_prediction",
         "rt_capture_timing_prime",
         "rt_ground_tempo_run",
         "rt_air_speed_run",

@@ -11,7 +11,6 @@ from .angles_bearings_degrees import (
     AnglesBearingsDegreesConfig,
     build_angles_bearings_degrees_test,
 )
-from .auditory_capacity import AuditoryCapacityConfig, build_auditory_capacity_test
 from .clock import Clock
 from .cognitive_core import Phase, TestSnapshot
 from .cognitive_updating import CognitiveUpdatingConfig, build_cognitive_updating_test
@@ -34,20 +33,16 @@ from .instrument_comprehension import (
 )
 from .math_reasoning import MathReasoningConfig, build_math_reasoning_test
 from .numerical_operations import NumericalOperationsConfig, build_numerical_operations_test
-from .rapid_tracking import RapidTrackingConfig, build_rapid_tracking_test
 from .results import AttemptResult, attempt_result_from_engine
 from .sensory_motor_apparatus import (
     SensoryMotorApparatusConfig,
     build_sensory_motor_apparatus_test,
 )
 from .situational_awareness import SituationalAwarenessConfig, build_situational_awareness_test
-from .spatial_integration import SpatialIntegrationConfig, build_spatial_integration_test
 from .system_logic import SystemLogicConfig, build_system_logic_test
 from .table_reading import TableReadingConfig, build_table_reading_test
 from .target_recognition import TargetRecognitionConfig, build_target_recognition_test
 from .telemetry import TelemetryAnalytics, TelemetryEvent, telemetry_analytics_from_events
-from .trace_test_1 import TraceTest1Config, build_trace_test_1_test
-from .trace_test_2 import TraceTest2Config, build_trace_test_2_test
 from .training_modes import split_half_note_fragment
 from .vigilance import VigilanceConfig, build_vigilance_test
 from .visual_search import VisualSearchConfig, build_visual_search_test
