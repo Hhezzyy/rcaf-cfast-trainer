@@ -351,7 +351,9 @@ class TraceTest2Generator:
         TraceTest2QuestionKind.TURNED_LEFT,
         TraceTest2QuestionKind.TURNED_RIGHT,
         TraceTest2QuestionKind.ENDED_LEFTMOST,
+        TraceTest2QuestionKind.ENDED_RIGHTMOST,
         TraceTest2QuestionKind.ENDED_HIGHEST,
+        TraceTest2QuestionKind.ENDED_LOWEST,
     )
 
     def __init__(

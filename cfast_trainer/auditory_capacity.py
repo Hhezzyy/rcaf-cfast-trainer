@@ -22,6 +22,7 @@ from .auditory_capacity_view import (
     BALL_FORWARD_IDLE_NORM,
     GATE_DEPTH_SLOTS_NORM,
 )
+from .adaptive_difficulty import difficulty_level_for_ratio
 from .clock import Clock
 from .cognitive_core import AttemptSummary, Phase, SeededRng, TestSnapshot, clamp01
 
@@ -99,7 +100,7 @@ class AuditoryCapacityDifficultyProfile:
     @classmethod
     def from_ratio(cls, difficulty: float) -> AuditoryCapacityDifficultyProfile:
         d = clamp01(difficulty)
-        level = max(1, min(10, int(round(d * 9.0)) + 1))
+        level = difficulty_level_for_ratio("auditory_capacity", d)
         overload_input = clamp01((d - (2.0 / 9.0)) / (7.0 / 9.0))
         overload_ramp = overload_input * overload_input * (3.0 - (2.0 * overload_input))
 
@@ -418,6 +419,16 @@ class AuditoryCapacityScenarioGenerator:
         "LANCER",
         "SABER",
         "NOVA",
+        "ORION",
+        "ATLAS",
+        "ARROW",
+        "COMET",
+        "NOMAD",
+        "SUMMIT",
+        "VECTOR",
+        "RANGER",
+        "HUNTER",
+        "PHOENIX",
     )
     COLORS: tuple[str, ...] = ("RED", "BLUE", "YELLOW")
     SHAPES: tuple[str, ...] = ("CIRCLE", "TRIANGLE", "SQUARE")

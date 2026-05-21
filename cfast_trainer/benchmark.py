@@ -1,51 +1,18 @@
 from __future__ import annotations
 
+import hashlib
 import random
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from enum import StrEnum
 
-from .adaptive_difficulty import build_resolved_difficulty_context, difficulty_ratio_for_level
-from .airborne_numerical import build_airborne_numerical_test
-from .angles_bearings_degrees import (
-    AnglesBearingsDegreesConfig,
-    build_angles_bearings_degrees_test,
-)
+from .activity_runtime_catalog import OFFICIAL_TEST_MENU_ORDER, build_benchmark_probe_runtime
+from .adaptive_difficulty import build_resolved_difficulty_context
 from .clock import Clock
 from .cognitive_core import Phase, TestSnapshot
-from .cognitive_updating import CognitiveUpdatingConfig, build_cognitive_updating_test
-from .colours_letters_numbers import (
-    ColoursLettersNumbersConfig,
-    build_colours_letters_numbers_test,
-)
-from .digit_recognition import build_digit_recognition_test
-from .godot_owned import (
-    auditory_capacity_godot_config,
-    build_godot_owned_test,
-    rapid_tracking_godot_config,
-    spatial_integration_godot_config,
-    trace_test_godot_config,
-)
-from .guide_skill_catalog import OFFICIAL_GUIDE_TESTS
-from .instrument_comprehension import (
-    InstrumentComprehensionConfig,
-    build_instrument_comprehension_test,
-)
-from .math_reasoning import MathReasoningConfig, build_math_reasoning_test
-from .numerical_operations import NumericalOperationsConfig, build_numerical_operations_test
 from .results import AttemptResult, attempt_result_from_engine
-from .sensory_motor_apparatus import (
-    SensoryMotorApparatusConfig,
-    build_sensory_motor_apparatus_test,
-)
-from .situational_awareness import SituationalAwarenessConfig, build_situational_awareness_test
-from .system_logic import SystemLogicConfig, build_system_logic_test
-from .table_reading import TableReadingConfig, build_table_reading_test
-from .target_recognition import TargetRecognitionConfig, build_target_recognition_test
 from .telemetry import TelemetryAnalytics, TelemetryEvent, telemetry_analytics_from_events
 from .training_modes import split_half_note_fragment
-from .vigilance import VigilanceConfig, build_vigilance_test
-from .visual_search import VisualSearchConfig, build_visual_search_test
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,6 +33,7 @@ class BenchmarkPlan:
     description: str
     notes: tuple[str, ...]
     probes: tuple[BenchmarkProbePlan, ...]
+    run_seed: int | None = None
 
     @property
     def scored_duration_s(self) -> float:
@@ -271,7 +239,7 @@ class BenchmarkSession:
     def __init__(self, *, plan: BenchmarkPlan) -> None:
         self._plan = plan
         self._stage = BenchmarkStage.INTRO
-        self._run_seed = _random_seed()
+        self._run_seed = _random_seed() if plan.run_seed is None else _clamp_seed(plan.run_seed)
         self._current_probe_index = 0
         self._current_engine: object | None = None
         self._completed_attempts: list[AttemptResult] = []
@@ -551,7 +519,7 @@ class BenchmarkSession:
             prompt="",
             note_lines=(
                 "Locked order and fixed level-5 difficulty.",
-                "Probe seeds are randomized each benchmark run.",
+                "Probe seeds derive from the recorded benchmark run seed.",
                 "Pause menu restart resets only the active probe.",
             ),
             probe_index=self._current_probe_index + 1,
@@ -946,7 +914,7 @@ class BenchmarkSession:
             "Approximate scored time: 28 minutes.",
             f"Benchmark run seed: {self._run_seed}",
             "Probe order is fixed and per-probe difficulty stays locked at level 5.",
-            "Probe seeds are randomized each run. Practice and adaptive difficulty stay disabled.",
+            "Probe seeds derive from the run seed. Practice and adaptive difficulty stay disabled.",
         ]
         for idx, probe in enumerate(self._plan.probes, start=1):
             lines.append(
@@ -988,6 +956,13 @@ def _random_seed() -> int:
     return _clamp_seed(random.SystemRandom().randint(1, (2**31) - 1))
 
 
+def _derived_probe_seed(run_seed: int, index: int, probe_code: str) -> int:
+    payload = f"benchmark:{int(run_seed)}:{int(index)}:{probe_code}".encode("utf-8")
+    digest = hashlib.sha256(payload).digest()
+    value = int.from_bytes(digest[:8], "big") % ((2**31) - 1)
+    return _clamp_seed(value + 1)
+
+
 def _build_benchmark_probe_engine(
     *,
     clock: Clock,
@@ -995,251 +970,17 @@ def _build_benchmark_probe_engine(
     seed: int,
     duration_s: float,
 ) -> object:
-    difficulty = difficulty_ratio_for_level(probe_code, 5)
-    if probe_code == "numerical_operations":
-        return build_numerical_operations_test(
-            clock=clock,
-            seed=seed,
-            difficulty=difficulty,
-            config=NumericalOperationsConfig(
-                scored_duration_s=duration_s,
-                practice_questions=0,
-            ),
-        )
-    if probe_code == "visual_search":
-        return build_visual_search_test(
-            clock=clock,
-            seed=seed,
-            difficulty=difficulty,
-            config=VisualSearchConfig(
-                scored_duration_s=duration_s,
-                practice_questions=0,
-            ),
-        )
-    if probe_code == "digit_recognition":
-        return build_digit_recognition_test(
-            clock=clock,
-            seed=seed,
-            difficulty=difficulty,
-            practice=False,
-            scored_duration_s=duration_s,
-        )
-    if probe_code == "angles_bearings_degrees":
-        return build_angles_bearings_degrees_test(
-            clock=clock,
-            seed=seed,
-            difficulty=difficulty,
-            config=AnglesBearingsDegreesConfig(
-                scored_duration_s=duration_s,
-                practice_questions=0,
-            ),
-        )
-    if probe_code == "sensory_motor_apparatus":
-        return build_sensory_motor_apparatus_test(
-            clock=clock,
-            seed=seed,
-            difficulty=difficulty,
-            config=SensoryMotorApparatusConfig(
-                practice_duration_s=0.0,
-                scored_duration_s=duration_s,
-            ),
-        )
-    if probe_code == "math_reasoning":
-        return build_math_reasoning_test(
-            clock=clock,
-            seed=seed,
-            difficulty=difficulty,
-            config=MathReasoningConfig(
-                scored_duration_s=duration_s,
-                practice_questions=0,
-            ),
-        )
-    if probe_code == "target_recognition":
-        return build_target_recognition_test(
-            clock=clock,
-            seed=seed,
-            difficulty=difficulty,
-            config=TargetRecognitionConfig(
-                scored_duration_s=duration_s,
-                practice_questions=0,
-            ),
-        )
-    if probe_code == "colours_letters_numbers":
-        return build_colours_letters_numbers_test(
-            clock=clock,
-            seed=seed,
-            difficulty=difficulty,
-            practice=False,
-            scored_duration_s=duration_s,
-            config=ColoursLettersNumbersConfig(
-                scored_duration_s=duration_s,
-                practice_rounds=0,
-            ),
-        )
-    if probe_code == "instrument_comprehension":
-        return build_instrument_comprehension_test(
-            clock=clock,
-            seed=seed,
-            difficulty=difficulty,
-            config=InstrumentComprehensionConfig(
-                scored_duration_s=duration_s,
-                practice_questions=0,
-            ),
-        )
-    if probe_code == "rapid_tracking":
-        return build_godot_owned_test(
-            clock=clock,
-            seed=seed,
-            difficulty=difficulty,
-            kind="rapid_tracking",
-            test_code=probe_code,
-            title="Rapid Tracking",
-            duration_s=duration_s,
-            mode="benchmark",
-            config=rapid_tracking_godot_config(
-                test_code=probe_code,
-                mode="benchmark",
-                difficulty=difficulty,
-                duration_s=duration_s,
-                extra={"benchmark": True},
-            ),
-        )
-    if probe_code == "airborne_numerical":
-        return build_airborne_numerical_test(
-            clock=clock,
-            seed=seed,
-            practice=False,
-            difficulty=difficulty,
-            scored_duration_s=duration_s,
-        )
-    if probe_code == "vigilance":
-        return build_vigilance_test(
-            clock=clock,
-            seed=seed,
-            difficulty=difficulty,
-            config=VigilanceConfig(
-                practice_duration_s=0.0,
-                scored_duration_s=duration_s,
-            ),
-        )
-    if probe_code == "auditory_capacity":
-        return build_godot_owned_test(
-            clock=clock,
-            seed=seed,
-            difficulty=difficulty,
-            kind="auditory_capacity",
-            test_code=probe_code,
-            title="Auditory Capacity",
-            duration_s=duration_s,
-            mode="benchmark",
-            config=auditory_capacity_godot_config(
-                test_code=probe_code,
-                mode="benchmark",
-                difficulty=difficulty,
-                duration_s=duration_s,
-                extra={"benchmark": True},
-            ),
-        )
-    if probe_code == "spatial_integration":
-        return build_godot_owned_test(
-            clock=clock,
-            seed=seed,
-            difficulty=difficulty,
-            kind="spatial_integration",
-            test_code=probe_code,
-            title="Spatial Integration",
-            duration_s=duration_s,
-            mode="benchmark",
-            config=spatial_integration_godot_config(
-                test_code=probe_code,
-                mode="benchmark",
-                duration_s=duration_s,
-                extra={"benchmark": True},
-            ),
-        )
-    if probe_code == "table_reading":
-        return build_table_reading_test(
-            clock=clock,
-            seed=seed,
-            difficulty=difficulty,
-            config=TableReadingConfig(
-                scored_duration_s=duration_s,
-                practice_questions=0,
-            ),
-        )
-    if probe_code == "cognitive_updating":
-        return build_cognitive_updating_test(
-            clock=clock,
-            seed=seed,
-            difficulty=difficulty,
-            config=CognitiveUpdatingConfig(
-                scored_duration_s=duration_s,
-                practice_questions=0,
-            ),
-        )
-    if probe_code == "trace_test_1":
-        return build_godot_owned_test(
-            clock=clock,
-            seed=seed,
-            difficulty=difficulty,
-            kind="trace_test_1",
-            test_code=probe_code,
-            title="Trace Test 1",
-            duration_s=duration_s,
-            mode="benchmark",
-            config=trace_test_godot_config(
-                test_code=probe_code,
-                mode="benchmark",
-                difficulty=difficulty,
-                duration_s=duration_s,
-                extra={"benchmark": True},
-            ),
-        )
-    if probe_code == "system_logic":
-        return build_system_logic_test(
-            clock=clock,
-            seed=seed,
-            difficulty=difficulty,
-            config=SystemLogicConfig(
-                scored_duration_s=duration_s,
-                practice_questions=0,
-            ),
-        )
-    if probe_code == "situational_awareness":
-        return build_situational_awareness_test(
-            clock=clock,
-            seed=seed,
-            difficulty=difficulty,
-            config=SituationalAwarenessConfig(
-                scored_duration_s=duration_s,
-                practice_scenarios=0,
-                practice_scenario_duration_s=0.0,
-                scored_scenario_duration_s=40.0,
-            ),
-        )
-    if probe_code == "trace_test_2":
-        return build_godot_owned_test(
-            clock=clock,
-            seed=seed,
-            difficulty=difficulty,
-            kind="trace_test_2",
-            test_code=probe_code,
-            title="Trace Test 2",
-            duration_s=duration_s,
-            mode="benchmark",
-            config=trace_test_godot_config(
-                test_code=probe_code,
-                mode="benchmark",
-                difficulty=difficulty,
-                duration_s=duration_s,
-                extra={"benchmark": True},
-            ),
-        )
-    raise KeyError(f"unsupported benchmark probe: {probe_code}")
+    return build_benchmark_probe_runtime(
+        clock=clock,
+        probe_code=probe_code,
+        seed=seed,
+        duration_s=duration_s,
+    )
 
 
-def build_benchmark_plan(*, clock: Clock) -> BenchmarkPlan:
-    official_codes = tuple(test.test_code for test in OFFICIAL_GUIDE_TESTS)
+def build_benchmark_plan(*, clock: Clock, seed: int | None = None) -> BenchmarkPlan:
+    run_seed = None if seed is None else _clamp_seed(seed)
+    official_codes = OFFICIAL_TEST_MENU_ORDER
     probe_order = (
         "numerical_operations",
         "visual_search",
@@ -1266,11 +1007,16 @@ def build_benchmark_plan(*, clock: Clock) -> BenchmarkPlan:
 
     def _probe(
         *,
+        index: int,
         probe_code: str,
         label: str,
         duration_s: float,
     ) -> BenchmarkProbePlan:
-        seed = _random_seed()
+        probe_seed = (
+            _random_seed()
+            if run_seed is None
+            else _derived_probe_seed(run_seed, index, probe_code)
+        )
         return BenchmarkProbePlan(
             probe_code=probe_code,
             label=label,
@@ -1280,7 +1026,7 @@ def build_benchmark_plan(*, clock: Clock) -> BenchmarkPlan:
                 seed=int(resolved_seed),
                 duration_s=float(duration_s),
             ),
-            seed=seed,
+            seed=probe_seed,
             difficulty_level=5,
             duration_s=float(duration_s),
         )
@@ -1295,106 +1041,127 @@ def build_benchmark_plan(*, clock: Clock) -> BenchmarkPlan:
         ),
         notes=(
             "The benchmark keeps a locked probe order and level-5 difficulty.",
-            "Fresh randomized seeds are generated for every new benchmark run.",
+            "Fresh randomized run seeds are generated unless a manual benchmark seed is selected.",
             "Practice is disabled on every probe.",
         ),
+        run_seed=run_seed,
         probes=(
             _probe(
+                index=0,
                 probe_code="numerical_operations",
                 label="Numerical Operations",
                 duration_s=45.0,
             ),
             _probe(
+                index=1,
                 probe_code="visual_search",
                 label="Visual Search",
                 duration_s=60.0,
             ),
             _probe(
+                index=2,
                 probe_code="digit_recognition",
                 label="Digit Recognition",
                 duration_s=45.0,
             ),
             _probe(
+                index=3,
                 probe_code="angles_bearings_degrees",
                 label="Angles, Bearings and Degrees",
                 duration_s=45.0,
             ),
             _probe(
+                index=4,
                 probe_code="sensory_motor_apparatus",
                 label="Sensory Motor Apparatus",
                 duration_s=195.0,
             ),
             _probe(
+                index=5,
                 probe_code="math_reasoning",
                 label="Mathematics Reasoning",
                 duration_s=75.0,
             ),
             _probe(
+                index=6,
                 probe_code="target_recognition",
                 label="Target Recognition",
                 duration_s=120.0,
             ),
             _probe(
+                index=7,
                 probe_code="colours_letters_numbers",
                 label="Colours, Letters and Numbers",
                 duration_s=60.0,
             ),
             _probe(
+                index=8,
                 probe_code="instrument_comprehension",
                 label="Instrument Comprehension",
                 duration_s=90.0,
             ),
             _probe(
+                index=9,
                 probe_code="rapid_tracking",
                 label="Rapid Tracking",
                 duration_s=135.0,
             ),
             _probe(
+                index=10,
                 probe_code="airborne_numerical",
                 label="Airborne Numerical",
                 duration_s=135.0,
             ),
             _probe(
+                index=11,
                 probe_code="vigilance",
                 label="Vigilance",
                 duration_s=150.0,
             ),
             _probe(
+                index=12,
                 probe_code="auditory_capacity",
                 label="Auditory Capacity",
                 duration_s=60.0,
             ),
             _probe(
+                index=13,
                 probe_code="spatial_integration",
                 label="Spatial Integration",
                 duration_s=90.0,
             ),
             _probe(
+                index=14,
                 probe_code="table_reading",
                 label="Table Reading",
                 duration_s=45.0,
             ),
             _probe(
+                index=15,
                 probe_code="cognitive_updating",
                 label="Cognitive Updating",
                 duration_s=60.0,
             ),
             _probe(
+                index=16,
                 probe_code="trace_test_1",
                 label="Trace Test 1",
                 duration_s=45.0,
             ),
             _probe(
+                index=17,
                 probe_code="system_logic",
                 label="System Logic",
                 duration_s=45.0,
             ),
             _probe(
+                index=18,
                 probe_code="situational_awareness",
                 label="Situational Awareness",
                 duration_s=120.0,
             ),
             _probe(
+                index=19,
                 probe_code="trace_test_2",
                 label="Trace Test 2",
                 duration_s=45.0,

@@ -41,6 +41,11 @@ from typing import Any, Protocol, cast
 
 import pygame
 
+from .activity_runtime_catalog import (
+    build_godot_owned_activity_runtime,
+    build_official_test_runtime,
+    official_test_title,
+)
 from .abd_drills import (
     AbdDrillConfig,
     AbdFamilyRunConfig,
@@ -145,6 +150,8 @@ from .adaptive_difficulty import (
     AdaptiveDifficultyDecision,
     ResolvedDifficultyContext,
     apply_level_to_engine,
+    difficulty_level_for_ratio,
+    difficulty_ratio_for_level,
     policy_for_activity_kind,
 )
 from .adaptive_scheduler import AdaptiveSession, AdaptiveStage, build_adaptive_session_plan
@@ -232,12 +239,7 @@ from .godot_bridge import GODOT_BACKEND_NAME, GodotBridgeManager, godot_kind_for
 from .godot_owned import (
     GODOT_OWNED_KINDS,
     GodotOwnedPayload,
-    auditory_capacity_godot_config,
-    build_godot_owned_test,
     godot_kind_for_test_code,
-    rapid_tracking_godot_config,
-    spatial_integration_godot_config,
-    trace_test_godot_config,
 )
 from .instrument_comprehension import (
     InstrumentAircraftViewPreset,
@@ -4319,7 +4321,9 @@ class App:
 
     def effective_difficulty_ratio(self, test_code: str | None) -> float:
         level = self.effective_difficulty_level(test_code)
-        return (max(1, min(10, int(level))) - 1) / 9.0
+        if not test_code:
+            return (max(1, min(10, int(level))) - 1) / 9.0
+        return difficulty_ratio_for_level(str(test_code), level)
 
     def stored_test_difficulty_level(self, test_code: str | None) -> int:
         if self._difficulty_settings_store is None or not test_code:
@@ -4384,28 +4388,40 @@ class App:
         self._difficulty_settings_store.set_review_mode_enabled(enabled)
 
     def rapid_tracking_seed_override_enabled(self) -> bool:
-        if self._test_seed_settings_store is None:
-            return False
-        return self._test_seed_settings_store.rapid_tracking_seed_override_enabled()
+        return self.test_seed_override_enabled("rapid_tracking")
 
     def set_rapid_tracking_seed_override_enabled(self, enabled: bool) -> None:
-        if self._test_seed_settings_store is None:
-            return
-        self._test_seed_settings_store.set_rapid_tracking_seed_override_enabled(enabled)
+        self.set_test_seed_override_enabled(test_code="rapid_tracking", enabled=enabled)
 
     def rapid_tracking_seed_value(self) -> int:
-        if self._test_seed_settings_store is None:
-            return 551
-        return self._test_seed_settings_store.rapid_tracking_seed_value()
+        return self.test_seed_value("rapid_tracking")
 
     def set_rapid_tracking_seed_value(self, value: int) -> int:
+        return self.set_test_seed_value(test_code="rapid_tracking", value=value)
+
+    def test_seed_override_enabled(self, test_code: str) -> bool:
+        if self._test_seed_settings_store is None:
+            return False
+        return self._test_seed_settings_store.seed_override_enabled(test_code)
+
+    def set_test_seed_override_enabled(self, *, test_code: str, enabled: bool) -> None:
+        if self._test_seed_settings_store is None:
+            return
+        self._test_seed_settings_store.set_seed_override_enabled(test_code, enabled)
+
+    def test_seed_value(self, test_code: str) -> int:
+        if self._test_seed_settings_store is None:
+            return 551
+        return self._test_seed_settings_store.seed_value(test_code)
+
+    def set_test_seed_value(self, *, test_code: str, value: int) -> int:
         if self._test_seed_settings_store is None:
             try:
                 return max(1, min((2**31) - 1, int(value)))
             except Exception:
                 return 551
-        self._test_seed_settings_store.set_rapid_tracking_seed_value(value)
-        return self._test_seed_settings_store.rapid_tracking_seed_value()
+        self._test_seed_settings_store.set_seed_value(test_code, value)
+        return self._test_seed_settings_store.seed_value(test_code)
 
     def rapid_tracking_invert_pitch_enabled(self) -> bool:
         if self._rapid_tracking_settings_store is None:
@@ -4418,8 +4434,11 @@ class App:
         self._rapid_tracking_settings_store.set_invert_pitch(enabled)
 
     def resolved_rapid_tracking_launch_seed(self) -> int:
-        if self.rapid_tracking_seed_override_enabled():
-            return self.rapid_tracking_seed_value()
+        return self.resolved_test_launch_seed("rapid_tracking")
+
+    def resolved_test_launch_seed(self, test_code: str) -> int:
+        if self.test_seed_override_enabled(test_code):
+            return self.test_seed_value(test_code)
         return _new_seed()
 
     def apply_runtime_defaults_to_engine(self, engine: object) -> None:
@@ -6939,7 +6958,7 @@ class DifficultySettingsStore:
 
     def effective_ratio(self, test_code: str) -> float:
         level = self.effective_level(test_code)
-        return (max(1, min(10, level)) - 1) / 9.0
+        return difficulty_ratio_for_level(test_code, level)
 
     def intro_mode_label(self, test_code: str) -> str:
         _ = test_code
@@ -6948,19 +6967,27 @@ class DifficultySettingsStore:
 
 @dataclass
 class TestSeedSettingsState:
-    rapid_tracking_seed_override_enabled: bool = False
-    rapid_tracking_seed_value: int = 551
+    per_activity_seed_override_enabled: dict[str, bool] = field(default_factory=dict)
+    per_activity_seed_values: dict[str, int] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, object]:
+        rapid_tracking_enabled = bool(
+            self.per_activity_seed_override_enabled.get("rapid_tracking", False)
+        )
+        rapid_tracking_seed = int(self.per_activity_seed_values.get("rapid_tracking", 551))
         return {
-            "rapid_tracking_seed_override_enabled": bool(self.rapid_tracking_seed_override_enabled),
-            "rapid_tracking_seed_value": int(self.rapid_tracking_seed_value),
+            "per_activity_seed_override_enabled": dict(
+                self.per_activity_seed_override_enabled
+            ),
+            "per_activity_seed_values": dict(self.per_activity_seed_values),
+            "rapid_tracking_seed_override_enabled": rapid_tracking_enabled,
+            "rapid_tracking_seed_value": rapid_tracking_seed,
         }
 
 
 class TestSeedSettingsStore:
     __test__ = False
-    _version = 1
+    _version = 2
 
     def __init__(self, path: Path) -> None:
         self._path = path
@@ -6982,6 +7009,11 @@ class TestSeedSettingsStore:
             seed = 551
         return max(1, min((2**31) - 1, seed))
 
+    @staticmethod
+    def _normalize_test_code(test_code: object) -> str:
+        token = str(test_code or "").strip().lower()
+        return token or "rapid_tracking"
+
     def _load(self) -> None:
         if not self._path.exists():
             return
@@ -6991,12 +7023,29 @@ class TestSeedSettingsStore:
             return
         if not isinstance(payload, dict):
             return
-        self._state.rapid_tracking_seed_override_enabled = bool(
-            payload.get("rapid_tracking_seed_override_enabled", False)
-        )
-        self._state.rapid_tracking_seed_value = self._clamp_seed(
-            payload.get("rapid_tracking_seed_value", 551)
-        )
+        overrides: dict[str, bool] = {}
+        raw_overrides = payload.get("per_activity_seed_override_enabled")
+        if isinstance(raw_overrides, dict):
+            for test_code, enabled in raw_overrides.items():
+                overrides[self._normalize_test_code(test_code)] = bool(enabled)
+
+        seeds: dict[str, int] = {}
+        raw_seeds = payload.get("per_activity_seed_values")
+        if isinstance(raw_seeds, dict):
+            for test_code, seed in raw_seeds.items():
+                seeds[self._normalize_test_code(test_code)] = self._clamp_seed(seed)
+
+        if "rapid_tracking" not in overrides and "rapid_tracking_seed_override_enabled" in payload:
+            overrides["rapid_tracking"] = bool(
+                payload.get("rapid_tracking_seed_override_enabled", False)
+            )
+        if "rapid_tracking" not in seeds and "rapid_tracking_seed_value" in payload:
+            seeds["rapid_tracking"] = self._clamp_seed(
+                payload.get("rapid_tracking_seed_value", 551)
+            )
+
+        self._state.per_activity_seed_override_enabled = overrides
+        self._state.per_activity_seed_values = seeds
 
     def save(self) -> None:
         payload = {
@@ -7011,19 +7060,35 @@ class TestSeedSettingsStore:
         except Exception:
             return
 
+    def seed_override_enabled(self, test_code: str) -> bool:
+        token = self._normalize_test_code(test_code)
+        return bool(self._state.per_activity_seed_override_enabled.get(token, False))
+
+    def set_seed_override_enabled(self, test_code: str, enabled: bool) -> None:
+        token = self._normalize_test_code(test_code)
+        self._state.per_activity_seed_override_enabled[token] = bool(enabled)
+        self.save()
+
+    def seed_value(self, test_code: str) -> int:
+        token = self._normalize_test_code(test_code)
+        return int(self._state.per_activity_seed_values.get(token, 551))
+
+    def set_seed_value(self, test_code: str, value: int) -> None:
+        token = self._normalize_test_code(test_code)
+        self._state.per_activity_seed_values[token] = self._clamp_seed(value)
+        self.save()
+
     def rapid_tracking_seed_override_enabled(self) -> bool:
-        return bool(self._state.rapid_tracking_seed_override_enabled)
+        return self.seed_override_enabled("rapid_tracking")
 
     def set_rapid_tracking_seed_override_enabled(self, enabled: bool) -> None:
-        self._state.rapid_tracking_seed_override_enabled = bool(enabled)
-        self.save()
+        self.set_seed_override_enabled("rapid_tracking", enabled)
 
     def rapid_tracking_seed_value(self) -> int:
-        return int(self._state.rapid_tracking_seed_value)
+        return self.seed_value("rapid_tracking")
 
     def set_rapid_tracking_seed_value(self, value: int) -> None:
-        self._state.rapid_tracking_seed_value = self._clamp_seed(value)
-        self.save()
+        self.set_seed_value("rapid_tracking", value)
 
 
 @dataclass
@@ -9638,6 +9703,7 @@ class TestSeedSettingsScreen:
     def __init__(self, app: App) -> None:
         self._app = app
         self._selected = 0
+        self._activity_index = self._default_activity_index()
         self._title_font = pygame.font.Font(None, 42)
         self._item_font = pygame.font.Font(None, 30)
         self._hint_font = pygame.font.Font(None, 22)
@@ -9646,28 +9712,61 @@ class TestSeedSettingsScreen:
         self._editing_seed = False
         self._seed_input = ""
 
+    @staticmethod
+    def _activity_options() -> tuple[tuple[str, str], ...]:
+        seen: set[str] = set()
+        rows: list[tuple[str, str]] = []
+        for code, label in (
+            *TEST_DIFFICULTY_OPTIONS,
+            ("adaptive_session", "Adaptive Session"),
+            ("benchmark_battery", "Benchmark Battery"),
+        ):
+            token = str(code)
+            if token in seen:
+                continue
+            seen.add(token)
+            rows.append((token, str(label)))
+        return tuple(rows)
+
+    def _default_activity_index(self) -> int:
+        for idx, (code, _label) in enumerate(self._activity_options()):
+            if code == "rapid_tracking":
+                return idx
+        return 0
+
+    def _selected_activity(self) -> tuple[str, str]:
+        options = self._activity_options()
+        if not options:
+            return ("rapid_tracking", "Rapid Tracking")
+        self._activity_index %= len(options)
+        return options[self._activity_index]
+
     def _rows(self) -> list[tuple[str, str, str]]:
+        code, label = self._selected_activity()
         return [
             (
-                "rapid_tracking_override",
-                "Rapid Tracking Seed Override",
-                "ON" if self._app.rapid_tracking_seed_override_enabled() else "OFF",
+                "activity_seed_override",
+                f"{label} Seed Override",
+                "ON" if self._app.test_seed_override_enabled(code) else "OFF",
             ),
             (
-                "rapid_tracking_seed",
-                "Rapid Tracking Seed",
-                str(self._app.rapid_tracking_seed_value()),
+                "activity_seed",
+                f"{label} Seed",
+                str(self._app.test_seed_value(code)),
             ),
+            ("selected_activity", "Activity", label),
             ("back", "Back", "Return to Settings"),
         ]
 
     def _begin_seed_edit(self) -> None:
+        code, _label = self._selected_activity()
         self._editing_seed = True
-        self._seed_input = str(self._app.rapid_tracking_seed_value())
+        self._seed_input = str(self._app.test_seed_value(code))
 
     def _finish_seed_edit(self) -> None:
+        code, _label = self._selected_activity()
         if self._seed_input.strip():
-            self._app.set_rapid_tracking_seed_value(int(self._seed_input.strip()))
+            self._app.set_test_seed_value(test_code=code, value=int(self._seed_input.strip()))
         self._editing_seed = False
         self._seed_input = ""
 
@@ -9751,24 +9850,37 @@ class TestSeedSettingsScreen:
         if key == "back":
             self._app.pop()
             return
-        if key == "rapid_tracking_override":
-            self._app.set_rapid_tracking_seed_override_enabled(
-                not self._app.rapid_tracking_seed_override_enabled()
+        code, _label = self._selected_activity()
+        if key == "activity_seed_override":
+            self._app.set_test_seed_override_enabled(
+                test_code=code,
+                enabled=not self._app.test_seed_override_enabled(code),
             )
             return
-        if key == "rapid_tracking_seed":
+        if key == "activity_seed":
             self._begin_seed_edit()
+            return
+        if key == "selected_activity":
+            self._activity_index = (self._activity_index + 1) % max(1, len(self._activity_options()))
 
     def _adjust_row(self, key: str, action: str) -> None:
-        if key == "rapid_tracking_override":
-            self._app.set_rapid_tracking_seed_override_enabled(
-                not self._app.rapid_tracking_seed_override_enabled()
+        code, _label = self._selected_activity()
+        if key == "activity_seed_override":
+            self._app.set_test_seed_override_enabled(
+                test_code=code,
+                enabled=not self._app.test_seed_override_enabled(code),
             )
             return
-        if key == "rapid_tracking_seed":
+        if key == "activity_seed":
             delta = -1 if action == "dec" else 1
-            current = self._app.rapid_tracking_seed_value()
-            self._app.set_rapid_tracking_seed_value(current + delta)
+            current = self._app.test_seed_value(code)
+            self._app.set_test_seed_value(test_code=code, value=current + delta)
+            return
+        if key == "selected_activity":
+            delta = -1 if action == "dec" else 1
+            self._activity_index = (self._activity_index + delta) % max(
+                1, len(self._activity_options())
+            )
 
     def render(self, surface: pygame.Surface) -> None:
         w, h = surface.get_size()
@@ -9788,7 +9900,7 @@ class TestSeedSettingsScreen:
         title = self._title_font.render("Test Seeds", True, text_main)
         surface.blit(title, title.get_rect(midtop=(panel.centerx, panel.y + 14)))
         subtitle = self._hint_font.render(
-            "Use a persistent manual seed when you want Rapid Tracking runs to be reproducible.",
+            "Use persistent manual seeds when you want an activity run to be reproducible.",
             True,
             text_muted,
         )
@@ -9823,7 +9935,7 @@ class TestSeedSettingsScreen:
             if key == "back":
                 value_surf = self._hint_font.render(value, True, value_color)
                 surface.blit(value_surf, value_surf.get_rect(midright=(row.right - 14, row.centery)))
-            elif key == "rapid_tracking_seed":
+            elif key == "activity_seed":
                 value_box = pygame.Rect(row.right - 176, row.y + 6, 164, row.h - 12)
                 dec_box = pygame.Rect(value_box.x, value_box.y, 32, value_box.h)
                 inc_box = pygame.Rect(value_box.right - 32, value_box.y, 32, value_box.h)
@@ -9839,13 +9951,33 @@ class TestSeedSettingsScreen:
                 pygame.draw.rect(surface, (92, 112, 168), mid_box, 1, border_radius=5)
                 value_surf = self._hint_font.render(value, True, text_main)
                 surface.blit(value_surf, value_surf.get_rect(center=mid_box.center))
-            else:
+            elif key == "activity_seed_override":
                 value_box = pygame.Rect(row.right - 120, row.y + 6, 108, row.h - 12)
                 self._control_hitboxes[(idx, "toggle")] = value_box.copy()
                 pygame.draw.rect(surface, (14, 26, 78), value_box, border_radius=5)
                 pygame.draw.rect(surface, (92, 112, 168), value_box, 1, border_radius=5)
                 value_surf = self._hint_font.render(value, True, text_main)
                 surface.blit(value_surf, value_surf.get_rect(center=value_box.center))
+            else:
+                value_box = pygame.Rect(row.right - 176, row.y + 6, 164, row.h - 12)
+                dec_box = pygame.Rect(value_box.x, value_box.y, 32, value_box.h)
+                inc_box = pygame.Rect(value_box.right - 32, value_box.y, 32, value_box.h)
+                mid_box = pygame.Rect(dec_box.right + 6, value_box.y, value_box.w - 76, value_box.h)
+                self._control_hitboxes[(idx, "dec")] = dec_box.copy()
+                self._control_hitboxes[(idx, "inc")] = inc_box.copy()
+                for box, glyph in ((dec_box, "<"), (inc_box, ">")):
+                    pygame.draw.rect(surface, (20, 32, 92), box, border_radius=5)
+                    pygame.draw.rect(surface, (110, 130, 184), box, 1, border_radius=5)
+                    glyph_surf = self._item_font.render(glyph, True, text_main)
+                    surface.blit(glyph_surf, glyph_surf.get_rect(center=box.center))
+                pygame.draw.rect(surface, (14, 26, 78), mid_box, border_radius=5)
+                pygame.draw.rect(surface, (92, 112, 168), mid_box, 1, border_radius=5)
+                value_surf = self._hint_font.render(
+                    MenuScreen._fit_label(self, self._hint_font, value, max(20, mid_box.w - 8)),
+                    True,
+                    text_main,
+                )
+                surface.blit(value_surf, value_surf.get_rect(center=mid_box.center))
 
             y += row_h + gap
 
@@ -9866,7 +9998,8 @@ class TestSeedSettingsScreen:
             pygame.draw.rect(surface, panel_bg, overlay, border_radius=10)
             pygame.draw.rect(surface, border, overlay, 2, border_radius=10)
 
-            title = self._item_font.render("Rapid Tracking Seed", True, text_main)
+            _code, activity_label = self._selected_activity()
+            title = self._item_font.render(f"{activity_label} Seed", True, text_main)
             surface.blit(title, title.get_rect(midtop=(overlay.centerx, overlay.y + 18)))
             prompt = self._hint_font.render(
                 "Type a positive integer seed. Press R to randomize before saving.",
@@ -11282,7 +11415,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         if not isinstance(raw, int | float):
             return DEFAULT_DIFFICULTY_LEVEL
         normalized = max(0.0, min(1.0, float(raw)))
-        return max(1, min(10, int(round(normalized * 9.0)) + 1))
+        return difficulty_level_for_ratio(self._test_code, normalized)
 
     def _update_camera_keyboard_state(self, event: pygame.event.Event) -> None:
         tracked = {
@@ -19292,7 +19425,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             ("Trucks", TargetRecognitionSceneEntity("truck", "friendly", False, False)),
             ("Tanks", TargetRecognitionSceneEntity("tank", "friendly", False, False)),
             ("Bldgs", TargetRecognitionSceneEntity("building", "friendly", False, False)),
-            ("Beacons", TargetRecognitionSceneEntity("beacon", "friendly", False, False)),
+            ("Beacons", TargetRecognitionSceneEntity("beacon", "neutral", False, False)),
             ("Unknown", TargetRecognitionSceneEntity("unknown", "friendly", False, False)),
         )
         shape_step = max(44, (rect.w - 16) // max(1, len(shape_defs)))
@@ -19377,7 +19510,10 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 if live_label
                 else 1.0,
             )
-            rc, gc, bc = self._target_recognition_affiliation_color(glyph.entity.affiliation)
+            if glyph.entity.shape == "beacon":
+                rc, gc, bc = (236, 48, 48)
+            else:
+                rc, gc, bc = self._target_recognition_affiliation_color(glyph.entity.affiliation)
             glyph_layer = pygame.Surface(scene.get_size(), pygame.SRCALPHA)
             self._draw_target_recognition_symbol(
                 glyph_layer,
@@ -19390,13 +19526,14 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             )
             scene.blit(glyph_layer, (0, 0))
 
-            hit_r = self._target_recognition_scene_hit_radius(
-                glyph.entity,
-                size,
-                live=bool(live_label),
-            )
-            hit = pygame.Rect(rect.x + cx - hit_r, rect.y + cy - hit_r, hit_r * 2, hit_r * 2)
-            self._tr_scene_symbol_hitboxes.append((hit, glyph_id))
+            if live_label or glyph.entity.shape != "beacon":
+                hit_r = self._target_recognition_scene_hit_radius(
+                    glyph.entity,
+                    size,
+                    live=bool(live_label),
+                )
+                hit = pygame.Rect(rect.x + cx - hit_r, rect.y + cy - hit_r, hit_r * 2, hit_r * 2)
+                self._tr_scene_symbol_hitboxes.append((hit, glyph_id))
 
         self._draw_target_recognition_scene_clouds(scene, seed=seed)
         surface.blit(scene, rect.topleft)
@@ -19537,6 +19674,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 size=s,
                 color=color,
             )
+            return
         elif entity.shape == "unknown":
             self._draw_target_recognition_unknown(
                 surface,
@@ -19579,9 +19717,8 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         color: tuple[int, int, int, int],
     ) -> None:
         s = max(3, int(size))
-        box = pygame.Rect(cx - s, cy - s, s * 2, s * 2)
-        pygame.draw.rect(surface, color, box)
-        pygame.draw.rect(surface, (18, 22, 34, max(80, color[3])), box, 1)
+        alpha = max(0, min(255, int(color[3])))
+        pygame.draw.circle(surface, (236, 48, 48, alpha), (cx, cy), s)
 
     @staticmethod
     def _draw_target_recognition_unknown(
@@ -19637,7 +19774,12 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             "BLD": "building",
             "BCN": "beacon",
             "UNK": "unknown",
+            "ANT": "antenna",
+            "BNK": "bunker",
+            "CNV": "convoy",
         }.get(shape_code, "truck")
+        if shape == "beacon":
+            return TargetRecognitionSceneEntity("beacon", "neutral", False, False)
         affiliation = {
             "H": "hostile",
             "F": "friendly",
@@ -20237,11 +20379,13 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
     ) -> int:
         s = max(5, int(size))
         radius = s + 7
+        if entity.shape == "beacon":
+            radius = max(radius, int(round(s * 2.05)) + 8)
         if entity.damaged:
             radius = max(radius, int(round(s * 1.45)) + 5)
         if entity.high_priority:
             radius = max(radius, int(round(s * 2.05)) + 8)
-        if entity.shape in {"beacon", "unknown"}:
+        if entity.shape == "unknown":
             radius = max(radius, int(round(s * 1.35)) + 5)
         if live:
             radius += 6
@@ -20276,17 +20420,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         if bool(getattr(payload, "scene_clear_all_targets", False)):
             active = set(payload.scene_target_options)
         for _ in range(72):
-            damaged, high_priority = self._target_recognition_scene_roll_modifiers()
-            candidate = TargetRecognitionSceneEntity(
-                shape=str(
-                    self._tr_scene_rng.choice(
-                        ("truck", "tank", "building", "beacon", "unknown")
-                    )
-                ),
-                affiliation=str(self._tr_scene_rng.choice(("hostile", "friendly", "neutral"))),
-                damaged=damaged,
-                high_priority=high_priority,
-            )
+            candidate = self._target_recognition_scene_random_entity_for_spawn()
             labels = self._target_recognition_scene_matching_labels(
                 entity=candidate,
                 labels=payload.scene_target_options,
@@ -20299,6 +20433,24 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
 
         glyph.entity = TargetRecognitionSceneEntity("truck", "neutral", False, False)
         glyph.matching_labels = ()
+
+    def _target_recognition_scene_random_entity_for_spawn(
+        self,
+    ) -> TargetRecognitionSceneEntity:
+        assert self._tr_scene_rng is not None
+        if self._tr_scene_rng.random() < 0.006:
+            return TargetRecognitionSceneEntity("beacon", "neutral", False, False)
+        damaged, high_priority = self._target_recognition_scene_roll_modifiers()
+        return TargetRecognitionSceneEntity(
+            shape=str(
+                self._tr_scene_rng.choice(
+                    ("truck", "tank", "building", "unknown", "antenna", "bunker", "convoy")
+                )
+            ),
+            affiliation=str(self._tr_scene_rng.choice(("hostile", "friendly", "neutral"))),
+            damaged=damaged,
+            high_priority=high_priority,
+        )
 
     def _target_recognition_scene_spawn_interval_s(
         self,
@@ -20452,7 +20604,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
     def _target_recognition_scene_label_matches(
         entity: TargetRecognitionSceneEntity, label: str
     ) -> bool:
-        txt = str(label).upper()
+        txt = str(label).upper().strip()
         if "TRUCK" in txt:
             shape = "truck"
         elif "TANK" in txt:
@@ -20460,9 +20612,15 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         elif "BUILDING" in txt:
             shape = "building"
         elif "BEACON" in txt:
-            shape = "beacon"
+            return entity.shape == "beacon" and txt in {"BEACON", "BEACONS"}
         elif "UNKNOWN" in txt:
             shape = "unknown"
+        elif "ANTENNA" in txt:
+            shape = "antenna"
+        elif "BUNKER" in txt:
+            shape = "bunker"
+        elif "CONVOY" in txt:
+            shape = "convoy"
         else:
             return False
         if "HOSTILE" in txt:
@@ -20487,7 +20645,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
     def _target_recognition_scene_entity_from_label(
         label: str,
     ) -> TargetRecognitionSceneEntity | None:
-        txt = str(label).upper()
+        txt = str(label).upper().strip()
         if "TRUCK" in txt:
             shape = "truck"
         elif "TANK" in txt:
@@ -20495,9 +20653,17 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         elif "BUILDING" in txt:
             shape = "building"
         elif "BEACON" in txt:
-            shape = "beacon"
+            if txt not in {"BEACON", "BEACONS"}:
+                return None
+            return TargetRecognitionSceneEntity("beacon", "neutral", False, False)
         elif "UNKNOWN" in txt:
             shape = "unknown"
+        elif "ANTENNA" in txt:
+            shape = "antenna"
+        elif "BUNKER" in txt:
+            shape = "bunker"
+        elif "CONVOY" in txt:
+            shape = "convoy"
         else:
             return None
         if "HOSTILE" in txt:
@@ -22990,6 +23156,20 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             max(1, int(round(cell_h))),
         )
 
+    def _spatial_aircraft_color(self, label: str) -> tuple[int, int, int]:
+        token = str(label).strip().upper()
+        if token == "RED":
+            return (230, 74, 62)
+        if token == "BLUE":
+            return (62, 132, 232)
+        if token == "AMBER":
+            return (236, 172, 54)
+        if token == "WHITE":
+            return (238, 238, 228)
+        if token == "GREEN":
+            return (64, 186, 92)
+        return (46, 90, 182)
+
     def _draw_spatial_map_view(
         self,
         surface: pygame.Surface,
@@ -23001,6 +23181,9 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         aircraft_point: SpatialIntegrationPoint | None,
         interactive: bool,
         title: str | None = None,
+        aircraft_tracks: tuple[object, ...] = (),
+        route_color: tuple[int, int, int] = (46, 90, 182),
+        aircraft_color: tuple[int, int, int] = (230, 74, 62),
     ) -> None:
         pygame.draw.rect(surface, (14, 22, 54), rect)
         pygame.draw.rect(surface, (228, 238, 255), rect, 1)
@@ -23044,12 +23227,43 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             cell = self._spatial_map_cell_rect(rect, grid_cols=grid_cols, grid_rows=grid_rows, x=col, y=0)
             surface.blit(label, (cell.centerx - 4, rect.y + 12))
 
-        if len(route_points) >= 2:
+        if aircraft_tracks:
+            for track in aircraft_tracks:
+                track_color = self._spatial_aircraft_color(str(getattr(track, "color_label", "")))
+                track_route = tuple(getattr(track, "route_points", ()))
+                if len(track_route) >= 2:
+                    track_pixels = [
+                        self._spatial_map_cell_rect(
+                            rect,
+                            grid_cols=grid_cols,
+                            grid_rows=grid_rows,
+                            x=int(point.x),
+                            y=int(point.y),
+                        ).center
+                        for point in track_route
+                    ]
+                    pygame.draw.lines(surface, track_color, False, track_pixels, 3)
+                    for point in track_pixels:
+                        pygame.draw.circle(surface, (236, 244, 255), point, 3)
+                now = getattr(track, "aircraft_now", None)
+                if now is not None:
+                    cell = self._spatial_map_cell_rect(
+                        rect,
+                        grid_cols=grid_cols,
+                        grid_rows=grid_rows,
+                        x=int(getattr(now, "x", 0)),
+                        y=int(getattr(now, "y", 0)),
+                    )
+                    pygame.draw.circle(surface, track_color, cell.center, 7)
+                    pygame.draw.circle(surface, (246, 246, 246), cell.center, 7, 1)
+                    label = self._tiny_font.render(str(getattr(track, "color_label", ""))[:1], True, (20, 20, 22))
+                    surface.blit(label, label.get_rect(center=cell.center))
+        elif len(route_points) >= 2:
             route_pixels = [
                 self._spatial_map_cell_rect(rect, grid_cols=grid_cols, grid_rows=grid_rows, x=int(point.x), y=int(point.y)).center
                 for point in route_points
             ]
-            pygame.draw.lines(surface, (46, 90, 182), False, route_pixels, 4)
+            pygame.draw.lines(surface, route_color, False, route_pixels, 4)
             for point in route_pixels:
                 pygame.draw.circle(surface, (236, 244, 255), point, 4)
 
@@ -23095,7 +23309,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
 
         if aircraft_point is not None:
             cell = self._spatial_map_cell_rect(rect, grid_cols=grid_cols, grid_rows=grid_rows, x=int(aircraft_point.x), y=int(aircraft_point.y))
-            pygame.draw.circle(surface, (230, 74, 62), cell.center, 7)
+            pygame.draw.circle(surface, aircraft_color, cell.center, 7)
             pygame.draw.circle(surface, (246, 246, 246), cell.center, 7, 1)
 
         if interactive:
@@ -23126,6 +23340,23 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
         pygame.draw.line(surface, (70, 78, 66), (plot.x + 18, plot.bottom - 18), (plot.right - 6, plot.bottom - 18), 2)
         pygame.draw.line(surface, (70, 78, 66), (plot.x + 18, plot.bottom - 18), (plot.x + 18, plot.y + 8), 2)
         if payload is None or not payload.route_points:
+            return
+        if payload.aircraft_tracks:
+            for track in payload.aircraft_tracks:
+                route = tuple(getattr(track, "route_points", ()))
+                if len(route) < 2:
+                    continue
+                xs = []
+                ys = []
+                for idx, point in enumerate(route):
+                    x = plot.x + 24 + int((idx / max(1, len(route) - 1)) * (plot.w - 36))
+                    y = plot.bottom - 22 - int((float(point.z) / max(1, payload.alt_levels - 1)) * (plot.h - 38))
+                    xs.append(x)
+                    ys.append(y)
+                color = self._spatial_aircraft_color(str(getattr(track, "color_label", "")))
+                pygame.draw.lines(surface, color, False, list(zip(xs, ys)), 3)
+                current_idx = max(0, min(len(route) - 1, int(getattr(track, "route_current_index", 0))))
+                pygame.draw.circle(surface, color, (xs[current_idx], ys[current_idx]), 7)
             return
         xs = []
         ys = []
@@ -23167,7 +23398,21 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 aircraft_point=None,
                 interactive=False,
             )
+        elif payload.kind in (
+            SpatialIntegrationQuestionKind.OBJECT_COUNT,
+            SpatialIntegrationQuestionKind.OBJECT_KIND_AT_CELL,
+        ):
+            statement = str(getattr(opt, "statement", "") or getattr(opt, "label", ""))
+            self._draw_wrapped_text(
+                surface,
+                statement,
+                inner.inflate(-10, -8),
+                color=(236, 244, 255),
+                font=self._small_font,
+                max_lines=3,
+            )
         else:
+            aircraft_color = self._spatial_aircraft_color(str(getattr(opt, "aircraft_color", "")))
             self._draw_spatial_map_view(
                 surface,
                 inner,
@@ -23176,6 +23421,8 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                 route_points=tuple(getattr(opt, "candidate_route", ())),
                 aircraft_point=getattr(opt, "candidate_aircraft", None),
                 interactive=False,
+                route_color=aircraft_color,
+                aircraft_color=aircraft_color,
             )
         self._draw_review_choice_overlay(surface, rect, option_code=int(opt.code))
 
@@ -23210,6 +23457,7 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
             ),
             interactive=False,
             title=title,
+            aircraft_tracks=() if payload is None else payload.aircraft_tracks,
         )
         return
 
@@ -26946,7 +27194,11 @@ def run(
     ) -> None:
         _ = title
         def _build_screen(seed_override: int | None = None) -> CognitiveTestScreen:
-            launch_seed = _new_seed() if seed_override is None else int(seed_override)
+            launch_seed = (
+                app.resolved_test_launch_seed(test_code)
+                if seed_override is None
+                else int(seed_override)
+            )
             return CognitiveTestScreen(
                 app,
                 engine_factory=lambda launch_seed=launch_seed: engine_factory(
@@ -26958,6 +27210,24 @@ def run(
             )
 
         app.push(_build_screen())
+
+    def open_official_test(test_code: str) -> None:
+        title = official_test_title(test_code)
+        open_test(
+            test_code=test_code,
+            title=title,
+            engine_factory=lambda difficulty, seed, resolved_code=test_code: cast(
+                CognitiveEngine,
+                build_official_test_runtime(
+                    clock=real_clock,
+                    test_code=resolved_code,
+                    seed=seed,
+                    difficulty=difficulty,
+                    review_mode_enabled=app.review_mode_enabled(),
+                    auditory_extra=app.auditory_godot_audio_overrides(),
+                ),
+            ),
+        )
 
     def _open_mode_wrapped_drill(
         *,
@@ -27185,13 +27455,7 @@ def run(
         return items
 
     def open_numerical_ops() -> None:
-        open_test(
-            test_code="numerical_operations",
-            title="Numerical Operations",
-            engine_factory=lambda difficulty, seed: build_numerical_operations_test(
-                clock=real_clock, seed=seed, difficulty=difficulty
-            ),
-        )
+        open_official_test("numerical_operations")
 
     def open_no_fact_prime(mode: AntDrillMode) -> None:
         _open_no_drill(
@@ -27301,13 +27565,7 @@ def run(
         )
 
     def open_airborne_numerical() -> None:
-        open_test(
-            test_code="airborne_numerical",
-            title="Airborne Numerical Test",
-            engine_factory=lambda difficulty, seed: build_airborne_numerical_test(
-                clock=real_clock, seed=seed, difficulty=difficulty
-            ),
-        )
+        open_official_test("airborne_numerical")
 
     def open_ant_snap_facts_sprint(mode: AntDrillMode) -> None:
         _open_ant_drill(
@@ -27508,43 +27766,10 @@ def run(
         godot_kind = godot_kind_for_test_code(token)
         if godot_kind in GODOT_OWNED_KINDS and token != "rapid_tracking_workout":
             title = str(workout_code).replace("_", " ").title()
-            godot_config: dict[str, object] = {"workout": True}
-            if godot_kind == "auditory_capacity":
-                godot_config = auditory_capacity_godot_config(
-                    test_code=workout_code,
-                    mode="workout",
-                    difficulty=app.effective_difficulty_ratio(workout_code),
-                    duration_s=90.0 * 60.0,
-                    review_mode_enabled=app.review_mode_enabled(),
-                    extra={**app.auditory_godot_audio_overrides(), "workout": True},
-                )
-            elif godot_kind == "rapid_tracking":
-                godot_config = rapid_tracking_godot_config(
-                    test_code=workout_code,
-                    mode="workout",
-                    difficulty=app.effective_difficulty_ratio(workout_code),
-                    duration_s=90.0 * 60.0,
-                    extra={"workout": True},
-                )
-            elif godot_kind == "spatial_integration":
-                godot_config = spatial_integration_godot_config(
-                    test_code=workout_code,
-                    mode="workout",
-                    duration_s=90.0 * 60.0,
-                    extra={"workout": True},
-                )
-            elif godot_kind in {"trace_test_1", "trace_test_2"}:
-                godot_config = trace_test_godot_config(
-                    test_code=workout_code,
-                    mode="workout",
-                    difficulty=app.effective_difficulty_ratio(workout_code),
-                    duration_s=90.0 * 60.0,
-                    extra={"workout": True},
-                )
             open_test(
                 test_code=workout_code,
                 title=title,
-                engine_factory=lambda difficulty, seed: build_godot_owned_test(
+                engine_factory=lambda difficulty, seed: build_godot_owned_activity_runtime(
                     clock=real_clock,
                     seed=seed,
                     difficulty=difficulty,
@@ -27553,7 +27778,9 @@ def run(
                     title=title,
                     duration_s=90.0 * 60.0,
                     mode="workout",
-                    config=godot_config,
+                    extra={"workout": True},
+                    review_mode_enabled=app.review_mode_enabled(),
+                    auditory_extra=app.auditory_godot_audio_overrides(),
                 ),
             )
             return
@@ -27561,7 +27788,7 @@ def run(
         def _build_session(level: int) -> AntWorkoutSession:
             return AntWorkoutSession(
                 clock=real_clock,
-                seed=_new_seed(),
+                seed=app.resolved_test_launch_seed(workout_code),
                 plan=_build_workout_plan_for_code(workout_code),
                 starting_level=level,
             )
@@ -27581,13 +27808,7 @@ def run(
         )
 
     def open_math_reasoning() -> None:
-        open_test(
-            test_code="math_reasoning",
-            title="Mathematics Reasoning",
-            engine_factory=lambda difficulty, seed: build_math_reasoning_test(
-                clock=real_clock, seed=seed, difficulty=difficulty
-            ),
-        )
+        open_official_test("math_reasoning")
 
     def open_mr_relevant_info_scan(mode: AntDrillMode) -> None:
         _open_mr_drill(
@@ -27806,35 +28027,13 @@ def run(
         )
 
     def open_digit_recognition() -> None:
-        open_test(
-            test_code="digit_recognition",
-            title="Digit Recognition",
-            engine_factory=lambda difficulty, seed: build_digit_recognition_test(
-                clock=real_clock, seed=seed, difficulty=difficulty
-            ),
-        )
+        open_official_test("digit_recognition")
 
     def open_colours_letters_numbers() -> None:
-        open_test(
-            test_code="colours_letters_numbers",
-            title="Colours, Letters and Numbers",
-            engine_factory=lambda difficulty, seed: build_colours_letters_numbers_test(
-                clock=real_clock,
-                seed=seed,
-                difficulty=difficulty,
-            ),
-        )
+        open_official_test("colours_letters_numbers")
 
     def open_angles_bearings_degrees() -> None:
-        open_test(
-            test_code="angles_bearings_degrees",
-            title="Angles, Bearings and Degrees",
-            engine_factory=lambda difficulty, seed: build_angles_bearings_degrees_test(
-                clock=real_clock,
-                seed=seed,
-                difficulty=difficulty,
-            ),
-        )
+        open_official_test("angles_bearings_degrees")
 
     def open_abd_cardinal_anchors(mode: AntDrillMode) -> None:
         _open_abd_drill(
@@ -27893,15 +28092,7 @@ def run(
         )
 
     def open_visual_search() -> None:
-        open_test(
-            test_code="visual_search",
-            title="Visual Search",
-            engine_factory=lambda difficulty, seed: build_visual_search_test(
-                clock=real_clock,
-                seed=seed,
-                difficulty=difficulty,
-            ),
-        )
+        open_official_test("visual_search")
 
     def open_vs_target_preview(mode: AntDrillMode) -> None:
         _open_vs_drill(
@@ -28054,7 +28245,12 @@ def run(
 
     def _build_benchmark_screen() -> Screen:
         def _build_session() -> BenchmarkSession:
-            return BenchmarkSession(plan=build_benchmark_plan(clock=real_clock))
+            return BenchmarkSession(
+                plan=build_benchmark_plan(
+                    clock=real_clock,
+                    seed=app.resolved_test_launch_seed("benchmark_battery"),
+                )
+            )
 
         return BenchmarkScreen(
             app,
@@ -28082,7 +28278,7 @@ def run(
                 )
             except Exception:
                 history = []
-            session_seed = _new_seed()
+            session_seed = app.resolved_test_launch_seed("adaptive_session")
             plan = build_adaptive_session_plan(history=history, seed=session_seed, variant="adaptive")
             session = AdaptiveSession(
                 clock=real_clock,
@@ -28104,15 +28300,7 @@ def run(
         )
 
     def open_vigilance() -> None:
-        open_test(
-            test_code="vigilance",
-            title="Vigilance",
-            engine_factory=lambda difficulty, seed: build_vigilance_test(
-                clock=real_clock,
-                seed=seed,
-                difficulty=difficulty,
-            ),
-        )
+        open_official_test("vigilance")
 
     def _open_vig_drill(
         *,
@@ -28189,26 +28377,10 @@ def run(
         )
 
     def open_instrument_comprehension() -> None:
-        open_test(
-            test_code="instrument_comprehension",
-            title="Instrument Comprehension",
-            engine_factory=lambda difficulty, seed: build_instrument_comprehension_test(
-                clock=real_clock,
-                seed=seed,
-                difficulty=difficulty,
-            ),
-        )
+        open_official_test("instrument_comprehension")
 
     def open_target_recognition() -> None:
-        open_test(
-            test_code="target_recognition",
-            title="Target Recognition",
-            engine_factory=lambda difficulty, seed: build_target_recognition_test(
-                clock=real_clock,
-                seed=seed,
-                difficulty=difficulty,
-            ),
-        )
+        open_official_test("target_recognition")
 
     def _open_tr_drill(
         *,
@@ -28588,37 +28760,13 @@ def run(
         )
 
     def open_system_logic() -> None:
-        open_test(
-            test_code="system_logic",
-            title="System Logic",
-            engine_factory=lambda difficulty, seed: build_system_logic_test(
-                clock=real_clock,
-                seed=seed,
-                difficulty=difficulty,
-            ),
-        )
+        open_official_test("system_logic")
 
     def open_table_reading() -> None:
-        open_test(
-            test_code="table_reading",
-            title="Table Reading",
-            engine_factory=lambda difficulty, seed: build_table_reading_test(
-                clock=real_clock,
-                seed=seed,
-                difficulty=difficulty,
-            ),
-        )
+        open_official_test("table_reading")
 
     def open_sensory_motor_apparatus() -> None:
-        open_test(
-            test_code="sensory_motor_apparatus",
-            title="Sensory Motor Apparatus",
-            engine_factory=lambda difficulty, seed: build_sensory_motor_apparatus_test(
-                clock=real_clock,
-                seed=seed,
-                difficulty=difficulty,
-            ),
-        )
+        open_official_test("sensory_motor_apparatus")
 
     def _open_sma_drill(
         *,
@@ -28711,23 +28859,7 @@ def run(
         )
 
     def open_rapid_tracking() -> None:
-        open_test(
-            test_code="rapid_tracking",
-            title="Rapid Tracking",
-            engine_factory=lambda difficulty, seed: build_godot_owned_test(
-                clock=real_clock,
-                seed=seed,
-                difficulty=difficulty,
-                kind="rapid_tracking",
-                test_code="rapid_tracking",
-                title="Rapid Tracking",
-                config=rapid_tracking_godot_config(
-                    test_code="rapid_tracking",
-                    mode="standard",
-                    difficulty=difficulty,
-                ),
-            ),
-        )
+        open_official_test("rapid_tracking")
 
     def _open_rt_drill(
         *,
@@ -28740,22 +28872,15 @@ def run(
             test_code=test_code,
             title=title,
             mode=mode,
-            engine_builder=lambda seed, difficulty, resolved_mode, scored_duration_s: build_godot_owned_test(
+            engine_builder=lambda seed, difficulty, resolved_mode, scored_duration_s: build_godot_owned_activity_runtime(
                 clock=real_clock,
                 seed=seed,
                 difficulty=difficulty,
-                kind="rapid_tracking",
                 test_code=test_code,
                 title=title,
                 duration_s=scored_duration_s,
                 mode=resolved_mode.value,
-                config=rapid_tracking_godot_config(
-                    test_code=test_code,
-                    mode=resolved_mode.value,
-                    difficulty=difficulty,
-                    duration_s=scored_duration_s,
-                    extra={"drill": True},
-                ),
+                extra={"drill": True},
             ),
         )
 
@@ -28901,17 +29026,13 @@ def run(
         open_test(
             test_code="spatial_integration",
             title="Spatial Integration",
-            engine_factory=lambda difficulty, seed: build_godot_owned_test(
-                clock=real_clock,
-                seed=seed,
-                difficulty=difficulty,
-                kind="spatial_integration",
-                test_code="spatial_integration",
-                title="Spatial Integration",
-                duration_s=23.0 * 60.0,
-                config=spatial_integration_godot_config(
+            engine_factory=lambda difficulty, seed: cast(
+                CognitiveEngine,
+                build_official_test_runtime(
+                    clock=real_clock,
                     test_code="spatial_integration",
-                    mode="standard",
+                    seed=seed,
+                    difficulty=difficulty,
                     duration_s=23.0 * 60.0,
                 ),
             ),
@@ -28928,21 +29049,15 @@ def run(
             test_code=test_code,
             title=title,
             mode=mode,
-            engine_builder=lambda seed, difficulty, resolved_mode, scored_duration_s: build_godot_owned_test(
+            engine_builder=lambda seed, difficulty, resolved_mode, scored_duration_s: build_godot_owned_activity_runtime(
                 clock=real_clock,
                 seed=seed,
                 difficulty=difficulty,
-                kind="spatial_integration",
                 test_code=test_code,
                 title=title,
                 duration_s=scored_duration_s,
                 mode=str(resolved_mode),
-                config=spatial_integration_godot_config(
-                    test_code=test_code,
-                    mode=str(resolved_mode),
-                    duration_s=scored_duration_s,
-                    extra={"drill": True},
-                ),
+                extra={"drill": True},
             ),
         )
 
@@ -29027,42 +29142,10 @@ def run(
         )
 
     def open_trace_test_1() -> None:
-        open_test(
-            test_code="trace_test_1",
-            title="Trace Test 1",
-            engine_factory=lambda difficulty, seed: build_godot_owned_test(
-                clock=real_clock,
-                seed=seed,
-                difficulty=difficulty,
-                kind="trace_test_1",
-                test_code="trace_test_1",
-                title="Trace Test 1",
-                config=trace_test_godot_config(
-                    test_code="trace_test_1",
-                    mode="standard",
-                    difficulty=difficulty,
-                ),
-            ),
-        )
+        open_official_test("trace_test_1")
 
     def open_trace_test_2() -> None:
-        open_test(
-            test_code="trace_test_2",
-            title="Trace Test 2",
-            engine_factory=lambda difficulty, seed: build_godot_owned_test(
-                clock=real_clock,
-                seed=seed,
-                difficulty=difficulty,
-                kind="trace_test_2",
-                test_code="trace_test_2",
-                title="Trace Test 2",
-                config=trace_test_godot_config(
-                    test_code="trace_test_2",
-                    mode="standard",
-                    difficulty=difficulty,
-                ),
-            ),
-        )
+        open_official_test("trace_test_2")
 
     def _open_trace_drill(
         *,
@@ -29075,7 +29158,7 @@ def run(
             test_code=test_code,
             title=title,
             mode=mode,
-            engine_builder=lambda seed, difficulty, resolved_mode, scored_duration_s: build_godot_owned_test(
+            engine_builder=lambda seed, difficulty, resolved_mode, scored_duration_s: build_godot_owned_activity_runtime(
                 clock=real_clock,
                 seed=seed,
                 difficulty=difficulty,
@@ -29084,13 +29167,7 @@ def run(
                 title=title,
                 duration_s=scored_duration_s,
                 mode=str(resolved_mode),
-                config=trace_test_godot_config(
-                    test_code=test_code,
-                    mode=str(resolved_mode),
-                    difficulty=difficulty,
-                    duration_s=scored_duration_s,
-                    extra={"drill": True},
-                ),
+                extra={"drill": True},
             ),
         )
 
@@ -29185,23 +29262,17 @@ def run(
             test_code=test_code,
             title=title,
             mode=mode,
-            engine_builder=lambda seed, difficulty, resolved_mode, scored_duration_s: build_godot_owned_test(
+            engine_builder=lambda seed, difficulty, resolved_mode, scored_duration_s: build_godot_owned_activity_runtime(
                 clock=real_clock,
                 seed=seed,
                 difficulty=difficulty,
-                kind="auditory_capacity",
                 test_code=test_code,
                 title=title,
                 duration_s=scored_duration_s,
                 mode=str(resolved_mode),
-                config=auditory_capacity_godot_config(
-                    test_code=test_code,
-                    mode=str(resolved_mode),
-                    difficulty=difficulty,
-                    duration_s=scored_duration_s,
-                    review_mode_enabled=app.review_mode_enabled(),
-                    extra={**app.auditory_godot_audio_overrides(), "drill": True},
-                ),
+                extra={"drill": True},
+                review_mode_enabled=app.review_mode_enabled(),
+                auditory_extra=app.auditory_godot_audio_overrides(),
             ),
         )
 
@@ -29270,25 +29341,7 @@ def run(
         )
 
     def open_auditory_capacity() -> None:
-        open_test(
-            test_code="auditory_capacity",
-            title="Auditory Capacity",
-            engine_factory=lambda difficulty, seed: build_godot_owned_test(
-                clock=real_clock,
-                seed=seed,
-                difficulty=difficulty,
-                kind="auditory_capacity",
-                test_code="auditory_capacity",
-                title="Auditory Capacity",
-                config=auditory_capacity_godot_config(
-                    test_code="auditory_capacity",
-                    mode="standard",
-                    difficulty=difficulty,
-                    review_mode_enabled=app.review_mode_enabled(),
-                    extra=app.auditory_godot_audio_overrides(),
-                ),
-            ),
-        )
+        open_official_test("auditory_capacity")
 
     def _open_cu_drill(
         *,
@@ -29382,15 +29435,7 @@ def run(
         )
 
     def open_cognitive_updating() -> None:
-        open_test(
-            test_code="cognitive_updating",
-            title="Cognitive Updating",
-            engine_factory=lambda difficulty, seed: build_cognitive_updating_test(
-                clock=real_clock,
-                seed=seed,
-                difficulty=difficulty,
-            ),
-        )
+        open_official_test("cognitive_updating")
 
     def _open_sa_drill(
         *,
@@ -29483,15 +29528,7 @@ def run(
         )
 
     def open_situational_awareness() -> None:
-        open_test(
-            test_code="situational_awareness",
-            title="Situational Awareness",
-            engine_factory=lambda difficulty, seed: build_situational_awareness_test(
-                clock=real_clock,
-                seed=seed,
-                difficulty=difficulty,
-            ),
-        )
+        open_official_test("situational_awareness")
 
     tests_menu = MenuScreen(
         app,

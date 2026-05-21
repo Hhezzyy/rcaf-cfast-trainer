@@ -228,11 +228,25 @@ static func _si_lay_multicell_hills(cells: Array, cols: int, rows: int, rng: Ran
 		return {"hill_cell_count": 0, "hill_cluster_count": 0, "hill_clusters": clusters}
 	var cluster_target: int = clampi(4 + int(round(difficulty * 3.0)), 4, 8)
 	var margin := 2
-	for i in range(cluster_target):
+	var attempts := 0
+	while clusters.size() < cluster_target and attempts < cluster_target * 8:
+		attempts += 1
 		var center := Vector2i(int(rng.randi_range(margin, cols - margin - 1)), int(rng.randi_range(margin, rows - margin - 1)))
-		var radius: int = int(rng.randi_range(2, 4))
-		var cluster_id := "si_hill_cluster_" + str(i)
+		var center_cell := _cell(cells, cols, center.x, center.y)
+		if center_cell.is_empty() or _cell_has_road(center_cell) or _cell_has_river(center_cell):
+			continue
+		var center_terrain := str(center_cell.get("terrain", "grassland"))
+		if center_terrain == "city" or center_terrain == "city_edge" or center_terrain == "forest" or center_terrain == "forest_edge" or center_terrain == "lake" or center_terrain == "bridge" or center_terrain == "hill":
+			continue
+		var target_footprint: int = 6 if difficulty >= 0.55 else 4
+		var radius: int = max(2, int(ceil(float(target_footprint) / 2.0)))
+		var cluster_id := "si_hill_cluster_" + str(clusters.size())
+		var peak_tier: int = clampi(radius + int(rng.randi_range(3, 5)), 4, 9)
 		var painted := 0
+		var min_x := cols
+		var min_y := rows
+		var max_x := -1
+		var max_y := -1
 		for dy in range(-radius, radius + 1):
 			for dx in range(-radius, radius + 1):
 				var dist := Vector2(float(dx), float(dy)).length()
@@ -249,12 +263,32 @@ static func _si_lay_multicell_hills(cells: Array, cols: int, rows: int, rng: Ran
 				if terrain == "city" or terrain == "city_edge" or terrain == "forest" or terrain == "forest_edge" or terrain == "lake" or terrain == "bridge":
 					continue
 				cell["terrain"] = "hill"
-				cell["height_tier"] = clampi(radius - int(floor(dist)) + int(rng.randi_range(1, 3)), 1, 6)
+				cell["height_tier"] = clampi(peak_tier - int(ceil(dist * 1.35)), 1, peak_tier)
 				cell["cluster_id"] = cluster_id
+				cell["cluster_peak_tier"] = peak_tier
 				_set_cell(cells, cols, x, y, cell)
 				painted += 1
+				min_x = mini(min_x, x)
+				min_y = mini(min_y, y)
+				max_x = maxi(max_x, x)
+				max_y = maxi(max_y, y)
 		if painted >= 4:
-			clusters.append({"x": center.x, "y": center.y, "radius": radius, "cluster_id": cluster_id, "cell_count": painted})
+			clusters.append({
+				"x": center.x,
+				"y": center.y,
+				"radius": radius,
+				"cluster_id": cluster_id,
+				"cell_count": painted,
+				"peak_tier": peak_tier,
+				"min_x": min_x,
+				"max_x": max_x,
+				"min_y": min_y,
+				"max_y": max_y,
+				"footprint_cols": max_x - min_x + 1,
+				"footprint_rows": max_y - min_y + 1,
+				"footprint_cells": max(max_x - min_x + 1, max_y - min_y + 1),
+				"target_footprint": target_footprint,
+			})
 			hill_cell_count += painted
 	return {"hill_cell_count": hill_cell_count, "hill_cluster_count": clusters.size(), "hill_clusters": clusters}
 
@@ -274,6 +308,7 @@ static func _rt_lay_priority_terrain(cells: Array, cols: int, rows: int, rng: Ra
 static func _rt_lay_edge_mountain_ring(cells: Array, cols: int, rows: int, rng: RandomNumberGenerator) -> int:
 	var max_width: int = clampi(int(min(cols, rows) / 7), 5, 8)
 	var width: int = int(rng.randi_range(5, max_width))
+	var peak_tier := clampi(width + 5, 8, 12)
 	for y in range(rows):
 		for x in range(cols):
 			var edge_depth: int = min(min(x, y), min(cols - 1 - x, rows - 1 - y))
@@ -282,8 +317,9 @@ static func _rt_lay_edge_mountain_ring(cells: Array, cols: int, rows: int, rng: 
 			var cell := _cell(cells, cols, x, y)
 			cell["terrain"] = "mountain"
 			cell["edge_mountain"] = true
-			cell["height_tier"] = clampi(width - edge_depth + int(rng.randi_range(2, 5)), 3, 10)
+			cell["height_tier"] = clampi(peak_tier - edge_depth, 3, peak_tier)
 			cell["cluster_id"] = "edge_ring"
+			cell["cluster_peak_tier"] = peak_tier
 			_set_cell(cells, cols, x, y, cell)
 	return width
 
@@ -293,23 +329,44 @@ static func _rt_lay_interior_hill_clusters(cells: Array, cols: int, rows: int, r
 	var mountain_clusters: Array = []
 	var margin: int = clampi(ring_width + 5, 6, max(6, int(min(cols, rows) / 3)))
 	var hill_count: int = clampi(3 + int(round(difficulty * 3.0)), 3, 6)
-	for i in range(hill_count):
+	var hill_attempts := 0
+	while hill_clusters.size() < hill_count and hill_attempts < hill_count * 8:
+		hill_attempts += 1
 		var center := Vector2i(int(rng.randi_range(margin, cols - margin - 1)), int(rng.randi_range(margin, rows - margin - 1)))
-		var radius: int = int(rng.randi_range(2, 5))
-		var cluster_id := "hill_cluster_" + str(i)
-		_rt_paint_elevation_cluster(cells, cols, rows, rng, center, radius, "hill", cluster_id)
-		hill_clusters.append({"x": center.x, "y": center.y, "radius": radius, "cluster_id": cluster_id})
+		var center_cell := _cell(cells, cols, center.x, center.y)
+		if center_cell.is_empty() or bool(center_cell.get("edge_mountain", false)) or str(center_cell.get("terrain", "grassland")) != "grassland":
+			continue
+		var target_footprint: int = 6 if difficulty >= 0.55 else 4
+		var radius: int = max(2, int(ceil(float(target_footprint) / 2.0)))
+		var cluster_id := "hill_cluster_" + str(hill_clusters.size())
+		var peak_tier: int = clampi(radius + int(rng.randi_range(3, 5)), 4, 9)
+		var hill_cluster := _rt_paint_elevation_cluster(cells, cols, rows, center, radius, "hill", cluster_id, peak_tier, target_footprint)
+		if int(hill_cluster.get("cell_count", 0)) > 0:
+			hill_clusters.append(hill_cluster)
 	var mountain_count: int = 1 + int(round(difficulty))
-	for i in range(mountain_count):
+	var mountain_attempts := 0
+	while mountain_clusters.size() < mountain_count and mountain_attempts < mountain_count * 10:
+		mountain_attempts += 1
 		var center_m := Vector2i(int(rng.randi_range(margin, cols - margin - 1)), int(rng.randi_range(margin, rows - margin - 1)))
-		var radius_m: int = int(rng.randi_range(2, 3))
-		var cluster_id_m := "mountain_cluster_" + str(i)
-		_rt_paint_elevation_cluster(cells, cols, rows, rng, center_m, radius_m, "mountain", cluster_id_m)
-		mountain_clusters.append({"x": center_m.x, "y": center_m.y, "radius": radius_m, "cluster_id": cluster_id_m})
+		var center_cell_m := _cell(cells, cols, center_m.x, center_m.y)
+		if center_cell_m.is_empty() or bool(center_cell_m.get("edge_mountain", false)) or str(center_cell_m.get("terrain", "grassland")) != "grassland":
+			continue
+		var target_footprint_m: int = 6 if difficulty >= 0.55 else 4
+		var radius_m: int = max(2, int(ceil(float(target_footprint_m) / 2.0)))
+		var cluster_id_m := "mountain_cluster_" + str(mountain_clusters.size())
+		var peak_tier_m: int = clampi(radius_m + int(rng.randi_range(5, 7)), 6, 11)
+		var mountain_cluster := _rt_paint_elevation_cluster(cells, cols, rows, center_m, radius_m, "mountain", cluster_id_m, peak_tier_m, target_footprint_m)
+		if int(mountain_cluster.get("cell_count", 0)) > 0:
+			mountain_clusters.append(mountain_cluster)
 	return {"hill_clusters": hill_clusters, "mountain_clusters": mountain_clusters}
 
 
-static func _rt_paint_elevation_cluster(cells: Array, cols: int, rows: int, rng: RandomNumberGenerator, center: Vector2i, radius: int, terrain_name: String, cluster_id: String) -> void:
+static func _rt_paint_elevation_cluster(cells: Array, cols: int, rows: int, center: Vector2i, radius: int, terrain_name: String, cluster_id: String, peak_tier: int, target_footprint: int) -> Dictionary:
+	var painted := 0
+	var min_x := cols
+	var min_y := rows
+	var max_x := -1
+	var max_y := -1
 	for dy in range(-radius, radius + 1):
 		for dx in range(-radius, radius + 1):
 			var dist := Vector2(float(dx), float(dy)).length()
@@ -322,12 +379,32 @@ static func _rt_paint_elevation_cluster(cells: Array, cols: int, rows: int, rng:
 				continue
 			if str(cell.get("terrain", "grassland")) != "grassland":
 				continue
-			if dist > float(radius) - 0.5 and rng.randf() < 0.35:
-				continue
 			cell["terrain"] = terrain_name
-			cell["height_tier"] = clampi(radius - int(floor(dist)) + int(rng.randi_range(0, 2)), 1, 6)
+			cell["height_tier"] = clampi(peak_tier - int(ceil(dist * 1.35)), 1, peak_tier)
 			cell["cluster_id"] = cluster_id
+			cell["cluster_peak_tier"] = peak_tier
 			_set_cell(cells, cols, x, y, cell)
+			painted += 1
+			min_x = mini(min_x, x)
+			min_y = mini(min_y, y)
+			max_x = maxi(max_x, x)
+			max_y = maxi(max_y, y)
+	return {
+		"x": center.x,
+		"y": center.y,
+		"radius": radius,
+		"cluster_id": cluster_id,
+		"cell_count": painted,
+		"peak_tier": peak_tier,
+		"min_x": min_x,
+		"max_x": max_x,
+		"min_y": min_y,
+		"max_y": max_y,
+		"footprint_cols": max_x - min_x + 1,
+		"footprint_rows": max_y - min_y + 1,
+		"footprint_cells": max(max_x - min_x + 1, max_y - min_y + 1),
+		"target_footprint": target_footprint,
+	}
 
 
 static func _rt_lay_water_features_v3(cells: Array, cols: int, rows: int, rng: RandomNumberGenerator, difficulty: float, ring_width: int) -> Dictionary:
@@ -1359,6 +1436,7 @@ static func _build_asset_sockets(cells: Array, cols: int, rows: int, rng: Random
 		"parked_vehicle": [],
 		"building": [],
 		"forest": [],
+		"sheep": [],
 		"static": [],
 		"air": [],
 		"plane": [],
@@ -1387,6 +1465,7 @@ static func _build_asset_sockets(cells: Array, cols: int, rows: int, rng: Random
 			_append_socket(sockets, "pedestrian", cell, -0.20, 0.18, "person")
 			_append_socket(sockets, "people", cell, -0.20, 0.18, "people")
 		elif terrain == "field" or terrain == "grassland":
+			_append_socket(sockets, "sheep", cell, -0.20, 0.18, "sheep")
 			if rng.randf() < 0.42:
 				_append_socket(sockets, "static", cell, 0.18, -0.22, "field_marker")
 	for x in range(1, cols - 1):

@@ -687,6 +687,15 @@ def test_rapid_tracking_godot_config_scales_world_with_difficulty() -> None:
     assert high["rapid_world"]["forest_patch_count"] > low["rapid_world"]["forest_patch_count"]
     assert high["rapid_world"]["occlusion_density"] > low["rapid_world"]["occlusion_density"]
     assert high["handoff_interval_s"] < low["handoff_interval_s"]
+    assert low["handoff_interval_s"] == pytest.approx(15.0)
+    assert high["handoff_interval_s"] == pytest.approx(8.2)
+    assert low["target_speed_scale"] == pytest.approx(0.52)
+    assert high["target_speed_scale"] > low["target_speed_scale"]
+    assert low["zoom_fov"] == pytest.approx(16.0)
+    assert low["target_zoom_time_scale"] == pytest.approx(0.42)
+    assert low["zoom_bonus_points"] == pytest.approx(1.0)
+    assert low["target_guide_mode"] == "offscreen_pip"
+    assert high["zoom_bonus_interval_s"] < low["zoom_bonus_interval_s"]
 
 
 def test_spatial_integration_godot_config_defaults_to_large_scene_questions() -> None:
@@ -697,11 +706,24 @@ def test_spatial_integration_godot_config_defaults_to_large_scene_questions() ->
 
     assert config["grid_cols"] == 24
     assert config["grid_rows"] == 24
+    assert config["answer_grid_cols"] == 3
+    assert config["answer_grid_rows"] == 3
+    assert config["question_time_limit_s"] == 0.0
     assert config["chunk_grid_cols"] == 24
     assert config["chunk_grid_rows"] == 24
     assert config["terrain_pipeline"] == "si_large_scene_v2"
     assert "scene_presence" in config["allowed_question_kinds"]
     assert "viewpoint_match" in config["allowed_question_kinds"]
+    assert "object_count" in config["allowed_question_kinds"]
+    assert "object_relation" in config["allowed_question_kinds"]
+    assert "aircraft_color_route_selection" in config["allowed_question_kinds"]
+    assert "aircraft_count" in config["allowed_question_kinds"]
+    assert "aircraft_presence" in config["allowed_question_kinds"]
+    assert "aircraft_order" in config["allowed_question_kinds"]
+    assert "landmark_grid" not in config["allowed_question_kinds"]
+    assert "object_kind_at_cell" not in config["allowed_question_kinds"]
+    assert "aircraft_location_grid" not in config["allowed_question_kinds"]
+    assert "aircraft_color_location_grid" not in config["allowed_question_kinds"]
 
     aircraft = spatial_integration_godot_config(
         test_code="si_moving_aircraft_multiview_integration",
@@ -709,6 +731,12 @@ def test_spatial_integration_godot_config_defaults_to_large_scene_questions() ->
     )
     assert "scene_presence" not in aircraft["allowed_question_kinds"]
     assert "viewpoint_match" not in aircraft["allowed_question_kinds"]
+    assert "aircraft_color_route_selection" in aircraft["allowed_question_kinds"]
+    assert "aircraft_count" in aircraft["allowed_question_kinds"]
+    assert "aircraft_presence" in aircraft["allowed_question_kinds"]
+    assert "aircraft_order" in aircraft["allowed_question_kinds"]
+    assert "aircraft_location_grid" not in aircraft["allowed_question_kinds"]
+    assert "aircraft_color_location_grid" not in aircraft["allowed_question_kinds"]
 
 
 def test_serializes_spatial_integration_godot_owned_start_spec_for_dedicated_runtime() -> None:
@@ -756,10 +784,12 @@ def test_serializes_spatial_integration_godot_owned_start_spec_for_dedicated_run
     assert start["config"]["allowed_question_kinds"] == ["aircraft_route_selection"]
     assert start["config"]["static_study_s"] == 12.0
     assert start["config"]["aircraft_study_s"] == 15.0
-    assert start["config"]["question_time_limit_s"] == 8.0
+    assert start["config"]["question_time_limit_s"] == 0.0
     assert start["config"]["chunked_generation"] is True
     assert start["config"]["grid_cols"] == 24
     assert start["config"]["grid_rows"] == 24
+    assert start["config"]["answer_grid_cols"] == 3
+    assert start["config"]["answer_grid_rows"] == 3
     assert start["config"]["chunk_grid_cols"] == 24
     assert start["config"]["chunk_grid_rows"] == 24
     assert start["config"]["chunk_pack"] == "rural_mixed_v1"
@@ -824,11 +854,13 @@ def test_godot_project_routes_spatial_integration_to_dedicated_runtime() -> None
     assert 'preload("res://scripts/spatial_integration_runtime.gd")' in main_source
     assert 'godot_owned_runtime.name = "SpatialIntegrationRuntime"' in main_source
     assert "func spatial_integration_runtime_marker()" in runtime_source
-    assert "landmark_grid" in runtime_source
+    assert "object_relation" in runtime_source
     assert "scene_reconstruction" in runtime_source
     assert "aircraft_route_selection" in runtime_source
     assert "aircraft_continuation_selection" in runtime_source
-    assert "aircraft_location_grid" in runtime_source
+    assert "aircraft_count" in runtime_source
+    assert "aircraft_presence" in runtime_source
+    assert "aircraft_order" in runtime_source
     assert "scene_hash" in runtime_source
     assert "route_hash" in runtime_source
     assert 'preload("res://scripts/chunk_map_generator.gd")' in runtime_source
@@ -839,6 +871,14 @@ def test_godot_project_routes_spatial_integration_to_dedicated_runtime() -> None
     assert "chunk_map_hash" in runtime_source
     assert "question_order_hash" in runtime_source
     assert "option_order_hash" in runtime_source
+    assert 'var show_scene := stage != "question"' in runtime_source
+    assert "NorthSceneMarker" in runtime_source
+    assert "_build_north_scene_marker" in runtime_source
+    assert "_update_north_marker" in runtime_source
+    assert 'north_marker_root.visible = active and stage != "question"' in runtime_source
+    assert "study_orientation_index" in runtime_source
+    assert "_study_camera_position" in runtime_source
+    assert "_record_answer(\"TIMEOUT\"" not in runtime_source
     assert "KEY_KP_PERIOD" in runtime_source
     assert "KEY_KP_ENTER" in runtime_source
     assert "godot_complete" in runtime_source

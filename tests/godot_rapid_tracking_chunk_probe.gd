@@ -28,6 +28,12 @@ func _init() -> void:
 	_expect(failures, int(first.get("edge_mountain_ring_width", 0)) >= 5, "expected a broad edge mountain ring at least five cells deep")
 	_expect(failures, int(first.get("mountain_cell_count", 0)) > 0, "expected mountain cells")
 	_expect(failures, int(first.get("hill_cell_count", 0)) > 0, "expected hill cells")
+	_expect(failures, _elevation_clusters_expose_metadata(first, "hill_clusters"), "expected hill cluster metadata")
+	_expect(failures, _elevation_clusters_expose_metadata(first, "mountain_clusters"), "expected mountain cluster metadata")
+	_expect(failures, _elevation_clusters_meet_target_footprints(first, "hill_clusters"), "expected hill clusters to meet target footprints")
+	_expect(failures, _elevation_clusters_meet_target_footprints(first, "mountain_clusters"), "expected mountain clusters to meet target footprints")
+	_expect(failures, _elevation_clusters_are_center_peaked(first, "hill_clusters"), "expected hill clusters to be center-peaked")
+	_expect(failures, _elevation_clusters_are_center_peaked(first, "mountain_clusters"), "expected mountain clusters to be center-peaked")
 	_expect(failures, _edge_ring_is_mountain(first), "expected all map edges to be mountains")
 	_expect(failures, int(first.get("water_feature_count", 0)) >= 2, "expected rivers or lakes")
 	_expect(failures, int(first.get("lake_cell_count", 0)) > 0, "expected lake cells")
@@ -115,6 +121,68 @@ func _edge_ring_is_mountain(chunk_map: Dictionary) -> bool:
 			continue
 		var terrain := str(cell.get("terrain", ""))
 		if terrain != "mountain":
+			return false
+	return true
+
+
+func _elevation_clusters_expose_metadata(chunk_map: Dictionary, key: String) -> bool:
+	var clusters: Array = chunk_map.get(key, [])
+	if clusters.is_empty():
+		return false
+	for item in clusters:
+		var cluster: Dictionary = item as Dictionary
+		if str(cluster.get("cluster_id", "")) == "":
+			return false
+		if int(cluster.get("cell_count", 0)) <= 0:
+			return false
+		if int(cluster.get("peak_tier", 0)) <= 0:
+			return false
+		if int(cluster.get("radius", 0)) <= 0:
+			return false
+		if int(cluster.get("footprint_cols", 0)) <= 0 or int(cluster.get("footprint_rows", 0)) <= 0:
+			return false
+		if int(cluster.get("target_footprint", 0)) < 4:
+			return false
+	return true
+
+
+func _elevation_clusters_meet_target_footprints(chunk_map: Dictionary, key: String) -> bool:
+	for item in chunk_map.get(key, []):
+		var cluster: Dictionary = item as Dictionary
+		var target := int(cluster.get("target_footprint", 4))
+		if int(cluster.get("footprint_cells", 0)) < target:
+			return false
+	return true
+
+
+func _elevation_clusters_are_center_peaked(chunk_map: Dictionary, key: String) -> bool:
+	var cols: int = int(chunk_map.get("cols", 0))
+	var cells: Array = chunk_map.get("cells", [])
+	for item in chunk_map.get(key, []):
+		var cluster: Dictionary = item as Dictionary
+		var cluster_id := str(cluster.get("cluster_id", ""))
+		var cx := int(cluster.get("x", -1))
+		var cy := int(cluster.get("y", -1))
+		var center_idx := cy * cols + cx
+		if center_idx < 0 or center_idx >= cells.size():
+			return false
+		var center: Dictionary = cells[center_idx] as Dictionary
+		if str(center.get("cluster_id", "")) != cluster_id:
+			return false
+		var center_tier := int(center.get("height_tier", 0))
+		if center_tier != int(cluster.get("peak_tier", 0)):
+			return false
+		var saw_lower_edge := false
+		for cell_item in cells:
+			var cell: Dictionary = cell_item as Dictionary
+			if str(cell.get("cluster_id", "")) != cluster_id:
+				continue
+			var tier := int(cell.get("height_tier", 0))
+			if tier > center_tier:
+				return false
+			if tier < center_tier:
+				saw_lower_edge = true
+		if int(cluster.get("cell_count", 0)) > 1 and not saw_lower_edge:
 			return false
 	return true
 

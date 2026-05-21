@@ -6,6 +6,7 @@
 - Current renderer direction: pygame app/control window plus optional Godot 4 companion window for Auditory Capacity, Rapid Tracking, Spatial Integration, Trace Test 1, and Trace Test 2.
 - Python remains source of truth for timing, scoring, input, persistence, and menus. Godot receives UDP JSON visual snapshots only.
 - Python-side OpenGL/ModernGL renderers and assets remain removed.
+- Spatial Integration Godot questions are fairness-constrained: no hidden object IDs, no grid-cell prompts, option cards only, scene hidden during questions, and reconstruction answers show four top-down map previews.
 
 ## How to run
 - Normal macOS launch:
@@ -31,6 +32,7 @@
 
 ## Next work areas
 - Fine-tune each Godot test presenter now that the simple bridge is in place.
+- Spatial Integration: add screenshot/video regression coverage for top-down map answer previews and aircraft motion-order questions.
 - Airborne Numerical: expand question types (fuel endurance, parcel effects) and align overlays/text with candidate guide.
 - UI robustness: add a reliable exit hotkey + windowed-safe default.
 - Add persistence for settings and session summaries.

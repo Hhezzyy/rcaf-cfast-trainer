@@ -23,7 +23,7 @@ class TargetRecognitionConfig:
 
 @dataclass(frozen=True, slots=True)
 class TargetRecognitionSceneEntity:
-    shape: str  # "truck" | "tank" | "building" | "beacon" | "unknown"
+    shape: str  # e.g. "truck", "tank", "building", "beacon", "unknown"
     affiliation: str  # "hostile" | "friendly" | "neutral"
     damaged: bool
     high_priority: bool
@@ -103,10 +103,51 @@ class TargetRecognitionScorer(AnswerScorer):
 class TargetRecognitionGenerator:
     """Deterministic mixed-panel target-recognition trial stream."""
 
-    _SCENE_SHAPES = ("truck", "tank", "building", "beacon", "unknown")
+    _BEACON_SHAPE = "beacon"
+    _BEACON_AFFILIATION = "neutral"
+    _SCENE_SHAPES = (
+        "truck",
+        "tank",
+        "building",
+        "beacon",
+        "unknown",
+        "antenna",
+        "bunker",
+        "convoy",
+    )
+    _SCENE_OBJECT_SHAPES = (
+        "truck",
+        "tank",
+        "building",
+        "unknown",
+        "antenna",
+        "bunker",
+        "convoy",
+    )
     _SCENE_AFFILIATIONS = ("hostile", "friendly", "neutral")
-    _SCAN_TOKENS = ("<>", "<|", "|>", "[]", "{}", "()", "/\\", "\\/", "==", "=~", "><", "||", "<>", "{|}")
-    _LIGHT_COLORS = ("G", "B", "Y", "R", "W")
+    _SCAN_TOKENS = (
+        "<#",
+        "<|",
+        "|>",
+        "[]",
+        "{}",
+        "()",
+        "/\\",
+        "\\/",
+        "==",
+        "=~",
+        "><",
+        "||",
+        "<>",
+        "{|}",
+        "A7",
+        "K9",
+        "M4",
+        "T6",
+        "V2",
+        "Z5",
+    )
+    _LIGHT_COLORS = ("G", "B", "Y", "R", "W", "A", "C")
     _ALNUM = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
     def __init__(self, *, seed: int) -> None:
@@ -226,15 +267,7 @@ class TargetRecognitionGenerator:
 
         entities: list[TargetRecognitionSceneEntity] = []
         for _ in range(count):
-            damaged, high_priority = self._roll_scene_modifiers(difficulty=difficulty)
-            entities.append(
-                TargetRecognitionSceneEntity(
-                    shape=str(self._rng.choice(self._SCENE_SHAPES)),
-                    affiliation=str(self._rng.choice(self._SCENE_AFFILIATIONS)),
-                    damaged=damaged,
-                    high_priority=high_priority,
-                )
-            )
+            entities.append(self._random_scene_entity(difficulty=difficulty))
         entities_tuple = tuple(entities)
         if has_target:
             criteria = self._pick_present_scene_criteria(
@@ -250,6 +283,30 @@ class TargetRecognitionGenerator:
         )
         cells = tuple(self._scene_entity_code(e) for e in entities)
         return entities_tuple, criteria, target_options, cells
+
+    @classmethod
+    def _beacon_entity(cls) -> TargetRecognitionSceneEntity:
+        return TargetRecognitionSceneEntity(
+            cls._BEACON_SHAPE,
+            cls._BEACON_AFFILIATION,
+            False,
+            False,
+        )
+
+    @staticmethod
+    def _beacon_probability(difficulty: float) -> float:
+        return 0.002 + (clamp01(difficulty) * 0.004)
+
+    def _random_scene_entity(self, *, difficulty: float) -> TargetRecognitionSceneEntity:
+        if self._rng.random() < self._beacon_probability(difficulty):
+            return self._beacon_entity()
+        damaged, high_priority = self._roll_scene_modifiers(difficulty=difficulty)
+        return TargetRecognitionSceneEntity(
+            shape=str(self._rng.choice(self._SCENE_OBJECT_SHAPES)),
+            affiliation=str(self._rng.choice(self._SCENE_AFFILIATIONS)),
+            damaged=damaged,
+            high_priority=high_priority,
+        )
 
     def _roll_scene_modifiers(self, *, difficulty: float) -> tuple[bool, bool]:
         damaged_prob = 0.16 + (difficulty * 0.14)
@@ -277,6 +334,9 @@ class TargetRecognitionGenerator:
                 require_damaged=None,
                 require_high_priority=None,
             )
+        beacon = [c for c in present if c.shape == self._BEACON_SHAPE]
+        if beacon and self._rng.random() < (0.82 + (difficulty * 0.14)):
+            return beacon[int(self._rng.randint(0, len(beacon) - 1))]
         weighted = [
             c for c in present if c.require_damaged is True or c.require_high_priority is True
         ]
@@ -336,12 +396,7 @@ class TargetRecognitionGenerator:
     ) -> tuple[TargetRecognitionSceneCriteria, ...]:
         dedup: dict[tuple[str, str, bool | None, bool | None], TargetRecognitionSceneCriteria] = {}
         for entity in entities:
-            candidate = TargetRecognitionSceneCriteria(
-                shape=entity.shape,
-                affiliation=entity.affiliation,
-                require_damaged=True if entity.damaged else None,
-                require_high_priority=True if entity.high_priority else None,
-            )
+            candidate = self._scene_criteria_for_entity(entity)
             key = (
                 candidate.shape,
                 candidate.affiliation,
@@ -363,7 +418,7 @@ class TargetRecognitionGenerator:
         entities: tuple[TargetRecognitionSceneEntity, ...],
     ) -> tuple[TargetRecognitionSceneCriteria, ...]:
         candidates: list[TargetRecognitionSceneCriteria] = []
-        for shape in self._SCENE_SHAPES:
+        for shape in self._SCENE_OBJECT_SHAPES:
             for affiliation in self._SCENE_AFFILIATIONS:
                 for req_d in (None, True):
                     for req_h in (None, True):
@@ -375,6 +430,15 @@ class TargetRecognitionGenerator:
                                 require_high_priority=req_h,
                             )
                         )
+        if not any(entity.shape == self._BEACON_SHAPE for entity in entities):
+            candidates.append(
+                TargetRecognitionSceneCriteria(
+                    shape=self._BEACON_SHAPE,
+                    affiliation=self._BEACON_AFFILIATION,
+                    require_damaged=None,
+                    require_high_priority=None,
+                )
+            )
         absent = [c for c in candidates if not any(self._scene_matches(e, c) for e in entities)]
         # Deterministic shuffle of the candidate pool.
         for i in range(len(absent) - 1, 0, -1):
@@ -382,10 +446,36 @@ class TargetRecognitionGenerator:
             absent[i], absent[j] = absent[j], absent[i]
         return tuple(absent)
 
+    @classmethod
+    def _scene_criteria_for_entity(
+        cls, entity: TargetRecognitionSceneEntity
+    ) -> TargetRecognitionSceneCriteria:
+        if entity.shape == cls._BEACON_SHAPE:
+            return TargetRecognitionSceneCriteria(
+                shape=cls._BEACON_SHAPE,
+                affiliation=cls._BEACON_AFFILIATION,
+                require_damaged=None,
+                require_high_priority=None,
+            )
+        return TargetRecognitionSceneCriteria(
+            shape=entity.shape,
+            affiliation=entity.affiliation,
+            require_damaged=True if entity.damaged else None,
+            require_high_priority=True if entity.high_priority else None,
+        )
+
     @staticmethod
     def _scene_matches(
         entity: TargetRecognitionSceneEntity, criteria: TargetRecognitionSceneCriteria
     ) -> bool:
+        if criteria.shape == TargetRecognitionGenerator._BEACON_SHAPE:
+            return (
+                entity.shape == TargetRecognitionGenerator._BEACON_SHAPE
+                and criteria.require_damaged is None
+                and criteria.require_high_priority is None
+            )
+        if entity.shape == TargetRecognitionGenerator._BEACON_SHAPE:
+            return False
         if entity.shape != criteria.shape:
             return False
         if entity.affiliation != criteria.affiliation:
@@ -402,12 +492,17 @@ class TargetRecognitionGenerator:
 
     @staticmethod
     def _scene_entity_code(entity: TargetRecognitionSceneEntity) -> str:
+        if entity.shape == TargetRecognitionGenerator._BEACON_SHAPE:
+            return "BCN"
         shape_code = {
             "truck": "TRK",
             "tank": "TNK",
             "building": "BLD",
             "beacon": "BCN",
             "unknown": "UNK",
+            "antenna": "ANT",
+            "bunker": "BNK",
+            "convoy": "CNV",
         }.get(entity.shape, "UNK")
         side_code = {
             "hostile": "H",
@@ -419,6 +514,8 @@ class TargetRecognitionGenerator:
 
     @staticmethod
     def _scene_criteria_label(criteria: TargetRecognitionSceneCriteria) -> str:
+        if criteria.shape == TargetRecognitionGenerator._BEACON_SHAPE:
+            return "Beacon"
         words: list[str] = []
         if criteria.require_damaged is True:
             words.append("Damaged")

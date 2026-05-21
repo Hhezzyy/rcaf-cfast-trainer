@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import StrEnum
 
+from .adaptive_difficulty import difficulty_level_for_ratio
 from .clock import Clock
 from .cognitive_core import (
     AnswerScorer,
@@ -40,7 +41,7 @@ _VISUAL_SEARCH_VARIANT_MARKS: tuple[str, ...] = (
 
 
 def _difficulty_to_level(difficulty: float) -> int:
-    return max(1, min(10, int(round(clamp01(difficulty) * 9.0)) + 1))
+    return difficulty_level_for_ratio("visual_search", clamp01(difficulty))
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,7 +119,28 @@ class VisualSearchScorer(AnswerScorer):
 class VisualSearchGenerator:
     """Deterministic generator for mixed visual search trials."""
 
-    _ALPHANUMERIC_TOKENS = ("A", "B", "E", "F", "G", "H", "K", "L", "M", "P", "R", "S")
+    _ALPHANUMERIC_TOKENS = (
+        "A",
+        "B",
+        "D",
+        "E",
+        "F",
+        "G",
+        "H",
+        "K",
+        "L",
+        "M",
+        "N",
+        "P",
+        "R",
+        "S",
+        "T",
+        "V",
+        "W",
+        "X",
+        "Y",
+        "Z",
+    )
     _SYMBOL_TOKENS = (
         "X_MARK",
         "DOUBLE_CROSS",
@@ -132,19 +154,62 @@ class VisualSearchGenerator:
         "PIN",
         "BOLT",
         "FORK",
+        "CHEVRON",
+        "DIAMOND",
+        "BARB",
+        "HASH",
+        "WEDGE",
+        "ANCHOR",
     )
-    _WARNING_TOKENS = ("FUEL", "OXY", "HYD", "ELEC", "ICE", "ENG", "FIRE", "WARN", "RAD", "NAV")
-    _COLOR_PATTERN_TOKENS = ("RG", "GR", "RB", "BR", "GY", "YG", "BY", "YB", "RW", "WR", "BW", "WB")
+    _WARNING_TOKENS = (
+        "FUEL",
+        "OXY",
+        "HYD",
+        "ELEC",
+        "ICE",
+        "ENG",
+        "FIRE",
+        "WARN",
+        "RAD",
+        "NAV",
+        "CABIN",
+        "TEMP",
+        "ALT",
+        "PRES",
+        "COMM",
+        "DOOR",
+    )
+    _COLOR_PATTERN_TOKENS = (
+        "RG",
+        "GR",
+        "RB",
+        "BR",
+        "GY",
+        "YG",
+        "BY",
+        "YB",
+        "RW",
+        "WR",
+        "BW",
+        "WB",
+        "RY",
+        "YR",
+        "GW",
+        "WG",
+        "GB",
+        "BG",
+    )
     _LETTER_CONFUSABLE_CLUSTERS = (
         ("E", "F", "H", "K", "L"),
-        ("A", "M", "R"),
+        ("A", "M", "N", "R", "W"),
         ("B", "G", "P", "R", "S"),
+        ("T", "V", "Y", "X", "Z"),
     )
     _SYMBOL_CONFUSABLE_CLUSTERS = (
-        ("X_MARK", "DOUBLE_CROSS", "STAR", "BOLT"),
-        ("L_HOOK", "PIN", "FORK"),
-        ("BOX", "TRIANGLE", "RING_SPOKE"),
-        ("S_BEND", "LOLLIPOP"),
+        ("X_MARK", "DOUBLE_CROSS", "STAR", "BOLT", "HASH"),
+        ("L_HOOK", "PIN", "FORK", "ANCHOR"),
+        ("BOX", "TRIANGLE", "RING_SPOKE", "DIAMOND"),
+        ("S_BEND", "LOLLIPOP", "CHEVRON", "BARB", "WEDGE"),
     )
     _ALPHANUMERIC_STRING_BY_LEVEL = {
         9: 3,

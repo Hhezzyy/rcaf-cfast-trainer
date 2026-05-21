@@ -2,7 +2,7 @@ extends Node3D
 
 const COLORS := ["RED", "BLUE", "YELLOW"]
 const SHAPES := ["CIRCLE", "TRIANGLE", "SQUARE"]
-const CALLSIGNS := ["EAGLE", "RAVEN", "FALCON", "VIPER", "COBRA", "TALON", "MOOSE", "LANCER", "SABER", "NOVA"]
+const CALLSIGNS := ["EAGLE", "RAVEN", "FALCON", "VIPER", "COBRA", "TALON", "MOOSE", "LANCER", "SABER", "NOVA", "ORION", "ATLAS", "ARROW", "COMET", "NOMAD", "SUMMIT", "VECTOR", "RANGER", "HUNTER", "PHOENIX"]
 const FILLER_NARRATION_LINES := [
 	"The weather office notes soft haze over the western valley.",
 	"Maintenance crews are sorting blank forms near the depot.",

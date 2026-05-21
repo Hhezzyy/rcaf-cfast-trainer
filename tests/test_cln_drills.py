@@ -60,6 +60,36 @@ def test_sequence_copy_keeps_sequence_visible_and_accepts_typed_memory_input() -
     assert payload.show_text_entry is True
 
 
+def test_cln_memory_drills_scale_sequence_lengths_from_three_to_eight() -> None:
+    memory_builders = (
+        build_cln_sequence_copy_drill,
+        build_cln_sequence_match_drill,
+        build_cln_sequence_math_recall_drill,
+        build_cln_memory_math_drill,
+        build_cln_memory_colour_drill,
+        build_cln_full_pressure_drill,
+        build_cln_overdrive_blue_return_drill,
+        build_cln_overdrive_six_choice_memory_drill,
+        build_cln_overdrive_dual_math_drill,
+    )
+
+    for builder in memory_builders:
+        for difficulty, expected_length in ((0.0, 3), (1.0, 8)):
+            clock = FakeClock()
+            engine = builder(
+                clock=clock,
+                seed=6100,
+                difficulty=difficulty,
+                config=ClnDrillConfig(practice_rounds=0, scored_duration_s=30.0),
+            )
+            engine.start_scored()
+            payload = cast(ColoursLettersNumbersTrainingPayload, engine.snapshot().payload)
+
+            assert payload.target_sequence is not None, builder.__name__
+            assert len(payload.target_sequence) == expected_length, builder.__name__
+            assert payload.memory_input_max_length in {0, 8}, builder.__name__
+
+
 def test_sequence_match_activates_choice_grid_after_delay() -> None:
     clock = FakeClock()
     engine = build_cln_sequence_match_drill(clock=clock, seed=23, difficulty=0.6)

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import importlib
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import pygame
 import pytest
@@ -14,9 +15,12 @@ from cfast_trainer.ant_workouts import (
     AntWorkoutPlan,
     AntWorkoutSession,
     AntWorkoutStage,
+    ant_workout_menu_entries,
     build_ant_workout_plan,
     build_workout_block_engine,
 )
+from cfast_trainer.activity_runtime_catalog import GODOT_ACTIVITY_RUNTIME_SOURCE
+from cfast_trainer.canonical_drill_registry import resolved_canonical_drill_code
 from cfast_trainer.cognitive_core import Phase
 from cfast_trainer.godot_owned import GodotOwnedPayload
 from cfast_trainer.persistence import ResultsStore
@@ -242,6 +246,70 @@ def test_real_airborne_numerical_workout_matches_standard_90_minute_structure() 
     }.issubset(set(plan.focus_skills))
 
 
+def _all_workout_plans() -> list[AntWorkoutPlan]:
+    no_arg_builders = (
+        ("cfast_trainer.abd_workouts", "build_abd_workout_plan"),
+        ("cfast_trainer.ac_workouts", "build_ac_workout_plan"),
+        ("cfast_trainer.cln_workouts", "build_cln_workout_plan"),
+        ("cfast_trainer.cu_workouts", "build_cu_workout_plan"),
+        ("cfast_trainer.dr_workouts", "build_dr_workout_plan"),
+        ("cfast_trainer.ic_workouts", "build_ic_workout_plan"),
+        ("cfast_trainer.mr_workouts", "build_mr_workout_plan"),
+        ("cfast_trainer.no_workouts", "build_no_workout_plan"),
+        ("cfast_trainer.rt_workouts", "build_rt_workout_plan"),
+        ("cfast_trainer.sa_workouts", "build_sa_workout_plan"),
+        ("cfast_trainer.si_workouts", "build_si_workout_plan"),
+        ("cfast_trainer.sl_workouts", "build_sl_workout_plan"),
+        ("cfast_trainer.sma_workouts", "build_sma_workout_plan"),
+        ("cfast_trainer.tbl_workouts", "build_tbl_workout_plan"),
+        ("cfast_trainer.tr_workouts", "build_tr_workout_plan"),
+        ("cfast_trainer.trace_workouts", "build_trace_test_1_workout_plan"),
+        ("cfast_trainer.trace_workouts", "build_trace_test_2_workout_plan"),
+        ("cfast_trainer.vig_workouts", "build_vig_workout_plan"),
+        ("cfast_trainer.vs_workouts", "build_vs_workout_plan"),
+    )
+    plans = [
+        build_ant_workout_plan(code, duration_scale=0.05)
+        for code, _label in ant_workout_menu_entries()
+    ]
+    for module_name, builder_name in no_arg_builders:
+        builder = getattr(importlib.import_module(module_name), builder_name)
+        plans.append(builder(duration_scale=0.05))
+    return plans
+
+
+def test_every_workout_block_resolves_builds_and_carries_runtime_labels() -> None:
+    clock = FakeClock()
+    checked: set[str] = set()
+    for plan in _all_workout_plans():
+        assert plan.blocks, plan.code
+        for index, block in enumerate(plan.blocks):
+            canonical_code = resolved_canonical_drill_code(block.drill_code) or block.drill_code
+            checked.add(str(block.drill_code))
+            assert canonical_code
+            smoke_block = replace(block, duration_min=0.05)
+            engine = build_workout_block_engine(
+                clock=clock,
+                block_seed=10_000 + index,
+                difficulty_level=5,
+                block=smoke_block,
+                block_index=index,
+            )
+            snapshot = engine.snapshot()
+            overrides = getattr(engine, "_result_metrics_overrides", {})
+            assert snapshot.title
+            assert getattr(engine, "_difficulty_code") == block.drill_code
+            assert getattr(engine, "_resolved_difficulty_context").code_scope_key == canonical_code
+            assert overrides["runtime_source"]
+            assert overrides["canonical_drill_code"] == canonical_code
+            assert overrides["source_test_family"]
+
+    assert "rt_obscured_target_prediction" in checked
+    assert "ac_gate_anchor" in checked
+    assert "si_static_multiview_integration" in checked
+    assert "trace_orientation_decode" in checked
+
+
 @pytest.mark.parametrize(
     ("drill_code", "expected_title_prefix"),
     (
@@ -409,6 +477,7 @@ def test_rapid_tracking_workout_drills_emit_godot_owned_payloads() -> None:
     assert payload.spec.mode == AntDrillMode.BUILD.value
     assert payload.spec.config["workout"] is True
     assert payload.spec.config["drill"] is True
+    assert getattr(engine, "_result_metrics_overrides")["runtime_source"] == GODOT_ACTIVITY_RUNTIME_SOURCE
 
 
 def test_workout_dev_skip_hotkeys_advance_shell_skip_block_and_finish(

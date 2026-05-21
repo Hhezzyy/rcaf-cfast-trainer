@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .adaptive_difficulty import difficulty_level_for_ratio
 from .ant_drills import ANT_DRILL_MODE_PROFILES, AntDrillAttemptSummary, AntDrillMode
 from .clock import Clock
 from .cognitive_core import AttemptSummary, Phase, QuestionEvent, TestSnapshot, clamp01
@@ -31,7 +32,7 @@ def _normalize_mode(mode: AntDrillMode | str) -> AntDrillMode:
 
 
 def _difficulty_to_level(difficulty: float) -> int:
-    return max(1, min(10, int(round(clamp01(difficulty) * 9.0)) + 1))
+    return difficulty_level_for_ratio("trace_test_1", clamp01(difficulty))
 
 
 def _summary_from_attempts(

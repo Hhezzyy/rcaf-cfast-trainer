@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 
 import pytest
 
 from cfast_trainer.ant_drills import ANT_DRILL_MODE_PROFILES, AntDrillMode
 from cfast_trainer.ma_drills import (
     MaDrillConfig,
+    MaOneStepFluencyGenerator,
     MaProblemPayload,
     build_ma_fuel_endurance_drill,
     build_ma_mixed_conversion_caps_drill,
@@ -155,6 +157,61 @@ def test_ma_mixed_conversion_caps_use_payload_caps_and_keep_typed_hint() -> None
 
 def _difficulty_for_level(level: int) -> float:
     return float(level - 1) / 9.0
+
+
+def _prompt_numbers(prompt: str) -> list[int]:
+    return [int(match) for match in re.findall(r"\d+", prompt)]
+
+
+def _is_easy_high_level_operand(value: int) -> bool:
+    value = abs(int(value))
+    return value in {0, 1, 2, 5, 10, 100} or value % 5 == 0 or value % 10 == 0 or value % 100 == 0
+
+
+def test_ma_one_step_level_10_uses_hard_arithmetic_shapes() -> None:
+    gen = MaOneStepFluencyGenerator(seed=6262)
+    seen_variants: set[str] = set()
+
+    for _ in range(120):
+        problem = gen.next_problem(difficulty=1.0)
+        payload = problem.payload
+        assert isinstance(payload, MaProblemPayload)
+        seen_variants.add(payload.variant)
+
+        if payload.variant == "addition":
+            left, right = _prompt_numbers(problem.prompt)[:2]
+            assert 10_000 <= left <= 99_999
+            assert 10_000 <= right <= 99_999
+            assert not _is_easy_high_level_operand(left)
+            assert not _is_easy_high_level_operand(right)
+            assert problem.answer == left + right
+        elif payload.variant == "subtraction":
+            left, right = _prompt_numbers(problem.prompt)[:2]
+            assert 10_000 <= left <= 99_999
+            assert 10_000 <= right <= 99_999
+            assert left > right
+            assert not _is_easy_high_level_operand(left)
+            assert not _is_easy_high_level_operand(right)
+            assert problem.answer == left - right
+        elif payload.variant == "multiplication":
+            left, right = _prompt_numbers(problem.prompt)[:2]
+            assert 100 <= left <= 999
+            assert 11 <= right <= 99
+            assert not _is_easy_high_level_operand(left)
+            assert not _is_easy_high_level_operand(right)
+            assert right % 2 == 1
+            assert problem.answer == left * right
+        elif payload.variant == "division":
+            dividend, divisor = _prompt_numbers(problem.prompt)[:2]
+            quotient = int(problem.answer)
+            assert 11 <= divisor <= 99
+            assert 100 <= quotient <= 999
+            assert not _is_easy_high_level_operand(divisor)
+            assert divisor % 2 == 1
+            assert not _is_easy_high_level_operand(quotient)
+            assert dividend == divisor * quotient
+
+    assert seen_variants == {"addition", "subtraction", "multiplication", "division"}
 
 
 def test_written_numerical_extraction_l2_l5_l8_scale_materially() -> None:

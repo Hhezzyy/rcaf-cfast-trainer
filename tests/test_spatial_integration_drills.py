@@ -92,6 +92,8 @@ def _answer_current(payload: SpatialIntegrationPayload) -> str:
             (
                 SpatialIntegrationQuestionKind.LANDMARK_GRID,
                 SpatialIntegrationQuestionKind.SCENE_RECONSTRUCTION,
+                SpatialIntegrationQuestionKind.OBJECT_COUNT,
+                SpatialIntegrationQuestionKind.OBJECT_KIND_AT_CELL,
             ),
         ),
         (
@@ -111,6 +113,8 @@ def _answer_current(payload: SpatialIntegrationPayload) -> str:
                 SpatialIntegrationQuestionKind.AIRCRAFT_ROUTE_SELECTION,
                 SpatialIntegrationQuestionKind.AIRCRAFT_CONTINUATION_SELECTION,
                 SpatialIntegrationQuestionKind.AIRCRAFT_LOCATION_GRID,
+                SpatialIntegrationQuestionKind.AIRCRAFT_COLOR_LOCATION_GRID,
+                SpatialIntegrationQuestionKind.AIRCRAFT_COLOR_ROUTE_SELECTION,
             ),
         ),
         (

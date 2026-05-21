@@ -756,8 +756,8 @@ def test_attitude_dial_semantics_match_signed_pitch_and_bank() -> None:
         assert left_bank_right is not None
 
         assert climb_average > descent_average
-        assert right_bank_right < right_bank_left
-        assert left_bank_right > left_bank_left
+        assert right_bank_right > right_bank_left
+        assert left_bank_right < left_bank_left
     finally:
         pygame.quit()
 

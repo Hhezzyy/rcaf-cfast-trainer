@@ -806,12 +806,13 @@ def difficulty_ratio_for_level(test_code: str | None, level: int, mode: object |
 def difficulty_level_for_ratio(test_code: str | None, value: float) -> int:
     ratio = clamp_ratio(value)
     spec = ladder_spec_for_code(test_code)
-    distances = [
-        (abs(ratio - float(level_ratio)), index + 1)
-        for index, level_ratio in enumerate(spec.level_ratios or _DEFAULT_LEVEL_RATIOS)
-    ]
-    distances.sort(key=lambda item: (item[0], item[1]))
-    return clamp_level(distances[0][1])
+    for index, level_ratio in enumerate(spec.level_ratios or _DEFAULT_LEVEL_RATIOS):
+        if abs(ratio - float(level_ratio)) <= 1e-9:
+            return clamp_level(index + 1)
+    # Raw generator/drill tests and legacy callers may still pass a continuous
+    # 0..1 ratio. Keep that path linear while exact ladder ratios replay to the
+    # intended level.
+    return level_from_ratio(ratio)
 
 
 def build_resolved_difficulty_context(

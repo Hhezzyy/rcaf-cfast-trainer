@@ -12,6 +12,7 @@ import pygame
 import pytest
 
 from cfast_trainer.adaptive_difficulty import difficulty_ratio_for_level
+from cfast_trainer.activity_runtime_catalog import OFFICIAL_TEST_RUNTIME_SOURCE
 from cfast_trainer.app import (
     INTRO_LOADING_MIN_FRAMES,
     App,
@@ -474,6 +475,20 @@ def test_build_benchmark_plan_is_randomized_and_totals_1665_seconds() -> None:
     assert plan.scored_duration_s == pytest.approx(1665.0)
 
 
+def test_build_benchmark_plan_replays_probe_seeds_from_manual_run_seed() -> None:
+    first = build_benchmark_plan(clock=_FakeClock(), seed=2468)
+    second = build_benchmark_plan(clock=_FakeClock(), seed=2468)
+    other = build_benchmark_plan(clock=_FakeClock(), seed=2469)
+
+    assert first.run_seed == 2468
+    assert tuple(probe.seed for probe in first.probes) == tuple(
+        probe.seed for probe in second.probes
+    )
+    assert tuple(probe.seed for probe in first.probes) != tuple(
+        probe.seed for probe in other.probes
+    )
+
+
 def test_auditory_benchmark_probe_uses_godot_standard_config() -> None:
     engine = _build_benchmark_probe_engine(
         clock=_FakeClock(),
@@ -495,6 +510,8 @@ def test_auditory_benchmark_probe_uses_godot_standard_config() -> None:
     assert config["review_mode_enabled"] is False
     assert config["ambient_volume_db"] == pytest.approx(-14.0)
     assert config["filler_narrator_interval_s"] == pytest.approx(13.0)
+    assert engine._result_metrics_overrides["runtime_source"] == OFFICIAL_TEST_RUNTIME_SOURCE
+    assert engine._result_metrics_overrides["runtime_context"] == "benchmark_probe"
 
 
 def test_rapid_tracking_benchmark_probe_uses_godot_world_config() -> None:
@@ -517,6 +534,8 @@ def test_rapid_tracking_benchmark_probe_uses_godot_world_config() -> None:
     assert config["rapid_world"]["vehicle_count"] >= 6
     assert config["rapid_world"]["pedestrian_count"] >= 4
     assert config["rapid_world"]["tunnel_count"] >= 1
+    assert engine._result_metrics_overrides["runtime_source"] == OFFICIAL_TEST_RUNTIME_SOURCE
+    assert engine._result_metrics_overrides["runtime_context"] == "benchmark_probe"
 
 
 def test_spatial_integration_benchmark_probe_uses_godot_standard_config() -> None:
@@ -537,6 +556,8 @@ def test_spatial_integration_benchmark_probe_uses_godot_standard_config() -> Non
     assert config["parts"] == ["static", "aircraft"]
     assert config["allowed_question_kinds"]
     assert config["duration_s"] == pytest.approx(90.0)
+    assert engine._result_metrics_overrides["runtime_source"] == OFFICIAL_TEST_RUNTIME_SOURCE
+    assert engine._result_metrics_overrides["runtime_context"] == "benchmark_probe"
 
 
 @pytest.mark.parametrize("probe_code", ("trace_test_1", "trace_test_2"))
@@ -563,6 +584,8 @@ def test_trace_benchmark_probes_use_godot_trace_tuning(probe_code: str) -> None:
     assert config["trace_panel_visual_scale"] == pytest.approx(2.0)
     assert config["trace1_response_window_s"] > 1.0
     assert config["trace2_observe_s"] > 2.0
+    assert engine._result_metrics_overrides["runtime_source"] == OFFICIAL_TEST_RUNTIME_SOURCE
+    assert engine._result_metrics_overrides["runtime_context"] == "benchmark_probe"
     assert config["trace2_clip_min_s"] >= 3.2
 
 

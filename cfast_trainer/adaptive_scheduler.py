@@ -7,6 +7,10 @@ from datetime import UTC, datetime
 from enum import Enum
 from typing import cast
 
+from .activity_runtime_catalog import (
+    GODOT_ACTIVITY_RUNTIME_SOURCE,
+    build_godot_owned_activity_runtime,
+)
 from .adaptive_difficulty import (
     LaunchDifficultyMode,
     ResolvedDifficultyContext,
@@ -25,12 +29,7 @@ from .clock import Clock
 from .cognitive_core import Phase, TestSnapshot
 from .godot_owned import (
     GODOT_OWNED_KINDS,
-    auditory_capacity_godot_config,
-    build_godot_owned_test,
     godot_kind_for_test_code,
-    rapid_tracking_godot_config,
-    spatial_integration_godot_config,
-    trace_test_godot_config,
 )
 from .guide_skill_catalog import guide_ranking_primitive_id_for_code, guide_subskill_ids_for_code
 from .persistence import AttemptHistoryEntry
@@ -57,9 +56,10 @@ from .training_modes import split_half_note_fragment, supports_training_mode
 
 _SCHEDULER_VERSION = 3
 _LIVE_BLOCK_DURATION_S = 150.0
+_LIVE_BLOCK_DURATION_CHOICES_S = (120.0, 150.0, 180.0)
 _FATIGUE_DRILL_ELIGIBILITY_S = 60.0 * 60.0
-_TOP_PICK_POOL_SIZE = 5
-_TOP_PICK_RANK_WEIGHTS = (5.0, 4.0, 3.0, 2.0, 1.0)
+_TOP_PICK_POOL_SIZE = 7
+_TOP_PICK_RANK_WEIGHTS = (4.0, 3.35, 2.75, 2.20, 1.70, 1.25, 0.90)
 _SOURCE_MULTIPLIERS = {
     "direct": 1.25,
     "integrated_test": 1.0,
@@ -1037,6 +1037,38 @@ def _seed_tiebreak(token: str, *, seed: int) -> float:
     return float((acc % 1000) / 1_000_000.0)
 
 
+def _stable_seed(seed: int, salt: str) -> int:
+    acc = (int(seed) & 0xFFFFFFFF) ^ 0x9E3779B9
+    for index, ch in enumerate(str(salt)):
+        acc = ((acc * 1664525) + ((index + 1) * ord(ch)) + 1013904223) & 0xFFFFFFFF
+    return int(acc)
+
+
+def _seeded_rng(seed: int, salt: str) -> random.Random:
+    return random.Random(_stable_seed(seed, salt))
+
+
+def _weighted_choice_index(
+    weights: list[float],
+    *,
+    seed: int,
+    salt: str,
+) -> int:
+    if not weights:
+        return 0
+    clean = [max(0.0, float(weight)) for weight in weights]
+    total = sum(clean)
+    if total <= 0.0:
+        return 0
+    threshold = _seeded_rng(seed, salt).random() * total
+    running = 0.0
+    for index, weight in enumerate(clean):
+        running += weight
+        if threshold <= running:
+            return index
+    return len(clean) - 1
+
+
 def _candidate_for_drill_code(drill_code: str | None) -> AdaptiveDrillCandidate | None:
     token = str(drill_code or "").strip().lower()
     if token == "":
@@ -1050,6 +1082,31 @@ def _candidate_for_drill_code(drill_code: str | None) -> AdaptiveDrillCandidate 
         if candidate.drill_code == token or candidate_code == resolved:
             return candidate
     return None
+
+
+def _canonical_drill_code_for_metrics(drill_code: str | None) -> str:
+    token = str(drill_code or "").strip().lower()
+    return resolved_canonical_drill_code(token, for_adaptive=True) or token
+
+
+def _source_test_family_for_drill_code(drill_code: str | None) -> str:
+    token = _canonical_drill_code_for_metrics(drill_code)
+    godot_kind = godot_kind_for_test_code(token)
+    if godot_kind in GODOT_OWNED_KINDS:
+        return str(godot_kind)
+    spec = canonical_drill_spec(token)
+    if spec is None:
+        return token
+    if spec.guide_test_links:
+        return str(spec.guide_test_links[0])
+    return str(spec.difficulty_family_id)
+
+
+def _runtime_source_for_block(block: AdaptiveSessionBlock) -> str:
+    godot_kind = godot_kind_for_test_code(block.drill_code)
+    if godot_kind in GODOT_OWNED_KINDS:
+        return GODOT_ACTIVITY_RUNTIME_SOURCE
+    return "canonical_drill_runtime"
 
 
 def _adaptive_metric_block_numbers(metrics: dict[str, str]) -> list[str]:
@@ -1827,9 +1884,9 @@ def build_adaptive_session_plan(
     variant: str = "full",
     active_elapsed_s: float = 0.0,
 ) -> AdaptiveSessionPlan | None:
-    _ = (fixed_mode, variant)
     authoritative_history = _authoritative_history(history)
     now_token = now_utc or _utc_now_iso()
+    _ = (fixed_mode, variant)
     ranking = rank_adaptive_primitives(authoritative_history, now_utc=now_token, seed=seed)
     legacy_ranking = rank_primitives(
         authoritative_history,
@@ -1869,7 +1926,8 @@ def build_adaptive_session_plan(
     note_lines = [
         "Open-ended adaptive session. Each Enter continues to the next weakest eligible drill.",
         "Selection uses the latest 5 completed attempts per drill, test, or probe code.",
-        "Unmeasured skills get an exploration bonus, but the session will not repeat the same primitive twice in a row when alternatives exist.",
+        "Seeded variation widens the candidate pool across primitive, drill, target area, supported mode, level, and duration while preserving major weaknesses.",
+        "Unmeasured skills get an exploration bonus, but recent primitive, drill, target-area, and domain repeats are avoided when alternatives exist.",
     ]
     for item in ranked_with_pool[:3]:
         tags = ", ".join(item.reason_tags)
@@ -1957,15 +2015,32 @@ def _select_weighted_adaptive_target(
         )
         weights.append(max(0.01, float(item.priority)) * float(rank_weight) * variety_multiplier)
     total_weight = sum(weights)
-    rng = random.Random(int(seed))
-    threshold = rng.random() * total_weight
-    running = 0.0
-    selected = pool[-1]
-    for item, weight in zip(pool, weights, strict=False):
-        running += weight
-        if threshold <= running:
-            selected = item
-            break
+    if dominant_id:
+        selected = pool[0]
+    elif len(pool) > 1:
+        ordered_weights = sorted(
+            zip(pool, weights, strict=False),
+            key=lambda item: (item[1], item[0].priority, item[0].primitive_id),
+            reverse=True,
+        )
+        if ordered_weights[0][1] >= ordered_weights[1][1] * 1.25:
+            selected = ordered_weights[0][0]
+        else:
+            selected = pool[
+                _weighted_choice_index(
+                    weights,
+                    seed=seed,
+                    salt=f"adaptive_target:{last_selected_primitive_id}:{active_elapsed_s:.3f}",
+                )
+            ]
+    else:
+        selected = pool[
+            _weighted_choice_index(
+                weights,
+                seed=seed,
+                salt=f"adaptive_target:{last_selected_primitive_id}:{active_elapsed_s:.3f}",
+            )
+        ]
     weight_by_primitive = {
         item.primitive_id: (0.0 if total_weight <= 0.0 else weight / total_weight)
         for item, weight in zip(pool, weights, strict=False)
@@ -2138,12 +2213,28 @@ def _pick_drill_candidate(
         score += _seed_tiebreak(candidate.drill_code, seed=seed)
         scored.append((score, candidate.drill_code, candidate))
     scored.sort(key=lambda value: (value[0], value[1]), reverse=True)
-    best = scored[0][2]
-    if previous_code != "" and best.drill_code == previous_code:
-        alternatives = [value[2] for value in scored if value[2].drill_code != previous_code]
+    if previous_code != "":
+        alternatives = [value for value in scored if value[2].drill_code != previous_code]
         if alternatives:
-            return alternatives[0]
-    return best
+            scored = alternatives
+    recent_target_repeats = recent_target_counts.get(target_area, 0)
+    if recent_target_repeats >= 2:
+        target_alternatives = [value for value in scored if value[2].target_area != target_area]
+        if target_alternatives and (scored[0][0] - target_alternatives[0][0]) <= 2.75:
+            scored = target_alternatives
+    best_score = scored[0][0]
+    choice_pool = [value for value in scored if (best_score - value[0]) <= 2.0][:4]
+    if len(choice_pool) <= 1:
+        return scored[0][2]
+    floor = min(value[0] for value in choice_pool)
+    weights = [((value[0] - floor) + 0.35) ** 2 for value in choice_pool]
+    return choice_pool[
+        _weighted_choice_index(
+            weights,
+            seed=seed,
+            salt=f"drill_candidate:{primitive_id}:{target_area}:{previous_code}",
+        )
+    ][2]
 
 
 def _training_mode_for_live_item(
@@ -2171,6 +2262,95 @@ def _training_mode_for_live_item(
     return AntDrillMode.BUILD
 
 
+def _varied_training_mode_for_live_item(
+    item: AdaptivePriorityBreakdown,
+    drill_code: str,
+    *,
+    seed: int,
+    active_elapsed_s: float | None = None,
+) -> AntDrillMode:
+    base = _training_mode_for_live_item(
+        item,
+        drill_code,
+        active_elapsed_s=active_elapsed_s,
+    )
+    if base is AntDrillMode.FATIGUE_PROBE:
+        return base
+    options: list[tuple[AntDrillMode, float]] = [(base, 3.0)]
+    if item.unmeasured and supports_training_mode(drill_code, AntDrillMode.FRESH):
+        options.append((AntDrillMode.FRESH, 1.25))
+    if supports_training_mode(drill_code, AntDrillMode.BUILD):
+        options.append((AntDrillMode.BUILD, 1.15 if item.confidence < 0.55 else 0.55))
+    if supports_training_mode(drill_code, AntDrillMode.TEMPO):
+        options.append((AntDrillMode.TEMPO, 1.0 if item.weakness >= 0.35 else 0.65))
+    if (
+        not item.unmeasured
+        and item.confidence >= 0.45
+        and supports_training_mode(drill_code, AntDrillMode.PRESSURE)
+    ):
+        options.append((AntDrillMode.PRESSURE, 0.95 if item.weakness >= 0.35 else 0.55))
+
+    by_mode: dict[AntDrillMode, float] = {}
+    for mode, weight in options:
+        if not supports_training_mode(drill_code, mode):
+            continue
+        by_mode[mode] = by_mode.get(mode, 0.0) + float(weight)
+    if not by_mode:
+        return AntDrillMode.BUILD
+    modes = list(by_mode)
+    weights = [by_mode[mode] for mode in modes]
+    return modes[
+        _weighted_choice_index(
+            weights,
+            seed=seed,
+            salt=f"training_mode:{drill_code}:{item.primitive_id}",
+        )
+    ]
+
+
+def _varied_live_difficulty_level(
+    item: AdaptivePriorityBreakdown,
+    *,
+    seed: int,
+    recommended_level: int | None,
+) -> int:
+    base = clamp_level(recommended_level or int(item.recommended_level))
+    if item.unmeasured or item.confidence < 0.45:
+        offsets = (-1, 0, 0)
+    elif item.fatigue >= max(item.weakness, item.post_error, item.lapse, item.control):
+        offsets = (-1, 0, 0, 1)
+    else:
+        offsets = (-1, 0, 0, 1, 1)
+    offset = offsets[
+        _weighted_choice_index(
+            [1.0 for _offset in offsets],
+            seed=seed,
+            salt=f"difficulty:{item.primitive_id}:{item.recommended_level}",
+        )
+    ]
+    if item.confidence < 0.45:
+        offset = min(0, int(offset))
+    return clamp_level(base + int(offset))
+
+
+def _varied_live_duration_s(item: AdaptivePriorityBreakdown, *, seed: int) -> float:
+    if item.unmeasured or item.confidence < 0.45:
+        choices = (120.0, 150.0)
+    elif item.fatigue >= max(item.weakness, item.post_error, item.lapse, item.control):
+        choices = (150.0, 180.0)
+    else:
+        choices = _LIVE_BLOCK_DURATION_CHOICES_S
+    return float(
+        choices[
+            _weighted_choice_index(
+                [1.0 for _choice in choices],
+                seed=seed,
+                salt=f"duration:{item.primitive_id}:{item.confidence:.3f}",
+            )
+        ]
+    )
+
+
 def _build_live_adaptive_block(
     *,
     block_index: int,
@@ -2194,20 +2374,26 @@ def _build_live_adaptive_block(
         recent_blocks=recent_blocks,
         target_area_override=target_area_override,
     )
-    difficulty_level = clamp_level(recommended_level or int(primitive.recommended_level))
+    difficulty_level = _varied_live_difficulty_level(
+        primitive,
+        seed=block_seed,
+        recommended_level=recommended_level,
+    )
     drill_code = resolved_canonical_drill_code(candidate.drill_code, for_adaptive=True) or candidate.drill_code
-    drill_mode = _training_mode_for_live_item(
+    drill_mode = _varied_training_mode_for_live_item(
         primitive,
         drill_code,
+        seed=block_seed,
         active_elapsed_s=active_elapsed_s,
     )
+    duration_s = _varied_live_duration_s(primitive, seed=block_seed)
     return AdaptiveSessionBlock(
         block_index=int(block_index),
         primitive_id=primitive.primitive_id,
         primitive_label=primitive.label,
         drill_code=drill_code,
         mode="adaptive_live",
-        duration_s=float(_LIVE_BLOCK_DURATION_S),
+        duration_s=float(duration_s),
         difficulty_level=int(difficulty_level),
         seed=int(block_seed),
         reason_tags=tuple(primitive.reason_tags),
@@ -2230,10 +2416,16 @@ def _history_entry_from_block_result(
     metrics = dict(result.metrics)
     metrics.setdefault("training_mode", block.drill_mode.value)
     metrics.setdefault("duration_s", f"{float(result.duration_s):.6f}")
+    metrics.setdefault("runtime_source", _runtime_source_for_block(block))
+    metrics.setdefault("canonical_drill_code", _canonical_drill_code_for_metrics(block.drill_code))
+    metrics.setdefault("source_test_family", _source_test_family_for_drill_code(block.drill_code))
     metrics["adaptive.block_role"] = block.mode
     metrics["adaptive.primitive_id"] = block.primitive_id
     metrics["adaptive.target_area"] = block.target_area
     metrics["adaptive.linked_primitive_id"] = block.linked_primitive_id or ""
+    metrics["adaptive.canonical_drill_code"] = _canonical_drill_code_for_metrics(block.drill_code)
+    metrics["adaptive.runtime_source"] = metrics["runtime_source"]
+    metrics["adaptive.source_test_family"] = metrics["source_test_family"]
     return AttemptHistoryEntry(
         attempt_id=int(attempt_id),
         session_id=0,
@@ -2806,8 +2998,12 @@ class AdaptiveSession:
         }
         for block in self._plan.blocks:
             prefix = f"block.{block.block_index + 1:02d}."
+            canonical_code = _canonical_drill_code_for_metrics(block.drill_code)
             metrics[f"{prefix}primitive_id"] = block.primitive_id
             metrics[f"{prefix}drill_code"] = block.drill_code
+            metrics[f"{prefix}canonical_drill_code"] = canonical_code
+            metrics[f"{prefix}runtime_source"] = _runtime_source_for_block(block)
+            metrics[f"{prefix}source_test_family"] = _source_test_family_for_drill_code(block.drill_code)
             metrics[f"{prefix}mode"] = block.mode
             metrics[f"{prefix}training_mode"] = block.drill_mode.value
             metrics[f"{prefix}duration_s"] = f"{block.duration_s:.6f}"
@@ -2960,38 +3156,7 @@ class AdaptiveSession:
                 mode = block.drill_mode.value
                 duration_s = float(block.duration_s)
                 extra = {"drill": True, "adaptive": True}
-                if godot_kind == "auditory_capacity":
-                    config = auditory_capacity_godot_config(
-                        test_code=block.drill_code,
-                        mode=mode,
-                        difficulty=difficulty,
-                        duration_s=duration_s,
-                        extra=extra,
-                    )
-                elif godot_kind == "rapid_tracking":
-                    config = rapid_tracking_godot_config(
-                        test_code=block.drill_code,
-                        mode=mode,
-                        difficulty=difficulty,
-                        duration_s=duration_s,
-                        extra=extra,
-                    )
-                elif godot_kind == "spatial_integration":
-                    config = spatial_integration_godot_config(
-                        test_code=block.drill_code,
-                        mode=mode,
-                        duration_s=duration_s,
-                        extra=extra,
-                    )
-                else:
-                    config = trace_test_godot_config(
-                        test_code=block.drill_code,
-                        mode=mode,
-                        difficulty=difficulty,
-                        duration_s=duration_s,
-                        extra=extra,
-                    )
-                engine = build_godot_owned_test(
+                engine = build_godot_owned_activity_runtime(
                     clock=self._clock,
                     seed=block.seed,
                     difficulty=difficulty,
@@ -3000,7 +3165,7 @@ class AdaptiveSession:
                     title=block.primitive_label,
                     duration_s=duration_s,
                     mode=mode,
-                    config=config,
+                    extra=extra,
                 )
             else:
                 workout_block = AntWorkoutBlockPlan(
@@ -3019,6 +3184,18 @@ class AdaptiveSession:
                     block=workout_block,
                     block_index=0,
                 )
+        overrides = getattr(engine, "_result_metrics_overrides", None)
+        if not isinstance(overrides, dict):
+            overrides = {}
+            setattr(engine, "_result_metrics_overrides", overrides)
+        canonical_code = _canonical_drill_code_for_metrics(block.drill_code)
+        overrides.setdefault("runtime_source", _runtime_source_for_block(block))
+        overrides.setdefault("source_test_family", _source_test_family_for_drill_code(block.drill_code))
+        overrides.setdefault("canonical_drill_code", canonical_code)
+        overrides.setdefault("canonical_activity_code", canonical_code)
+        overrides.setdefault("runtime_mode", block.drill_mode.value)
+        overrides.setdefault("runtime_seed", str(int(block.seed)))
+        overrides.setdefault("runtime_duration_s", f"{float(block.duration_s):.6f}")
         self._reset_block_engine_to_intro(engine)
         setattr(engine, "_difficulty_code", str(block.drill_code))
         setattr(engine, "_resolved_difficulty_context", self._block_difficulty_context(block))

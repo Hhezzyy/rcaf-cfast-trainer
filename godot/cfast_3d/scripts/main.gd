@@ -402,9 +402,14 @@ func _unhandled_input(event: InputEvent) -> void:
 	if not (event is InputEventKey):
 		return
 	var key_event := event as InputEventKey
-	if not key_event.pressed or key_event.echo:
+	if key_event.echo:
 		return
 	var key := key_event.keycode
+	if not key_event.pressed:
+		if not _menu_active() and godot_owned_runtime != null:
+			if godot_owned_runtime.handle_key(key_event):
+				get_viewport().set_input_as_handled()
+		return
 	if key == KEY_F11 or ((key == KEY_ENTER or key == KEY_KP_PERIOD) and (key_event.alt_pressed or key_event.meta_pressed)):
 		_toggle_window_mode_from_godot()
 		get_viewport().set_input_as_handled()

@@ -52,9 +52,13 @@ class SpatialIntegrationTrialStage(StrEnum):
 class SpatialIntegrationQuestionKind(StrEnum):
     LANDMARK_GRID = "landmark_grid"
     SCENE_RECONSTRUCTION = "scene_reconstruction"
+    OBJECT_COUNT = "object_count"
+    OBJECT_KIND_AT_CELL = "object_kind_at_cell"
     AIRCRAFT_ROUTE_SELECTION = "aircraft_route_selection"
     AIRCRAFT_CONTINUATION_SELECTION = "aircraft_continuation_selection"
     AIRCRAFT_LOCATION_GRID = "aircraft_location_grid"
+    AIRCRAFT_COLOR_LOCATION_GRID = "aircraft_color_location_grid"
+    AIRCRAFT_COLOR_ROUTE_SELECTION = "aircraft_color_route_selection"
 
 
 class SpatialIntegrationAnswerMode(StrEnum):
@@ -71,13 +75,20 @@ _SPATIAL_INTEGRATION_QUESTION_KINDS_BY_PART = {
     SpatialIntegrationPart.STATIC: (
         SpatialIntegrationQuestionKind.LANDMARK_GRID,
         SpatialIntegrationQuestionKind.SCENE_RECONSTRUCTION,
+        SpatialIntegrationQuestionKind.OBJECT_COUNT,
+        SpatialIntegrationQuestionKind.OBJECT_KIND_AT_CELL,
     ),
     SpatialIntegrationPart.AIRCRAFT: (
         SpatialIntegrationQuestionKind.AIRCRAFT_ROUTE_SELECTION,
         SpatialIntegrationQuestionKind.AIRCRAFT_CONTINUATION_SELECTION,
         SpatialIntegrationQuestionKind.AIRCRAFT_LOCATION_GRID,
+        SpatialIntegrationQuestionKind.AIRCRAFT_COLOR_LOCATION_GRID,
+        SpatialIntegrationQuestionKind.AIRCRAFT_COLOR_ROUTE_SELECTION,
     ),
 }
+
+_OBJECT_MEMORY_KINDS = ("building", "vehicle", "human", "sheep")
+_AIRCRAFT_COLOR_LABELS = ("RED", "BLUE", "AMBER", "WHITE", "GREEN")
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,6 +103,16 @@ class SpatialIntegrationVector:
     dx: int
     dy: int
     dz: int
+
+
+@dataclass(frozen=True, slots=True)
+class SpatialIntegrationAircraftTrack:
+    color_label: str
+    route_points: tuple[SpatialIntegrationPoint, ...]
+    route_current_index: int
+    aircraft_prev: SpatialIntegrationPoint
+    aircraft_now: SpatialIntegrationPoint
+    aircraft_next: SpatialIntegrationPoint
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,6 +148,10 @@ class SpatialIntegrationOption:
     candidate_route: tuple[SpatialIntegrationPoint, ...] = ()
     candidate_aircraft: SpatialIntegrationPoint | None = None
     heading_deg: int = 0
+    statement: str = ""
+    object_category: str = ""
+    object_count: int | None = None
+    aircraft_color: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,6 +193,7 @@ class SpatialIntegrationPayload:
     correct_point: SpatialIntegrationPoint
     correct_answer_token: str
     answer_map_route_points: tuple[SpatialIntegrationPoint, ...] = ()
+    aircraft_tracks: tuple[SpatialIntegrationAircraftTrack, ...] = ()
     content_family: str = ""
     variant_id: str = ""
     content_pack: str = ""
@@ -175,6 +201,50 @@ class SpatialIntegrationPayload:
 
 def _clamp(v: int, lo: int, hi: int) -> int:
     return int(lo if v < lo else hi if v > hi else v)
+
+
+def _memory_category(kind: str) -> str:
+    token = str(kind).strip().lower()
+    if token == "building":
+        return "building"
+    if token in {"vehicle", "truck", "tank", "car"}:
+        return "vehicle"
+    if token in {"human", "person", "people", "foot_soldiers"}:
+        return "human"
+    if token == "sheep":
+        return "sheep"
+    return ""
+
+
+def _memory_category_counts(
+    landmarks: tuple[SpatialIntegrationLandmark, ...],
+) -> dict[str, int]:
+    counts = {category: 0 for category in _OBJECT_MEMORY_KINDS}
+    for landmark in landmarks:
+        category = _memory_category(landmark.kind)
+        if category:
+            counts[category] = int(counts.get(category, 0)) + 1
+    return counts
+
+
+def _object_category_label(category: str) -> str:
+    labels = {
+        "building": "Building",
+        "vehicle": "Vehicle",
+        "human": "Human",
+        "sheep": "Sheep",
+    }
+    return labels.get(str(category), str(category).capitalize())
+
+
+def _plural_object_category(category: str, count: int) -> str:
+    token = str(category).strip().lower()
+    if token == "sheep":
+        return "sheep"
+    if token == "human":
+        return "human" if int(count) == 1 else "humans"
+    label = _object_category_label(token).lower()
+    return label if int(count) == 1 else f"{label}s"
 
 
 def _grid_cell_token(x: int, y: int) -> str:
@@ -322,29 +392,39 @@ class _SpatialIntegrationSceneCluster:
     content_family: str = ""
     variant_id: str = ""
     content_pack: str = ""
+    aircraft_tracks: tuple[SpatialIntegrationAircraftTrack, ...] = ()
 
 
 class SpatialIntegrationGenerator:
     _STATIC_OBJECT_SPECS = (
         ("BLD1", "building"),
         ("BLD2", "building"),
-        ("SOL1", "foot_soldiers"),
-        ("SOL2", "foot_soldiers"),
+        ("HUM1", "human"),
+        ("HUM2", "human"),
         ("SHP1", "sheep"),
         ("SHP2", "sheep"),
         ("WOOD", "forest"),
-        ("TRK1", "truck"),
+        ("VEH1", "vehicle"),
+        ("VEH2", "vehicle"),
         ("TWR1", "tower"),
+        ("TWR2", "tower"),
         ("TENT", "tent"),
+        ("HGR1", "building"),
+        ("RAD1", "tower"),
     )
     _AIRCRAFT_OBJECT_SPECS = (
         ("BLD1", "building"),
-        ("SOL1", "foot_soldiers"),
+        ("BLD2", "building"),
+        ("HUM1", "human"),
+        ("HUM2", "human"),
         ("SHP1", "sheep"),
+        ("SHP2", "sheep"),
         ("WOOD", "forest"),
-        ("TRK1", "truck"),
+        ("VEH1", "vehicle"),
+        ("VEH2", "vehicle"),
         ("TWR1", "tower"),
         ("TENT", "tent"),
+        ("RAD1", "tower"),
     )
     _ROUTE_TEMPLATES = (
         (
@@ -441,7 +521,7 @@ class SpatialIntegrationGenerator:
             grid_cols=grid_cols,
             grid_rows=grid_rows,
             specs=self._STATIC_OBJECT_SPECS,
-            count=7,
+            count=8,
         )
         primary_targets = cast(tuple[SpatialIntegrationLandmark, ...], self._rng.sample(landmarks, k=2))
 
@@ -452,7 +532,7 @@ class SpatialIntegrationGenerator:
         )
         correct_option = next(opt for opt in options if opt.answer_token == "correct")
 
-        questions = (
+        questions: list[_SpatialIntegrationQuestion] = [
             _SpatialIntegrationQuestion(
                 kind=SpatialIntegrationQuestionKind.LANDMARK_GRID,
                 answer_mode=SpatialIntegrationAnswerMode.GRID_CLICK,
@@ -496,6 +576,40 @@ class SpatialIntegrationGenerator:
                 options=options,
                 answer_map_landmarks=(),
             ),
+        ]
+
+        count_options = self._build_object_count_options(landmarks=landmarks)
+        count_correct = next(opt for opt in count_options if opt.answer_token == "correct")
+        count_category = str(count_correct.object_category or "object")
+        questions.append(
+            _SpatialIntegrationQuestion(
+                kind=SpatialIntegrationQuestionKind.OBJECT_COUNT,
+                answer_mode=SpatialIntegrationAnswerMode.OPTION_PICK,
+                stem=f"How many {_plural_object_category(count_category, 2)} were in the studied scene?",
+                query_label=f"{count_category.upper()} COUNT",
+                correct_code=int(count_correct.code),
+                correct_point=SpatialIntegrationPoint(0, 0, 0),
+                correct_answer_token=str(count_correct.code),
+                options=count_options,
+                answer_map_landmarks=(),
+            )
+        )
+
+        kind_options, target_landmark = self._build_object_kind_at_cell_options(landmarks=landmarks)
+        kind_correct = next(opt for opt in kind_options if opt.answer_token == "correct")
+        target_cell = _grid_cell_token(target_landmark.x, target_landmark.y)
+        questions.append(
+            _SpatialIntegrationQuestion(
+                kind=SpatialIntegrationQuestionKind.OBJECT_KIND_AT_CELL,
+                answer_mode=SpatialIntegrationAnswerMode.OPTION_PICK,
+                stem=f"What type of object was in cell {target_cell}?",
+                query_label=target_cell,
+                correct_code=int(kind_correct.code),
+                correct_point=SpatialIntegrationPoint(target_landmark.x, target_landmark.y, 0),
+                correct_answer_token=str(kind_correct.code),
+                options=kind_options,
+                answer_map_landmarks=(),
+            )
         )
 
         return _SpatialIntegrationSceneCluster(
@@ -519,7 +633,7 @@ class SpatialIntegrationGenerator:
             aircraft_now=SpatialIntegrationPoint(0, 0, 0),
             velocity=SpatialIntegrationVector(0, 0, 0),
             show_aircraft_motion=False,
-            questions=questions,
+            questions=tuple(questions),
             content_family="static_scene",
             variant_id=stable_variant_id("static", scene_id, "landmark_grid"),
             content_pack="static",
@@ -538,7 +652,7 @@ class SpatialIntegrationGenerator:
             grid_cols=grid_cols,
             grid_rows=grid_rows,
             specs=self._AIRCRAFT_OBJECT_SPECS,
-            count=5,
+            count=6,
         )
         candidate_indices = [
             index
@@ -552,9 +666,19 @@ class SpatialIntegrationGenerator:
         if len(self._recent_route_variants) > 3:
             del self._recent_route_variants[:-3]
         route_current_index = int(self._rng.randint(2, len(route) - 2))
-        aircraft_prev = route[route_current_index - 1]
-        aircraft_now = route[route_current_index]
-        aircraft_next = route[route_current_index + 1]
+        aircraft_tracks = self._build_aircraft_tracks(
+            base_route=route,
+            base_index=route_current_index,
+            difficulty=difficulty,
+            grid_cols=grid_cols,
+            grid_rows=grid_rows,
+        )
+        primary_track = aircraft_tracks[0]
+        route = primary_track.route_points
+        route_current_index = int(primary_track.route_current_index)
+        aircraft_prev = primary_track.aircraft_prev
+        aircraft_now = primary_track.aircraft_now
+        aircraft_next = primary_track.aircraft_next
         velocity = SpatialIntegrationVector(
             dx=int(aircraft_next.x - aircraft_now.x),
             dy=int(aircraft_next.y - aircraft_now.y),
@@ -581,7 +705,7 @@ class SpatialIntegrationGenerator:
             opt for opt in continuation_options if opt.answer_token == "correct"
         )
 
-        questions = (
+        questions: list[_SpatialIntegrationQuestion] = [
             _SpatialIntegrationQuestion(
                 kind=SpatialIntegrationQuestionKind.AIRCRAFT_ROUTE_SELECTION,
                 answer_mode=SpatialIntegrationAnswerMode.OPTION_PICK,
@@ -624,6 +748,56 @@ class SpatialIntegrationGenerator:
                     difficulty=difficulty,
                 ),
             ),
+        ]
+
+        location_track = cast(SpatialIntegrationAircraftTrack, self._rng.choice(aircraft_tracks))
+        questions.append(
+            _SpatialIntegrationQuestion(
+                kind=SpatialIntegrationQuestionKind.AIRCRAFT_COLOR_LOCATION_GRID,
+                answer_mode=SpatialIntegrationAnswerMode.GRID_CLICK,
+                stem=f"Click the grid cell where the {location_track.color_label} aircraft ended in the studied scene.",
+                query_label=f"{location_track.color_label} AIRCRAFT",
+                correct_code=0,
+                correct_point=location_track.aircraft_now,
+                correct_answer_token=_grid_cell_token(location_track.aircraft_now.x, location_track.aircraft_now.y),
+                options=(),
+                answer_map_landmarks=self._grid_context_landmarks(
+                    landmarks=landmarks,
+                    anchor_point=location_track.aircraft_now,
+                    difficulty=difficulty,
+                ),
+                answer_map_route_points=self._grid_context_route_points(
+                    route_points=location_track.route_points,
+                    focus_index=location_track.route_current_index,
+                    difficulty=difficulty,
+                ),
+            )
+        )
+
+        route_track = cast(SpatialIntegrationAircraftTrack, self._rng.choice(aircraft_tracks))
+        color_route_options = tuple(
+            replace(option, aircraft_color=route_track.color_label)
+            for option in self._build_aircraft_route_options(
+                correct_route=route_track.route_points,
+                aircraft_now=route_track.aircraft_now,
+                grid_cols=grid_cols,
+                grid_rows=grid_rows,
+                variant="route",
+            )
+        )
+        color_route_correct = next(opt for opt in color_route_options if opt.answer_token == "correct")
+        questions.append(
+            _SpatialIntegrationQuestion(
+                kind=SpatialIntegrationQuestionKind.AIRCRAFT_COLOR_ROUTE_SELECTION,
+                answer_mode=SpatialIntegrationAnswerMode.OPTION_PICK,
+                stem=f"Which route belonged to the {route_track.color_label} aircraft?",
+                query_label=f"{route_track.color_label} ROUTE",
+                correct_code=int(color_route_correct.code),
+                correct_point=route_track.aircraft_now,
+                correct_answer_token=str(color_route_correct.code),
+                options=color_route_options,
+                answer_map_landmarks=landmarks,
+            )
         )
 
         return _SpatialIntegrationSceneCluster(
@@ -647,10 +821,11 @@ class SpatialIntegrationGenerator:
             aircraft_now=aircraft_now,
             velocity=velocity,
             show_aircraft_motion=True,
-            questions=questions,
+            questions=tuple(questions),
             content_family="aircraft_route",
             variant_id=route_variant,
             content_pack="aircraft",
+            aircraft_tracks=aircraft_tracks,
         )
 
     def _sample_hills(self) -> tuple[SpatialIntegrationHill, ...]:
@@ -681,7 +856,23 @@ class SpatialIntegrationGenerator:
         specs: tuple[tuple[str, str], ...],
         count: int,
     ) -> tuple[SpatialIntegrationLandmark, ...]:
-        chosen_specs = cast(tuple[tuple[str, str], ...], self._rng.sample(specs, k=min(count, len(specs))))
+        available = list(specs)
+        chosen_specs: list[tuple[str, str]] = []
+        for required_kind in _OBJECT_MEMORY_KINDS:
+            match_index = next(
+                (
+                    index
+                    for index, spec in enumerate(available)
+                    if _memory_category(spec[1]) == required_kind
+                ),
+                None,
+            )
+            if match_index is not None:
+                chosen_specs.append(available.pop(match_index))
+        target_count = min(count, len(specs))
+        while len(chosen_specs) < target_count and available:
+            index = int(self._rng.randint(0, len(available) - 1))
+            chosen_specs.append(available.pop(index))
         points: list[tuple[int, int]] = []
         occupancy: dict[tuple[int, int], int] = {}
         while len(points) < len(chosen_specs):
@@ -765,6 +956,65 @@ class SpatialIntegrationGenerator:
             start = end - keep_count
         return route_points[start:end]
 
+    def _build_object_count_options(
+        self,
+        *,
+        landmarks: tuple[SpatialIntegrationLandmark, ...],
+    ) -> tuple[SpatialIntegrationOption, ...]:
+        counts = _memory_category_counts(landmarks)
+        category = str(self._rng.choice(_OBJECT_MEMORY_KINDS))
+        correct_count = int(counts.get(category, 0))
+        values = [correct_count]
+        for delta in (-1, 1, 2, -2, 3, -3):
+            candidate = max(0, correct_count + int(delta))
+            if candidate not in values:
+                values.append(candidate)
+            if len(values) >= 4:
+                break
+        fallback = 0
+        while len(values) < 4:
+            if fallback not in values:
+                values.append(fallback)
+            fallback += 1
+        candidates = tuple(
+            SpatialIntegrationOption(
+                code=idx + 1,
+                label=str(idx + 1),
+                answer_token="correct" if value == correct_count else f"count_{value}",
+                statement=f"{value} {_plural_object_category(category, value)}",
+                object_category=category,
+                object_count=int(value),
+            )
+            for idx, value in enumerate(values[:4])
+        )
+        order = self._rng.sample(tuple(range(len(candidates))), k=len(candidates))
+        return tuple(replace(candidates[idx], code=code, label=str(code)) for code, idx in enumerate(order, start=1))
+
+    def _build_object_kind_at_cell_options(
+        self,
+        *,
+        landmarks: tuple[SpatialIntegrationLandmark, ...],
+    ) -> tuple[tuple[SpatialIntegrationOption, ...], SpatialIntegrationLandmark]:
+        pool = tuple(landmark for landmark in landmarks if _memory_category(landmark.kind))
+        target = cast(SpatialIntegrationLandmark, self._rng.choice(pool or landmarks))
+        correct_category = _memory_category(target.kind)
+        candidates = tuple(
+            SpatialIntegrationOption(
+                code=idx + 1,
+                label=str(idx + 1),
+                answer_token="correct" if category == correct_category else category,
+                statement=_object_category_label(category),
+                object_category=category,
+            )
+            for idx, category in enumerate(_OBJECT_MEMORY_KINDS)
+        )
+        order = self._rng.sample(tuple(range(len(candidates))), k=len(candidates))
+        options = tuple(
+            replace(candidates[idx], code=code, label=str(code))
+            for code, idx in enumerate(order, start=1)
+        )
+        return options, target
+
     def _build_static_reconstruction_options(
         self,
         *,
@@ -816,6 +1066,78 @@ class SpatialIntegrationGenerator:
                 )
             )
         return tuple(options)
+
+    def _aircraft_track_count(self, difficulty: float) -> int:
+        d = clamp01(difficulty)
+        if d >= 0.90:
+            return 5
+        if d >= 0.66:
+            return 4
+        if d >= 0.34:
+            return 3
+        return 2
+
+    def _build_aircraft_tracks(
+        self,
+        *,
+        base_route: tuple[SpatialIntegrationPoint, ...],
+        base_index: int,
+        difficulty: float,
+        grid_cols: int,
+        grid_rows: int,
+    ) -> tuple[SpatialIntegrationAircraftTrack, ...]:
+        count = min(self._aircraft_track_count(difficulty), len(_AIRCRAFT_COLOR_LABELS))
+        tracks: list[SpatialIntegrationAircraftTrack] = []
+        for idx in range(count):
+            route = self._route_variant_for_track(
+                route=base_route,
+                index=idx,
+                grid_cols=grid_cols,
+                grid_rows=grid_rows,
+            )
+            if len(route) < 4:
+                continue
+            offset = 0 if idx == 0 else (idx % 3) - 1
+            current_index = _clamp(int(base_index) + offset, 1, len(route) - 2)
+            tracks.append(
+                SpatialIntegrationAircraftTrack(
+                    color_label=_AIRCRAFT_COLOR_LABELS[idx],
+                    route_points=route,
+                    route_current_index=current_index,
+                    aircraft_prev=route[current_index - 1],
+                    aircraft_now=route[current_index],
+                    aircraft_next=route[current_index + 1],
+                )
+            )
+        return tuple(tracks)
+
+    def _route_variant_for_track(
+        self,
+        *,
+        route: tuple[SpatialIntegrationPoint, ...],
+        index: int,
+        grid_cols: int,
+        grid_rows: int,
+    ) -> tuple[SpatialIntegrationPoint, ...]:
+        if index == 1:
+            return tuple(self._mirror_aircraft_point(point, grid_cols=grid_cols) for point in route)
+        if index == 2:
+            return tuple(
+                self._rotate_aircraft_point(point, grid_cols=grid_cols, grid_rows=grid_rows)
+                for point in route
+            )
+        if index == 3:
+            return tuple(
+                SpatialIntegrationPoint(
+                    x=_clamp(point.x + 1, 0, grid_cols - 1),
+                    y=_clamp(point.y - 1, 0, grid_rows - 1),
+                    z=point.z,
+                )
+                for point in route
+            )
+        if index == 4:
+            return tuple(reversed(route))
+        return tuple(route)
 
     def _build_aircraft_route_options(
         self,
@@ -1333,6 +1655,7 @@ class SpatialIntegrationEngine:
             correct_point=question.correct_point,
             correct_answer_token=str(question.correct_answer_token),
             answer_map_route_points=question.answer_map_route_points,
+            aircraft_tracks=scene.aircraft_tracks,
             content_family=scene.content_family,
             variant_id=stable_variant_id(scene.variant_id, question.kind.value, question.query_label),
             content_pack=scene.content_pack,

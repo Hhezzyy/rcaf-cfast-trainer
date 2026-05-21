@@ -217,19 +217,29 @@ def test_tr_scene_clear_all_variants_emit_expected_objectives() -> None:
             lambda payload: payload.scene_objective_label == "All Damaged Targets"
             and all("DAMAGED" in label.upper() for label in payload.scene_target_options),
         ),
-        (
-            build_tr_category_sweep_drill,
-            lambda payload: payload.scene_objective_label
-            in {"All Trucks", "All Tanks", "All Buildings", "All Beacons", "All Unknowns"}
-            and all(
-                {
-                    "All Trucks": "Truck",
-                    "All Tanks": "Tank",
-                    "All Buildings": "Building",
-                    "All Beacons": "Beacon",
-                    "All Unknowns": "Unknown",
-                }[payload.scene_objective_label]
-                in label
+            (
+                build_tr_category_sweep_drill,
+                lambda payload: payload.scene_objective_label
+                in {
+                    "All Trucks",
+                    "All Tanks",
+                    "All Buildings",
+                    "All Unknowns",
+                    "All Antennas",
+                    "All Bunkers",
+                    "All Convoys",
+                }
+                and all(
+                    {
+                        "All Trucks": "Truck",
+                        "All Tanks": "Tank",
+                        "All Buildings": "Building",
+                        "All Unknowns": "Unknown",
+                        "All Antennas": "Antenna",
+                        "All Bunkers": "Bunker",
+                        "All Convoys": "Convoy",
+                    }[payload.scene_objective_label]
+                    in label
                 for label in payload.scene_target_options
             ),
         ),

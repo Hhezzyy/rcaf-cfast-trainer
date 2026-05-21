@@ -76,6 +76,13 @@ def test_static_scene_cluster_has_expected_question_mix() -> None:
     assert scene.questions[2].answer_mode is SpatialIntegrationAnswerMode.OPTION_PICK
     assert len(scene.questions[2].options) == 4
     assert any(opt.answer_token == "correct" for opt in scene.questions[2].options)
+    assert scene.questions[3].kind is SpatialIntegrationQuestionKind.OBJECT_COUNT
+    assert scene.questions[4].kind is SpatialIntegrationQuestionKind.OBJECT_KIND_AT_CELL
+    assert len(scene.questions[3].options) == 4
+    assert len(scene.questions[4].options) == 4
+    assert {kind for kind in ("building", "vehicle", "human", "sheep")} <= {
+        _memory_kind_for_test(landmark.kind) for landmark in scene.landmarks
+    }
 
 
 def test_aircraft_scene_cluster_has_expected_question_mix() -> None:
@@ -90,13 +97,48 @@ def test_aircraft_scene_cluster_has_expected_question_mix() -> None:
         "topdown",
     )
     assert len(scene.route_points) >= 5
+    assert len(scene.aircraft_tracks) == 3
+    assert tuple(track.color_label for track in scene.aircraft_tracks) == ("RED", "BLUE", "AMBER")
     assert scene.questions[0].kind is SpatialIntegrationQuestionKind.AIRCRAFT_ROUTE_SELECTION
     assert scene.questions[0].answer_mode is SpatialIntegrationAnswerMode.OPTION_PICK
     assert scene.questions[1].kind is SpatialIntegrationQuestionKind.AIRCRAFT_CONTINUATION_SELECTION
     assert scene.questions[2].kind is SpatialIntegrationQuestionKind.AIRCRAFT_LOCATION_GRID
     assert scene.questions[2].answer_mode is SpatialIntegrationAnswerMode.GRID_CLICK
+    assert scene.questions[3].kind is SpatialIntegrationQuestionKind.AIRCRAFT_COLOR_LOCATION_GRID
+    assert scene.questions[4].kind is SpatialIntegrationQuestionKind.AIRCRAFT_COLOR_ROUTE_SELECTION
     assert len(scene.questions[0].options) == 4
     assert len(scene.questions[1].options) == 4
+    assert len(scene.questions[4].options) == 4
+
+
+def _memory_kind_for_test(kind: str) -> str:
+    if kind in {"truck", "vehicle"}:
+        return "vehicle"
+    if kind in {"foot_soldiers", "human"}:
+        return "human"
+    if kind in {"building", "sheep"}:
+        return kind
+    return ""
+
+
+@pytest.mark.parametrize(
+    ("difficulty", "expected_count"),
+    ((0.0, 2), (0.5, 3), (0.75, 4), (1.0, 5)),
+)
+def test_aircraft_track_count_scales_with_difficulty(difficulty: float, expected_count: int) -> None:
+    scene = SpatialIntegrationGenerator(seed=39).next_scene_cluster(
+        part=SpatialIntegrationPart.AIRCRAFT,
+        difficulty=difficulty,
+    )
+
+    assert len(scene.aircraft_tracks) == expected_count
+    assert tuple(track.color_label for track in scene.aircraft_tracks) == (
+        "RED",
+        "BLUE",
+        "AMBER",
+        "WHITE",
+        "GREEN",
+    )[:expected_count]
 
 
 def test_generator_filters_questions_by_kind_for_each_part() -> None:
@@ -114,10 +156,10 @@ def test_generator_filters_questions_by_kind_for_each_part() -> None:
     aircraft_scene = gen.next_scene_cluster(
         part=SpatialIntegrationPart.AIRCRAFT,
         difficulty=0.5,
-        allowed_question_kinds=(SpatialIntegrationQuestionKind.AIRCRAFT_CONTINUATION_SELECTION,),
+        allowed_question_kinds=(SpatialIntegrationQuestionKind.AIRCRAFT_COLOR_ROUTE_SELECTION,),
     )
     assert tuple(question.kind for question in aircraft_scene.questions) == (
-        SpatialIntegrationQuestionKind.AIRCRAFT_CONTINUATION_SELECTION,
+        SpatialIntegrationQuestionKind.AIRCRAFT_COLOR_ROUTE_SELECTION,
     )
 
 
@@ -282,7 +324,7 @@ def test_scorer_is_exact_for_grid_and_option_answers() -> None:
     assert scorer.score(problem=aircraft_problem, user_answer=int(wrong_code), raw=str(wrong_code)) == pytest.approx(0.0)
 
 
-def test_engine_advances_static_practice_scene_through_three_questions() -> None:
+def test_engine_advances_static_practice_scene_through_all_questions() -> None:
     clock = FakeClock()
     engine = build_spatial_integration_test(
         clock=clock,
@@ -319,21 +361,26 @@ def test_engine_advances_static_practice_scene_through_three_questions() -> None
     assert third_study.trial_stage is SpatialIntegrationTrialStage.STUDY
     assert third_study.study_view_index == 3
 
-    payload_1 = _wait_for_question(engine=engine, clock=clock)
-    assert payload_1.part is SpatialIntegrationPart.STATIC
-    assert payload_1.question_index_in_scene == 1
-    assert engine.submit_answer(payload_1.correct_answer_token) is True
-
-    payload_2 = engine.snapshot().payload
-    assert isinstance(payload_2, SpatialIntegrationPayload)
-    assert payload_2.question_index_in_scene == 2
-    assert engine.submit_answer(payload_2.correct_answer_token) is True
-
-    payload_3 = engine.snapshot().payload
-    assert isinstance(payload_3, SpatialIntegrationPayload)
-    assert payload_3.question_index_in_scene == 3
-    assert payload_3.answer_mode is SpatialIntegrationAnswerMode.OPTION_PICK
-    assert engine.submit_answer(str(payload_3.correct_code)) is True
+    seen_kinds: list[SpatialIntegrationQuestionKind] = []
+    for expected_idx in range(1, 6):
+        payload = _wait_for_question(engine=engine, clock=clock) if expected_idx == 1 else engine.snapshot().payload
+        assert isinstance(payload, SpatialIntegrationPayload)
+        assert payload.part is SpatialIntegrationPart.STATIC
+        assert payload.question_index_in_scene == expected_idx
+        seen_kinds.append(payload.kind)
+        answer = (
+            payload.correct_answer_token
+            if payload.answer_mode is SpatialIntegrationAnswerMode.GRID_CLICK
+            else str(payload.correct_code)
+        )
+        assert engine.submit_answer(answer) is True
+    assert seen_kinds == [
+        SpatialIntegrationQuestionKind.LANDMARK_GRID,
+        SpatialIntegrationQuestionKind.LANDMARK_GRID,
+        SpatialIntegrationQuestionKind.SCENE_RECONSTRUCTION,
+        SpatialIntegrationQuestionKind.OBJECT_COUNT,
+        SpatialIntegrationQuestionKind.OBJECT_KIND_AT_CELL,
+    ]
     assert engine.phase is Phase.PRACTICE_DONE
 
 

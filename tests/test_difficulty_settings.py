@@ -8,6 +8,7 @@ os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 import pygame
 import pytest
 
+from cfast_trainer.adaptive_difficulty import difficulty_ratio_for_level
 from cfast_trainer.app import (
     AnalogBinding,
     App,
@@ -46,7 +47,9 @@ def test_difficulty_settings_store_persists_global_and_per_test_levels(tmp_path)
     assert reloaded.review_mode_enabled() is True
     assert reloaded.test_level("rapid_tracking") == 8
     assert reloaded.effective_level("rapid_tracking") == 9
-    assert reloaded.effective_ratio("rapid_tracking") == pytest.approx((9 - 1) / 9.0)
+    assert reloaded.effective_ratio("rapid_tracking") == pytest.approx(
+        difficulty_ratio_for_level("rapid_tracking", 9)
+    )
     assert reloaded.intro_mode_label("rapid_tracking") == "Global Override"
 
     reloaded.set_global_override_enabled(False)
@@ -138,13 +141,32 @@ def test_test_seed_settings_store_persists_override_and_seed_value(tmp_path) -> 
 
     assert store.rapid_tracking_seed_override_enabled() is False
     assert store.rapid_tracking_seed_value() == 551
+    assert store.seed_override_enabled("math_reasoning") is False
+    assert store.seed_value("math_reasoning") == 551
 
     store.set_rapid_tracking_seed_override_enabled(True)
     store.set_rapid_tracking_seed_value(424242)
+    store.set_seed_override_enabled("math_reasoning", True)
+    store.set_seed_value("math_reasoning", 8080)
 
     reloaded = TestSeedSettingsStore(path)
     assert reloaded.rapid_tracking_seed_override_enabled() is True
     assert reloaded.rapid_tracking_seed_value() == 424242
+    assert reloaded.seed_override_enabled("math_reasoning") is True
+    assert reloaded.seed_value("math_reasoning") == 8080
+
+
+def test_test_seed_settings_store_migrates_legacy_rapid_tracking_payload(tmp_path) -> None:
+    path = tmp_path / "test-seed-settings.json"
+    path.write_text(
+        '{"rapid_tracking_seed_override_enabled": true, "rapid_tracking_seed_value": 6060}',
+        encoding="utf-8",
+    )
+
+    store = TestSeedSettingsStore(path)
+
+    assert store.seed_override_enabled("rapid_tracking") is True
+    assert store.seed_value("rapid_tracking") == 6060
 
 
 def test_rapid_tracking_settings_store_persists_invert_pitch(tmp_path) -> None:
@@ -259,10 +281,15 @@ def test_app_resolves_rapid_tracking_launch_seed_from_override(tmp_path, monkeyp
 
         monkeypatch.setattr("cfast_trainer.app._new_seed", lambda: 987654)
         assert app.resolved_rapid_tracking_launch_seed() == 987654
+        assert app.resolved_test_launch_seed("math_reasoning") == 987654
 
         seed_store.set_rapid_tracking_seed_override_enabled(True)
         seed_store.set_rapid_tracking_seed_value(246810)
         assert app.resolved_rapid_tracking_launch_seed() == 246810
+
+        seed_store.set_seed_override_enabled("math_reasoning", True)
+        seed_store.set_seed_value("math_reasoning", 13579)
+        assert app.resolved_test_launch_seed("math_reasoning") == 13579
     finally:
         pygame.quit()
 

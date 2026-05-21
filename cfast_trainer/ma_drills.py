@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from .adaptive_difficulty import difficulty_level_for_ratio
 from .ant_drills import (
     ANT_DRILL_MODE_PROFILES,
     AntAdaptiveDifficultyConfig,
@@ -17,7 +18,7 @@ def _clamp01(value: float) -> float:
 
 
 def _difficulty_to_level(difficulty: float) -> int:
-    return max(1, min(10, int(round(_clamp01(difficulty) * 9.0)) + 1))
+    return difficulty_level_for_ratio("numerical_operations", _clamp01(difficulty))
 
 
 def _normalize_mode(mode: AntDrillMode | str) -> AntDrillMode:
@@ -89,9 +90,10 @@ class MaOneStepFluencyGenerator(_BaseMaGenerator):
         level = _difficulty_to_level(difficulty)
         op = self._OPERATORS[(level + self._rng.randint(0, 3)) % len(self._OPERATORS)]
         if op == "+":
-            hi = 14 if level <= 3 else 35 if level <= 6 else 85
-            a = self._rng.randint(4, hi)
-            b = self._rng.randint(3, hi)
+            lo, hi = self._add_sub_range_for_level(level)
+            hard = level >= 9
+            a = self._challenging_int(lo, hi, hard=hard)
+            b = self._challenging_int(lo, hi, hard=hard)
             return self._problem(
                 prompt=f"{a} + {b} =",
                 answer=a + b,
@@ -99,9 +101,17 @@ class MaOneStepFluencyGenerator(_BaseMaGenerator):
                 variant="addition",
             )
         if op == "-":
-            hi = 18 if level <= 3 else 45 if level <= 6 else 95
-            a = self._rng.randint(8, hi)
-            b = self._rng.randint(2, min(a - 1, hi // 2 + 4))
+            lo, hi = self._add_sub_range_for_level(level)
+            hard = level >= 9
+            a = self._challenging_int(lo, hi, hard=hard)
+            b = self._challenging_int(lo, hi, hard=hard)
+            if hard:
+                for _ in range(20):
+                    if b != a:
+                        break
+                    b = self._challenging_int(lo, hi, hard=hard)
+            if b > a:
+                a, b = b, a
             return self._problem(
                 prompt=f"{a} - {b} =",
                 answer=a - b,
@@ -109,18 +119,20 @@ class MaOneStepFluencyGenerator(_BaseMaGenerator):
                 variant="subtraction",
             )
         if op == "*":
-            a_hi = 10 if level <= 3 else 14 if level <= 6 else 18
-            b_hi = 10 if level <= 3 else 12 if level <= 6 else 15
-            a = self._rng.randint(2, a_hi)
-            b = self._rng.randint(2, b_hi)
+            a_lo, a_hi, b_lo, b_hi = self._mult_range_for_level(level)
+            hard = level >= 9
+            a = self._challenging_int(a_lo, a_hi, hard=hard)
+            b = self._challenging_int(b_lo, b_hi, hard=hard, avoid_even=hard)
             return self._problem(
                 prompt=f"{a} × {b} =",
                 answer=a * b,
                 family="one_step_fluency",
                 variant="multiplication",
             )
-        divisor = self._rng.randint(2, 10 if level <= 4 else 14 if level <= 7 else 18)
-        quotient = self._rng.randint(2, 12 if level <= 4 else 18 if level <= 7 else 24)
+        quotient_lo, quotient_hi, divisor_lo, divisor_hi = self._division_range_for_level(level)
+        hard = level >= 9
+        divisor = self._challenging_int(divisor_lo, divisor_hi, hard=hard, avoid_even=hard)
+        quotient = self._challenging_int(quotient_lo, quotient_hi, hard=hard)
         dividend = divisor * quotient
         return self._problem(
             prompt=f"{dividend} ÷ {divisor} =",
@@ -128,6 +140,86 @@ class MaOneStepFluencyGenerator(_BaseMaGenerator):
             family="one_step_fluency",
             variant="division",
         )
+
+    @staticmethod
+    def _add_sub_range_for_level(level: int) -> tuple[int, int]:
+        ranges = (
+            (4, 14),
+            (6, 24),
+            (8, 45),
+            (20, 95),
+            (60, 250),
+            (100, 900),
+            (250, 2500),
+            (750, 9000),
+            (2500, 99999),
+            (10000, 99999),
+        )
+        return ranges[max(0, min(9, int(level) - 1))]
+
+    @staticmethod
+    def _mult_range_for_level(level: int) -> tuple[int, int, int, int]:
+        ranges = (
+            (2, 10, 2, 10),
+            (3, 10, 3, 10),
+            (4, 12, 3, 10),
+            (6, 14, 4, 12),
+            (8, 18, 4, 12),
+            (10, 25, 6, 15),
+            (20, 60, 7, 18),
+            (40, 99, 8, 24),
+            (75, 499, 11, 49),
+            (100, 999, 11, 99),
+        )
+        return ranges[max(0, min(9, int(level) - 1))]
+
+    @staticmethod
+    def _division_range_for_level(level: int) -> tuple[int, int, int, int]:
+        ranges = (
+            (2, 12, 2, 10),
+            (3, 12, 3, 10),
+            (4, 14, 3, 12),
+            (6, 18, 4, 12),
+            (8, 24, 4, 14),
+            (10, 35, 6, 18),
+            (20, 75, 7, 24),
+            (40, 99, 8, 36),
+            (75, 499, 11, 49),
+            (100, 999, 11, 99),
+        )
+        return ranges[max(0, min(9, int(level) - 1))]
+
+    @staticmethod
+    def _too_clean_operand(value: int, *, avoid_even: bool) -> bool:
+        n = abs(int(value))
+        if n in {0, 1, 2, 5, 10, 100}:
+            return True
+        if n % 10 == 0 or n % 100 == 0:
+            return True
+        if n % 5 == 0:
+            return True
+        if avoid_even and n % 2 == 0:
+            return True
+        return False
+
+    def _challenging_int(
+        self,
+        lo: int,
+        hi: int,
+        *,
+        hard: bool,
+        avoid_even: bool = False,
+    ) -> int:
+        if not hard:
+            return self._rng.randint(int(lo), int(hi))
+        for _ in range(200):
+            value = self._rng.randint(int(lo), int(hi))
+            if not self._too_clean_operand(value, avoid_even=avoid_even):
+                return value
+        for value in range(int(lo), int(hi) + 1):
+            if not self._too_clean_operand(value, avoid_even=avoid_even):
+                return value
+        return int(lo)
 
 
 class MaPercentageSnapGenerator(_BaseMaGenerator):

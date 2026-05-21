@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from .adaptive_difficulty import difficulty_level_for_ratio
 from .ant_drills import ANT_DRILL_MODE_PROFILES, AntDrillAttemptSummary, AntDrillMode
 from .clock import Clock
 from .cognitive_core import Phase, Problem, QuestionEvent, SeededRng, TestSnapshot, clamp01
@@ -33,7 +34,7 @@ def _normalize_mode(mode: AntDrillMode | str) -> AntDrillMode:
 
 
 def _level_from_difficulty(difficulty: float) -> int:
-    return max(1, min(10, int(round(clamp01(float(difficulty)) * 9.0)) + 1))
+    return difficulty_level_for_ratio("colours_letters_numbers", clamp01(float(difficulty)))
 
 
 def _lerp_float(lo: float, hi: float, difficulty: float) -> float:
@@ -1091,10 +1092,10 @@ def build_cln_sequence_copy_drill(
         active_channels=("memory",),
         memory_mode=ColoursLettersNumbersMemoryMode.VISIBLE_COPY,
         generation_profile=ColoursLettersNumbersGenerationProfile(
-            sequence_min_easy=5,
-            sequence_min_hard=7,
-            sequence_max_easy=6,
-            sequence_max_hard=9,
+            sequence_min_easy=3,
+            sequence_min_hard=8,
+            sequence_max_easy=3,
+            sequence_max_hard=8,
             option_style="scaffold",
         ),
         sequence_show_easy=18.0,
@@ -1107,7 +1108,7 @@ def build_cln_sequence_copy_drill(
         show_text_entry=True,
         static_text="--",
         top_hint_override="Type the full sequence while it remains visible.",
-        typed_memory_max_length=10,
+        typed_memory_max_length=8,
     )
     return _build_cln_drill(
         title_base="Colours, Letters and Numbers: Sequence Copy",
@@ -1140,9 +1141,9 @@ def build_cln_sequence_match_drill(
     profile = ClnDrillProfile(
         active_channels=("memory",),
         generation_profile=ColoursLettersNumbersGenerationProfile(
-            sequence_min_easy=5,
-            sequence_min_hard=6,
-            sequence_max_easy=6,
+            sequence_min_easy=3,
+            sequence_min_hard=8,
+            sequence_max_easy=3,
             sequence_max_hard=8,
             option_style="scaffold",
         ),
@@ -1198,13 +1199,12 @@ def build_cln_sequence_math_recall_drill(
             else ColoursLettersNumbersMemoryMode.DELAYED_CHOICE
         ),
         generation_profile=ColoursLettersNumbersGenerationProfile(
-            sequence_min_easy=5,
-            sequence_min_hard=6,
-            sequence_max_easy=6,
+            sequence_min_easy=3,
+            sequence_min_hard=8,
+            sequence_max_easy=3,
             sequence_max_hard=8,
             option_style="scaffold" if exact_recall else "default",
-            math_profile=NumericalOperationsProblemProfile(operand_profile="clean_compute"),
-            math_difficulty_offset=-0.05,
+            math_profile=NumericalOperationsProblemProfile(operand_profile="cln_light"),
         ),
         sequence_show_easy=4.2,
         sequence_show_hard=2.4,
@@ -1224,7 +1224,7 @@ def build_cln_sequence_math_recall_drill(
         show_text_entry=True,
         static_text="--",
         top_hint_override="Store the sequence, solve one math item, then recall it.",
-        typed_memory_max_length=10,
+        typed_memory_max_length=8,
         required_math_answers_before_memory=1,
     )
     return _build_cln_drill(
@@ -1258,8 +1258,7 @@ def build_cln_math_prime_drill(
     profile = ClnDrillProfile(
         active_channels=("math",),
         generation_profile=ColoursLettersNumbersGenerationProfile(
-            math_profile=NumericalOperationsProblemProfile(operand_profile="fact_prime"),
-            math_difficulty_offset=-0.15,
+            math_profile=NumericalOperationsProblemProfile(operand_profile="cln_light"),
         ),
         panel_prompt="Solve the math prompt and press Enter.",
         control_hint="Enter: math",
@@ -1346,13 +1345,12 @@ def build_cln_memory_math_drill(
     profile = ClnDrillProfile(
         active_channels=("memory", "math"),
         generation_profile=ColoursLettersNumbersGenerationProfile(
-            sequence_min_easy=5,
-            sequence_min_hard=6,
-            sequence_max_easy=6,
+            sequence_min_easy=3,
+            sequence_min_hard=8,
+            sequence_max_easy=3,
             sequence_max_hard=8,
             option_style="default",
-            math_profile=NumericalOperationsProblemProfile(operand_profile="clean_compute"),
-            math_difficulty_offset=0.0,
+            math_profile=NumericalOperationsProblemProfile(operand_profile="cln_light"),
         ),
         sequence_show_easy=3.4,
         sequence_show_hard=2.1,
@@ -1399,9 +1397,9 @@ def build_cln_memory_colour_drill(
     profile = ClnDrillProfile(
         active_channels=("memory", "colour"),
         generation_profile=ColoursLettersNumbersGenerationProfile(
-            sequence_min_easy=5,
-            sequence_min_hard=6,
-            sequence_max_easy=6,
+            sequence_min_easy=3,
+            sequence_min_hard=8,
+            sequence_max_easy=3,
             sequence_max_hard=8,
             option_style="default",
         ),
@@ -1460,13 +1458,12 @@ def build_cln_full_steady_drill(
     profile = ClnDrillProfile(
         active_channels=("memory", "math", "colour"),
         generation_profile=ColoursLettersNumbersGenerationProfile(
-            sequence_min_easy=5,
-            sequence_min_hard=6,
-            sequence_max_easy=6,
+            sequence_min_easy=3,
+            sequence_min_hard=8,
+            sequence_max_easy=3,
             sequence_max_hard=8,
             option_style="default",
-            math_profile=NumericalOperationsProblemProfile(operand_profile="clean_compute"),
-            math_difficulty_offset=0.05,
+            math_profile=NumericalOperationsProblemProfile(operand_profile="cln_light"),
         ),
         sequence_show_easy=3.2,
         sequence_show_hard=2.0,
@@ -1523,13 +1520,12 @@ def build_cln_full_pressure_drill(
     profile = ClnDrillProfile(
         active_channels=("memory", "math", "colour"),
         generation_profile=ColoursLettersNumbersGenerationProfile(
-            sequence_min_easy=5,
-            sequence_min_hard=7,
-            sequence_max_easy=7,
-            sequence_max_hard=9,
+            sequence_min_easy=3,
+            sequence_min_hard=8,
+            sequence_max_easy=3,
+            sequence_max_hard=8,
             option_style="tight",
-            math_profile=NumericalOperationsProblemProfile(operand_profile="default"),
-            math_difficulty_offset=0.15,
+            math_profile=NumericalOperationsProblemProfile(operand_profile="cln_light"),
         ),
         sequence_show_easy=2.8,
         sequence_show_hard=1.7,
@@ -1586,13 +1582,12 @@ def build_cln_overdrive_blue_return_drill(
     profile = ClnDrillProfile(
         active_channels=("memory", "math", "colour"),
         generation_profile=ColoursLettersNumbersGenerationProfile(
-            sequence_min_easy=5,
-            sequence_min_hard=6,
-            sequence_max_easy=6,
+            sequence_min_easy=3,
+            sequence_min_hard=8,
+            sequence_max_easy=3,
             sequence_max_hard=8,
             option_style="default",
-            math_profile=NumericalOperationsProblemProfile(operand_profile="clean_compute"),
-            math_difficulty_offset=0.10,
+            math_profile=NumericalOperationsProblemProfile(operand_profile="cln_light"),
         ),
         sequence_show_easy=3.0,
         sequence_show_hard=1.8,
@@ -1650,14 +1645,13 @@ def build_cln_overdrive_six_choice_memory_drill(
     profile = ClnDrillProfile(
         active_channels=("memory", "math", "colour"),
         generation_profile=ColoursLettersNumbersGenerationProfile(
-            sequence_min_easy=5,
-            sequence_min_hard=7,
-            sequence_max_easy=6,
+            sequence_min_easy=3,
+            sequence_min_hard=8,
+            sequence_max_easy=3,
             sequence_max_hard=8,
             memory_option_count=6,
             option_style="tight",
-            math_profile=NumericalOperationsProblemProfile(operand_profile="clean_compute"),
-            math_difficulty_offset=0.10,
+            math_profile=NumericalOperationsProblemProfile(operand_profile="cln_light"),
         ),
         sequence_show_easy=2.9,
         sequence_show_hard=1.7,
@@ -1714,13 +1708,12 @@ def build_cln_overdrive_dual_math_drill(
     profile = ClnDrillProfile(
         active_channels=("memory", "math", "colour"),
         generation_profile=ColoursLettersNumbersGenerationProfile(
-            sequence_min_easy=5,
-            sequence_min_hard=7,
-            sequence_max_easy=7,
-            sequence_max_hard=9,
+            sequence_min_easy=3,
+            sequence_min_hard=8,
+            sequence_max_easy=3,
+            sequence_max_hard=8,
             option_style="tight",
-            math_profile=NumericalOperationsProblemProfile(operand_profile="default"),
-            math_difficulty_offset=0.15,
+            math_profile=NumericalOperationsProblemProfile(operand_profile="cln_light"),
         ),
         sequence_show_easy=2.7,
         sequence_show_hard=1.6,
@@ -1745,8 +1738,7 @@ def build_cln_overdrive_dual_math_drill(
         input_label="Main Math",
         show_text_entry=True,
         static_text="--",
-        secondary_math_profile=NumericalOperationsProblemProfile(operand_profile="clean_compute"),
-        secondary_math_difficulty_offset=0.10,
+        secondary_math_profile=NumericalOperationsProblemProfile(operand_profile="cln_light"),
         secondary_math_option_count=5,
     )
     return _build_cln_drill(

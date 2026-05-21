@@ -80,29 +80,53 @@ def test_scene_target_is_specific_compound_instruction() -> None:
     assert payload.scene_target_options[0] == payload.scene_target
 
     for option in payload.scene_target_options:
+        if option == "Beacon":
+            continue
         words = option.replace("(HP)", "").split()
         assert any(w in words for w in ("Hostile", "Friendly", "Neutral"))
-        assert any(w in words for w in ("Truck", "Tank", "Building", "Beacon", "Unknown"))
+        assert any(
+            w in words
+            for w in (
+                "Truck",
+                "Tank",
+                "Building",
+                "Unknown",
+                "Antenna",
+                "Bunker",
+                "Convoy",
+            )
+        )
 
 
 def test_scene_generation_includes_guide_beacon_and_unknown_types() -> None:
     gen = TargetRecognitionGenerator(seed=4242)
     shapes: set[str] = set()
     labels: set[str] = set()
+    beacons: list[TargetRecognitionSceneEntity] = []
     for _ in range(50):
         payload = gen.next_problem(difficulty=0.8).payload
         assert isinstance(payload, TargetRecognitionPayload)
         shapes.update(entity.shape for entity in payload.scene_entities)
+        beacons.extend(entity for entity in payload.scene_entities if entity.shape == "beacon")
         labels.update(payload.scene_target_options)
 
     assert {"beacon", "unknown"} <= shapes
-    assert any("Beacon" in label for label in labels)
+    assert "Beacon" in labels
+    assert not any(
+        label != "Beacon" and "Beacon" in label
+        for label in labels
+    )
     assert any("Unknown" in label for label in labels)
+    assert beacons
+    assert all(
+        entity.affiliation == "neutral" and not entity.damaged and not entity.high_priority
+        for entity in beacons
+    )
     assert (
         TargetRecognitionGenerator._scene_entity_code(
-            TargetRecognitionSceneEntity("beacon", "friendly", False, False)
+            TargetRecognitionSceneEntity("beacon", "friendly", True, True)
         )
-        == "BCN:F"
+        == "BCN"
     )
     assert (
         TargetRecognitionGenerator._scene_entity_code(
@@ -112,12 +136,12 @@ def test_scene_generation_includes_guide_beacon_and_unknown_types() -> None:
     )
 
 
-def test_beacon_and_unknown_target_labels_keep_affiliation_designations() -> None:
+def test_beacon_is_standalone_target_not_affiliation_or_status_modified() -> None:
     assert (
         TargetRecognitionGenerator._scene_criteria_label(
             TargetRecognitionSceneCriteria("beacon", "friendly", None, None)
         )
-        == "Friendly Beacon"
+        == "Beacon"
     )
     assert (
         TargetRecognitionGenerator._scene_criteria_label(
@@ -129,7 +153,15 @@ def test_beacon_and_unknown_target_labels_keep_affiliation_designations() -> Non
         TargetRecognitionGenerator._scene_criteria_label(
             TargetRecognitionSceneCriteria("beacon", "neutral", True, None)
         )
-        == "Damaged Neutral Beacon"
+        == "Beacon"
+    )
+    assert TargetRecognitionGenerator._scene_matches(
+        TargetRecognitionSceneEntity("beacon", "hostile", True, True),
+        TargetRecognitionSceneCriteria("beacon", "neutral", None, None),
+    )
+    assert not TargetRecognitionGenerator._scene_matches(
+        TargetRecognitionSceneEntity("beacon", "neutral", False, False),
+        TargetRecognitionSceneCriteria("beacon", "neutral", True, None),
     )
 
 

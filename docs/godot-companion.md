@@ -65,6 +65,14 @@ CFAST_GODOT_BIN=/Applications/Godot.app/Contents/MacOS/Godot
 - Reflections: off
 - Anti-aliasing: off
 
+## Spatial Integration Notes
+
+- Spatial Integration is Godot-owned for the active 3D path.
+- Study views use oblique/rotated scene cameras; question screens hide the studied scene.
+- The north marker is scene geometry during study only, positioned off the north edge of the map, and hidden during questions.
+- Fair-question rules are enforced in the Godot runtime: no hidden object IDs, no grid-cell answer prompts, and no typed grid-cell input for active Spatial Integration questions.
+- The reconstruction question presents four clickable top-down map previews below the prompt. One is exact; the other three are generated with difficulty-scaled similarity.
+
 ## Bridge Contract
 
 Python launches Godot with:

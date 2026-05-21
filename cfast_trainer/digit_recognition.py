@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Literal
 
+from .adaptive_difficulty import difficulty_level_for_ratio, difficulty_ratio_for_level
 from .clock import Clock
 from .cognitive_core import AttemptSummary, Phase, SeededRng, TestSnapshot
 
@@ -100,7 +101,7 @@ class DigitRecognitionProfile:
     @staticmethod
     def level_for(difficulty: float) -> int:
         d = 0.0 if difficulty <= 0.0 else 1.0 if difficulty >= 1.0 else float(difficulty)
-        return max(1, min(10, int(round(d * 9.0)) + 1))
+        return difficulty_level_for_ratio("digit_recognition", d)
 
     @staticmethod
     def _value_for_level(
@@ -113,7 +114,7 @@ class DigitRecognitionProfile:
         if len(values) >= 10:
             index = max(0, min(len(values) - 1, int(level) - 1))
             return float(values[index])
-        difficulty = float(max(1, min(10, int(level))) - 1) / 9.0
+        difficulty = difficulty_ratio_for_level("digit_recognition", int(level))
         return float(easy) + ((float(hard) - float(easy)) * difficulty)
 
 

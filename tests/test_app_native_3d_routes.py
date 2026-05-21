@@ -8,11 +8,13 @@ import cfast_trainer.app as app_module
 def test_app_standard_3d_tests_route_to_godot_owned_runtime() -> None:
     source = inspect.getsource(app_module.run)
 
-    assert "build_godot_owned_test(" in source
-    assert "auditory_capacity_godot_config(" in source
-    assert "rapid_tracking_godot_config(" in source
-    assert "spatial_integration_godot_config(" in source
-    assert "trace_test_godot_config(" in source
+    assert "open_official_test(" in source
+    assert "build_official_test_runtime(" in source
+    assert "build_godot_owned_activity_runtime(" in source
+    assert 'open_official_test("auditory_capacity")' in source
+    assert 'open_official_test("rapid_tracking")' in source
+    assert 'open_official_test("trace_test_1")' in source
+    assert 'open_official_test("trace_test_2")' in source
 
 
 def test_app_individual_3d_drill_wrappers_use_godot_owned_runtime() -> None:
@@ -22,10 +24,11 @@ def test_app_individual_3d_drill_wrappers_use_godot_owned_runtime() -> None:
     assert "_open_si_drill" in source
     assert "_open_trace_drill" in source
     assert "_open_auditory_capacity_drill" in source
-    assert 'kind="rapid_tracking"' in source
-    assert 'kind="spatial_integration"' in source
+    assert "build_godot_owned_activity_runtime(" in source
+    assert 'test_code="rt_obscured_target_prediction"' in source
+    assert 'test_code="si_static_multiview_integration"' in source
     assert 'kind=godot_kind_for_test_code(test_code) or "trace_test_1"' in source
-    assert 'kind="auditory_capacity"' in source
+    assert 'test_code="ac_gate_anchor"' in source
 
 
 def test_app_visible_3d_drill_menu_entries_use_canonical_codes() -> None:

@@ -192,9 +192,9 @@ def ensure_memory_challenge_has_target(
 
 @dataclass(frozen=True, slots=True)
 class ColoursLettersNumbersGenerationProfile:
-    sequence_min_easy: int = 5
-    sequence_min_hard: int = 6
-    sequence_max_easy: int = 6
+    sequence_min_easy: int = 3
+    sequence_min_hard: int = 8
+    sequence_max_easy: int = 3
     sequence_max_hard: int = 8
     memory_option_count: int = 5
     option_style: str = "default"
@@ -397,17 +397,23 @@ class ColoursLettersNumbersGenerator:
         return f"{sequence[:idx]}{replacement}{sequence[idx + 1 :]}"
 
     def _build_math(self, *, difficulty: float) -> tuple[str, int]:
-        lo = lerp_int(2, 4, difficulty)
-        hi = lerp_int(9, 16, difficulty)
-        a = int(self._rng.randint(lo, hi))
-        b = int(self._rng.randint(lo, hi))
         op = int(self._rng.randint(0, 2))
         if op == 0:
+            lo = lerp_int(1, 16, difficulty)
+            hi = lerp_int(9, 60, difficulty)
+            a = int(self._rng.randint(lo, hi))
+            b = int(self._rng.randint(lo, hi))
             return f"{a} + {b} =", a + b
         if op == 1:
+            lo = lerp_int(1, 16, difficulty)
+            hi = lerp_int(9, 60, difficulty)
+            a = int(self._rng.randint(lo, hi))
+            b = int(self._rng.randint(lo, hi))
             if a < b:
                 a, b = b, a
             return f"{a} - {b} =", a - b
+        a = int(self._rng.randint(lerp_int(2, 8, difficulty), lerp_int(5, 30, difficulty)))
+        b = int(self._rng.randint(lerp_int(2, 3, difficulty), lerp_int(5, 30, difficulty)))
         return f"{a} x {b} =", a * b
 
 

@@ -7,6 +7,7 @@ import pytest
 from cfast_trainer.cognitive_core import Phase, SeededRng
 from cfast_trainer.colours_letters_numbers import (
     ColoursLettersNumbersConfig,
+    ColoursLettersNumbersGenerationProfile,
     ColoursLettersNumbersGenerator,
     _LiveDiamond,
     _colours_letters_numbers_difficulty_params,
@@ -75,9 +76,56 @@ def test_default_memory_sequences_get_longer_at_higher_difficulty() -> None:
         len(high.next_memory_challenge(difficulty=1.0).target_sequence) for _ in range(30)
     ]
 
+    assert set(low_lengths) == {3}
+    assert set(high_lengths) == {8}
     assert min(high_lengths) >= min(low_lengths)
     assert max(high_lengths) > max(low_lengths)
     assert (sum(high_lengths) / len(high_lengths)) > (sum(low_lengths) / len(low_lengths))
+
+
+def test_default_memory_sequence_lengths_scale_from_three_to_eight() -> None:
+    expected_by_difficulty = {
+        0.0: 3,
+        0.25: 4,
+        0.5: 6,
+        0.75: 7,
+        1.0: 8,
+    }
+
+    for difficulty, expected_length in expected_by_difficulty.items():
+        generator = ColoursLettersNumbersGenerator(SeededRng(8800))
+        lengths = {
+            len(generator.next_memory_challenge(difficulty=difficulty).target_sequence)
+            for _ in range(20)
+        }
+        assert lengths == {expected_length}
+
+
+def test_cln_math_stays_light_even_at_max_difficulty() -> None:
+    generator = ColoursLettersNumbersGenerator(
+        SeededRng(9191),
+        profile=ColoursLettersNumbersGenerationProfile(),
+    )
+
+    for _ in range(100):
+        prompt, answer = generator.next_math_challenge(difficulty=1.0)
+        left_text, op, right_text = str(prompt).replace("=", "").split()
+        left = int(left_text)
+        right = int(right_text)
+
+        if op == "x":
+            assert 2 <= left <= 30
+            assert 2 <= right <= 30
+            assert answer == left * right
+        elif op == "+":
+            assert 1 <= left <= 60
+            assert 1 <= right <= 60
+            assert answer == left + right
+        elif op == "-":
+            assert 0 <= right <= left <= 60
+            assert answer == left - right
+        else:
+            raise AssertionError(f"Unexpected CLN math operator: {op}")
 
 
 def test_memory_generator_options_always_include_target_sequence() -> None:

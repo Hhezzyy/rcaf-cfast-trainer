@@ -598,7 +598,7 @@ def test_target_recognition_beacon_and_unknown_parse_and_draw_distinctly() -> No
     _app, screen = _build_screen(_FakeTREngine(_build_payload(active_panels=("scene",)), title="Target Recognition"))
     try:
         beacon_surface = pygame.Surface((48, 48), pygame.SRCALPHA)
-        beacon = TargetRecognitionSceneEntity("beacon", "friendly", False, False)
+        beacon = TargetRecognitionSceneEntity("beacon", "friendly", True, True)
         screen._draw_target_recognition_symbol(
             beacon_surface,
             entity=beacon,
@@ -635,21 +635,72 @@ def test_target_recognition_beacon_and_unknown_parse_and_draw_distinctly() -> No
         )
         assert beacon_alpha > 0
         assert unknown_alpha > 0
+        beacon_center = beacon_surface.get_at((20, 20))
+        assert beacon_center.r > 220
+        assert beacon_center.g < 80
+        assert beacon_center.b < 80
+        assert beacon_surface.get_at((10, 10)).a == 0
         assert pygame.image.tobytes(beacon_surface, "RGBA") != pygame.image.tobytes(
             unknown_surface, "RGBA"
         )
 
-        assert screen._target_recognition_entity_from_code("BCN:F").shape == "beacon"
+        assert screen._target_recognition_entity_from_code("BCN:FDP") == TargetRecognitionSceneEntity(
+            "beacon",
+            "neutral",
+            False,
+            False,
+        )
         assert screen._target_recognition_entity_from_code("UNK:HD").shape == "unknown"
-        parsed_beacon = screen._target_recognition_scene_entity_from_label("Friendly Beacon")
+        parsed_beacon = screen._target_recognition_scene_entity_from_label("Beacon")
         parsed_unknown = screen._target_recognition_scene_entity_from_label("Hostile Unknown (HP)")
-        assert parsed_beacon == TargetRecognitionSceneEntity("beacon", "friendly", False, False)
+        assert parsed_beacon == TargetRecognitionSceneEntity("beacon", "neutral", False, False)
         assert parsed_unknown == TargetRecognitionSceneEntity("unknown", "hostile", False, True)
-        assert screen._target_recognition_scene_label_matches(beacon, "Friendly Beacon")
+        assert screen._target_recognition_scene_label_matches(beacon, "Beacon")
+        assert screen._target_recognition_scene_entity_from_label("Friendly Beacon") is None
+        assert not screen._target_recognition_scene_label_matches(beacon, "Friendly Beacon")
+        assert not screen._target_recognition_scene_label_matches(beacon, "Damaged Beacon")
         assert screen._target_recognition_scene_label_matches(
             TargetRecognitionSceneEntity("unknown", "hostile", False, True),
             "Hostile Unknown (HP)",
         )
+    finally:
+        pygame.quit()
+
+
+def test_target_recognition_non_live_beacon_distractor_is_not_clickable() -> None:
+    payload = replace(
+        _build_payload(active_panels=("scene",)),
+        scene_rows=1,
+        scene_cols=2,
+        scene_cells=("BCN", "TRK:F"),
+        scene_entities=(
+            TargetRecognitionSceneEntity("beacon", "neutral", False, False),
+            TargetRecognitionSceneEntity("truck", "friendly", False, False),
+        ),
+        scene_target="Friendly Truck",
+        scene_has_target=True,
+        scene_target_options=("Friendly Truck",),
+    )
+    _app, screen = _build_screen(_FakeTREngine(payload, title="Target Recognition: Scene Anchor"))
+    try:
+        surface = pygame.display.get_surface()
+        assert surface is not None
+        screen.render(surface)
+
+        hitbox_ids = {glyph_id for _hit, glyph_id in screen._tr_scene_symbol_hitboxes}
+        beacon_ids = {
+            glyph_id
+            for glyph_id, glyph in screen._tr_scene_glyphs.items()
+            if glyph.entity is not None and glyph.entity.shape == "beacon"
+        }
+        live_truck_ids = {
+            glyph_id
+            for glyph_id, glyph in screen._tr_scene_glyphs.items()
+            if glyph.live_target_label == "Friendly Truck"
+        }
+        assert beacon_ids
+        assert beacon_ids.isdisjoint(hitbox_ids)
+        assert live_truck_ids & hitbox_ids
     finally:
         pygame.quit()
 

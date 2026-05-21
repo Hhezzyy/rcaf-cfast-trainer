@@ -39,15 +39,19 @@ _DIRECT_KIND_BY_CODE = {
 }
 
 _SI_STATIC_KINDS = (
-    "landmark_grid",
     "scene_reconstruction",
     "scene_presence",
     "viewpoint_match",
+    "object_count",
+    "object_relation",
 )
 _SI_AIRCRAFT_KINDS = (
     "aircraft_route_selection",
     "aircraft_continuation_selection",
-    "aircraft_location_grid",
+    "aircraft_color_route_selection",
+    "aircraft_count",
+    "aircraft_presence",
+    "aircraft_order",
 )
 _SI_ALL_KINDS = _SI_STATIC_KINDS + _SI_AIRCRAFT_KINDS
 
@@ -155,9 +159,14 @@ def rapid_tracking_godot_config(
         "capture_cooldown_s": max(0.14, 0.48 - ratio * 0.14),
         "camera_orbit_rate_scale": 1.15 + ratio * 0.75,
         "camera_turbulence_scale": 1.55 + ratio * 1.10,
-        "target_speed_scale": 0.82 + ratio * 0.62,
-        "handoff_interval_s": max(3.2, 6.0 - ratio * 2.1),
+        "target_speed_scale": 0.52 + ratio * 0.88,
+        "handoff_interval_s": max(7.5, 15.0 - ratio * 6.8),
         "obscuration_scale": 0.72 + ratio * 0.75,
+        "target_zoom_time_scale": 0.42,
+        "zoom_fov": 16.0,
+        "zoom_bonus_interval_s": max(0.16, 0.28 - ratio * 0.06),
+        "zoom_bonus_points": 1.0,
+        "target_guide_mode": "offscreen_pip",
         "rapid_world": rapid_world,
     }
     if duration_s is not None:
@@ -776,7 +785,7 @@ def spatial_integration_godot_config(
     allowed: tuple[str, ...]
     if token in {"si_landmark_anchor"}:
         parts = ("static",)
-        allowed = ("landmark_grid",)
+        allowed = ("scene_presence", "object_relation", "scene_reconstruction")
     elif token in {"si_reconstruction_run"}:
         parts = ("static",)
         allowed = ("scene_reconstruction",)
@@ -791,7 +800,7 @@ def spatial_integration_godot_config(
         allowed = ("aircraft_continuation_selection",)
     elif token in {"si_aircraft_grid_run"}:
         parts = ("aircraft",)
-        allowed = ("aircraft_location_grid",)
+        allowed = ("aircraft_route_selection", "aircraft_continuation_selection", "aircraft_count")
     elif token in {"si_moving_aircraft_multiview_integration", "si_aircraft_multiview_integration"}:
         parts = ("aircraft",)
         allowed = _SI_AIRCRAFT_KINDS
@@ -805,10 +814,12 @@ def spatial_integration_godot_config(
         "allowed_question_kinds": list(allowed),
         "static_study_s": 12.0,
         "aircraft_study_s": 15.0,
-        "question_time_limit_s": 8.0,
+        "question_time_limit_s": 0.0,
         "practice_scenes_per_part": max(0, int(practice_scenes_per_part)),
         "grid_cols": 24,
         "grid_rows": 24,
+        "answer_grid_cols": 3,
+        "answer_grid_rows": 3,
         "alt_levels": 5,
         "chunked_generation": True,
         "chunk_grid_cols": 24,

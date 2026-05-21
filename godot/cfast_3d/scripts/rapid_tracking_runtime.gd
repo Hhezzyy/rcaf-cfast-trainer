@@ -24,6 +24,12 @@ const CHUNK_TILE_SCALE := 1.03
 const CHUNK_TILE_THICKNESS := 0.045
 const GROUND_VEHICLE_SCALE := 1.28
 const GROUND_PERSON_SCALE := 1.35
+const GUIDE_VIEWPORT_WIDTH := 300
+const GUIDE_VIEWPORT_HEIGHT := 190
+const GUIDE_BORDER_PAD := 5.0
+const GUIDE_MARGIN := 18.0
+const JOYSTICK_DEADZONE := 0.16
+const JOYSTICK_AXIS_SENSITIVITY := 1.45
 const TARGET_KINDS := ["car", "truck", "tank", "person", "building", "helicopter", "jet"]
 
 var control_sender: Callable
@@ -49,11 +55,17 @@ var aim_angles := Vector2.ZERO
 var aim_velocity := Vector2.ZERO
 var target_screen_pos := Vector2.ZERO
 var target_screen_valid := false
+var target_screen_in_view := false
+var target_behind_camera := false
+var target_guide_vector := Vector2.RIGHT
 var active_target_pos := Vector3.ZERO
 var active_target_kind := "truck"
 var active_target_index := -1
 var active_target_moving := true
 var active_target_obscured := false
+var active_target_motion_s := 0.0
+var opening_target_focus_until_s := 0.0
+var opening_target_focus_duration_s := 5.0
 
 var on_target_radius := 0.11
 var capture_box_half_width := 0.14
@@ -64,6 +76,14 @@ var last_capture_at_s := -999.0
 var capture_feedback := ""
 var capture_flash_hit := false
 var sample_event_accum := 0.0
+var zoom_key_active := false
+var zoom_joy_active := false
+var zoom_hold_active := false
+var zoom_blend := 0.0
+var zoom_fov := 16.0
+var zoom_bonus_interval_s := 0.24
+var zoom_bonus_points := 1.0
+var target_guide_mode := "offscreen_pip"
 
 var tracking_sample_count := 0
 var tracking_on_target_count := 0
@@ -79,11 +99,19 @@ var capture_attempts := 0
 var capture_hits := 0
 var capture_points := 0.0
 var capture_max_points := 0.0
+var zoom_bonus_score := 0.0
+var zoom_bonus_max_score := 0.0
+var zoom_held_s := 0.0
+var zoom_on_target_s := 0.0
 var overshoot_count := 0
 var reversal_count := 0
 var previous_error_delta := Vector2.ZERO
 var previous_input_sign_x := 0
 var event_log: Array = []
+var input_left_active := false
+var input_right_active := false
+var input_up_active := false
+var input_down_active := false
 
 var scene_root: Node3D
 var static_root: Node3D
@@ -97,8 +125,10 @@ var capture_top: ColorRect
 var capture_bottom: ColorRect
 var capture_left: ColorRect
 var capture_right: ColorRect
-var target_marker_h: ColorRect
-var target_marker_v: ColorRect
+var guide_viewport: SubViewport
+var guide_camera: Camera3D
+var guide_border: ColorRect
+var guide_texture: TextureRect
 var material_cache := {}
 var rapid_world_config := {}
 var world_size_m := 96.0
@@ -131,10 +161,13 @@ var air_targets_enabled := false
 var target_speed_scale := 1.0
 var camera_orbit_rate_scale := 1.0
 var camera_turbulence_scale := 1.0
-var handoff_interval_s := 4.6
+var handoff_interval_s := 8.8
 var obscuration_scale := 1.0
+var target_zoom_time_scale := 0.42
 var moving_assets := []
 var target_schedule := []
+var target_instances := []
+var target_motion_times := []
 var cluster_centers := []
 var house_positions := []
 var road_nodes := []
@@ -170,11 +203,16 @@ func start(spec: Dictionary, sender: Callable) -> void:
 	capture_box_half_width = maxf(0.075, _float(cfg.get("capture_box_half_width", 0.155 - difficulty * 0.025)))
 	capture_box_half_height = maxf(0.065, _float(cfg.get("capture_box_half_height", 0.135 - difficulty * 0.018)))
 	capture_cooldown_s = maxf(0.12, _float(cfg.get("capture_cooldown_s", 0.46 - difficulty * 0.12)))
-	target_speed_scale = maxf(0.25, _float(cfg.get("target_speed_scale", 0.82 + difficulty * 0.62)))
+	target_speed_scale = maxf(0.25, _float(cfg.get("target_speed_scale", 0.52 + difficulty * 0.88)))
 	camera_orbit_rate_scale = maxf(0.25, _float(cfg.get("camera_orbit_rate_scale", 1.15 + difficulty * 0.75)))
 	camera_turbulence_scale = maxf(0.25, _float(cfg.get("camera_turbulence_scale", 1.55 + difficulty * 1.10)))
-	handoff_interval_s = maxf(3.2, _float(cfg.get("handoff_interval_s", 5.8 - difficulty * 1.9)))
+	handoff_interval_s = maxf(7.5, _float(cfg.get("handoff_interval_s", 15.0 - difficulty * 6.8)))
 	obscuration_scale = maxf(0.0, _float(cfg.get("obscuration_scale", 0.72 + difficulty * 0.75)))
+	target_zoom_time_scale = clampf(_float(cfg.get("target_zoom_time_scale", 0.42)), 0.15, 1.0)
+	zoom_fov = clampf(_float(cfg.get("zoom_fov", 16.0)), 12.0, 52.0)
+	zoom_bonus_interval_s = maxf(0.05, _float(cfg.get("zoom_bonus_interval_s", 0.24)))
+	zoom_bonus_points = maxf(0.0, _float(cfg.get("zoom_bonus_points", 1.0)))
+	target_guide_mode = str(cfg.get("target_guide_mode", "offscreen_pip")).to_lower()
 	elapsed_s = 0.0
 	tick_accum = 0.0
 	progress_accum = 0.0
@@ -182,12 +220,23 @@ func start(spec: Dictionary, sender: Callable) -> void:
 	aim_velocity = Vector2.ZERO
 	target_screen_pos = Vector2.ZERO
 	target_screen_valid = false
+	target_screen_in_view = false
+	target_behind_camera = false
+	target_guide_vector = Vector2.RIGHT
 	active_target_index = -1
+	active_target_motion_s = 0.0
+	opening_target_focus_until_s = 0.0
+	zoom_key_active = false
+	zoom_joy_active = false
+	zoom_hold_active = false
+	zoom_blend = 0.0
+	_clear_movement_keys()
 	event_log.clear()
 	_reset_score()
 	_build_nodes()
 	_generate_scene()
 	_generate_target_schedule()
+	_build_target_instances()
 	_activate_target(0)
 	active = true
 	_send("godot_ready", {
@@ -221,12 +270,21 @@ func update_runtime(delta: float, camera: Camera3D) -> void:
 
 
 func handle_key(event: InputEventKey) -> bool:
-	if not active or paused or event.echo or not event.pressed:
+	if not active or event.echo:
 		return false
 	var key := event.keycode
+	if _set_movement_key(key, event.pressed):
+		return true
+	if paused:
+		return false
+	if key == KEY_SPACE:
+		_set_zoom_source_active("key", event.pressed)
+		return true
+	if not event.pressed:
+		return false
 	if key == KEY_KP_ENTER:
 		return true
-	if key == KEY_SPACE or key == KEY_ENTER or key == KEY_KP_PERIOD:
+	if key == KEY_ENTER or key == KEY_KP_PERIOD:
 		_capture("key")
 		return true
 	return false
@@ -255,6 +313,10 @@ func _reset_score() -> void:
 	capture_hits = 0
 	capture_points = 0.0
 	capture_max_points = 0.0
+	zoom_bonus_score = 0.0
+	zoom_bonus_max_score = 0.0
+	zoom_held_s = 0.0
+	zoom_on_target_s = 0.0
 	overshoot_count = 0
 	reversal_count = 0
 	previous_error_delta = Vector2.ZERO
@@ -263,6 +325,11 @@ func _reset_score() -> void:
 	last_capture_at_s = -999.0
 	capture_feedback = ""
 	capture_flash_hit = false
+	zoom_key_active = false
+	zoom_joy_active = false
+	zoom_hold_active = false
+	zoom_blend = 0.0
+	_clear_movement_keys()
 
 
 func _step(dt: float) -> void:
@@ -271,7 +338,7 @@ func _step(dt: float) -> void:
 	if next_target_index != active_target_index:
 		_activate_target(next_target_index)
 	var input_vec := _input_vector()
-	var gain := 1.75 + difficulty * 0.85
+	var gain := 2.45 + difficulty * 1.05
 	aim_velocity += input_vec * gain * dt
 	aim_velocity *= pow(0.08, dt)
 	aim_angles += aim_velocity * dt
@@ -282,30 +349,77 @@ func _step(dt: float) -> void:
 		reversal_count += 1
 	if input_sign_x != 0:
 		previous_input_sign_x = int(input_sign_x)
+	active_target_motion_s += dt * lerpf(1.0, target_zoom_time_scale, clampf(zoom_blend, 0.0, 1.0))
+	if active_target_index >= 0 and active_target_index < target_motion_times.size():
+		target_motion_times[active_target_index] = active_target_motion_s
 	_score_tracking(dt)
-	if Input.is_joy_button_pressed(_primary_joypad(), JOY_BUTTON_A):
-		_capture("joystick")
+	var joy := _primary_joypad()
+	_set_zoom_source_active("joystick", joy >= 0 and Input.is_joy_button_pressed(joy, JOY_BUTTON_A))
 	if elapsed_s >= duration_s:
 		_complete()
 
 
 func _input_vector() -> Vector2:
 	var out := Vector2.ZERO
-	if Input.is_key_pressed(KEY_A) or Input.is_key_pressed(KEY_LEFT):
+	if input_left_active or Input.is_key_pressed(KEY_A) or Input.is_key_pressed(KEY_LEFT):
 		out.x += 1.0
-	if Input.is_key_pressed(KEY_D) or Input.is_key_pressed(KEY_RIGHT):
+	if input_right_active or Input.is_key_pressed(KEY_D) or Input.is_key_pressed(KEY_RIGHT):
 		out.x -= 1.0
-	if Input.is_key_pressed(KEY_W) or Input.is_key_pressed(KEY_UP):
+	if input_up_active or Input.is_key_pressed(KEY_W) or Input.is_key_pressed(KEY_UP):
 		out.y += 1.0
-	if Input.is_key_pressed(KEY_S) or Input.is_key_pressed(KEY_DOWN):
+	if input_down_active or Input.is_key_pressed(KEY_S) or Input.is_key_pressed(KEY_DOWN):
 		out.y -= 1.0
 	var joy := _primary_joypad()
+	var max_input_length := 1.0
 	if joy >= 0:
-		out.x -= Input.get_joy_axis(joy, JOY_AXIS_LEFT_X)
-		out.y -= Input.get_joy_axis(joy, JOY_AXIS_LEFT_Y)
-	if out.length() > 1.0:
-		out = out.normalized()
+		var joy_axis := Vector2(
+			-_joy_axis_with_deadzone(joy, JOY_AXIS_LEFT_X),
+			_joy_axis_with_deadzone(joy, JOY_AXIS_LEFT_Y)
+		)
+		if joy_axis.length() > 0.0:
+			out += joy_axis * JOYSTICK_AXIS_SENSITIVITY
+			max_input_length = JOYSTICK_AXIS_SENSITIVITY
+		if Input.is_joy_button_pressed(joy, JOY_BUTTON_DPAD_LEFT):
+			out.x += 1.0
+		if Input.is_joy_button_pressed(joy, JOY_BUTTON_DPAD_RIGHT):
+			out.x -= 1.0
+		if Input.is_joy_button_pressed(joy, JOY_BUTTON_DPAD_UP):
+			out.y += 1.0
+		if Input.is_joy_button_pressed(joy, JOY_BUTTON_DPAD_DOWN):
+			out.y -= 1.0
+	if out.length() > max_input_length:
+		out = out.normalized() * max_input_length
 	return out
+
+
+func _set_movement_key(key: int, pressed: bool) -> bool:
+	if key == KEY_A or key == KEY_LEFT:
+		input_left_active = bool(pressed)
+		return true
+	if key == KEY_D or key == KEY_RIGHT:
+		input_right_active = bool(pressed)
+		return true
+	if key == KEY_W or key == KEY_UP:
+		input_up_active = bool(pressed)
+		return true
+	if key == KEY_S or key == KEY_DOWN:
+		input_down_active = bool(pressed)
+		return true
+	return false
+
+
+func _clear_movement_keys() -> void:
+	input_left_active = false
+	input_right_active = false
+	input_up_active = false
+	input_down_active = false
+
+
+func _joy_axis_with_deadzone(joy: int, axis: int) -> float:
+	var value := float(Input.get_joy_axis(joy, axis))
+	if absf(value) < JOYSTICK_DEADZONE:
+		return 0.0
+	return value
 
 
 func _primary_joypad() -> int:
@@ -315,7 +429,33 @@ func _primary_joypad() -> int:
 	return int(pads[0])
 
 
+func _set_zoom_source_active(source: String, value: bool) -> void:
+	var active_value := bool(value)
+	var changed := false
+	if source == "key":
+		changed = zoom_key_active != active_value
+		zoom_key_active = active_value
+	elif source == "joystick":
+		changed = zoom_joy_active != active_value
+		zoom_joy_active = active_value
+	else:
+		return
+	var next_hold := zoom_key_active or zoom_joy_active
+	if next_hold == zoom_hold_active and not changed:
+		return
+	if next_hold == zoom_hold_active:
+		return
+	zoom_hold_active = next_hold
+	_append_event("zoom_hold_" + ("start" if zoom_hold_active else "end"), true, 0.0, 0.0, {
+		"source": source,
+		"zoom_active": zoom_hold_active,
+		"target_kind": active_target_kind,
+		"target_index": active_target_index,
+	}, false)
+
+
 func _score_tracking(dt: float) -> void:
+	_score_zoom_bonus(dt)
 	if not target_screen_valid:
 		return
 	var error_delta := Vector2.ZERO - target_screen_pos
@@ -351,6 +491,20 @@ func _score_tracking(dt: float) -> void:
 			"aim_yaw_rad": aim_angles.x,
 			"aim_pitch_rad": aim_angles.y,
 		}, false)
+
+
+func _score_zoom_bonus(dt: float) -> void:
+	if not zoom_hold_active:
+		return
+	zoom_held_s += dt
+	var in_box := target_screen_valid and not active_target_obscured and _reticle_in_capture_box()
+	if in_box:
+		zoom_on_target_s += dt
+	var bonus_rate := zoom_bonus_points / maxf(0.05, zoom_bonus_interval_s)
+	var max_delta := bonus_rate * dt
+	zoom_bonus_max_score += max_delta
+	if in_box:
+		zoom_bonus_score += max_delta
 
 
 func _capture(source: String) -> void:
@@ -394,7 +548,7 @@ func _target_index_for_time(time_s: float) -> int:
 func _segment_duration_s() -> float:
 	var token := test_code.to_lower()
 	if token.find("pressure") >= 0 or token.find("air_speed") >= 0:
-		return minf(handoff_interval_s, 8.0)
+		return minf(handoff_interval_s, 8.0 + (1.0 - difficulty) * 3.0)
 	if token.find("lock_anchor") >= 0:
 		return maxf(handoff_interval_s, 16.0)
 	return handoff_interval_s
@@ -404,11 +558,13 @@ func _activate_target(index: int) -> void:
 	if index < 0 or index >= target_schedule.size():
 		return
 	active_target_index = index
+	active_target_motion_s = _float(target_motion_times[index], 0.0) if index < target_motion_times.size() else 0.0
 	var item := _as_dict(target_schedule[index])
 	active_target_kind = str(item.get("kind", "truck"))
 	active_target_moving = bool(item.get("moving", true))
-	_clear_children(target_root)
-	_build_target_model(active_target_kind)
+	active_target_pos = _active_target_world_position()
+	if index == 0:
+		opening_target_focus_until_s = elapsed_s + opening_target_focus_duration_s
 	_append_event("target_handoff", true, 0.0, 0.0, {
 		"target_kind": active_target_kind,
 		"target_index": active_target_index,
@@ -419,12 +575,16 @@ func _active_target_world_position() -> Vector3:
 	if active_target_index < 0 or active_target_index >= target_schedule.size():
 		return Vector3.ZERO
 	var item := _as_dict(target_schedule[active_target_index])
+	var local_t := maxf(0.0, active_target_motion_s)
+	return _target_position_for_item(item, active_target_kind, local_t)
+
+
+func _target_position_for_item(item: Dictionary, target_kind: String, local_t: float) -> Vector3:
 	var base := _vec3(item.get("base", {}), Vector3.ZERO)
 	var phase_offset := _float(item.get("phase", 0.0))
 	var radius := _float(item.get("radius", 4.0))
 	var speed := _float(item.get("speed", 0.25))
-	var local_t := maxf(0.0, elapsed_s - float(active_target_index) * _segment_duration_s())
-	var token := active_target_kind.to_lower()
+	var token := target_kind.to_lower()
 	if str(item.get("route", "")) == "path_graph":
 		var route_nodes := _int_array(item.get("route_nodes", []))
 		var pose := _route_pose(route_nodes, _float(item.get("route_distance", 0.0)) + local_t * speed, _float(item.get("lane_offset", 0.0)))
@@ -471,32 +631,57 @@ func _is_active_target_obscured(camera: Camera3D) -> bool:
 
 
 func _update_live_objects(camera: Camera3D) -> void:
+	_update_scheduled_target_nodes()
 	active_target_pos = _active_target_world_position()
 	active_target_obscured = _is_active_target_obscured(camera)
-	target_root.position = active_target_pos
-	var look := active_target_pos + active_target_direction
-	if active_target_pos.distance_to(look) > 0.01:
-		target_root.look_at(look, Vector3.UP)
-	var tint := GREEN_COLOR
-	if active_target_obscured:
-		tint = Color(0.48, 0.62, 0.52, 1.0)
-	_apply_material_recursive(target_root, tint, true)
 	for asset in moving_assets:
 		_update_moving_asset(_as_dict(asset))
 	_update_target_screen(camera)
 
 
+func _update_scheduled_target_nodes() -> void:
+	for i in range(min(target_instances.size(), target_schedule.size())):
+		var node: Variant = target_instances[i]
+		if not (node is Node3D):
+			continue
+		var root := node as Node3D
+		var item := _as_dict(target_schedule[i])
+		var kind_value := str(item.get("kind", "truck"))
+		var local_t := _float(target_motion_times[i], 0.0) if i < target_motion_times.size() else 0.0
+		var pos := _target_position_for_item(item, kind_value, local_t)
+		var dir := active_target_direction
+		root.position = pos
+		root.visible = true
+		if dir.length() > 0.01:
+			root.look_at(pos + dir, Vector3.UP)
+
+
 func _update_target_screen(camera: Camera3D) -> void:
 	target_screen_valid = false
+	target_screen_in_view = false
+	target_behind_camera = false
 	if camera == null:
 		return
-	if camera.is_position_behind(active_target_pos):
+	var target_point := active_target_pos + Vector3(0.0, 0.6, 0.0)
+	var local := camera.global_transform.affine_inverse() * target_point
+	target_guide_vector = Vector2(local.x, local.y)
+	if target_guide_vector.length() < 0.05:
+		target_guide_vector = Vector2.RIGHT
+	target_behind_camera = camera.is_position_behind(target_point)
+	if target_behind_camera:
 		return
-	var pixel := camera.unproject_position(active_target_pos + Vector3(0.0, 0.6, 0.0))
-	var size := get_viewport().get_visible_rect().size
+	var pixel := camera.unproject_position(target_point)
+	var viewport := get_viewport()
+	if viewport == null:
+		return
+	var size := viewport.get_visible_rect().size
 	if size.x <= 1.0 or size.y <= 1.0:
 		return
 	target_screen_pos = Vector2((pixel.x / size.x) * 2.0 - 1.0, 1.0 - (pixel.y / size.y) * 2.0)
+	target_guide_vector = target_screen_pos
+	if target_guide_vector.length() < 0.05:
+		target_guide_vector = Vector2.RIGHT
+	target_screen_in_view = target_screen_pos.x >= -1.0 and target_screen_pos.x <= 1.0 and target_screen_pos.y >= -1.0 and target_screen_pos.y <= 1.0
 	target_screen_valid = target_screen_pos.x >= -1.08 and target_screen_pos.x <= 1.08 and target_screen_pos.y >= -1.08 and target_screen_pos.y <= 1.08
 
 
@@ -574,10 +759,19 @@ func _update_camera(camera: Camera3D, dt: float) -> void:
 		right = Vector3.RIGHT
 	var look_dir := (Basis(right, aim_angles.y) * yawed_forward).normalized()
 	var focus := desired + look_dir * maxf(8.0, radius)
+	var handoff_remaining := maxf(0.0, opening_target_focus_until_s - elapsed_s)
+	if handoff_remaining > 0.0:
+		var handoff_t := clampf(handoff_remaining / maxf(0.001, opening_target_focus_duration_s), 0.0, 1.0)
+		var zoom_release_assist := 1.0 - clampf(zoom_blend * 0.72, 0.0, 0.82)
+		var focus_assist := clampf(handoff_t * zoom_release_assist, 0.0, 1.0)
+		focus = focus.lerp(active_target_pos + Vector3(0.0, 1.2, 0.0), focus_assist)
+	var zoom_target := 1.0 if zoom_hold_active else 0.0
+	zoom_blend += (zoom_target - zoom_blend) * clampf(dt * 8.5, 0.0, 1.0)
+	var base_fov := 58.0
 	if capture_feedback_until_s > elapsed_s and capture_flash_hit:
-		camera.fov = lerpf(camera.fov, 48.0, 0.16)
-	else:
-		camera.fov = lerpf(camera.fov, 58.0, 0.08)
+		base_fov = 48.0
+	var desired_fov := lerpf(base_fov, zoom_fov, clampf(zoom_blend, 0.0, 1.0))
+	camera.fov = lerpf(camera.fov, desired_fov, 0.16 if zoom_hold_active else 0.10)
 	var blend := clampf(1.0 - pow(0.015, dt), 0.02, 0.24)
 	camera.position = camera.position.lerp(desired, blend)
 	camera.look_at(focus, Vector3.UP)
@@ -592,12 +786,17 @@ func _update_hud(camera: Camera3D) -> void:
 	if capture_feedback_until_s > elapsed_s:
 		feedback = " | " + hit_text
 	var on_ratio := 0.0 if tracking_sample_count <= 0 else float(tracking_on_target_count) / float(tracking_sample_count)
-	hud_label.text = "Rapid Tracking | " + phase + " | " + str(int(ceil(remaining))) + "s | On target " + str(int(round(on_ratio * 100.0))) + "% | Captures " + str(capture_hits) + "/" + str(capture_attempts) + feedback
+	var zoom_ratio := 0.0 if zoom_bonus_max_score <= 0.0 else zoom_bonus_score / zoom_bonus_max_score
+	hud_label.text = "Rapid Tracking | " + phase + " | " + str(int(ceil(remaining))) + "s | On target " + str(int(round(on_ratio * 100.0))) + "% | Zoom bonus " + str(int(round(zoom_ratio * 100.0))) + "%" + feedback
 	_update_overlay(camera)
+	_update_target_guide(camera)
 
 
 func _update_overlay(camera: Camera3D) -> void:
-	var size := get_viewport().get_visible_rect().size
+	var viewport := get_viewport()
+	if viewport == null:
+		return
+	var size := viewport.get_visible_rect().size
 	if size.x <= 1.0 or size.y <= 1.0:
 		return
 	var center := _norm_to_pixel(Vector2.ZERO, size)
@@ -611,12 +810,80 @@ func _update_overlay(camera: Camera3D) -> void:
 	_set_rect(capture_bottom, center + Vector2(-half.x, half.y), Vector2(half.x * 2.0, 2.0), color.darkened(0.08))
 	_set_rect(capture_left, center + Vector2(-half.x, -half.y), Vector2(2.0, half.y * 2.0), color.darkened(0.08))
 	_set_rect(capture_right, center + Vector2(half.x, -half.y), Vector2(2.0, half.y * 2.0), color.darkened(0.08))
-	var marker_color := GREEN_COLOR if target_screen_valid and not active_target_obscured else Color(0.55, 0.64, 0.58, 1.0)
-	var target_px := _norm_to_pixel(target_screen_pos, size)
-	target_marker_h.visible = target_screen_valid
-	target_marker_v.visible = target_screen_valid
-	_set_rect(target_marker_h, target_px + Vector2(-13.0, -1.5), Vector2(26.0, 3.0), marker_color)
-	_set_rect(target_marker_v, target_px + Vector2(-1.5, -13.0), Vector2(3.0, 26.0), marker_color)
+
+
+func _update_target_guide(camera: Camera3D) -> void:
+	if guide_border == null or guide_texture == null or guide_camera == null:
+		return
+	var enabled := target_guide_mode == "offscreen_pip"
+	var should_show := enabled and active_target_index >= 0 and not target_screen_in_view
+	guide_border.visible = should_show
+	guide_texture.visible = should_show
+	if not should_show:
+		return
+	var viewport := get_viewport()
+	if viewport == null:
+		return
+	var size := viewport.get_visible_rect().size
+	if size.x <= 1.0 or size.y <= 1.0:
+		return
+	var guide_size := _target_guide_size(size)
+	var guide_pos := _target_guide_position(size, guide_size)
+	_set_rect(guide_border, guide_pos, guide_size, AMBER_COLOR)
+	guide_texture.position = guide_pos + Vector2(GUIDE_BORDER_PAD, GUIDE_BORDER_PAD)
+	guide_texture.size = guide_size - Vector2(GUIDE_BORDER_PAD * 2.0, GUIDE_BORDER_PAD * 2.0)
+	_update_guide_camera(camera)
+
+
+func _target_guide_size(view_size: Vector2) -> Vector2:
+	var width := clampf(view_size.x * 0.26, 220.0, float(GUIDE_VIEWPORT_WIDTH))
+	if view_size.x < 720.0:
+		width = clampf(view_size.x * 0.36, 180.0, 240.0)
+	return Vector2(width, width * (float(GUIDE_VIEWPORT_HEIGHT) / float(GUIDE_VIEWPORT_WIDTH)))
+
+
+func _target_guide_position(view_size: Vector2, guide_size: Vector2) -> Vector2:
+	var dir := target_guide_vector
+	if dir.length() < 0.05:
+		dir = Vector2.RIGHT
+	var x := GUIDE_MARGIN if dir.x < 0.0 else view_size.x - guide_size.x - GUIDE_MARGIN
+	var y := (view_size.y - guide_size.y) * 0.5
+	if dir.y > 0.18:
+		y = GUIDE_MARGIN
+	elif dir.y < -0.18:
+		y = view_size.y - guide_size.y - GUIDE_MARGIN
+	return Vector2(clampf(x, GUIDE_MARGIN, maxf(GUIDE_MARGIN, view_size.x - guide_size.x - GUIDE_MARGIN)), clampf(y, GUIDE_MARGIN, maxf(GUIDE_MARGIN, view_size.y - guide_size.y - GUIDE_MARGIN)))
+
+
+func _update_guide_camera(main_camera: Camera3D) -> void:
+	if guide_camera == null:
+		return
+	var token := active_target_kind.to_lower()
+	var air_target := token == "helicopter" or token == "jet"
+	var building_target := token == "building"
+	var focus_height := 1.4
+	var distance := 7.0
+	var lift := 2.8
+	if air_target:
+		focus_height = 0.3
+		distance = 11.0
+		lift = 3.8
+	elif building_target:
+		focus_height = 1.7
+		distance = 10.5
+		lift = 4.2
+	var focus := active_target_pos + Vector3(0.0, focus_height, 0.0)
+	var facing := active_target_direction
+	if facing.length() < 0.05 and main_camera != null:
+		facing = (focus - main_camera.global_position).normalized()
+	if facing.length() < 0.05:
+		facing = Vector3.FORWARD
+	guide_camera.projection = Camera3D.PROJECTION_PERSPECTIVE
+	guide_camera.fov = 33.0 if not air_target else 38.0
+	guide_camera.near = 0.05
+	guide_camera.far = maxf(100.0, world_size_m * 1.8)
+	guide_camera.global_position = focus - facing.normalized() * distance + Vector3.UP * lift
+	guide_camera.look_at(focus, Vector3.UP)
 
 
 func _reticle_in_capture_box() -> bool:
@@ -649,9 +916,14 @@ func _send_progress() -> void:
 			"time_remaining_s": maxf(0.0, duration_s - elapsed_s),
 			"attempted": _attempted_count(),
 			"correct": _correct_count(),
-			"score": tracking_score + capture_points,
+			"score": tracking_score + capture_points + zoom_bonus_score,
 			"capture_attempts": capture_attempts,
 			"capture_hits": capture_hits,
+			"zoom_active": zoom_hold_active,
+			"zoom_bonus_score": zoom_bonus_score,
+			"zoom_bonus_max_score": zoom_bonus_max_score,
+			"zoom_held_s": zoom_held_s,
+			"zoom_on_target_s": zoom_on_target_s,
 			"active_target_kind": active_target_kind,
 			"aim_yaw_rad": aim_angles.x,
 			"aim_pitch_rad": aim_angles.y,
@@ -683,8 +955,8 @@ func _complete() -> void:
 	completed_run_key = run_key
 	var attempted := _attempted_count()
 	var correct := _correct_count()
-	var total_score := tracking_score + capture_points
-	var max_score := tracking_max_score + capture_max_points
+	var total_score := tracking_score + capture_points + zoom_bonus_score
+	var max_score := tracking_max_score + capture_max_points + zoom_bonus_max_score
 	var summary := {
 		"attempted": attempted,
 		"correct": correct,
@@ -743,6 +1015,12 @@ func _complete() -> void:
 		"capture_accuracy": 0.0 if capture_attempts <= 0 else float(capture_hits) / float(capture_attempts),
 		"capture_max_points": capture_max_points,
 		"capture_score_ratio": 0.0 if capture_max_points <= 0.0 else capture_points / capture_max_points,
+		"zoom_bonus_score": zoom_bonus_score,
+		"zoom_bonus_max_score": zoom_bonus_max_score,
+		"zoom_bonus_ratio": 0.0 if zoom_bonus_max_score <= 0.0 else zoom_bonus_score / zoom_bonus_max_score,
+		"zoom_held_s": zoom_held_s,
+		"zoom_on_target_s": zoom_on_target_s,
+		"zoom_on_target_ratio": 0.0 if zoom_held_s <= 0.0 else zoom_on_target_s / zoom_held_s,
 		"overshoot_count": overshoot_count,
 		"reversal_count": reversal_count,
 	}
@@ -803,7 +1081,7 @@ func _build_nodes() -> void:
 	moving_root.name = "MovingDistractors"
 	scene_root.add_child(moving_root)
 	target_root = Node3D.new()
-	target_root.name = "ActiveTarget"
+	target_root.name = "TrackedTargets"
 	scene_root.add_child(target_root)
 	hud_layer = CanvasLayer.new()
 	hud_layer.layer = 4
@@ -820,8 +1098,7 @@ func _build_nodes() -> void:
 	capture_bottom = _make_color_rect("CaptureBottom")
 	capture_left = _make_color_rect("CaptureLeft")
 	capture_right = _make_color_rect("CaptureRight")
-	target_marker_h = _make_color_rect("TargetMarkerH")
-	target_marker_v = _make_color_rect("TargetMarkerV")
+	_build_target_guide()
 
 
 func _make_color_rect(name_value: String) -> ColorRect:
@@ -831,6 +1108,31 @@ func _make_color_rect(name_value: String) -> ColorRect:
 	rect.color = WHITE_COLOR
 	hud_layer.add_child(rect)
 	return rect
+
+
+func _build_target_guide() -> void:
+	guide_viewport = SubViewport.new()
+	guide_viewport.name = "TargetGuideViewport"
+	guide_viewport.size = Vector2i(GUIDE_VIEWPORT_WIDTH, GUIDE_VIEWPORT_HEIGHT)
+	guide_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	var root_viewport := get_viewport()
+	if root_viewport != null:
+		guide_viewport.world_3d = root_viewport.world_3d
+	add_child(guide_viewport)
+	guide_camera = Camera3D.new()
+	guide_camera.name = "GuideCamera"
+	guide_camera.current = true
+	guide_camera.fov = 33.0
+	guide_viewport.add_child(guide_camera)
+	guide_border = _make_color_rect("TargetGuideBorder")
+	guide_texture = TextureRect.new()
+	guide_texture.name = "TargetGuideTexture"
+	guide_texture.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	guide_texture.texture = guide_viewport.get_texture()
+	guide_texture.stretch_mode = TextureRect.STRETCH_SCALE
+	guide_texture.visible = false
+	guide_border.visible = false
+	hud_layer.add_child(guide_texture)
 
 
 func _clear_runtime() -> void:
@@ -844,8 +1146,14 @@ func _clear_runtime() -> void:
 	target_root = null
 	hud_layer = null
 	hud_label = null
+	guide_viewport = null
+	guide_camera = null
+	guide_border = null
+	guide_texture = null
 	moving_assets.clear()
 	target_schedule.clear()
+	target_instances.clear()
+	target_motion_times.clear()
 	cluster_centers.clear()
 	house_positions.clear()
 	road_nodes.clear()
@@ -855,6 +1163,16 @@ func _clear_runtime() -> void:
 	tunnel_segments.clear()
 	occluder_positions.clear()
 	chunk_map.clear()
+	target_screen_valid = false
+	target_screen_in_view = false
+	target_behind_camera = false
+	target_guide_vector = Vector2.RIGHT
+	active_target_motion_s = 0.0
+	opening_target_focus_until_s = 0.0
+	zoom_key_active = false
+	zoom_joy_active = false
+	zoom_hold_active = false
+	zoom_blend = 0.0
 
 
 func _configure_world(cfg: Dictionary) -> void:
@@ -1178,6 +1496,7 @@ func _draw_chunk_ground_tiles() -> void:
 		var tint := _chunk_tile_color(cell)
 		_make_box_child(static_root, _chunk_tile_node_name(cell), pos, Vector3(chunk_size_m * CHUNK_TILE_SCALE, CHUNK_TILE_THICKNESS, chunk_size_m * CHUNK_TILE_SCALE), tint)
 		_make_chunk_elevation_block(cell, pos, tint)
+	_draw_merged_elevation_clusters()
 
 
 func _chunk_cell_has_road(cell: Dictionary) -> bool:
@@ -1244,15 +1563,101 @@ func _make_chunk_elevation_block(cell: Dictionary, tile_pos: Vector3, tint: Colo
 	var terrain := str(cell.get("terrain", "grassland"))
 	if terrain != "hill" and terrain != "mountain":
 		return
+	var edge_mountain := bool(cell.get("edge_mountain", false))
+	if not edge_mountain and str(cell.get("cluster_id", "")) != "":
+		return
 	var tier: int = max(1, int(cell.get("height_tier", 2)))
 	var is_mountain := terrain == "mountain"
-	var edge_mountain := bool(cell.get("edge_mountain", false))
 	var height := (5.60 + float(tier) * 1.95) if edge_mountain else ((3.80 + float(tier) * 1.45) if is_mountain else (2.20 + float(tier) * 1.05))
 	var footprint := chunk_size_m * (1.28 if edge_mountain else (1.16 if is_mountain else 1.08))
-	var center := Vector3(tile_pos.x, _terrain_height_at(tile_pos.x, tile_pos.z) + height * 0.5, tile_pos.z)
+	var base_y := _terrain_height_at(tile_pos.x, tile_pos.z) + 0.02
 	var color := tint.darkened(0.04) if is_mountain else tint.lightened(0.08)
-	_make_box_child(static_root, "MountainChunkBlock" if is_mountain else "HillChunkBlock", center, Vector3(footprint, height, footprint), color)
+	_make_rounded_terrain_dome(
+		static_root,
+		"MountainRoundedDome" if is_mountain else "HillRoundedDome",
+		Vector3(tile_pos.x, base_y, tile_pos.z),
+		footprint * 0.58,
+		height,
+		color
+	)
+	var center := Vector3(tile_pos.x, base_y + height * 0.52, tile_pos.z)
 	occluder_positions.append({"pos": _vec3_dict(center), "radius": footprint * (0.95 if edge_mountain else 0.82), "type": "terrain"})
+
+
+func _draw_merged_elevation_clusters() -> void:
+	if not chunked_generation or chunk_map.is_empty():
+		return
+	for cluster_item in chunk_map.get("hill_clusters", []):
+		_make_merged_elevation_cluster(_as_dict(cluster_item), "hill")
+	for cluster_item in chunk_map.get("mountain_clusters", []):
+		_make_merged_elevation_cluster(_as_dict(cluster_item), "mountain")
+
+
+func _make_merged_elevation_cluster(cluster: Dictionary, terrain_name: String) -> void:
+	var is_mountain := terrain_name == "mountain"
+	var cx := int(cluster.get("x", 0))
+	var cy := int(cluster.get("y", 0))
+	var peak_tier: int = max(1, int(cluster.get("peak_tier", 4)))
+	var footprint_cells: int = max(1, int(cluster.get("footprint_cells", int(cluster.get("radius", 2)) * 2 + 1)))
+	var target_footprint: int = max(1, int(cluster.get("target_footprint", footprint_cells)))
+	var dome_cells: int = max(footprint_cells, target_footprint)
+	var tile_pos := _chunk_cell_center_world(cx, cy, 0.0)
+	var base_y := _terrain_height_at(tile_pos.x, tile_pos.z) + 0.02
+	var height := (4.40 + float(peak_tier) * 1.55) if is_mountain else (2.55 + float(peak_tier) * 1.10)
+	var radius := float(dome_cells) * chunk_size_m * (0.56 if is_mountain else 0.52)
+	var color := MOUNTAIN_COLOR.lightened(0.06) if is_mountain else MOUNTAIN_COLOR.lerp(FIELD_GREEN, 0.34).lightened(0.06)
+	_make_rounded_terrain_dome(
+		static_root,
+		"MergedMountainClusterDome" if is_mountain else "MergedHillClusterDome",
+		Vector3(tile_pos.x, base_y, tile_pos.z),
+		radius,
+		height,
+		color
+	)
+	var center := Vector3(tile_pos.x, base_y + height * 0.52, tile_pos.z)
+	occluder_positions.append({"pos": _vec3_dict(center), "radius": radius * 0.78, "type": "terrain"})
+
+
+func _make_rounded_terrain_dome(parent: Node, name_value: String, base_center: Vector3, radius: float, height: float, color: Color) -> MeshInstance3D:
+	var mesh := ArrayMesh.new()
+	var vertices := PackedVector3Array()
+	var normals := PackedVector3Array()
+	var indices := PackedInt32Array()
+	var rings := 6
+	var segments := 18
+	for r in range(rings + 1):
+		var frac := float(r) / float(rings)
+		var ring_radius := radius * frac
+		var y := base_center.y + height * pow(maxf(0.0, 1.0 - frac * frac), 0.72)
+		for s in range(segments):
+			var ang := (TAU * float(s)) / float(segments)
+			vertices.append(Vector3(base_center.x + cos(ang) * ring_radius, y, base_center.z + sin(ang) * ring_radius))
+			normals.append(Vector3.UP)
+	for r in range(rings):
+		for s in range(segments):
+			var next_s := (s + 1) % segments
+			var i0 := r * segments + s
+			var i1 := r * segments + next_s
+			var i2 := (r + 1) * segments + s
+			var i3 := (r + 1) * segments + next_s
+			indices.append(i0)
+			indices.append(i2)
+			indices.append(i1)
+			indices.append(i1)
+			indices.append(i2)
+			indices.append(i3)
+	var arrays := []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = vertices
+	arrays[Mesh.ARRAY_NORMAL] = normals
+	arrays[Mesh.ARRAY_INDEX] = indices
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	var node := MeshInstance3D.new()
+	node.name = name_value
+	node.mesh = mesh
+	node.material_override = _material(color)
+	parent.add_child(node)
+	return node
 
 
 func _draw_road_graph() -> void:
@@ -1535,14 +1940,14 @@ func _make_moving_distractors() -> void:
 			_build_aircraft(root, BLUE_COLOR.darkened(0.25), 0.72)
 		else:
 			_build_helicopter(root, Color(0.30, 0.42, 0.48, 1.0), 0.82)
-		moving_assets.append({
-			"node": root,
-			"asset_kind": "helicopter" if i % 2 else "jet",
-			"center": _vec3_dict(Vector3(rng.randf_range(-world_size_m * 0.32, world_size_m * 0.32), 0.0, rng.randf_range(-world_size_m * 0.32, world_size_m * 0.32))),
-			"radius": rng.randf_range(20.0, 42.0),
-			"speed": rng.randf_range(0.24, 0.58 + difficulty * 0.38),
-			"phase": rng.randf() * TAU,
-			"altitude": rng.randf_range(11.0, 28.0),
+			moving_assets.append({
+				"node": root,
+				"asset_kind": "helicopter" if i % 2 else "jet",
+				"center": _vec3_dict(Vector3(rng.randf_range(-world_size_m * 0.32, world_size_m * 0.32), 0.0, rng.randf_range(-world_size_m * 0.32, world_size_m * 0.32))),
+				"radius": rng.randf_range(20.0, 42.0),
+				"speed": rng.randf_range(0.18, 0.42 + difficulty * 0.45) * target_speed_scale,
+				"phase": rng.randf() * TAU,
+				"altitude": rng.randf_range(11.0, 28.0),
 			"altitude_bob": rng.randf_range(3.2, 7.8),
 			"route": "air",
 		})
@@ -1552,6 +1957,7 @@ func _generate_target_schedule() -> void:
 	var rng := _rng_for("targets")
 	var count := int(ceil(duration_s / _segment_duration_s())) + 2
 	target_schedule.clear()
+	var handoff_anchor := Vector3.ZERO
 	for i in range(count):
 		var target_kind := _target_kind_for_slot(i, rng)
 		var moving := target_kind != "building"
@@ -1582,8 +1988,25 @@ func _generate_target_schedule() -> void:
 			item["route_distance"] = rng.randf_range(0.0, maxf(1.0, _route_length(route_nodes)))
 			item["lane_offset"] = rng.randf_range(-0.38, 0.38) if target_kind != "person" else rng.randf_range(-0.86, 0.86)
 			item["speed"] = _ground_speed_for_kind(target_kind, rng) * (1.06 + difficulty * 0.18)
+		_align_target_item_to_handoff_anchor(item, target_kind, handoff_anchor, rng, i == 0)
 		target_schedule.append(item)
+		target_motion_times.append(0.0)
+		handoff_anchor = _target_position_for_item(item, target_kind, _segment_duration_s())
 	target_schedule_hash = _hash_target_schedule()
+
+
+func _build_target_instances() -> void:
+	_clear_children(target_root)
+	target_instances.clear()
+	for i in range(target_schedule.size()):
+		var item := _as_dict(target_schedule[i])
+		var kind_value := str(item.get("kind", "truck"))
+		var node := Node3D.new()
+		node.name = "TrackedTarget%02d_%s" % [i, kind_value]
+		target_root.add_child(node)
+		_build_target_model(node, kind_value)
+		target_instances.append(node)
+	_update_scheduled_target_nodes()
 
 
 func _target_kind_for_slot(index: int, rng: RandomNumberGenerator) -> String:
@@ -1612,6 +2035,99 @@ func _target_kind_for_slot(index: int, rng: RandomNumberGenerator) -> String:
 	return "building"
 
 
+func _align_target_item_to_handoff_anchor(item: Dictionary, target_kind: String, anchor: Vector3, rng: RandomNumberGenerator, first_target: bool) -> void:
+	var token := target_kind.to_lower()
+	var handoff_radius := 3.0 if first_target else (4.0 + difficulty * 10.0)
+	if bool(item.get("moving", true)):
+		var speed_scale := rng.randf_range(0.52, 0.78) if rng.randf() < 0.74 else rng.randf_range(0.78, 1.02)
+		item["speed"] = maxf(0.06, _float(item.get("speed", 0.25)) * speed_scale)
+	if str(item.get("route", "")) == "path_graph":
+		var route_nodes := _route_nodes_near_position(anchor, rng, target_kind)
+		if route_nodes.size() >= 2:
+			item["route_nodes"] = route_nodes
+			item["route_total"] = _route_length(route_nodes)
+			item["route_distance"] = _route_distance_near_position(route_nodes, anchor)
+		return
+	var phase_offset := _float(item.get("phase", 0.0))
+	var radius := _float(item.get("radius", 4.0))
+	var handoff_target := _surface_position_near(anchor, rng, handoff_radius)
+	if token == "helicopter":
+		var start_offset := Vector3(sin(phase_offset) * radius, 0.0, cos(phase_offset) * radius)
+		item["base"] = _vec3_dict(_clamped_world_position(handoff_target - start_offset))
+	elif token == "jet":
+		var sweep := fmod(phase_offset, 28.0) - 14.0
+		var start_offset_jet := Vector3(sweep, 0.0, sin(phase_offset) * radius * 0.5)
+		item["base"] = _vec3_dict(_clamped_world_position(handoff_target - start_offset_jet))
+	else:
+		item["base"] = _vec3_dict(_clamped_world_position(handoff_target))
+
+
+func _surface_position_near(anchor: Vector3, rng: RandomNumberGenerator, radius: float) -> Vector3:
+	var angle := rng.randf_range(0.0, TAU)
+	var dist := rng.randf_range(0.0, maxf(0.1, radius))
+	var pos := anchor + Vector3(cos(angle) * dist, 0.0, sin(angle) * dist)
+	return _clamped_world_position(pos)
+
+
+func _clamped_world_position(pos: Vector3) -> Vector3:
+	var half := world_size_m * 0.46
+	var out := Vector3(clampf(pos.x, -half, half), pos.y, clampf(pos.z, -half, half))
+	out.y = _terrain_height_at(out.x, out.z)
+	return out
+
+
+func _route_nodes_near_position(pos: Vector3, rng: RandomNumberGenerator, kind_value: String) -> Array:
+	if road_nodes.size() < 2:
+		return _random_route_nodes(rng, kind_value)
+	var start := _nearest_road_node(pos)
+	if start < 0:
+		return _random_route_nodes(rng, kind_value)
+	var best_goal := -1
+	var best_score := INF
+	for i in range(18):
+		var candidate := int(rng.randi_range(0, road_nodes.size() - 1))
+		if candidate == start:
+			continue
+		var dist := _road_node_pos(start).distance_to(_road_node_pos(candidate))
+		var preferred := 28.0 if kind_value == "person" else 46.0
+		var score := absf(dist - preferred) + rng.randf_range(0.0, 6.0)
+		if score < best_score:
+			best_score = score
+			best_goal = candidate
+	if best_goal < 0:
+		best_goal = (start + 1) % road_nodes.size()
+	var path := _find_path_nodes(start, best_goal)
+	if path.size() < 2:
+		path = [start, best_goal]
+	if kind_value == "person" and path.size() > 4:
+		path = path.slice(0, 4)
+	return path
+
+
+func _route_distance_near_position(route_nodes: Array, pos: Vector3) -> float:
+	if route_nodes.size() < 2:
+		return 0.0
+	var best_distance := 0.0
+	var best_error := INF
+	var accumulated := 0.0
+	var target_2d := Vector2(pos.x, pos.z)
+	for i in range(route_nodes.size() - 1):
+		var a := _road_node_pos(int(route_nodes[i]))
+		var b := _road_node_pos(int(route_nodes[i + 1]))
+		var ab := Vector2(b.x - a.x, b.z - a.z)
+		var length_sq := maxf(0.001, ab.length_squared())
+		var ap := target_2d - Vector2(a.x, a.z)
+		var t := clampf(ap.dot(ab) / length_sq, 0.0, 1.0)
+		var closest := Vector2(a.x, a.z) + ab * t
+		var error := closest.distance_to(target_2d)
+		var segment_length := a.distance_to(b)
+		if error < best_error:
+			best_error = error
+			best_distance = accumulated + segment_length * t
+		accumulated += segment_length
+	return best_distance
+
+
 func _base_for_target(target_kind: String, rng: RandomNumberGenerator) -> Vector3:
 	if chunked_generation and asset_spawn_policy == "socketed":
 		if target_kind == "building":
@@ -1631,30 +2147,30 @@ func _base_for_target(target_kind: String, rng: RandomNumberGenerator) -> Vector
 	return Vector3(rng.randf_range(-half, half), 0.0, rng.randf_range(-half, half))
 
 
-func _build_target_model(target_kind: String) -> void:
+func _build_target_model(parent: Node3D, target_kind: String) -> void:
 	var token := target_kind.to_lower()
 	if token == "soldier" or token == "person":
-		_build_person(target_root, GREEN_COLOR, GROUND_PERSON_SCALE)
-		_make_box_child(target_root, "Beacon", Vector3(0.0, 1.62, 0.0), Vector3(0.055, 0.68, 0.055), AMBER_COLOR)
+		_build_person(parent, Color(0.28, 0.30, 0.34, 1.0), GROUND_PERSON_SCALE)
+		_make_box_child(parent, "Beacon", Vector3(0.0, 1.62, 0.0), Vector3(0.055, 0.68, 0.055), AMBER_COLOR)
 	elif token == "building":
-		_make_box_child(target_root, "TargetBuilding", Vector3(0.0, 0.72, 0.0), Vector3(0.72, 0.72, 0.72), GREEN_COLOR.darkened(0.08))
-		_make_box_child(target_root, "Roof", Vector3(0.0, 1.54, 0.0), Vector3(0.82, 0.18, 0.82), AMBER_COLOR)
-		_make_box_child(target_root, "Beacon", Vector3(0.0, 2.14, 0.0), Vector3(0.05, 0.58, 0.05), GREEN_COLOR.lightened(0.2))
+		_make_box_child(parent, "TargetBuilding", Vector3(0.0, 0.72, 0.0), Vector3(0.72, 0.72, 0.72), HOUSE_WALL)
+		_make_box_child(parent, "Roof", Vector3(0.0, 1.54, 0.0), Vector3(0.82, 0.18, 0.82), HOUSE_ROOF)
+		_make_box_child(parent, "Beacon", Vector3(0.0, 2.14, 0.0), Vector3(0.05, 0.58, 0.05), AMBER_COLOR)
 	elif token == "helicopter":
-		_build_helicopter(target_root, GREEN_COLOR, 1.06)
-		_make_box_child(target_root, "Beacon", Vector3(0.0, 0.92, 0.0), Vector3(0.055, 0.56, 0.055), AMBER_COLOR)
+		_build_helicopter(parent, Color(0.20, 0.30, 0.38, 1.0), 1.06)
+		_make_box_child(parent, "Beacon", Vector3(0.0, 0.92, 0.0), Vector3(0.055, 0.56, 0.055), AMBER_COLOR)
 	elif token == "jet":
-		_build_aircraft(target_root, GREEN_COLOR, 1.08)
-		_make_box_child(target_root, "Beacon", Vector3(0.0, 0.78, 0.0), Vector3(0.055, 0.48, 0.055), AMBER_COLOR)
+		_build_aircraft(parent, Color(0.50, 0.54, 0.57, 1.0), 1.08)
+		_make_box_child(parent, "Beacon", Vector3(0.0, 0.78, 0.0), Vector3(0.055, 0.48, 0.055), AMBER_COLOR)
 	elif token == "car":
-		_build_vehicle(target_root, GREEN_COLOR.lightened(0.08), GROUND_VEHICLE_SCALE)
-		_make_box_child(target_root, "Beacon", Vector3(0.0, 1.02, 0.0), Vector3(0.06, 0.58, 0.06), AMBER_COLOR)
+		_build_vehicle(parent, Color(0.24, 0.34, 0.56, 1.0), GROUND_VEHICLE_SCALE)
+		_make_box_child(parent, "Beacon", Vector3(0.0, 1.02, 0.0), Vector3(0.06, 0.58, 0.06), AMBER_COLOR)
 	elif token == "tank":
-		_build_vehicle(target_root, GREEN_COLOR.darkened(0.12), GROUND_VEHICLE_SCALE * 1.22)
-		_make_box_child(target_root, "Beacon", Vector3(0.0, 1.16, 0.0), Vector3(0.06, 0.64, 0.06), AMBER_COLOR)
+		_build_vehicle(parent, Color(0.25, 0.30, 0.22, 1.0), GROUND_VEHICLE_SCALE * 1.22)
+		_make_box_child(parent, "Beacon", Vector3(0.0, 1.16, 0.0), Vector3(0.06, 0.64, 0.06), AMBER_COLOR)
 	else:
-		_build_vehicle(target_root, GREEN_COLOR, GROUND_VEHICLE_SCALE * 1.10)
-		_make_box_child(target_root, "Beacon", Vector3(0.0, 1.08, 0.0), Vector3(0.06, 0.62, 0.06), AMBER_COLOR)
+		_build_vehicle(parent, Color(0.52, 0.42, 0.25, 1.0), GROUND_VEHICLE_SCALE * 1.10)
+		_make_box_child(parent, "Beacon", Vector3(0.0, 1.08, 0.0), Vector3(0.06, 0.62, 0.06), AMBER_COLOR)
 
 
 func _build_person(parent: Node3D, color: Color, size: float) -> void:

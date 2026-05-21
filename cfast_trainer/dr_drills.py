@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
+from .adaptive_difficulty import difficulty_level_for_ratio
 from .ant_drills import ANT_DRILL_MODE_PROFILES, AntDrillAttemptSummary, AntDrillMode
 from .clock import Clock
 from .cognitive_core import AnswerScorer, Phase, Problem, QuestionEvent, SeededRng, TestSnapshot
@@ -22,7 +23,7 @@ def _clamp01(value: float) -> float:
 
 
 def _difficulty_to_level(difficulty: float) -> int:
-    return max(1, min(10, int(round(_clamp01(difficulty) * 9.0)) + 1))
+    return difficulty_level_for_ratio("digit_recognition", _clamp01(difficulty))
 
 
 @dataclass(frozen=True, slots=True)

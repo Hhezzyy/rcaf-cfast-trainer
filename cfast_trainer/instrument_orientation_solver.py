@@ -154,7 +154,9 @@ def attitude_display_observation_from_bank_pitch(
     return InstrumentAttitudeDisplayObservation(
         bank_deg=bank,
         pitch_deg=pitch,
-        horizon_rotation_deg=float(bank),
+        # The attitude sphere is a cockpit-view world reference: when the aircraft
+        # banks right, the visible sky shifts to the pilot's right.
+        horizon_rotation_deg=float(-bank),
         horizon_offset_norm=float(pitch) / 20.0,
     )
 

@@ -4,6 +4,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from typing import cast
 
+from .adaptive_difficulty import difficulty_level_for_ratio, difficulty_ratio_for_level
 from .angles_bearings_degrees import (
     AnglesBearingsDegreesGenerator,
     AnglesBearingsQuestionKind,
@@ -22,12 +23,11 @@ from .cognitive_core import AnswerScorer, Problem, SeededRng
 
 
 def _difficulty_to_level(difficulty: float) -> int:
-    return max(1, min(10, int(round(_clamp01(difficulty) * 9.0)) + 1))
+    return difficulty_level_for_ratio("angles_bearings_degrees", _clamp01(difficulty))
 
 
 def _level_to_difficulty(level: int) -> float:
-    clamped = max(1, min(10, int(level)))
-    return float(clamped - 1) / 9.0
+    return difficulty_ratio_for_level("angles_bearings_degrees", level)
 
 
 def _normalize_mode(mode: AntDrillMode | str) -> AntDrillMode:

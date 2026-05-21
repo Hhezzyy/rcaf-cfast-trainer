@@ -73,9 +73,9 @@ def test_attitude_display_observation_tracks_signed_pitch_and_bank() -> None:
     right_bank_climb = attitude_display_observation_from_bank_pitch(18, 7)
     left_bank_descent = attitude_display_observation_from_bank_pitch(-22, -6)
 
-    assert right_bank_climb.horizon_rotation_deg > 0.0
+    assert right_bank_climb.horizon_rotation_deg < 0.0
     assert right_bank_climb.horizon_offset_norm > 0.0
-    assert left_bank_descent.horizon_rotation_deg < 0.0
+    assert left_bank_descent.horizon_rotation_deg > 0.0
     assert left_bank_descent.horizon_offset_norm < 0.0
 
 

@@ -59,7 +59,9 @@ def test_generated_problem_has_four_color_options_and_guide_question_kinds() -> 
         TraceTest2QuestionKind.TURNED_LEFT,
         TraceTest2QuestionKind.TURNED_RIGHT,
         TraceTest2QuestionKind.ENDED_LEFTMOST,
+        TraceTest2QuestionKind.ENDED_RIGHTMOST,
         TraceTest2QuestionKind.ENDED_HIGHEST,
+        TraceTest2QuestionKind.ENDED_LOWEST,
     }
     assert 1 <= payload.correct_code <= 4
 
@@ -78,7 +80,9 @@ def test_generator_emits_only_guide_recall_kinds() -> None:
         TraceTest2QuestionKind.TURNED_LEFT,
         TraceTest2QuestionKind.TURNED_RIGHT,
         TraceTest2QuestionKind.ENDED_LEFTMOST,
+        TraceTest2QuestionKind.ENDED_RIGHTMOST,
         TraceTest2QuestionKind.ENDED_HIGHEST,
+        TraceTest2QuestionKind.ENDED_LOWEST,
     }
 
 

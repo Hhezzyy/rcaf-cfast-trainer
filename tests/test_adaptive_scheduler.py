@@ -725,7 +725,7 @@ def test_build_adaptive_session_plan_returns_single_live_block_and_top5_pool() -
     assert plan.code == "adaptive_session"
     assert len(plan.blocks) == 1
     assert plan.blocks[0].mode == "adaptive_live"
-    assert plan.blocks[0].duration_s == pytest.approx(150.0)
+    assert plan.blocks[0].duration_s in adaptive_scheduler._LIVE_BLOCK_DURATION_CHOICES_S
     assert plan.last_selected_primitive_id == "mental_arithmetic_automaticity"
     eligible = [item for item in plan.ranked_primitives if item.eligible]
     assert len(eligible) == 4
@@ -741,7 +741,7 @@ def test_build_adaptive_session_plan_uses_unmeasured_pool_on_cold_start() -> Non
     assert plan is not None
     assert plan.code == "adaptive_session"
     assert len(plan.blocks) == 1
-    assert plan.blocks[0].duration_s == pytest.approx(150.0)
+    assert plan.blocks[0].duration_s in adaptive_scheduler._LIVE_BLOCK_DURATION_CHOICES_S
     assert plan.blocks[0].form_factor in {"micro", "short"}
     selected = next(
         item for item in plan.ranked_primitives if item.primitive_id == plan.blocks[0].primitive_id
@@ -1205,6 +1205,122 @@ def test_variety_selection_is_deterministic_for_same_seed_and_history() -> None:
     ]
 
 
+def test_seeded_adaptive_variation_changes_block_shape_across_seeds() -> None:
+    entries = [
+        _history_entry(
+            test_code="ma_percentage_snap",
+            hours_ago=3,
+            metrics=_base_metrics(score_ratio=0.34),
+            activity_kind="drill",
+            attempt_id=501,
+        ),
+        _history_entry(
+            test_code="tbl_single_lookup_anchor",
+            hours_ago=4,
+            metrics=_base_metrics(score_ratio=0.36),
+            activity_kind="drill",
+            attempt_id=502,
+        ),
+        _history_entry(
+            test_code="visual_search",
+            hours_ago=6,
+            metrics=_base_metrics(score_ratio=0.41),
+            activity_kind="test",
+            attempt_id=503,
+        ),
+    ]
+
+    signatures = set()
+    for seed in range(600, 612):
+        plan = build_adaptive_session_plan(history=entries, seed=seed, active_elapsed_s=0.0)
+        assert plan is not None
+        block = plan.blocks[0]
+        signatures.add(
+            (
+                block.primitive_id,
+                block.drill_code,
+                block.target_area,
+                block.drill_mode.value,
+                block.difficulty_level,
+                block.duration_s,
+            )
+        )
+
+    assert len(signatures) >= 2
+
+
+def test_seeded_training_mode_variation_never_selects_unsupported_modes() -> None:
+    for candidate in adaptive_scheduler.ADAPTIVE_DRILL_CATALOG:
+        item = _priority_item(candidate.primitive_id, priority=1.0, weakness=0.55)
+        drill_code = (
+            adaptive_scheduler.resolved_canonical_drill_code(
+                candidate.drill_code,
+                for_adaptive=True,
+            )
+            or candidate.drill_code
+        )
+        for seed in range(20, 34):
+            mode = adaptive_scheduler._varied_training_mode_for_live_item(
+                item,
+                drill_code,
+                seed=seed,
+                active_elapsed_s=adaptive_scheduler._FATIGUE_DRILL_ELIGIBILITY_S,
+            )
+            assert adaptive_scheduler.supports_training_mode(drill_code, mode)
+
+
+def test_history_entry_from_adaptive_block_labels_runtime_source_and_canonical_drill() -> None:
+    block = AdaptiveSessionBlock(
+        block_index=0,
+        primitive_id="tracking_stability_low_load",
+        primitive_label="Tracking Stability",
+        drill_code="rt_obscured_target_prediction",
+        mode="adaptive_live",
+        duration_s=150.0,
+        difficulty_level=5,
+        seed=303,
+        reason_tags=("weak",),
+        priority=0.8,
+        drill_mode=AntDrillMode.BUILD,
+        form_factor="short",
+        target_area="obscured_prediction",
+    )
+    result = AttemptResult(
+        test_code="rt_obscured_target_prediction",
+        test_version=1,
+        seed=303,
+        difficulty=0.5,
+        practice_questions=0,
+        scored_duration_s=150.0,
+        duration_s=150.0,
+        attempted=1,
+        correct=1,
+        accuracy=1.0,
+        throughput_per_min=0.4,
+        mean_rt_ms=700.0,
+        median_rt_ms=700.0,
+        total_score=1.0,
+        max_score=1.0,
+        score_ratio=1.0,
+        difficulty_level_start=5,
+        difficulty_level_end=5,
+        metrics={},
+        events=[],
+    )
+
+    attempt = adaptive_scheduler._history_entry_from_block_result(
+        block=block,
+        result=result,
+        completed_at_utc=_iso(0),
+        attempt_id=-2,
+    )
+
+    assert attempt.metrics["runtime_source"] == adaptive_scheduler.GODOT_ACTIVITY_RUNTIME_SOURCE
+    assert attempt.metrics["canonical_drill_code"] == "rt_obscured_target_prediction"
+    assert attempt.metrics["source_test_family"] == "rapid_tracking"
+    assert attempt.metrics["adaptive.runtime_source"] == adaptive_scheduler.GODOT_ACTIVITY_RUNTIME_SOURCE
+
+
 def test_rank_adaptive_primitives_increases_priority_for_high_fatigue_history() -> None:
     low_fatigue_entries = [
         _history_entry(
@@ -1365,9 +1481,15 @@ def test_variant_selection_uses_single_adaptive_session_shape() -> None:
     assert micro.code == "adaptive_session"
     assert short.code == "adaptive_session"
     assert full.code == "adaptive_session"
-    assert {block.duration_s for block in micro.blocks} == {150.0}
-    assert {block.duration_s for block in short.blocks} == {150.0}
-    assert {block.duration_s for block in full.blocks} == {150.0}
+    assert {block.duration_s for block in micro.blocks} <= set(
+        adaptive_scheduler._LIVE_BLOCK_DURATION_CHOICES_S
+    )
+    assert {block.duration_s for block in short.blocks} <= set(
+        adaptive_scheduler._LIVE_BLOCK_DURATION_CHOICES_S
+    )
+    assert {block.duration_s for block in full.blocks} <= set(
+        adaptive_scheduler._LIVE_BLOCK_DURATION_CHOICES_S
+    )
     assert {block.form_factor for block in micro.blocks} <= {"micro"}
     assert {block.form_factor for block in short.blocks} <= {"micro", "short"}
     assert {block.form_factor for block in full.blocks} <= {"micro", "short"}

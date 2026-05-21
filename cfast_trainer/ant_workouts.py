@@ -262,10 +262,13 @@ from .ant_drills import (
     build_ant_snap_facts_sprint_drill,
     build_ant_time_flip_drill,
 )
+from .activity_runtime_catalog import (
+    GODOT_ACTIVITY_RUNTIME_SOURCE,
+    build_godot_owned_activity_runtime,
+)
+from .canonical_drill_registry import canonical_drill_spec, resolved_canonical_drill_code
 from .clock import Clock
-from .canonical_drill_registry import resolved_canonical_drill_code
 from .cognitive_core import Phase, Problem, QuestionEvent, SeededRng
-from .godot_owned import build_godot_owned_test, rapid_tracking_godot_config
 from .results import AttemptResult, attempt_result_from_engine
 from .training_modes import maybe_build_fatigue_probe_drill, split_half_note_fragment
 from .visual_search import VisualSearchTaskKind
@@ -290,6 +293,38 @@ def _rapid_tracking_workout_block_title(block: "AntWorkoutBlockPlan") -> str:
     if label == str(block.drill_code).strip():
         label = str(block.drill_code).removeprefix("rt_").replace("_", " ").title()
     return f"Rapid Tracking: {label}"
+
+
+def _canonical_drill_code_for_metrics(drill_code: str | None) -> str:
+    token = str(drill_code or "").strip().lower()
+    return resolved_canonical_drill_code(token) or token
+
+
+def _source_test_family_for_drill_code(drill_code: str | None) -> str:
+    token = _canonical_drill_code_for_metrics(drill_code)
+    if token.startswith("rt_"):
+        return "rapid_tracking"
+    spec = canonical_drill_spec(token)
+    if spec is None:
+        return token
+    if spec.guide_test_links:
+        return str(spec.guide_test_links[0])
+    return str(spec.difficulty_family_id)
+
+
+def _target_area_for_drill_code(drill_code: str | None) -> str:
+    token = _canonical_drill_code_for_metrics(drill_code)
+    spec = canonical_drill_spec(token)
+    if spec is None:
+        return "rapid_tracking" if token.startswith("rt_") else token
+    return str(spec.target_area or spec.primary_subskill or token)
+
+
+def _runtime_source_for_block_code(drill_code: str | None) -> str:
+    token = _canonical_drill_code_for_metrics(drill_code)
+    if token.startswith("rt_"):
+        return GODOT_ACTIVITY_RUNTIME_SOURCE
+    return "canonical_drill_runtime"
 
 
 def build_workout_block_engine(
@@ -1091,9 +1126,15 @@ class AntWorkoutSession:
         }
         for index, block in enumerate(self._plan.blocks, start=1):
             prefix = f"block.{index:02d}."
+            canonical_code = _canonical_drill_code_for_metrics(block.drill_code)
             metrics[f"{prefix}drill_code"] = block.drill_code
+            metrics[f"{prefix}canonical_drill_code"] = canonical_code
+            metrics[f"{prefix}runtime_source"] = _runtime_source_for_block_code(block.drill_code)
+            metrics[f"{prefix}source_test_family"] = _source_test_family_for_drill_code(block.drill_code)
             metrics[f"{prefix}mode"] = block.mode.value
             metrics[f"{prefix}seed"] = str(int(self._block_seeds[index - 1]))
+            metrics[f"{prefix}duration_s"] = f"{block.duration_s:.6f}"
+            metrics[f"{prefix}target_area"] = _target_area_for_drill_code(block.drill_code)
             metrics[f"{prefix}level_offset"] = str(int(block.level_offset))
         return metrics
 
@@ -2571,22 +2612,15 @@ class AntWorkoutSession:
                 config=SaDrillConfig(scored_duration_s=block.duration_s),
             )
         elif block.drill_code.startswith("rt_"):
-            engine = build_godot_owned_test(
+            engine = build_godot_owned_activity_runtime(
                 clock=self._clock,
                 seed=block_seed,
                 difficulty=difficulty,
-                kind="rapid_tracking",
                 test_code=block.drill_code,
                 title=_rapid_tracking_workout_block_title(block),
                 duration_s=block.duration_s,
                 mode=block.mode.value,
-                config=rapid_tracking_godot_config(
-                    test_code=block.drill_code,
-                    mode=block.mode.value,
-                    difficulty=difficulty,
-                    duration_s=block.duration_s,
-                    extra={"drill": True, "workout": True},
-                ),
+                extra={"drill": True, "workout": True},
             )
         elif block.drill_code == "dtb_tracking_recall":
             engine = build_dtb_tracking_recall_drill(
@@ -3233,6 +3267,18 @@ class AntWorkoutSession:
             "_resolved_difficulty_context",
             self._block_difficulty_context(block=block, difficulty_level=difficulty_level),
         )
+        overrides = getattr(engine, "_result_metrics_overrides", None)
+        if not isinstance(overrides, dict):
+            overrides = {}
+            setattr(engine, "_result_metrics_overrides", overrides)
+        canonical_code = _canonical_drill_code_for_metrics(block.drill_code)
+        overrides.setdefault("runtime_source", _runtime_source_for_block_code(block.drill_code))
+        overrides.setdefault("canonical_drill_code", canonical_code)
+        overrides.setdefault("canonical_activity_code", canonical_code)
+        overrides.setdefault("source_test_family", _source_test_family_for_drill_code(block.drill_code))
+        overrides.setdefault("runtime_mode", block.mode.value)
+        overrides.setdefault("runtime_seed", str(int(self._block_seeds[self._current_block_index])))
+        overrides.setdefault("runtime_difficulty_level", str(int(difficulty_level)))
 
     def _refresh_metric_overrides(self) -> None:
         self._result_metrics_overrides.update(

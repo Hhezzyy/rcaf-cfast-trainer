@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from .adaptive_difficulty import difficulty_level_for_ratio
 from .ant_drills import (
     ANT_DRILL_MODE_PROFILES,
     AntAdaptiveDifficultyConfig,
@@ -29,7 +30,7 @@ def _normalize_mode(mode: AntDrillMode | str) -> AntDrillMode:
 
 
 def _difficulty_to_level(difficulty: float) -> int:
-    return max(1, min(10, int(round(clamp01(difficulty) * 9.0)) + 1))
+    return difficulty_level_for_ratio("target_recognition", clamp01(difficulty))
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,8 +56,10 @@ class _TargetRecognitionTrainingGenerator(TargetRecognitionGenerator):
         "truck": "All Trucks",
         "tank": "All Tanks",
         "building": "All Buildings",
-        "beacon": "All Beacons",
         "unknown": "All Unknowns",
+        "antenna": "All Antennas",
+        "bunker": "All Bunkers",
+        "convoy": "All Convoys",
     }
 
     def __init__(
@@ -232,7 +235,9 @@ class _TargetRecognitionTrainingGenerator(TargetRecognitionGenerator):
     ]:
         objective_mode = self._scene_objective_mode
         category_shape = (
-            str(self._rng.choice(self._SCENE_SHAPES)) if objective_mode == "category" else None
+            str(self._rng.choice(self._SCENE_OBJECT_SHAPES))
+            if objective_mode == "category"
+            else None
         )
         objective_label = self._scene_objective_label(
             objective_mode=objective_mode,
@@ -294,7 +299,7 @@ class _TargetRecognitionTrainingGenerator(TargetRecognitionGenerator):
         objective_mode: str,
         category_shape: str | None,
     ) -> tuple[TargetRecognitionSceneCriteria, ...]:
-        shapes = self._SCENE_SHAPES
+        shapes = self._SCENE_OBJECT_SHAPES
         if objective_mode == "category" and category_shape is not None:
             shapes = (category_shape,)
         pool: list[TargetRecognitionSceneCriteria] = []
@@ -354,13 +359,7 @@ class _TargetRecognitionTrainingGenerator(TargetRecognitionGenerator):
         return tuple(entities)
 
     def _random_scene_entity(self, *, difficulty: float) -> TargetRecognitionSceneEntity:
-        damaged, high_priority = self._roll_scene_modifiers(difficulty=difficulty)
-        return TargetRecognitionSceneEntity(
-            shape=str(self._rng.choice(self._SCENE_SHAPES)),
-            affiliation=str(self._rng.choice(self._SCENE_AFFILIATIONS)),
-            damaged=damaged,
-            high_priority=high_priority,
-        )
+        return super()._random_scene_entity(difficulty=difficulty)
 
     def _random_scene_entity_for_objective(
         self,
@@ -421,6 +420,8 @@ class _TargetRecognitionTrainingGenerator(TargetRecognitionGenerator):
     def _scene_entity_from_criteria(
         criteria: TargetRecognitionSceneCriteria,
     ) -> TargetRecognitionSceneEntity:
+        if criteria.shape == TargetRecognitionGenerator._BEACON_SHAPE:
+            return TargetRecognitionGenerator._beacon_entity()
         return TargetRecognitionSceneEntity(
             shape=criteria.shape,
             affiliation=criteria.affiliation,
@@ -457,7 +458,9 @@ class _TargetRecognitionTrainingGenerator(TargetRecognitionGenerator):
                     damaged=False,
                     high_priority=False,
                 )
-            other_shapes = tuple(shape for shape in self._SCENE_SHAPES if shape != category_shape)
+            other_shapes = tuple(
+                shape for shape in self._SCENE_OBJECT_SHAPES if shape != category_shape
+            )
             fallback_shape = other_shapes[0] if other_shapes else "truck"
             return TargetRecognitionSceneEntity(
                 shape=fallback_shape,
@@ -504,12 +507,7 @@ class _TargetRecognitionTrainingGenerator(TargetRecognitionGenerator):
     ]:
         count = max(1, int(rows * cols))
         entities = tuple(
-            TargetRecognitionSceneEntity(
-                shape=str(self._rng.choice(self._SCENE_SHAPES)),
-                affiliation=str(self._rng.choice(self._SCENE_AFFILIATIONS)),
-                damaged=False,
-                high_priority=False,
-            )
+            self._random_scene_entity_basic(difficulty=difficulty)
             for _ in range(count)
         )
         present = self._scene_present_candidates_basic(entities=entities)
@@ -535,17 +533,35 @@ class _TargetRecognitionTrainingGenerator(TargetRecognitionGenerator):
         cells = tuple(self._scene_entity_code(entity) for entity in entities)
         return entities, criteria, tuple(labels), cells
 
+    def _random_scene_entity_basic(self, *, difficulty: float) -> TargetRecognitionSceneEntity:
+        if self._rng.random() < self._beacon_probability(difficulty):
+            return self._beacon_entity()
+        return TargetRecognitionSceneEntity(
+            shape=str(self._rng.choice(self._SCENE_OBJECT_SHAPES)),
+            affiliation=str(self._rng.choice(self._SCENE_AFFILIATIONS)),
+            damaged=False,
+            high_priority=False,
+        )
+
     def _scene_present_candidates_basic(
         self, *, entities: tuple[TargetRecognitionSceneEntity, ...]
     ) -> tuple[TargetRecognitionSceneCriteria, ...]:
         dedup: dict[tuple[str, str], TargetRecognitionSceneCriteria] = {}
         for entity in entities:
-            candidate = TargetRecognitionSceneCriteria(
-                shape=entity.shape,
-                affiliation=entity.affiliation,
-                require_damaged=None,
-                require_high_priority=None,
-            )
+            if entity.shape == self._BEACON_SHAPE:
+                candidate = TargetRecognitionSceneCriteria(
+                    shape=self._BEACON_SHAPE,
+                    affiliation=self._BEACON_AFFILIATION,
+                    require_damaged=None,
+                    require_high_priority=None,
+                )
+            else:
+                candidate = TargetRecognitionSceneCriteria(
+                    shape=entity.shape,
+                    affiliation=entity.affiliation,
+                    require_damaged=None,
+                    require_high_priority=None,
+                )
             dedup[(candidate.shape, candidate.affiliation)] = candidate
         candidates = list(dedup.values())
         for idx in range(len(candidates) - 1, 0, -1):
@@ -556,7 +572,11 @@ class _TargetRecognitionTrainingGenerator(TargetRecognitionGenerator):
     def _scene_absent_candidates_basic(
         self, *, entities: tuple[TargetRecognitionSceneEntity, ...]
     ) -> tuple[TargetRecognitionSceneCriteria, ...]:
-        present = {(entity.shape, entity.affiliation) for entity in entities}
+        present = {
+            (entity.shape, entity.affiliation)
+            for entity in entities
+            if entity.shape != self._BEACON_SHAPE
+        }
         candidates = [
             TargetRecognitionSceneCriteria(
                 shape=shape,
@@ -564,10 +584,19 @@ class _TargetRecognitionTrainingGenerator(TargetRecognitionGenerator):
                 require_damaged=None,
                 require_high_priority=None,
             )
-            for shape in self._SCENE_SHAPES
+            for shape in self._SCENE_OBJECT_SHAPES
             for affiliation in self._SCENE_AFFILIATIONS
             if (shape, affiliation) not in present
         ]
+        if not any(entity.shape == self._BEACON_SHAPE for entity in entities):
+            candidates.append(
+                TargetRecognitionSceneCriteria(
+                    shape=self._BEACON_SHAPE,
+                    affiliation=self._BEACON_AFFILIATION,
+                    require_damaged=None,
+                    require_high_priority=None,
+                )
+            )
         for idx in range(len(candidates) - 1, 0, -1):
             swap = int(self._rng.randint(0, idx))
             candidates[idx], candidates[swap] = candidates[swap], candidates[idx]

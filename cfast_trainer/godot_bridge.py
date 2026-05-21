@@ -749,6 +749,18 @@ def _serialize_spatial_integration(payload: SpatialIntegrationPayload | None) ->
         "landmarks": [_json_safe(landmark) for landmark in payload.landmarks],
         "route_points": [_spatial_point(point) for point in payload.route_points],
         "route_current_index": int(payload.route_current_index),
+        "aircraft_tracks": [
+            {
+                "color_label": str(track.color_label),
+                "route": [_spatial_point(point) for point in track.route_points],
+                "route_points": [_spatial_point(point) for point in track.route_points],
+                "current_index": int(track.route_current_index),
+                "previous": _spatial_point(track.aircraft_prev),
+                "current": _spatial_point(track.aircraft_now),
+                "next": _spatial_point(track.aircraft_next),
+            }
+            for track in payload.aircraft_tracks
+        ],
         "aircraft": {
             "previous": _spatial_point(payload.aircraft_prev),
             "current": _spatial_point(payload.aircraft_now),

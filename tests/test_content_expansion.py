@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from cfast_trainer.airborne_numerical import AirborneNumericalGenerator, TEMPLATES, UNIT_PROFILES
+from cfast_trainer.auditory_capacity import AuditoryCapacityScenarioGenerator
 from cfast_trainer.cognitive_core import Phase, SeededRng
 from cfast_trainer.cognitive_updating import supported_cognitive_updating_scenario_families
 from cfast_trainer.math_reasoning import (
@@ -13,8 +14,11 @@ from cfast_trainer.math_reasoning import (
 )
 from cfast_trainer.system_logic import SystemLogicGenerator
 from cfast_trainer.table_reading import TableReadingGenerator
+from cfast_trainer.spatial_integration import SpatialIntegrationGenerator
+from cfast_trainer.target_recognition import TargetRecognitionGenerator
 from cfast_trainer.telemetry import telemetry_events_from_engine
 from cfast_trainer.trace_test_2 import TraceTest2Generator, TraceTest2QuestionKind
+from cfast_trainer.visual_search import VisualSearchGenerator
 
 
 @dataclass
@@ -31,7 +35,7 @@ class FakeClock:
 def test_airborne_numerical_expansion_exposes_new_metadata() -> None:
     generator = AirborneNumericalGenerator(SeededRng(123), scripted_diverse_problems=8)
     scenarios = [generator.generate().payload for _ in range(8)]
-    assert len(TEMPLATES) >= 10
+    assert len(TEMPLATES) >= 12
     assert len(UNIT_PROFILES) >= 6
     assert {scenario.question_kind for scenario in scenarios} >= {
         "fuel_endurance",
@@ -40,6 +44,17 @@ def test_airborne_numerical_expansion_exposes_new_metadata() -> None:
     assert all(scenario.content_family for scenario in scenarios)
     assert all(scenario.variant_id for scenario in scenarios)
     assert all(scenario.content_pack in {"table_table", "chart_table", "table_chart", "chart_chart"} for scenario in scenarios)
+
+
+def test_finite_literal_banks_have_expanded_seed_variety() -> None:
+    assert len(AuditoryCapacityScenarioGenerator.CALLSIGNS) >= 20
+    assert len(VisualSearchGenerator._ALPHANUMERIC_TOKENS) >= 20
+    assert len(VisualSearchGenerator._SYMBOL_TOKENS) >= 18
+    assert len(VisualSearchGenerator._WARNING_TOKENS) >= 16
+    assert len(TargetRecognitionGenerator._SCENE_SHAPES) >= 8
+    assert len(TargetRecognitionGenerator._SCAN_TOKENS) >= 20
+    assert len(SpatialIntegrationGenerator._STATIC_OBJECT_SPECS) >= 14
+    assert len(SpatialIntegrationGenerator._AIRCRAFT_OBJECT_SPECS) >= 12
 
 
 def test_table_reading_expansion_adds_new_families() -> None:

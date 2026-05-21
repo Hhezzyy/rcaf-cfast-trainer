@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .adaptive_difficulty import difficulty_level_for_ratio
 from .ant_drills import ANT_DRILL_MODE_PROFILES, AntDrillAttemptSummary, AntDrillMode
 from .clock import Clock
 from .cognitive_core import Phase, TestSnapshot, clamp01
@@ -17,11 +18,15 @@ _DEFAULT_SI_CONFIG = SpatialIntegrationConfig()
 _STATIC_KINDS = (
     SpatialIntegrationQuestionKind.LANDMARK_GRID,
     SpatialIntegrationQuestionKind.SCENE_RECONSTRUCTION,
+    SpatialIntegrationQuestionKind.OBJECT_COUNT,
+    SpatialIntegrationQuestionKind.OBJECT_KIND_AT_CELL,
 )
 _AIRCRAFT_KINDS = (
     SpatialIntegrationQuestionKind.AIRCRAFT_ROUTE_SELECTION,
     SpatialIntegrationQuestionKind.AIRCRAFT_CONTINUATION_SELECTION,
     SpatialIntegrationQuestionKind.AIRCRAFT_LOCATION_GRID,
+    SpatialIntegrationQuestionKind.AIRCRAFT_COLOR_LOCATION_GRID,
+    SpatialIntegrationQuestionKind.AIRCRAFT_COLOR_ROUTE_SELECTION,
 )
 _ALL_KINDS = _STATIC_KINDS + _AIRCRAFT_KINDS
 
@@ -33,7 +38,7 @@ def _normalize_mode(mode: AntDrillMode | str) -> AntDrillMode:
 
 
 def _difficulty_to_level(difficulty: float) -> int:
-    return max(1, min(10, int(round(clamp01(difficulty) * 9.0)) + 1))
+    return difficulty_level_for_ratio("spatial_integration", clamp01(difficulty))
 
 
 @dataclass(frozen=True, slots=True)

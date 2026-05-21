@@ -95,6 +95,7 @@ Offline-first training app for CFASC CFAST-style aircrew selection aptitude doma
 - Digit Recognition map: `docs/subsystems/digit-recognition/README.md`
 - Situational Awareness map: `docs/subsystems/situational-awareness/README.md`
 - Visual Search map: `docs/subsystems/visual-search/README.md`
+- Spatial Integration map: `docs/subsystems/spatial-integration/README.md`
 - Benchmark map: `docs/subsystems/benchmark/README.md`
 - Adaptive scheduler map: `docs/subsystems/adaptive-scheduler/README.md`
 - Rapid Tracking local map: `cfast_trainer/rapid_tracking/README.md`

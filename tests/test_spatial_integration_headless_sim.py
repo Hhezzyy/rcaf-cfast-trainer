@@ -68,7 +68,7 @@ def test_headless_run_covers_both_parts_and_binary_summary() -> None:
     # Part 1 practice
     engine.start_practice()
     assert engine.phase is Phase.PRACTICE
-    for _ in range(3):
+    for _ in range(5):
         p = _wait_for_question(engine=engine, clock=clock)
         assert p.part is SpatialIntegrationPart.STATIC
         assert engine.submit_answer(_answer_current(p)) is True
@@ -85,7 +85,7 @@ def test_headless_run_covers_both_parts_and_binary_summary() -> None:
     # Part 2 practice
     engine.start_scored()
     assert engine.phase is Phase.PRACTICE
-    for _ in range(3):
+    for _ in range(5):
         p = _wait_for_question(engine=engine, clock=clock)
         assert p.part is SpatialIntegrationPart.AIRCRAFT
         assert engine.submit_answer(_answer_current(p)) is True

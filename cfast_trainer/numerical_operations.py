@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .adaptive_difficulty import difficulty_level_for_ratio
 from .clock import Clock
 from .content_variants import stable_variant_id
 from .cognitive_core import Problem, SeededRng, TimedTextInputTest, lerp_int
@@ -56,7 +57,7 @@ class NumericalOperationsGenerator:
                 payload=self._payload(operator_family="+", operand_profile=operand_profile),
             )
         if op == "-":
-            a, b = self._operands(difficulty, operand_profile=operand_profile)
+            a, b = self._operands(difficulty, operand_profile=operand_profile, distinct=True)
             if b > a:
                 a, b = b, a
             return Problem(
@@ -98,6 +99,8 @@ class NumericalOperationsGenerator:
         configured = str(self._profile.operand_profile).strip().lower()
         if configured and configured != "default":
             return configured
+        if self._difficulty_level(difficulty) >= 9:
+            return "advanced"
         pool = ["default", "fact_prime"]
         if difficulty >= 0.35:
             pool.append("clean_compute")
@@ -111,25 +114,58 @@ class NumericalOperationsGenerator:
             del self._recent_operand_profiles[:-3]
         return profile
 
-    def _operands(self, difficulty: float, *, operand_profile: str) -> tuple[int, int]:
+    def _operands(
+        self,
+        difficulty: float,
+        *,
+        operand_profile: str,
+        distinct: bool = False,
+    ) -> tuple[int, int]:
+        level = self._difficulty_level(difficulty)
         profile = operand_profile
         if profile == "fact_prime":
             return self._fact_prime_operands(difficulty)
         if profile == "clean_compute":
             return self._clean_compute_operands(difficulty)
-        lo = 1
-        hi = lerp_int(9, 99, difficulty)
+        if profile == "cln_light":
+            return self._cln_light_operands(level=level, distinct=distinct)
+        if profile == "advanced":
+            lo, hi = (10000, 99999) if level >= 10 else (2500, 99999)
+            a = self._challenging_int(lo, hi, avoid_multiples_of_five=True)
+            b = self._challenging_int(lo, hi, avoid_multiples_of_five=True)
+            if distinct:
+                for _ in range(20):
+                    if b != a:
+                        break
+                    b = self._challenging_int(lo, hi, avoid_multiples_of_five=True)
+            return a, b
+        lo, hi = self._add_sub_range_for_level(level)
         return self._rng.randint(lo, hi), self._rng.randint(lo, hi)
 
     def _operands_mult(self, difficulty: float, *, operand_profile: str) -> tuple[int, int]:
+        level = self._difficulty_level(difficulty)
         profile = operand_profile
         if profile == "fact_prime":
             return self._fact_prime_mult_operands(difficulty)
         if profile == "clean_compute":
             return self._clean_compute_mult_operands(difficulty)
+        if profile == "cln_light":
+            return self._cln_light_mult_operands(level=level)
+        if profile == "advanced":
+            major_lo, major_hi, minor_lo, minor_hi = (
+                (100, 999, 11, 99) if level >= 10 else (40, 499, 11, 49)
+            )
+            return (
+                self._challenging_int(major_lo, major_hi, avoid_multiples_of_five=True),
+                self._challenging_int(
+                    minor_lo,
+                    minor_hi,
+                    avoid_multiples_of_five=True,
+                    avoid_even=True,
+                ),
+            )
         # Keep multiplication within reasonable mental range.
-        a_hi = lerp_int(9, 25, difficulty)
-        b_hi = lerp_int(9, 15, difficulty)
+        a_hi, b_hi = self._mult_range_for_level(level)
         return self._rng.randint(2, a_hi), self._rng.randint(2, b_hi)
 
     def _fact_prime_operands(self, difficulty: float) -> tuple[int, int]:
@@ -182,6 +218,7 @@ class NumericalOperationsGenerator:
         return a, self._rng.randint(2, hi)
 
     def division_terms(self, difficulty: float, *, operand_profile: str) -> tuple[int, int, int]:
+        level = self._difficulty_level(difficulty)
         profile = operand_profile
         if profile == "fact_prime":
             divisor = self._rng.randint(2, 12)
@@ -189,11 +226,149 @@ class NumericalOperationsGenerator:
         elif profile == "clean_compute":
             divisor = self._rng.choice((2, 4, 5, 8, 10, 12))
             quotient = self._rng.randint(2, lerp_int(12, 24, difficulty))
+        elif profile == "cln_light":
+            divisor, quotient = self._cln_light_mult_operands(level=level)
+            dividend = divisor * quotient
+            return dividend, divisor, quotient
+        elif profile == "advanced":
+            quotient_lo, quotient_hi, divisor_lo, divisor_hi = (
+                (100, 999, 11, 99) if level >= 10 else (40, 499, 11, 49)
+            )
+            divisor = self._challenging_int(
+                divisor_lo,
+                divisor_hi,
+                avoid_multiples_of_five=True,
+                avoid_even=True,
+            )
+            quotient = self._challenging_int(
+                quotient_lo,
+                quotient_hi,
+                avoid_multiples_of_five=True,
+            )
+            return divisor * quotient, divisor, quotient
         else:
             divisor = self._rng.randint(2, lerp_int(9, 25, difficulty))
             quotient = self._rng.randint(2, lerp_int(9, 25, difficulty))
         dividend = divisor * quotient
         return dividend, divisor, quotient
+
+    @staticmethod
+    def _difficulty_level(difficulty: float) -> int:
+        return difficulty_level_for_ratio("numerical_operations", max(0.0, min(1.0, difficulty)))
+
+    @staticmethod
+    def _add_sub_range_for_level(level: int) -> tuple[int, int]:
+        ranges = (
+            (1, 9),
+            (4, 18),
+            (8, 35),
+            (15, 90),
+            (40, 250),
+            (100, 900),
+            (250, 2500),
+            (750, 9000),
+            (2500, 99999),
+            (10000, 99999),
+        )
+        return ranges[max(0, min(9, int(level) - 1))]
+
+    @staticmethod
+    def _mult_range_for_level(level: int) -> tuple[int, int]:
+        ranges = (
+            (9, 9),
+            (10, 9),
+            (12, 10),
+            (14, 12),
+            (18, 12),
+            (25, 15),
+            (40, 18),
+            (99, 24),
+            (499, 49),
+            (999, 99),
+        )
+        return ranges[max(0, min(9, int(level) - 1))]
+
+    def _cln_light_operands(self, *, level: int, distinct: bool) -> tuple[int, int]:
+        ranges = (
+            (1, 9),
+            (2, 10),
+            (3, 12),
+            (4, 16),
+            (5, 20),
+            (6, 24),
+            (8, 30),
+            (10, 36),
+            (12, 45),
+            (16, 60),
+        )
+        lo, hi = ranges[max(0, min(9, int(level) - 1))]
+        a = self._rng.randint(lo, hi)
+        b = self._rng.randint(lo, hi)
+        if distinct:
+            for _ in range(20):
+                if b != a:
+                    break
+                b = self._rng.randint(lo, hi)
+        return a, b
+
+    def _cln_light_mult_operands(self, *, level: int) -> tuple[int, int]:
+        ranges = (
+            (2, 5, 2, 5),
+            (2, 6, 2, 6),
+            (2, 8, 2, 6),
+            (3, 10, 2, 8),
+            (3, 12, 2, 10),
+            (4, 16, 2, 10),
+            (4, 20, 2, 12),
+            (6, 24, 2, 16),
+            (8, 28, 3, 20),
+            (8, 30, 3, 30),
+        )
+        a_lo, a_hi, b_lo, b_hi = ranges[max(0, min(9, int(level) - 1))]
+        return self._rng.randint(a_lo, a_hi), self._rng.randint(b_lo, b_hi)
+
+    @staticmethod
+    def _too_clean_operand(
+        value: int,
+        *,
+        avoid_multiples_of_five: bool,
+        avoid_even: bool,
+    ) -> bool:
+        n = abs(int(value))
+        if n in {0, 1, 2, 5, 10, 100}:
+            return True
+        if n % 10 == 0 or n % 100 == 0:
+            return True
+        if avoid_multiples_of_five and n % 5 == 0:
+            return True
+        if avoid_even and n % 2 == 0:
+            return True
+        return False
+
+    def _challenging_int(
+        self,
+        lo: int,
+        hi: int,
+        *,
+        avoid_multiples_of_five: bool,
+        avoid_even: bool = False,
+    ) -> int:
+        for _ in range(200):
+            value = self._rng.randint(int(lo), int(hi))
+            if not self._too_clean_operand(
+                value,
+                avoid_multiples_of_five=avoid_multiples_of_five,
+                avoid_even=avoid_even,
+            ):
+                return value
+        for value in range(int(lo), int(hi) + 1):
+            if not self._too_clean_operand(
+                value,
+                avoid_multiples_of_five=avoid_multiples_of_five,
+                avoid_even=avoid_even,
+            ):
+                return value
+        return int(lo)
 
     def _payload(self, *, operator_family: str, operand_profile: str) -> NumericalOperationsPayload:
         return NumericalOperationsPayload(
