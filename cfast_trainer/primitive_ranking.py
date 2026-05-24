@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 from .adaptive_difficulty import DifficultyFamilyId, difficulty_profile_for_family
 from .canonical_drill_registry import canonical_drill_spec, resolved_canonical_drill_code
 from .guide_skill_catalog import guide_ranking_primitive_id_for_code, official_guide_test
+from .skill_evidence import skill_evidence_from_metrics
 from .training_modes import mode_token
 
 if TYPE_CHECKING:
@@ -1257,15 +1258,19 @@ def _build_primitive_state(
             if _is_meltdown_level_evidence(item):
                 last_meltdown_level = item.difficulty_level
         if previous_performance is not None:
-            if (
-                previous_performance.performance_score is not None
-                and item.performance_score is not None
-            ):
+            previous_retention_score = previous_performance.performance_score
+            current_retention_score = item.performance_score
+            if previous_performance.source_code == item.source_code:
+                if previous_performance.score_ratio is not None and item.score_ratio is not None:
+                    previous_retention_score = previous_performance.score_ratio
+                    current_retention_score = item.score_ratio
+                elif previous_performance.accuracy is not None and item.accuracy is not None:
+                    previous_retention_score = previous_performance.accuracy
+                    current_retention_score = item.accuracy
+            if previous_retention_score is not None and current_retention_score is not None:
                 delta_h = (item.completed_at_epoch_s - previous_performance.completed_at_epoch_s) / 3600.0
                 if 48.0 <= delta_h <= 72.0:
-                    decay = _clamp(
-                        float(previous_performance.performance_score) - float(item.performance_score)
-                    )
+                    decay = _clamp(float(previous_retention_score) - float(current_retention_score))
                     retention_ewma = _ewma(retention_ewma, decay, alpha=alpha)
         if item.performance_score is not None:
             previous_performance = item
@@ -1791,14 +1796,34 @@ def _build_evidence(
 ) -> PrimitiveEvidence | None:
     score_ratio = _metric_float(metrics, "score_ratio")
     accuracy = _metric_float(metrics, "accuracy")
-    performance_score = score_ratio if score_ratio is not None else accuracy
+    normalized = skill_evidence_from_metrics(
+        metrics,
+        test_code=source_code,
+        family_id=primitive.domain_id,
+    )
+    raw_performance = score_ratio if score_ratio is not None else accuracy
+    performance_score = (
+        normalized.mastery_score
+        if normalized.confidence > 0.15 or raw_performance is not None
+        else None
+    )
     mean_rt_ms = _metric_float(metrics, "mean_rt_ms")
     median_rt_ms = _metric_float(metrics, "median_rt_ms")
+
+    def _merge_penalty(existing: float | None, normalized_value: float) -> float | None:
+        if existing is None:
+            return normalized_value if normalized_value > 0.0 else None
+        return max(float(existing), float(normalized_value))
+
     fatigue = _fatigue_penalty(metrics)
+    fatigue = _merge_penalty(fatigue, normalized.fatigue_drop)
     post_error = _post_error_penalty(metrics)
     instability = _instability_penalty(metrics)
+    instability = _merge_penalty(instability, 1.0 - normalized.stability_score)
     lapse = _lapse_penalty(metrics)
+    lapse = _merge_penalty(lapse, normalized.timeout_penalty)
     distractor = _distractor_penalty(metrics)
+    distractor = _merge_penalty(distractor, normalized.false_alarm_penalty)
     switch = _switch_penalty(metrics)
     control = _control_penalty(metrics, instability_penalty=instability)
     interference = _interference_penalty(metrics)
@@ -1816,6 +1841,7 @@ def _build_evidence(
         and control is None
         and interference is None
         and timeout_rate is None
+        and normalized.confidence <= 0.15
     ):
         return None
     level = difficulty_level_end if difficulty_level_end is not None else difficulty_level_start
@@ -1844,7 +1870,7 @@ def _build_evidence(
         timeout_rate=None if timeout_rate is None else _clamp(timeout_rate),
         mean_rt_ms=None if mean_rt_ms is None else max(0.0, float(mean_rt_ms)),
         median_rt_ms=None if median_rt_ms is None else max(0.0, float(median_rt_ms)),
-        speed_score=_speed_score(mean_rt_ms if mean_rt_ms is not None else median_rt_ms),
+        speed_score=normalized.speed_score,
         training_mode=str(training_mode),
         runtime_s=_metric_float(metrics, "duration_s"),
         evidence_weight=float(evidence_weight),

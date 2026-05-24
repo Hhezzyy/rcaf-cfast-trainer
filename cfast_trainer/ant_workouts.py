@@ -51,17 +51,6 @@ from .ic_drills import (
     build_ic_reverse_panel_prime_drill,
     build_ic_reverse_panel_run_drill,
 )
-from .ac_drills import (
-    AcDrillConfig,
-    build_ac_callsign_filter_run_drill,
-    build_ac_digit_sequence_prime_drill,
-    build_ac_gate_anchor_drill,
-    build_ac_gate_directive_run_drill,
-    build_ac_mixed_tempo_drill,
-    build_ac_pressure_run_drill,
-    build_ac_state_command_prime_drill,
-    build_ac_trigger_cue_anchor_drill,
-)
 from .cu_drills import (
     CuDrillConfig,
     build_cu_controls_anchor_drill,
@@ -125,10 +114,13 @@ from .vig_drills import (
 )
 from .tr_drills import (
     TrDrillConfig,
+    build_tr_category_sweep_drill,
+    build_tr_damaged_sweep_drill,
     build_tr_light_anchor_drill,
     build_tr_mixed_tempo_drill,
     build_tr_panel_switch_run_drill,
     build_tr_pressure_run_drill,
+    build_tr_priority_sweep_drill,
     build_tr_scan_anchor_drill,
     build_tr_scene_anchor_drill,
     build_tr_scene_modifier_run_drill,
@@ -191,6 +183,7 @@ from .cln_drills import (
     build_cln_overdrive_dual_math_drill,
     build_cln_overdrive_six_choice_memory_drill,
     build_cln_sequence_copy_drill,
+    build_cln_sequence_math_recall_drill,
     build_cln_sequence_match_drill,
 )
 from .airborne_numerical import (
@@ -248,6 +241,8 @@ from .ant_drills import (
     AntFuelBurnSolveConfig,
     AntFuelBurnSolveGenerator,
     AntInfoGrabberConfig,
+    AntMixedTempoSetConfig,
+    AntPayloadReferenceConfig,
     AntPayloadReferenceGenerator,
     AntRouteTimeSolveConfig,
     AntRouteTimeSolveGenerator,
@@ -258,6 +253,8 @@ from .ant_drills import (
     build_ant_endurance_solve_drill,
     build_ant_fuel_burn_solve_drill,
     build_ant_info_grabber_drill,
+    build_ant_mixed_tempo_set_drill,
+    build_ant_payload_reference_drill,
     build_ant_route_time_solve_drill,
     build_ant_snap_facts_sprint_drill,
     build_ant_time_flip_drill,
@@ -295,6 +292,15 @@ def _rapid_tracking_workout_block_title(block: "AntWorkoutBlockPlan") -> str:
     return f"Rapid Tracking: {label}"
 
 
+def _auditory_capacity_workout_block_title(block: "AntWorkoutBlockPlan") -> str:
+    label = str(block.label).strip() or str(block.drill_code).strip()
+    if label.startswith("Auditory Capacity"):
+        return label
+    if label == str(block.drill_code).strip():
+        label = str(block.drill_code).removeprefix("ac_").replace("_", " ").title()
+    return f"Auditory Capacity: {label}"
+
+
 def _canonical_drill_code_for_metrics(drill_code: str | None) -> str:
     token = str(drill_code or "").strip().lower()
     return resolved_canonical_drill_code(token) or token
@@ -302,6 +308,8 @@ def _canonical_drill_code_for_metrics(drill_code: str | None) -> str:
 
 def _source_test_family_for_drill_code(drill_code: str | None) -> str:
     token = _canonical_drill_code_for_metrics(drill_code)
+    if token.startswith("ac_"):
+        return "auditory_capacity"
     if token.startswith("rt_"):
         return "rapid_tracking"
     spec = canonical_drill_spec(token)
@@ -316,13 +324,15 @@ def _target_area_for_drill_code(drill_code: str | None) -> str:
     token = _canonical_drill_code_for_metrics(drill_code)
     spec = canonical_drill_spec(token)
     if spec is None:
+        if token.startswith("ac_"):
+            return "auditory_capacity"
         return "rapid_tracking" if token.startswith("rt_") else token
     return str(spec.target_area or spec.primary_subskill or token)
 
 
 def _runtime_source_for_block_code(drill_code: str | None) -> str:
     token = _canonical_drill_code_for_metrics(drill_code)
-    if token.startswith("rt_"):
+    if token.startswith(("ac_", "rt_")):
         return GODOT_ACTIVITY_RUNTIME_SOURCE
     return "canonical_drill_runtime"
 
@@ -1315,6 +1325,19 @@ class AntWorkoutSession:
                     adaptive=AntAdaptiveDifficultyConfig(enabled=False),
                 ),
             )
+        elif block.drill_code == "ant_mixed_tempo_set":
+            engine = build_ant_mixed_tempo_set_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=AntMixedTempoSetConfig(
+                    skin=block.skin,
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                    adaptive=AntAdaptiveDifficultyConfig(enabled=False),
+                ),
+            )
         elif block.drill_code == "ant_distance_scan":
             engine = build_ant_distance_scan_drill(
                 clock=self._clock,
@@ -1358,6 +1381,18 @@ class AntWorkoutSession:
                 difficulty=difficulty,
                 mode=block.mode,
                 config=AntFuelBurnSolveConfig(
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                    adaptive=AntAdaptiveDifficultyConfig(enabled=False),
+                ),
+            )
+        elif block.drill_code == "ant_payload_reference":
+            engine = build_ant_payload_reference_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=AntPayloadReferenceConfig(
                     practice_questions=0,
                     scored_duration_s=block.duration_s,
                     adaptive=AntAdaptiveDifficultyConfig(enabled=False),
@@ -1959,6 +1994,42 @@ class AntWorkoutSession:
                     adaptive=AntAdaptiveDifficultyConfig(enabled=False),
                 ),
             )
+        elif block.drill_code == "tr_priority_sweep":
+            engine = build_tr_priority_sweep_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=TrDrillConfig(
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                    adaptive=AntAdaptiveDifficultyConfig(enabled=False),
+                ),
+            )
+        elif block.drill_code == "tr_damaged_sweep":
+            engine = build_tr_damaged_sweep_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=TrDrillConfig(
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                    adaptive=AntAdaptiveDifficultyConfig(enabled=False),
+                ),
+            )
+        elif block.drill_code == "tr_category_sweep":
+            engine = build_tr_category_sweep_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=TrDrillConfig(
+                    practice_questions=0,
+                    scored_duration_s=block.duration_s,
+                    adaptive=AntAdaptiveDifficultyConfig(enabled=False),
+                ),
+            )
         elif block.drill_code == "tr_light_anchor":
             engine = build_tr_light_anchor_drill(
                 clock=self._clock,
@@ -2403,85 +2474,16 @@ class AntWorkoutSession:
                     scored_duration_s=block.duration_s,
                 ),
             )
-        elif block.drill_code == "ac_gate_anchor":
-            engine = build_ac_gate_anchor_drill(
+        elif block.drill_code.startswith("ac_"):
+            engine = build_godot_owned_activity_runtime(
                 clock=self._clock,
                 seed=block_seed,
                 difficulty=difficulty,
-                mode=block.mode,
-                config=AcDrillConfig(
-                    scored_duration_s=block.duration_s,
-                ),
-            )
-        elif block.drill_code == "ac_state_command_prime":
-            engine = build_ac_state_command_prime_drill(
-                clock=self._clock,
-                seed=block_seed,
-                difficulty=difficulty,
-                mode=block.mode,
-                config=AcDrillConfig(
-                    scored_duration_s=block.duration_s,
-                ),
-            )
-        elif block.drill_code == "ac_gate_directive_run":
-            engine = build_ac_gate_directive_run_drill(
-                clock=self._clock,
-                seed=block_seed,
-                difficulty=difficulty,
-                mode=block.mode,
-                config=AcDrillConfig(
-                    scored_duration_s=block.duration_s,
-                ),
-            )
-        elif block.drill_code == "ac_digit_sequence_prime":
-            engine = build_ac_digit_sequence_prime_drill(
-                clock=self._clock,
-                seed=block_seed,
-                difficulty=difficulty,
-                mode=block.mode,
-                config=AcDrillConfig(
-                    scored_duration_s=block.duration_s,
-                ),
-            )
-        elif block.drill_code == "ac_trigger_cue_anchor":
-            engine = build_ac_trigger_cue_anchor_drill(
-                clock=self._clock,
-                seed=block_seed,
-                difficulty=difficulty,
-                mode=block.mode,
-                config=AcDrillConfig(
-                    scored_duration_s=block.duration_s,
-                ),
-            )
-        elif block.drill_code == "ac_callsign_filter_run":
-            engine = build_ac_callsign_filter_run_drill(
-                clock=self._clock,
-                seed=block_seed,
-                difficulty=difficulty,
-                mode=block.mode,
-                config=AcDrillConfig(
-                    scored_duration_s=block.duration_s,
-                ),
-            )
-        elif block.drill_code == "ac_mixed_tempo":
-            engine = build_ac_mixed_tempo_drill(
-                clock=self._clock,
-                seed=block_seed,
-                difficulty=difficulty,
-                mode=block.mode,
-                config=AcDrillConfig(
-                    scored_duration_s=block.duration_s,
-                ),
-            )
-        elif block.drill_code == "ac_pressure_run":
-            engine = build_ac_pressure_run_drill(
-                clock=self._clock,
-                seed=block_seed,
-                difficulty=difficulty,
-                mode=block.mode,
-                config=AcDrillConfig(
-                    scored_duration_s=block.duration_s,
-                ),
+                test_code=block.drill_code,
+                title=_auditory_capacity_workout_block_title(block),
+                duration_s=block.duration_s,
+                mode=block.mode.value,
+                extra={"drill": True, "workout": True},
             )
         elif block.drill_code == "cu_controls_anchor":
             engine = build_cu_controls_anchor_drill(
@@ -2953,6 +2955,17 @@ class AntWorkoutSession:
             )
         elif block.drill_code == "cln_sequence_match":
             engine = build_cln_sequence_match_drill(
+                clock=self._clock,
+                seed=block_seed,
+                difficulty=difficulty,
+                mode=block.mode,
+                config=ClnDrillConfig(
+                    practice_rounds=0,
+                    scored_duration_s=block.duration_s,
+                ),
+            )
+        elif block.drill_code == "cln_sequence_math_recall":
+            engine = build_cln_sequence_math_recall_drill(
                 clock=self._clock,
                 seed=block_seed,
                 difficulty=difficulty,

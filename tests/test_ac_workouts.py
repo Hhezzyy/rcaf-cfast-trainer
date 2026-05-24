@@ -9,7 +9,7 @@ from cfast_trainer.ant_workouts import (
     AntWorkoutSession,
     AntWorkoutStage,
 )
-from cfast_trainer.auditory_capacity import AuditoryCapacityPayload
+from cfast_trainer.godot_owned import GodotOwnedPayload
 from cfast_trainer.results import attempt_result_from_engine
 from cfast_trainer.ac_workouts import build_ac_workout_plan
 
@@ -54,49 +54,33 @@ def _build_small_ac_workout_plan() -> AntWorkoutPlan:
     )
 
 
-def _run_current_block(session: AntWorkoutSession, clock: FakeClock) -> None:
-    remembered: dict[int, str] = {}
-    handled_commands: set[int] = set()
-    recalled: set[int] = set()
-    beep_answered: set[int] = set()
-
-    while session.stage is AntWorkoutStage.BLOCK:
-        engine = session.current_engine()
-        assert engine is not None
-        snap = engine.snapshot()
-        payload = snap.payload
-        if isinstance(payload, AuditoryCapacityPayload):
-            instruction_uid = payload.instruction_uid
-            if instruction_uid is not None and instruction_uid not in handled_commands:
-                if payload.color_command is not None:
-                    engine.set_colour(payload.color_command)
-                    handled_commands.add(instruction_uid)
-                elif payload.number_command is not None:
-                    engine.set_number(payload.number_command)
-                    handled_commands.add(instruction_uid)
-
-            if instruction_uid is not None and payload.sequence_display is not None:
-                remembered[instruction_uid] = payload.sequence_display
-            if (
-                instruction_uid is not None
-                and payload.sequence_response_open
-                and instruction_uid not in recalled
-                and instruction_uid in remembered
-            ):
-                session.submit_answer(remembered[instruction_uid])
-                recalled.add(instruction_uid)
-
-            if payload.beep_active and instruction_uid is not None and instruction_uid not in beep_answered:
-                session.submit_answer("SPACE")
-                beep_answered.add(instruction_uid)
-
-            target_y = payload.gates[0].y_norm if payload.gates else 0.0
-            engine.set_control(
-                horizontal=max(-1.0, min(1.0, -payload.ball_x * 2.0)),
-                vertical=max(-1.0, min(1.0, (target_y - payload.ball_y) * 5.0)),
-            )
-        clock.advance(0.25)
-        session.update()
+def _complete_current_godot_block(session: AntWorkoutSession, clock: FakeClock) -> None:
+    engine = session.current_engine()
+    assert engine is not None
+    payload = engine.snapshot().payload
+    assert isinstance(payload, GodotOwnedPayload)
+    assert payload.spec.kind == "auditory_capacity"
+    assert payload.spec.config["workout"] is True
+    assert payload.spec.config["drill"] is True
+    engine.apply_godot_authoritative_message(
+        {
+            "command": "complete",
+            "summary": {
+                "attempted": 5,
+                "correct": 4,
+                "accuracy": 0.8,
+                "duration_s": 15.0,
+                "throughput_per_min": 20.0,
+                "total_score": 4.0,
+                "max_score": 5.0,
+                "score_ratio": 0.8,
+                "difficulty_level_start": 5,
+                "difficulty_level_end": 5,
+            },
+        }
+    )
+    clock.advance(0.5)
+    session.update()
 
 
 def _complete_small_ac_workout(clock: FakeClock) -> AntWorkoutSession:
@@ -110,12 +94,12 @@ def _complete_small_ac_workout(clock: FakeClock) -> AntWorkoutSession:
     session.activate()
     session.activate()
     session.activate()
-    _run_current_block(session, clock)
+    _complete_current_godot_block(session, clock)
     assert session.stage is AntWorkoutStage.BLOCK_RESULTS
     session.activate()
     assert session.stage is AntWorkoutStage.BLOCK_SETUP
     session.activate()
-    _run_current_block(session, clock)
+    _complete_current_godot_block(session, clock)
     assert session.stage is AntWorkoutStage.BLOCK_RESULTS
     session.activate()
     assert session.stage is AntWorkoutStage.RESULTS

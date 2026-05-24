@@ -13,7 +13,28 @@ os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 import pygame
 import pytest
 
-from cfast_trainer.app import App, CognitiveTestScreen, MenuItem, MenuScreen
+from cfast_trainer.app import (
+    AdaptiveSessionScreen,
+    AntWorkoutScreen,
+    App,
+    CognitiveTestScreen,
+    MenuItem,
+    MenuScreen,
+)
+from cfast_trainer.ac_drills import AcDrillConfig, build_ac_gate_anchor_drill
+from cfast_trainer.adaptive_scheduler import (
+    AdaptiveSession,
+    AdaptiveSessionBlock,
+    AdaptiveSessionPlan,
+    AdaptiveStage,
+)
+from cfast_trainer.ant_drills import AntDrillMode
+from cfast_trainer.ant_workouts import (
+    AntWorkoutBlockPlan,
+    AntWorkoutPlan,
+    AntWorkoutSession,
+    AntWorkoutStage,
+)
 from cfast_trainer.auditory_capacity import AuditoryCapacityPayload, build_auditory_capacity_test
 from cfast_trainer.cognitive_core import Phase
 from cfast_trainer.cognitive_core import TestSnapshot as SnapshotModel
@@ -1440,6 +1461,193 @@ def test_godot_menu_commands_reuse_pause_settings_handlers() -> None:
         assert screen._pause_menu_mode == "settings"
         assert screen._pause_settings_rows()[screen._pause_settings_selected][0] == "difficulty"
         assert screen._staged_difficulty_level == 6
+    finally:
+        pygame.quit()
+
+
+def test_godot_phase_advance_reaches_nested_rapid_tracking_workout_engine() -> None:
+    pygame.init()
+    try:
+        surface = pygame.display.set_mode((960, 540))
+        font = pygame.font.Font(None, 36)
+        app = App(surface=surface, font=font)
+        fake_bridge = _FakeBridge()
+        app._godot_bridge = fake_bridge
+        app.push(MenuScreen(app, "Main Menu", [MenuItem("Quit", app.quit)], is_root=True))
+        clock = _FakeClock()
+        session = AntWorkoutSession(
+            clock=clock,
+            seed=2026,
+            plan=AntWorkoutPlan(
+                code="rapid_tracking_workout",
+                title="Rapid Tracking Workout",
+                description="Nested route regression.",
+                notes=(),
+                blocks=(
+                    AntWorkoutBlockPlan(
+                        block_id="rt",
+                        label="RT",
+                        description="RT block.",
+                        focus_skills=("Tracking",),
+                        drill_code="rt_lock_anchor",
+                        mode=AntDrillMode.BUILD,
+                        duration_min=0.25,
+                    ),
+                ),
+            ),
+            starting_level=5,
+        )
+        session.activate()
+        session.activate()
+        assert session.stage is AntWorkoutStage.BLOCK
+        engine = session.current_engine()
+        assert engine is not None
+        payload = engine.snapshot().payload
+        assert isinstance(payload, GodotOwnedPayload)
+        assert engine.phase is Phase.SCORED
+        screen = AntWorkoutScreen(
+            app,
+            session=session,
+            test_code="rapid_tracking_workout",
+        )
+        app.push(screen)
+
+        fake_bridge.control_commands.append(
+            {
+                "command": "complete",
+                "run_key": payload.spec.run_key,
+                "test_code": "rt_lock_anchor",
+                "kind": "rapid_tracking",
+                "summary": {
+                    "attempted": 3,
+                    "correct": 2,
+                    "accuracy": 0.6666667,
+                    "duration_s": 15.0,
+                    "total_score": 2.0,
+                    "max_score": 3.0,
+                    "score_ratio": 0.6666667,
+                },
+            }
+        )
+        app.render()
+
+        assert engine.phase is Phase.RESULTS
+        assert session.stage is AntWorkoutStage.BLOCK_RESULTS
+    finally:
+        pygame.quit()
+
+
+def test_godot_phase_advance_reaches_nested_adaptive_godot_engine() -> None:
+    pygame.init()
+    try:
+        surface = pygame.display.set_mode((960, 540))
+        font = pygame.font.Font(None, 36)
+        app = App(surface=surface, font=font)
+        fake_bridge = _FakeBridge()
+        app._godot_bridge = fake_bridge
+        app.push(MenuScreen(app, "Main Menu", [MenuItem("Quit", app.quit)], is_root=True))
+        clock = _FakeClock()
+        block = AdaptiveSessionBlock(
+            block_index=0,
+            primitive_id="tracking_stability_low_load",
+            primitive_label="Tracking Stability",
+            drill_code="rt_obscured_target_prediction",
+            mode="block_component",
+            duration_s=15.0,
+            difficulty_level=5,
+            seed=2027,
+            reason_tags=("regression",),
+            priority=0.8,
+            drill_mode=AntDrillMode.BUILD,
+            form_factor="micro",
+            target_area="tracking_stability",
+        )
+        session = AdaptiveSession(
+            clock=clock,
+            seed=2027,
+            plan=AdaptiveSessionPlan(
+                code="adaptive_session",
+                title="Adaptive Route",
+                version=1,
+                generated_at_utc="2026-01-01T00:00:00Z",
+                description="Nested route regression.",
+                notes=(),
+                ranked_primitives=(),
+                variant="adaptive",
+                blocks=(block,),
+            ),
+        )
+        session.activate()
+        assert session.stage is AdaptiveStage.BLOCK
+        engine = session.current_engine()
+        assert engine is not None
+        payload = engine.snapshot().payload
+        assert isinstance(payload, GodotOwnedPayload)
+        assert payload.spec.phase == "instructions"
+        screen = AdaptiveSessionScreen(
+            app,
+            session=session,
+            test_code="adaptive_session",
+        )
+        app.push(screen)
+
+        fake_bridge.control_commands.append(
+            {
+                "command": "godot_phase_advance",
+                "run_key": payload.spec.run_key,
+                "test_code": "rt_obscured_target_prediction",
+                "kind": "rapid_tracking",
+            }
+        )
+        app.render()
+
+        routed_payload = engine.snapshot().payload
+        assert isinstance(routed_payload, GodotOwnedPayload)
+        assert routed_payload.spec.phase == "practice"
+    finally:
+        pygame.quit()
+
+
+def test_auditory_capacity_wrapper_drills_receive_screen_control(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pygame.init()
+    try:
+        surface = pygame.display.set_mode((960, 540))
+        font = pygame.font.Font(None, 36)
+        app = App(surface=surface, font=font)
+        app.push(MenuScreen(app, "Main Menu", [MenuItem("Quit", app.quit)], is_root=True))
+        clock = _FakeClock()
+
+        def build_engine() -> object:
+            engine = build_ac_gate_anchor_drill(
+                clock=clock,
+                seed=2028,
+                difficulty=0.5,
+                mode=AntDrillMode.BUILD,
+                config=AcDrillConfig(scored_duration_s=2.0),
+            )
+            engine.start_practice()
+            return engine
+
+        screen = CognitiveTestScreen(
+            app,
+            engine_factory=build_engine,
+            test_code="ac_gate_anchor",
+        )
+        app.push(screen)
+        monkeypatch.setattr(
+            screen,
+            "_read_sensory_motor_control",
+            lambda **_kwargs: (0.42, -0.58),
+        )
+
+        screen.render(surface)
+
+        payload = screen._engine.snapshot().payload
+        assert isinstance(payload, AuditoryCapacityPayload)
+        assert payload.control_x == pytest.approx(0.42)
+        assert payload.control_y == pytest.approx(-0.58)
     finally:
         pygame.quit()
 

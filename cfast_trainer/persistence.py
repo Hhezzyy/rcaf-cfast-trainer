@@ -1003,6 +1003,7 @@ def _update_difficulty_states(
                     ),
                     scope_kind=scope_kind,  # type: ignore[arg-type]
                     scope_key=scope_key,
+                    test_code=str(item["test_code"]),
                     start_level=item["start_level"],
                     end_level=item["end_level"],
                     accuracy=item["accuracy"],

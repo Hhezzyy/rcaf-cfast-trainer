@@ -194,15 +194,23 @@ def test_auditory_runtime_spaces_gates_and_keeps_them_until_offscreen() -> None:
     assert "travel_distance + GATE_VISIBLE_AHEAD_DISTANCE" in rebuild_body
 
 
-def test_auditory_runtime_uses_arrows_and_joystick_not_wasd_for_ball_motion() -> None:
+def test_auditory_runtime_uses_flipped_pitch_arrows_and_joystick_for_ball_motion() -> None:
     source = _source()
     body = _function_body(source, "_update_ball")
 
     assert "Input.is_key_pressed(KEY_LEFT)" in body
     assert "Input.is_key_pressed(KEY_RIGHT)" in body
     assert "Input.is_key_pressed(KEY_UP)" in body
+    assert "if Input.is_key_pressed(KEY_UP):\n\t\tinput_vec.y -= 1.0" in body
     assert "Input.is_key_pressed(KEY_DOWN)" in body
-    assert "Input.get_joy_axis" in body
+    assert "if Input.is_key_pressed(KEY_DOWN):\n\t\tinput_vec.y += 1.0" in body
+    assert "for raw_joy in Input.get_connected_joypads():" in body
+    assert "_joy_axis_with_deadzone(joy, JOY_AXIS_LEFT_X)" in body
+    assert "_joy_axis_with_deadzone(joy, JOY_AXIS_LEFT_Y)" in body
+    assert "input_vec.y += _joy_axis_with_deadzone(joy, JOY_AXIS_LEFT_Y)" in body
+    assert "input_vec.y -= _joy_axis_with_deadzone(joy, JOY_AXIS_LEFT_Y)" not in body
+    assert "JOYSTICK_DEADZONE" in source
+    assert "Input.get_joy_axis" in _function_body(source, "_joy_axis_with_deadzone")
     assert "Input.is_key_pressed(KEY_A)" not in body
     assert "Input.is_key_pressed(KEY_D)" not in body
     assert "Input.is_key_pressed(KEY_W)" not in body

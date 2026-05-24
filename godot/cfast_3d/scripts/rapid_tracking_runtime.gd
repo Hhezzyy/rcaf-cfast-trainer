@@ -353,8 +353,7 @@ func _step(dt: float) -> void:
 	if active_target_index >= 0 and active_target_index < target_motion_times.size():
 		target_motion_times[active_target_index] = active_target_motion_s
 	_score_tracking(dt)
-	var joy := _primary_joypad()
-	_set_zoom_source_active("joystick", joy >= 0 and Input.is_joy_button_pressed(joy, JOY_BUTTON_A))
+	_set_zoom_source_active("joystick", _any_joy_button_pressed(JOY_BUTTON_A))
 	if elapsed_s >= duration_s:
 		_complete()
 
@@ -369,9 +368,9 @@ func _input_vector() -> Vector2:
 		out.y += 1.0
 	if input_down_active or Input.is_key_pressed(KEY_S) or Input.is_key_pressed(KEY_DOWN):
 		out.y -= 1.0
-	var joy := _primary_joypad()
 	var max_input_length := 1.0
-	if joy >= 0:
+	for raw_joy in Input.get_connected_joypads():
+		var joy := int(raw_joy)
 		var joy_axis := Vector2(
 			-_joy_axis_with_deadzone(joy, JOY_AXIS_LEFT_X),
 			_joy_axis_with_deadzone(joy, JOY_AXIS_LEFT_Y)
@@ -390,6 +389,13 @@ func _input_vector() -> Vector2:
 	if out.length() > max_input_length:
 		out = out.normalized() * max_input_length
 	return out
+
+
+func _any_joy_button_pressed(button: int) -> bool:
+	for raw_joy in Input.get_connected_joypads():
+		if Input.is_joy_button_pressed(int(raw_joy), button):
+			return true
+	return false
 
 
 func _set_movement_key(key: int, pressed: bool) -> bool:
@@ -420,13 +426,6 @@ func _joy_axis_with_deadzone(joy: int, axis: int) -> float:
 	if absf(value) < JOYSTICK_DEADZONE:
 		return 0.0
 	return value
-
-
-func _primary_joypad() -> int:
-	var pads := Input.get_connected_joypads()
-	if pads.size() <= 0:
-		return -1
-	return int(pads[0])
 
 
 func _set_zoom_source_active(source: String, value: bool) -> void:

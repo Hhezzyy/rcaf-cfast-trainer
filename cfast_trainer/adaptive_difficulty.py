@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal, cast
 
 from .guide_skill_catalog import official_guide_test, guide_ranking_primitive_id_for_code
@@ -155,6 +155,18 @@ class ChallengeBand:
     meltdown_accuracy: float
     meltdown_timeout_rate: float
     allow_promotion: bool
+
+
+@dataclass(frozen=True, slots=True)
+class DifficultyTargetBand:
+    family_id: str
+    target_score_low: float
+    target_score_high: float
+    emergency_low: float
+    promote_threshold: float
+    demote_threshold: float
+    preferred_training_modes: tuple[str, ...]
+    score_interpretation: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -492,6 +504,113 @@ _FAMILY_REGISTRY: dict[DifficultyFamilyId, _FamilyDifficultyConfig] = {
     ),
 }
 
+_COGNITIVE_TARGET = DifficultyTargetBand(
+    family_id="cognitive",
+    target_score_low=0.75,
+    target_score_high=0.85,
+    emergency_low=0.45,
+    promote_threshold=0.88,
+    demote_threshold=0.70,
+    preferred_training_modes=("build", "tempo", "pressure"),
+    score_interpretation="normalized accuracy/score with timeout and stability penalties",
+)
+_FAMILY_TARGET_BANDS: dict[DifficultyFamilyId, DifficultyTargetBand] = {
+    "quantitative": _COGNITIVE_TARGET,
+    "angle_bearing": DifficultyTargetBand(
+        family_id="angle_bearing",
+        target_score_low=0.75,
+        target_score_high=0.85,
+        emergency_low=0.45,
+        promote_threshold=0.88,
+        demote_threshold=0.70,
+        preferred_training_modes=("build", "tempo"),
+        score_interpretation="angular/orientation accuracy plus response stability",
+    ),
+    "auditory_multitask": DifficultyTargetBand(
+        family_id="auditory_multitask",
+        target_score_low=0.60,
+        target_score_high=0.80,
+        emergency_low=0.35,
+        promote_threshold=0.84,
+        demote_threshold=0.55,
+        preferred_training_modes=("build", "tempo", "fatigue_probe"),
+        score_interpretation="exact recall and command accuracy under divided attention",
+    ),
+    "cln_multitask": DifficultyTargetBand(
+        family_id="cln_multitask",
+        target_score_low=0.60,
+        target_score_high=0.80,
+        emergency_low=0.35,
+        promote_threshold=0.84,
+        demote_threshold=0.55,
+        preferred_training_modes=("build", "tempo", "fatigue_probe"),
+        score_interpretation="memory exactness, primary/secondary task balance, and dual-task drop",
+    ),
+    "instrument_orientation": DifficultyTargetBand(
+        family_id="instrument_orientation",
+        target_score_low=0.75,
+        target_score_high=0.85,
+        emergency_low=0.45,
+        promote_threshold=0.88,
+        demote_threshold=0.70,
+        preferred_training_modes=("build", "tempo"),
+        score_interpretation="orientation correctness and spatial ambiguity handling",
+    ),
+    "visual_memory_updating": DifficultyTargetBand(
+        family_id="visual_memory_updating",
+        target_score_low=0.60,
+        target_score_high=0.80,
+        emergency_low=0.35,
+        promote_threshold=0.84,
+        demote_threshold=0.55,
+        preferred_training_modes=("build", "tempo"),
+        score_interpretation="exact memory recall with omission/order-error penalties",
+    ),
+    "situational_awareness": _COGNITIVE_TARGET,
+    "table_cross_reference": _COGNITIVE_TARGET,
+    "system_logic": _COGNITIVE_TARGET,
+    "search_vigilance": DifficultyTargetBand(
+        family_id="search_vigilance",
+        target_score_low=0.70,
+        target_score_high=0.85,
+        emergency_low=0.40,
+        promote_threshold=0.88,
+        demote_threshold=0.65,
+        preferred_training_modes=("build", "tempo", "pressure"),
+        score_interpretation="scan accuracy with throughput trend and false-alarm control",
+    ),
+    "psychomotor_tracking": DifficultyTargetBand(
+        family_id="psychomotor_tracking",
+        target_score_low=0.70,
+        target_score_high=0.85,
+        emergency_low=0.35,
+        promote_threshold=0.88,
+        demote_threshold=0.65,
+        preferred_training_modes=("build", "tempo", "fatigue_probe"),
+        score_interpretation="time-on-target/control quality rather than raw point score alone",
+    ),
+    "spatial_integration_trace": DifficultyTargetBand(
+        family_id="spatial_integration_trace",
+        target_score_low=0.70,
+        target_score_high=0.85,
+        emergency_low=0.40,
+        promote_threshold=0.88,
+        demote_threshold=0.65,
+        preferred_training_modes=("build", "tempo"),
+        score_interpretation="spatial/orientation accuracy and view integration quality",
+    ),
+}
+_BENCHMARK_TARGET_BAND = DifficultyTargetBand(
+    family_id="benchmark",
+    target_score_low=1.0,
+    target_score_high=1.0,
+    emergency_low=0.0,
+    promote_threshold=1.1,
+    demote_threshold=-0.1,
+    preferred_training_modes=("benchmark",),
+    score_interpretation="fixed comparable benchmark; no adaptive targeting",
+)
+
 
 def is_benchmark_code(test_code: str | None) -> bool:
     return str(test_code or "").strip().lower() == _BENCHMARK_CODE
@@ -650,6 +769,22 @@ def family_id_for_code(test_code: str | None) -> DifficultyFamilyId:
         if "situational" in lower:
             return "situational_awareness"
     return "quantitative"
+
+
+def difficulty_target_for_family(family_id: DifficultyFamilyId | str) -> DifficultyTargetBand:
+    token = str(family_id or "quantitative").strip().lower()
+    if token == "benchmark":
+        return _BENCHMARK_TARGET_BAND
+    band = _FAMILY_TARGET_BANDS.get(cast(DifficultyFamilyId, token), _COGNITIVE_TARGET)
+    if band.family_id == token:
+        return band
+    return replace(band, family_id=token)
+
+
+def difficulty_target_for_code(test_code: str | None) -> DifficultyTargetBand:
+    if is_benchmark_code(test_code):
+        return _BENCHMARK_TARGET_BAND
+    return difficulty_target_for_family(family_id_for_code(test_code))
 
 
 def _normalize_intended_use(mode: object | None, *, default: DifficultyIntendedUse = "build") -> DifficultyIntendedUse:
@@ -889,10 +1024,19 @@ def next_level_from_performance(
     max_delta: int,
     session_gain_cap: int = 2,
     severe_meltdown: bool = False,
+    test_code: str | None = None,
+    family_id: DifficultyFamilyId | None = None,
 ) -> int:
     normalized_use = _normalize_intended_use(intended_use)
     band = _challenge_band_for_use(normalized_use)
+    target_band = (
+        difficulty_target_for_family(family_id)
+        if family_id is not None
+        else difficulty_target_for_code(test_code)
+    )
     current = clamp_level(current_level)
+    if target_band.family_id == "benchmark":
+        return current
     launch = clamp_level(launch_level)
     block_start = launch if block_start_level is None else clamp_level(block_start_level)
     recent_perf = recent_score_ratio if recent_score_ratio is not None else recent_accuracy
@@ -904,6 +1048,10 @@ def next_level_from_performance(
         return current
 
     meltdown = bool(severe_meltdown)
+    if recent_perf is not None and float(recent_perf) <= target_band.emergency_low:
+        meltdown = True
+    if medium_perf is not None and float(medium_perf) <= max(0.0, target_band.emergency_low - 0.02):
+        meltdown = True
     if recent_accuracy is not None and float(recent_accuracy) <= band.meltdown_accuracy:
         meltdown = True
     if recent_timeout >= band.meltdown_timeout_rate:
@@ -916,20 +1064,25 @@ def next_level_from_performance(
         target = current - 1
     else:
         below_band = False
-        if recent_perf is not None and float(recent_perf) < band.retain_accuracy:
+        demote_threshold = max(
+            float(target_band.demote_threshold),
+            min(float(target_band.target_score_low), float(band.retain_accuracy)),
+        )
+        if recent_perf is not None and float(recent_perf) < demote_threshold:
             below_band = True
-        if medium_perf is not None and float(medium_perf) < band.retain_accuracy:
+        if medium_perf is not None and float(medium_perf) < demote_threshold:
             below_band = True
         if recent_timeout > band.max_timeout_rate or medium_timeout > band.max_timeout_rate:
             below_band = True
         if below_band:
             target = current - 1
         elif band.allow_promotion:
+            promote_threshold = min(float(band.promote_accuracy), float(target_band.promote_threshold))
             if (
                 recent_perf is not None
                 and medium_perf is not None
-                and float(recent_perf) >= band.promote_accuracy
-                and float(medium_perf) >= band.promote_accuracy
+                and float(recent_perf) >= promote_threshold
+                and float(medium_perf) >= promote_threshold
                 and recent_timeout <= band.promote_timeout_rate
                 and medium_timeout <= band.promote_timeout_rate
             ):
@@ -958,6 +1111,8 @@ class AdaptiveDifficultyController:
         launch_level: int,
         policy: AdaptivePolicy,
         block_start_level: int | None = None,
+        test_code: str | None = None,
+        family_id: DifficultyFamilyId | None = None,
     ) -> None:
         self._launch_level = clamp_level(launch_level)
         self._block_start_level = (
@@ -965,6 +1120,8 @@ class AdaptiveDifficultyController:
         )
         self._current_level = self._launch_level
         self._policy = policy
+        self._test_code = None if test_code is None else str(test_code)
+        self._family_id = family_id
         self._observations: deque[_AdaptiveObservation] = deque(
             maxlen=max(1, int(policy.medium_window_size))
         )
@@ -1065,6 +1222,8 @@ class AdaptiveDifficultyController:
             max_delta=self._policy.max_delta,
             session_gain_cap=self._policy.session_gain_cap,
             severe_meltdown=meltdown,
+            test_code=self._test_code,
+            family_id=self._family_id,
         )
         if target_level == self._current_level:
             return None
@@ -1168,6 +1327,7 @@ def merge_adaptive_state(
     *,
     scope_kind: ScopeKind,
     scope_key: str,
+    test_code: str | None = None,
     start_level: int | None,
     end_level: int | None,
     accuracy: float | None,
@@ -1208,6 +1368,7 @@ def merge_adaptive_state(
         max_delta=3,
         session_gain_cap=2,
         severe_meltdown=False,
+        test_code=test_code,
     )
     recommended = clamp_level(
         int(round(((float(prev_level) * 1.0) + (float(target_level) * 2.0)) / 3.0))

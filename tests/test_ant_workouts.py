@@ -415,7 +415,6 @@ def test_build_workout_block_engine_routes_replacement_aliases_through_canonical
 @pytest.mark.parametrize(
     "drill_code",
     (
-        "ac_gate_anchor",
         "si_static_multiview_integration",
         "si_moving_aircraft_multiview_integration",
         "trace_orientation_decode",
@@ -451,14 +450,24 @@ def test_canonical_3d_workout_drills_emit_native_payloads(drill_code: str) -> No
     assert not isinstance(payload, GodotOwnedPayload)
 
 
-def test_rapid_tracking_workout_drills_emit_godot_owned_payloads() -> None:
+@pytest.mark.parametrize(
+    ("drill_code", "expected_kind"),
+    (
+        ("rt_obscured_target_prediction", "rapid_tracking"),
+        ("ac_gate_anchor", "auditory_capacity"),
+    ),
+)
+def test_godot_workout_drills_emit_godot_owned_payloads(
+    drill_code: str,
+    expected_kind: str,
+) -> None:
     clock = FakeClock()
     block = AntWorkoutBlockPlan(
-        block_id="rt_block",
-        label="Obscured Target Prediction",
-        description="Rapid Tracking Godot workout block.",
+        block_id="godot_block",
+        label=drill_code,
+        description="Godot workout block.",
         focus_skills=("Primitive",),
-        drill_code="rt_obscured_target_prediction",
+        drill_code=drill_code,
         mode=AntDrillMode.BUILD,
         duration_min=0.25,
     )
@@ -472,8 +481,8 @@ def test_rapid_tracking_workout_drills_emit_godot_owned_payloads() -> None:
     payload = engine.snapshot().payload
 
     assert isinstance(payload, GodotOwnedPayload)
-    assert payload.spec.kind == "rapid_tracking"
-    assert payload.spec.test_code == "rt_obscured_target_prediction"
+    assert payload.spec.kind == expected_kind
+    assert payload.spec.test_code == drill_code
     assert payload.spec.mode == AntDrillMode.BUILD.value
     assert payload.spec.config["workout"] is True
     assert payload.spec.config["drill"] is True

@@ -528,8 +528,11 @@ def test_tracking_result_emits_rms_tracking_overshoot_and_reversal_metrics() -> 
     result = _run_rt_attempt(level=6)
 
     assert result.metrics["rms_tracking_error"] != ""
+    assert result.metrics["tracking_error_mean"] != ""
+    assert result.metrics["time_on_target_ratio"] != ""
     assert result.metrics["overshoot_count"] != ""
     assert result.metrics["reversal_count"] != ""
+    assert result.metrics["control_reversal_count"] == result.metrics["reversal_count"]
     for key in (
         "visible_mean_error",
         "visible_rms_error",
@@ -551,7 +554,9 @@ def test_command_multitask_result_emits_switch_cost_and_false_command_rate() -> 
     result = _run_dtb_attempt()
 
     assert result.metrics["switch_cost_ms"] != ""
+    assert result.metrics["task_switch_cost_ms"] == result.metrics["switch_cost_ms"]
     assert result.metrics["false_command_rate"] != ""
+    assert result.metrics["false_alarm_rate"] != ""
 
 
 def test_distractor_heavy_result_emits_distractor_capture_count() -> None:

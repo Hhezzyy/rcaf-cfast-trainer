@@ -104,6 +104,53 @@ _OPTIONAL_METRIC_KEYS = (
     "false_command_rate",
 )
 
+_NORMALIZED_COMMON_METRIC_KEYS = (
+    "score_ratio",
+    "accuracy",
+    "throughput_per_min",
+    "timeout_rate",
+    "omission_rate",
+    "false_alarm_rate",
+    "mean_rt_ms",
+    "median_rt_ms",
+    "rt_variance_ms2",
+    "first_half_accuracy",
+    "second_half_accuracy",
+    "first_half_throughput",
+    "second_half_throughput",
+    "post_error_next_item_rt_inflation_ms",
+    "difficulty_level_start",
+    "difficulty_level_end",
+    "training_mode",
+    "canonical_drill_code",
+    "source_test_family",
+    "runtime_source",
+)
+_NORMALIZED_PSYCHOMOTOR_METRIC_KEYS = (
+    "tracking_error_mean",
+    "tracking_error_p95",
+    "time_on_target_ratio",
+    "overshoot_count",
+    "control_reversal_count",
+    "prediction_error_mean",
+    "lost_lock_time_s",
+)
+_NORMALIZED_SPATIAL_METRIC_KEYS = (
+    "angular_error_deg",
+    "orientation_correct",
+    "position_error",
+    "recall_distance_error",
+    "view_integration_error",
+)
+_NORMALIZED_MULTITASK_METRIC_KEYS = (
+    "task_switch_cost_ms",
+    "secondary_task_accuracy",
+    "primary_task_accuracy",
+    "dual_task_drop",
+    "missed_audio_commands",
+    "memory_recall_accuracy",
+)
+
 _COMPOSITE_DIFFICULTY_OVERRIDE_CODES = {
     "benchmark_battery",
     "adaptive_session",
@@ -706,6 +753,202 @@ def _standardized_optional_metrics(
     return metrics
 
 
+def _set_metric_if_value(metrics: dict[str, str], key: str, value: object | None) -> None:
+    if key in metrics and str(metrics.get(key, "")).strip() != "":
+        return
+    formatted = _format_metric_value(value)
+    if formatted is not None:
+        metrics[key] = formatted
+
+
+def _first_metric_float(metrics: dict[str, str], *keys: str) -> float | None:
+    for key in keys:
+        value = _metric_float(metrics, key)
+        if value is not None:
+            return value
+    return None
+
+
+def _rate_from_count(
+    metrics: dict[str, str],
+    *,
+    count_keys: tuple[str, ...],
+    attempted: float | None,
+) -> float | None:
+    if attempted is None or attempted <= 0.0:
+        return None
+    for key in count_keys:
+        count = _metric_float(metrics, key)
+        if count is not None:
+            return max(0.0, min(1.0, float(count) / float(attempted)))
+    return None
+
+
+def _derive_half_throughput(
+    metrics: dict[str, str],
+    *,
+    attempted_key: str,
+    duration_s: float | None,
+) -> float | None:
+    attempted = _metric_float(metrics, attempted_key)
+    if attempted is None or duration_s is None or duration_s <= 0.0:
+        return None
+    half_duration_s = max(1.0, float(duration_s) / 2.0)
+    return (float(attempted) / half_duration_s) * 60.0
+
+
+def _derive_window_throughput(
+    metrics: dict[str, str],
+    *,
+    attempted_key: str,
+    duration_s: float | None,
+    window_s: float,
+) -> float | None:
+    attempted = _metric_float(metrics, attempted_key)
+    if attempted is None or duration_s is None or duration_s <= 0.0:
+        return None
+    observed_s = min(float(window_s), max(1.0, float(duration_s)))
+    return (float(attempted) / observed_s) * 60.0
+
+
+def _ensure_normalized_metric_aliases(
+    metrics: dict[str, str],
+    *,
+    test_code: str,
+    scored_duration_s: float | None,
+) -> None:
+    _ = test_code
+    attempted = _metric_float(metrics, "attempted")
+
+    _set_metric_if_value(
+        metrics,
+        "first_half_throughput",
+        _derive_half_throughput(
+            metrics,
+            attempted_key="first_half_attempted",
+            duration_s=scored_duration_s,
+        ),
+    )
+    _set_metric_if_value(
+        metrics,
+        "second_half_throughput",
+        _derive_half_throughput(
+            metrics,
+            attempted_key="second_half_attempted",
+            duration_s=scored_duration_s,
+        ),
+    )
+    _set_metric_if_value(
+        metrics,
+        "first_3m_throughput",
+        _derive_window_throughput(
+            metrics,
+            attempted_key="first_3m_attempted",
+            duration_s=scored_duration_s,
+            window_s=180.0,
+        ),
+    )
+    _set_metric_if_value(
+        metrics,
+        "last_3m_throughput",
+        _derive_window_throughput(
+            metrics,
+            attempted_key="last_3m_attempted",
+            duration_s=scored_duration_s,
+            window_s=180.0,
+        ),
+    )
+    _set_metric_if_value(
+        metrics,
+        "omission_rate",
+        _rate_from_count(metrics, count_keys=("omission_count",), attempted=attempted),
+    )
+    false_alarm_rate = _metric_float(metrics, "false_command_rate")
+    if false_alarm_rate is None:
+        false_alarm_rate = _rate_from_count(
+            metrics,
+            count_keys=("false_alarm_count", "false_alarms", "bridge.false_alarms"),
+            attempted=attempted,
+        )
+    _set_metric_if_value(metrics, "false_alarm_rate", false_alarm_rate)
+
+    _set_metric_if_value(
+        metrics,
+        "canonical_drill_code",
+        metrics.get("canonical_activity_code"),
+    )
+    _set_metric_if_value(
+        metrics,
+        "source_test_family",
+        metrics.get("source_test_code") or metrics.get("difficulty_family_id"),
+    )
+
+    _set_metric_if_value(
+        metrics,
+        "tracking_error_mean",
+        _metric_float(
+            metrics,
+            "mean_tracking_error",
+        )
+        if _metric_float(metrics, "mean_tracking_error") is not None
+        else _first_metric_float(metrics, "mean_error", "rms_tracking_error", "rms_error"),
+    )
+    _set_metric_if_value(
+        metrics,
+        "tracking_error_p95",
+        _first_metric_float(metrics, "tracking_error_p95", "p95_tracking_error"),
+    )
+    _set_metric_if_value(metrics, "time_on_target_ratio", _metric_float(metrics, "on_target_ratio"))
+    _set_metric_if_value(metrics, "control_reversal_count", metrics.get("reversal_count"))
+    _set_metric_if_value(
+        metrics,
+        "prediction_error_mean",
+        _first_metric_float(metrics, "obscured_mean_error", "prediction_error_mean"),
+    )
+    _set_metric_if_value(
+        metrics,
+        "lost_lock_time_s",
+        _first_metric_float(metrics, "lost_lock_time_s", "lost_lock_s"),
+    )
+
+    _set_metric_if_value(metrics, "angular_error_deg", _metric_float(metrics, "angle_error_deg"))
+    _set_metric_if_value(metrics, "orientation_correct", _metric_float(metrics, "orientation_correct"))
+    _set_metric_if_value(metrics, "position_error", _metric_float(metrics, "position_error"))
+    _set_metric_if_value(metrics, "recall_distance_error", _metric_float(metrics, "recall_distance_error"))
+    _set_metric_if_value(metrics, "view_integration_error", _metric_float(metrics, "view_integration_error"))
+
+    _set_metric_if_value(metrics, "task_switch_cost_ms", _metric_float(metrics, "switch_cost_ms"))
+    _set_metric_if_value(
+        metrics,
+        "missed_audio_commands",
+        _first_metric_float(
+            metrics,
+            "missed_audio_commands",
+            "auditory.missed_commands",
+            "bridge.missed_commands",
+        ),
+    )
+    _set_metric_if_value(
+        metrics,
+        "memory_recall_accuracy",
+        _first_metric_float(metrics, "recall_accuracy", "sequence_recall_accuracy"),
+    )
+    _set_metric_if_value(metrics, "primary_task_accuracy", _metric_float(metrics, "primary_task_accuracy"))
+    _set_metric_if_value(metrics, "secondary_task_accuracy", _metric_float(metrics, "secondary_task_accuracy"))
+    primary = _metric_float(metrics, "primary_task_accuracy")
+    secondary = _metric_float(metrics, "secondary_task_accuracy")
+    if primary is not None and secondary is not None:
+        _set_metric_if_value(metrics, "dual_task_drop", max(0.0, float(primary) - float(secondary)))
+
+    for key in (
+        *_NORMALIZED_COMMON_METRIC_KEYS,
+        *_NORMALIZED_PSYCHOMOTOR_METRIC_KEYS,
+        *_NORMALIZED_SPATIAL_METRIC_KEYS,
+        *_NORMALIZED_MULTITASK_METRIC_KEYS,
+    ):
+        metrics.setdefault(key, "")
+
+
 def _filtered_nonreserved_metrics(
     raw_metrics: dict[str, str],
     *,
@@ -805,6 +1048,11 @@ def attempt_result_from_engine(
     training_mode = _training_mode_metric(engine, summary)
     if training_mode and "training_mode" not in metrics:
         metrics["training_mode"] = training_mode
+    _ensure_normalized_metric_aliases(
+        metrics,
+        test_code=str(test_code),
+        scored_duration_s=float(scored_duration_s),
+    )
 
     return AttemptResult(
         test_code=str(test_code),

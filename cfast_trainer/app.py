@@ -128,7 +128,6 @@ from .auditory_capacity import (
     AUDITORY_GATE_SPAWN_X_NORM,
     AUDITORY_TRIANGLE_GATE_POINTS,
     AuditoryCapacityCommandType,
-    AuditoryCapacityEngine,
     AuditoryCapacityGate,
     AuditoryCapacityGateDirective,
     AuditoryCapacityPayload,
@@ -580,6 +579,129 @@ def _iter_reachable_runtime_engines(engine: object | None) -> list[object]:
             if child is not None:
                 stack.append(child)
     return found
+
+
+_GODOT_AUTHORITATIVE_COMMANDS = frozenset(
+    {
+        "auditory_ready",
+        "auditory_progress",
+        "auditory_event",
+        "auditory_complete",
+        "auditory_error",
+        "godot_ready",
+        "godot_progress",
+        "godot_event",
+        "godot_complete",
+        "godot_error",
+        "godot_phase_advance",
+        "godot_phase_complete",
+        "ready",
+        "progress",
+        "event",
+        "complete",
+        "error",
+    }
+)
+
+
+def _message_token(message: Mapping[str, object], key: str) -> str:
+    return str(message.get(key, "") or "").strip()
+
+
+def _iter_godot_message_targets(root: object | None) -> list[object]:
+    """Return Godot-authoritative engines reachable through screen/session wrappers."""
+    if root is None:
+        return []
+    roots: list[object] = [root]
+    for attr in ("_engine", "_current_engine", "_session", "_runtime_screen"):
+        try:
+            candidate = getattr(root, attr, None)
+        except Exception:
+            candidate = None
+        if candidate is not None:
+            roots.append(candidate)
+
+    targets: list[object] = []
+    seen: set[int] = set()
+    for candidate in roots:
+        for target in _iter_reachable_runtime_engines(candidate):
+            target_id = id(target)
+            if target_id in seen:
+                continue
+            seen.add(target_id)
+            targets.append(target)
+    return targets
+
+
+def _godot_target_metadata(target: object) -> tuple[str, str, str]:
+    run_key = ""
+    test_code = ""
+    kind = ""
+    try:
+        snap = target.snapshot()
+    except Exception:
+        snap = None
+    payload = getattr(snap, "payload", None)
+    if isinstance(payload, GodotOwnedPayload):
+        spec = payload.spec
+        run_key = str(spec.run_key)
+        test_code = str(spec.test_code).strip().lower()
+        kind = str(spec.kind).strip().lower()
+    if test_code == "":
+        test_code = str(getattr(target, "_test_code", "") or "").strip().lower()
+    if kind == "":
+        kind = str(getattr(target, "_kind", "") or "").strip().lower()
+    return run_key, test_code, kind
+
+
+def _godot_message_target_score(target: object, message: Mapping[str, object]) -> int:
+    handler = getattr(target, "apply_godot_authoritative_message", None)
+    if not callable(handler):
+        return -1
+
+    requested_run_key = _message_token(message, "run_key")
+    requested_test_code = _message_token(message, "test_code").lower()
+    requested_kind = _message_token(message, "kind").lower()
+    run_key, test_code, kind = _godot_target_metadata(target)
+
+    if requested_run_key:
+        return 100 if run_key == requested_run_key else -1
+    if requested_test_code and requested_test_code == test_code:
+        return 80
+    if requested_test_code and requested_test_code == kind:
+        return 70
+    if requested_kind and requested_kind == kind:
+        return 60
+    if requested_test_code or requested_kind:
+        return -1
+    return 10
+
+
+def _route_godot_authoritative_message(
+    root: object | None,
+    message: Mapping[str, object],
+) -> bool:
+    """Route a Godot control packet to the nested engine that owns its run key.
+
+    Workout, benchmark, and adaptive screens wrap the live engine one or two
+    levels deep. Matching by run key first prevents stale phase/progress
+    messages from advancing the wrong block when several Godot-owned activities
+    share a broad kind such as Rapid Tracking.
+    """
+    best_target: object | None = None
+    best_score = -1
+    for target in _iter_godot_message_targets(root):
+        score = _godot_message_target_score(target, message)
+        if score > best_score:
+            best_score = score
+            best_target = target
+    if best_target is None or best_score < 0:
+        return False
+    handler = getattr(best_target, "apply_godot_authoritative_message", None)
+    if not callable(handler):
+        return False
+    handler(message)
+    return True
 
 
 def _install_reachable_pausable_engine_clocks(engine: object | None) -> list[PausableClock]:
@@ -3837,30 +3959,14 @@ class App:
         if command == "set_window_mode":
             self.set_godot_window_mode(str(message.get("window_mode", message.get("mode", ""))))
             return
-        if command in {
-            "auditory_ready",
-            "auditory_progress",
-            "auditory_event",
-            "auditory_complete",
-            "auditory_error",
-            "godot_ready",
-            "godot_progress",
-            "godot_event",
-            "godot_complete",
-            "godot_error",
-            "godot_phase_advance",
-            "godot_phase_complete",
-            "ready",
-            "progress",
-            "event",
-            "complete",
-            "error",
-        }:
+        if command in _GODOT_AUTHORITATIVE_COMMANDS:
             screen = self._current_screen()
-            engine = getattr(screen, "_engine", None)
-            handler = getattr(engine, "apply_godot_authoritative_message", None)
+            routed = False
+            handler = getattr(screen, "shell_handle_godot_control_command", None)
             if callable(handler):
-                handler(message)
+                routed = bool(handler(message))
+            if not routed:
+                _route_godot_authoritative_message(screen, message)
             return
         if command == "pause_toggle":
             self._set_shell_pause_active(not self._shell_pause_active)
@@ -4910,6 +5016,9 @@ class AntWorkoutScreen(_SharedPauseMenuMixin):
         snap = self._session.snapshot()
         return str(getattr(snap, "current_block_label", "") or snap.title)
 
+    def shell_handle_godot_control_command(self, message: Mapping[str, object]) -> bool:
+        return _route_godot_authoritative_message(self, message)
+
     def _shared_pause_supports_restart_current(self) -> bool:
         return self._session.snapshot().stage in (
             AntWorkoutStage.BLOCK_SETUP,
@@ -5658,6 +5767,9 @@ class BenchmarkScreen(_SharedPauseMenuMixin):
         snap = self._session.snapshot()
         return str(getattr(snap, "current_probe_label", "") or snap.title)
 
+    def shell_handle_godot_control_command(self, message: Mapping[str, object]) -> bool:
+        return _route_godot_authoritative_message(self, message)
+
     def _shared_pause_supports_restart_current(self) -> bool:
         return self._session.stage is BenchmarkStage.PROBE
 
@@ -6174,6 +6286,9 @@ class AdaptiveSessionScreen(_SharedPauseMenuMixin):
             return None
         snap = self._session.snapshot()
         return str(getattr(snap, "current_block_label", "") or snap.title)
+
+    def shell_handle_godot_control_command(self, message: Mapping[str, object]) -> bool:
+        return _route_godot_authoritative_message(self, message)
 
     def _shared_pause_supports_restart_current(self) -> bool:
         return self._session is not None and self._session.stage is AdaptiveStage.BLOCK
@@ -10402,6 +10517,7 @@ class _AdaptiveRuntimeTracker:
                     self._activity_kind,
                     intended_use=getattr(engine, "_mode", None),
                 ),
+                test_code=test_code,
             )
             if context.adaptive_enabled
             else None
@@ -10546,21 +10662,36 @@ class _AdaptiveRuntimeTracker:
     def _refresh_metric_overrides(self) -> None:
         end_level = int(getattr(self._engine, "_adaptive_end_level", self._context.launch_level))
         change_count = int(getattr(self._engine, "_adaptive_change_count", 0))
+        changes = getattr(self._engine, "_difficulty_changes", ())
+        latest = None
+        if isinstance(changes, (list, tuple)) and changes:
+            latest = changes[-1]
         overrides = getattr(self._engine, "_result_metrics_overrides", None)
         if not isinstance(overrides, dict):
             overrides = {}
             setattr(self._engine, "_result_metrics_overrides", overrides)
-        overrides.update(
-            {
-                "adaptive_mode": str(self._context.mode),
-                "adaptive_start_level": str(int(self._context.launch_level)),
-                "adaptive_end_level": str(int(end_level)),
-                "adaptive_change_count": str(int(change_count)),
-                "adaptive_scope_code": self._context.code_scope_key,
-                "adaptive_scope_family": self._context.family_scope_key,
-                "adaptive_scope_primitive": self._context.primitive_scope_key,
-            }
-        )
+        updates = {
+            "adaptive_mode": str(self._context.mode),
+            "adaptive_start_level": str(int(self._context.launch_level)),
+            "adaptive_end_level": str(int(end_level)),
+            "adaptive_change_count": str(int(change_count)),
+            "adaptive_scope_code": self._context.code_scope_key,
+            "adaptive_scope_family": self._context.family_scope_key,
+            "adaptive_scope_primitive": self._context.primitive_scope_key,
+            "difficulty_decision.count": str(int(change_count)),
+        }
+        if latest is not None:
+            updates.update(
+                {
+                    "difficulty_decision.latest_after_units": str(
+                        int(getattr(latest, "after_units", getattr(latest, "after_attempt", 0)))
+                    ),
+                    "difficulty_decision.latest_old_level": str(int(getattr(latest, "old_level", end_level))),
+                    "difficulty_decision.latest_new_level": str(int(getattr(latest, "new_level", end_level))),
+                    "difficulty_decision.latest_reason": str(getattr(latest, "reason", "")),
+                }
+            )
+        overrides.update(updates)
 
 
 class CognitiveTestScreen(_SharedPauseMenuMixin):
@@ -13587,9 +13718,9 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
                     control_scheme=str(rapid_tracking_payload.control_scheme),
                 )
                 set_control(horizontal=control_x, vertical=control_y)
-            elif isinstance(self._engine, AuditoryCapacityEngine):
+            elif isinstance(live_snap.payload, AuditoryCapacityPayload) and callable(set_control):
                 control_x, control_y = self._read_sensory_motor_control()
-                self._engine.set_control(horizontal=control_x, vertical=control_y)
+                set_control(horizontal=control_x, vertical=control_y)
 
             # Update engine and take a fresh snapshot.
             self._engine.update()
@@ -15071,6 +15202,9 @@ class CognitiveTestScreen(_SharedPauseMenuMixin):
 
     def shell_activity_label(self) -> str:
         return self._engine.snapshot().title
+
+    def shell_handle_godot_control_command(self, message: Mapping[str, object]) -> bool:
+        return _route_godot_authoritative_message(self._engine, message)
 
     def abort_activity(self, reason: str) -> None:
         if self._activity_finalized or self._test_code is None:

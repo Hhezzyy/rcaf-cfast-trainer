@@ -156,7 +156,7 @@ def test_rapid_tracking_uses_shared_chunk_map_for_routes_and_socketed_spawns() -
 def test_rapid_tracking_yaw_controls_are_horizontally_flipped() -> None:
     source = (GODOT_SCRIPTS / "rapid_tracking_runtime.gd").read_text(encoding="utf-8")
     body = source.split("func _input_vector() -> Vector2:", 1)[1].split(
-        "func _primary_joypad()", 1
+        "func _any_joy_button_pressed", 1
     )[0]
 
     assert "KEY_A" in body and "KEY_LEFT" in body
@@ -166,10 +166,12 @@ def test_rapid_tracking_yaw_controls_are_horizontally_flipped() -> None:
     assert "JOYSTICK_AXIS_SENSITIVITY" in body
     assert "input_left_active" in body
     assert "input_right_active" in body
+    assert "for raw_joy in Input.get_connected_joypads():" in body
     assert "-_joy_axis_with_deadzone(joy, JOY_AXIS_LEFT_X)" in body
     assert "_joy_axis_with_deadzone(joy, JOY_AXIS_LEFT_Y)" in body
     assert "JOY_BUTTON_DPAD_LEFT" in body
     assert "JOYSTICK_DEADZONE" in source
+    assert "func _primary_joypad" not in source
 
 
 def test_rapid_tracking_input_key_state_probe_via_godot() -> None:
@@ -206,8 +208,9 @@ def test_rapid_tracking_hold_zoom_replaces_space_capture_and_green_target_marker
     assert '_set_zoom_source_active("key", event.pressed)' in space_branch
     assert '_capture("key")' not in space_branch
     assert '_capture("key")' in handle_body
-    assert "Input.is_joy_button_pressed(joy, JOY_BUTTON_A)" in source
-    assert '_set_zoom_source_active("joystick"' in source
+    assert "_any_joy_button_pressed(JOY_BUTTON_A)" in source
+    assert "Input.is_joy_button_pressed(int(raw_joy), button)" in source
+    assert '_set_zoom_source_active("joystick", _any_joy_button_pressed(JOY_BUTTON_A))' in source
     assert "zoom_fov" in source
     assert "zoom_bonus_score" in source
     assert "zoom_bonus_max_score" in source

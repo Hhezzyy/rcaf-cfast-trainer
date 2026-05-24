@@ -39,15 +39,17 @@
 ## Input / Rendering Dependencies
 
 - Keyboard, mouse, joystick calibration, input profiles, and button bindings are all configured here.
-- Pygame remains the control window and fallback renderer. Auditory Capacity, Rapid Tracking, Spatial Integration, Trace Test 1, and Trace Test 2 also stream visual snapshots to the optional Godot 4 companion window. Instrument Comprehension aircraft-image flows render local 3D mesh assets inside pygame.
-- Godot is visual-only in this pass; scoring, input, timers, persistence, and menus stay in Python.
+- Pygame remains the control window and fallback renderer. Auditory Capacity, Rapid Tracking, Spatial Integration, Trace Test 1, and Trace Test 2 can run as Godot-owned 3D activities in the optional Godot 4 companion window. Instrument Comprehension aircraft-image flows render local 3D mesh assets inside pygame.
+- Godot-owned activities report ready/progress/phase/complete/error messages back to Python. `App._route_godot_control_command(...)` forwards those packets by `run_key`, `test_code`, and runtime kind so nested workout, benchmark, and adaptive block engines advance correctly.
+- Python remains responsible for menus, pause flow, persistence, and final result storage, even when Godot owns the live 3D simulation.
 - Many subsystem payloads are rendered directly by `CognitiveTestScreen`, so shell changes can affect many tests at once.
 
 ## Persistence / Test Hooks
 
 - `ResultsStore` is the shared persistence entry point.
 - Headless shell scenarios are available through `python -m cfast_trainer --headless-sim <scenario>`.
-- `tests/test_godot_bridge.py` covers companion payload serialization, fake-process bridge lifecycle, UI render sync, and a skipped import smoke test when Godot is unavailable.
+- `tests/test_godot_bridge.py` covers companion payload serialization, fake-process bridge lifecycle, nested Godot-owned message routing, UI render sync, and a skipped import smoke test when Godot is unavailable.
+- `tests/test_drill_runtime_audit.py` checks menu drills, canonical drill builders, and workout blocks against the expected runtime families.
 - Shell safety nets live in the pause, smoke, intro, and hardening tests listed above.
 
 ## Common Safe Edit Points

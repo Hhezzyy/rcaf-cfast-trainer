@@ -34,6 +34,7 @@ const BLUE_COLOR := Color(0.12, 0.42, 0.95, 1.0)
 const YELLOW_COLOR := Color(0.95, 0.66, 0.16, 1.0)
 const WHITE_COLOR := Color(0.92, 0.96, 0.98, 1.0)
 const BLACK_COLOR := Color(0.05, 0.06, 0.07, 1.0)
+const JOYSTICK_DEADZONE := 0.16
 
 class StreamRng:
 	var rng := RandomNumberGenerator.new()
@@ -384,14 +385,15 @@ func _update_ball(dt: float) -> void:
 		input_vec.x -= 1.0
 	if Input.is_key_pressed(KEY_RIGHT):
 		input_vec.x += 1.0
+	# Auditory Capacity uses aircraft-style pitch: push/forward moves down.
 	if Input.is_key_pressed(KEY_UP):
-		input_vec.y += 1.0
-	if Input.is_key_pressed(KEY_DOWN):
 		input_vec.y -= 1.0
-	if Input.get_connected_joypads().size() > 0:
-		var joy := int(Input.get_connected_joypads()[0])
-		input_vec.x += Input.get_joy_axis(joy, JOY_AXIS_LEFT_X)
-		input_vec.y -= Input.get_joy_axis(joy, JOY_AXIS_LEFT_Y)
+	if Input.is_key_pressed(KEY_DOWN):
+		input_vec.y += 1.0
+	for raw_joy in Input.get_connected_joypads():
+		var joy := int(raw_joy)
+		input_vec.x += _joy_axis_with_deadzone(joy, JOY_AXIS_LEFT_X)
+		input_vec.y += _joy_axis_with_deadzone(joy, JOY_AXIS_LEFT_Y)
 	if input_vec.length() > 1.0:
 		input_vec = input_vec.normalized()
 	var accel := (input_vec * control_gain) + (disturbance * disturbance_gain)
@@ -417,6 +419,13 @@ func _update_ball(dt: float) -> void:
 			ball_vel *= -wall_bounce_factor
 		ball_body.global_position += normal * 0.015
 	ball_pos = _ball_pos_from_world(ball_body.global_position, travel_distance)
+
+
+func _joy_axis_with_deadzone(joy: int, axis: int) -> float:
+	var value := float(Input.get_joy_axis(joy, axis))
+	if absf(value) < JOYSTICK_DEADZONE:
+		return 0.0
+	return value
 
 
 func _update_disturbance(_dt: float) -> void:

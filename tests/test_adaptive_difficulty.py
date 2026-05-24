@@ -9,16 +9,21 @@ from cfast_trainer.adaptive_difficulty import (
     AdaptiveDifficultyState,
     DifficultyAxes,
     build_resolved_difficulty_context,
+    default_launch_mode_for_code,
+    difficulty_target_for_code,
+    difficulty_target_for_family,
     difficulty_profile_for_family,
     difficulty_ratio_for_level,
     family_id_for_code,
     next_level_from_performance,
     policy_for_activity_kind,
     recommended_level_for_primitive,
+    supports_adaptive_difficulty,
 )
 from cfast_trainer.airborne_numerical import build_ant_airborne_difficulty_profile
 from cfast_trainer.guide_skill_catalog import OfficialGuideTestSpec
 from cfast_trainer.rapid_tracking import build_rapid_tracking_test
+from cfast_trainer.skill_evidence import skill_evidence_from_metrics
 
 
 _FAMILIES = (
@@ -81,6 +86,64 @@ def test_mode_offsets_shift_time_pressure_and_distractors_by_intended_use() -> N
     assert anchor.axes.distractor_density < build.axes.distractor_density
     assert fatigue.axes.time_pressure >= build.axes.time_pressure
     assert fatigue.axes.distractor_density >= build.axes.distractor_density
+
+
+def test_family_specific_learning_target_bands_are_exposed() -> None:
+    cognitive = difficulty_target_for_family("quantitative")
+    search = difficulty_target_for_family("search_vigilance")
+    memory = difficulty_target_for_family("visual_memory_updating")
+    tracking = difficulty_target_for_family("psychomotor_tracking")
+    benchmark = difficulty_target_for_code("benchmark_battery")
+
+    assert (cognitive.target_score_low, cognitive.target_score_high) == pytest.approx((0.75, 0.85))
+    assert (search.target_score_low, search.target_score_high) == pytest.approx((0.70, 0.85))
+    assert (memory.target_score_low, memory.target_score_high) == pytest.approx((0.60, 0.80))
+    assert (tracking.target_score_low, tracking.target_score_high) == pytest.approx((0.70, 0.85))
+    assert benchmark.preferred_training_modes == ("benchmark",)
+
+
+def test_skill_evidence_normalizes_cognitive_metrics() -> None:
+    evidence = skill_evidence_from_metrics(
+        {
+            "score_ratio": "0.720000",
+            "accuracy": "0.760000",
+            "attempted": "20",
+            "timeout_rate": "0.050000",
+            "mean_rt_ms": "1100.000000",
+            "rt_variance_ms2": "90000.000000",
+            "first_half_accuracy": "0.820000",
+            "second_half_accuracy": "0.700000",
+            "post_error_next_item_rt_inflation_ms": "300.000000",
+        },
+        test_code="ma_percentage_snap",
+        family_id="quantitative",
+    )
+
+    assert 0.0 <= evidence.mastery_score <= 1.0
+    assert evidence.weakness == pytest.approx(1.0 - evidence.mastery_score)
+    assert evidence.timeout_penalty == pytest.approx(0.05)
+    assert evidence.fatigue_drop > 0.10
+    assert evidence.confidence > 0.45
+
+
+def test_skill_evidence_accepts_godot_owned_tracking_metrics() -> None:
+    evidence = skill_evidence_from_metrics(
+        {
+            "attempted": "12",
+            "score_ratio": "0.640000",
+            "mean_tracking_error": "0.250000",
+            "time_on_target_ratio": "0.780000",
+            "overshoot_count": "2",
+            "control_reversal_count": "3",
+            "prediction_error_mean": "0.300000",
+        },
+        test_code="rapid_tracking",
+        family_id="psychomotor_tracking",
+    )
+
+    assert evidence.mastery_score > 0.65
+    assert evidence.recommended_training_target in {"learning_zone", "control_quality"}
+    assert evidence.confidence > 0.35
 
 
 def test_scope_keys_for_code_prefers_catalog_backed_primitive_mapping(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -188,6 +251,65 @@ def test_next_level_from_performance_applies_hysteresis_and_session_caps() -> No
             max_delta=3,
         )
         == 4
+    )
+
+
+def test_next_level_from_performance_holds_inside_target_band_and_demotes_below() -> None:
+    assert (
+        next_level_from_performance(
+            current_level=5,
+            launch_level=5,
+            block_start_level=5,
+            intended_use="build",
+            recent_accuracy=0.80,
+            recent_score_ratio=0.80,
+            recent_timeout_rate=0.0,
+            medium_accuracy=0.80,
+            medium_score_ratio=0.80,
+            medium_timeout_rate=0.0,
+            max_delta=3,
+            family_id="quantitative",
+        )
+        == 5
+    )
+    assert (
+        next_level_from_performance(
+            current_level=5,
+            launch_level=5,
+            block_start_level=5,
+            intended_use="build",
+            recent_accuracy=0.69,
+            recent_score_ratio=0.69,
+            recent_timeout_rate=0.0,
+            medium_accuracy=0.71,
+            medium_score_ratio=0.71,
+            medium_timeout_rate=0.0,
+            max_delta=3,
+            family_id="quantitative",
+        )
+        == 4
+    )
+
+
+def test_benchmark_difficulty_targeting_is_fixed() -> None:
+    assert default_launch_mode_for_code("benchmark_battery") == "fixed"
+    assert supports_adaptive_difficulty("benchmark_battery") is False
+    assert (
+        next_level_from_performance(
+            current_level=5,
+            launch_level=5,
+            block_start_level=5,
+            intended_use="build",
+            recent_accuracy=0.05,
+            recent_score_ratio=0.05,
+            recent_timeout_rate=1.0,
+            medium_accuracy=0.05,
+            medium_score_ratio=0.05,
+            medium_timeout_rate=1.0,
+            max_delta=3,
+            test_code="benchmark_battery",
+        )
+        == 5
     )
 
 
